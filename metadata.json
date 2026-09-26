@@ -1,0 +1,6 @@
+{
+  "name": "Festus's website",
+  "description": "Festus's official website featuring mechanical engineering portfolio, 3D CAD modeling, first-principles hand calculations, DFM/DFA analysis, and technical projects.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

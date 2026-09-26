@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <!-- Vibrant Blue Gradient for Top Swoosh -->
+    <linearGradient id="fesline-blue-grad-og" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0068FF" />
+      <stop offset="100%" stop-color="#004BE0" />
+    </linearGradient>
+    <filter id="subtle-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#080E21" flood-opacity="0.06"/>
+    </filter>
+  </defs>
+
+  <!-- Clean White Background matching original graphic -->
+  <rect width="1200" height="630" fill="#FFFFFF" />
+
+  <!-- Subtle grid/accent background lines for professional engineering finish -->
+  <rect x="40" y="40" width="1120" height="550" rx="24" fill="none" stroke="#E2E8F0" stroke-width="2" stroke-dasharray="8 8" opacity="0.6"/>
+
+  <!-- Centered Logo Group (Scale 1.15, Offset to center x=205, y=210) -->
+  <g transform="translate(205, 215) scale(1.15)" filter="url(#subtle-shadow)">
+    <!-- ICON: F SWOOSH & BODY -->
+    <!-- Top Blue Wing Swoosh -->
+    <path d="M 32 64 C 58 26, 112 20, 222 20 C 185 46, 148 52, 122 52 L 58 52 C 45 52, 36 56, 32 64 Z" fill="url(#fesline-blue-grad-og)" />
+    
+    <!-- Deep Navy F Body & Crossbar -->
+    <path d="M 122 52 L 78 52 C 50 52, 28 78, 18 108 C 6 144, -2 168, 22 158 C 38 150, 48 124, 58 96 L 188 96 L 178 116 L 66 116 L 48 165 C 44 176, 28 178, 18 170 C 2 160, 8 134, 18 108 C 30 72, 55 52, 90 52 Z" fill="#080E21" />
+
+    <!-- LOGOTYPE TEXT: esline -->
+    <!-- e -->
+    <path d="M 270 120 C 240 120, 222 102, 222 76 C 222 50, 240 32, 270 32 C 298 32, 314 50, 314 76 L 246 76 C 248 98, 258 105, 272 105 C 283 105, 292 99, 297 90 L 312 96 C 304 112, 290 120, 270 120 Z M 270 46 C 257 46, 248 54, 246 64 L 292 64 C 290 54, 281 46, 270 46 Z" fill="#080E21" />
+
+    <!-- s -->
+    <path d="M 328 100 C 333 105, 342 108, 352 108 C 362 108, 369 103, 369 96 C 369 88, 360 85, 347 81 C 331 76, 324 67, 324 55 C 324 40, 338 32, 356 32 C 370 32, 382 38, 388 48 L 374 57 C 370 51, 363 47, 355 47 C 346 47, 340 51, 340 56 C 340 62, 348 65, 360 69 C 376 74, 385 82, 385 96 C 385 111, 370 120, 351 120 C 335 120, 322 112, 314 99 Z" fill="#080E21" />
+
+    <!-- l -->
+    <path d="M 402 24 C 402 20, 406 16, 412 16 L 422 16 C 428 16, 432 20, 432 24 L 432 112 C 432 116, 428 120, 422 120 L 412 120 C 406 120, 402 116, 402 112 Z" fill="#080E21" />
+
+    <!-- i with leaf dot -->
+    <!-- Stem -->
+    <path d="M 452 50 C 452 46, 456 42, 462 42 L 472 42 C 478 42, 482 46, 482 50 L 482 112 C 482 116, 478 120, 472 120 L 462 120 C 456 120, 452 116, 452 112 Z" fill="#080E21" />
+    <!-- Leaf / Teardrop Dot -->
+    <path d="M 460 32 C 456 22, 462 14, 474 14 C 482 14, 486 22, 482 30 C 478 35, 466 36, 460 32 Z" fill="url(#fesline-blue-grad-og)" />
+
+    <!-- n -->
+    <path d="M 502 48 C 502 44, 506 40, 512 40 L 522 40 C 527 40, 531 44, 531 48 L 531 57 C 538 46, 549 40, 562 40 C 582 40, 592 53, 592 74 L 592 112 C 592 116, 588 120, 582 120 L 572 120 C 566 120, 562 116, 562 112 L 562 76 C 562 65, 556 57, 546 57 C 536 57, 531 65, 531 77 L 531 112 C 531 116, 527 120, 522 120 L 512 120 C 506 120, 502 116, 502 112 Z" fill="#080E21" />
+
+    <!-- e -->
+    <path d="M 630 120 C 600 120, 582 102, 582 76 C 582 50, 600 32, 630 32 C 658 32, 674 50, 674 76 L 606 76 C 608 98, 618 105, 632 105 C 643 105, 652 99, 657 90 L 672 96 C 664 112, 650 120, 630 120 Z M 630 46 C 617 46, 608 54, 606 64 L 652 64 C 650 54, 641 46, 630 46 Z" fill="#080E21" />
+  </g>
+</svg>
