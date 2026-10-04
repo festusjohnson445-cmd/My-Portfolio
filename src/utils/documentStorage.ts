@@ -1,4 +1,5 @@
 import { DocumentItem } from './profileState';
+import { isMockDrawingPreview } from './pdfRenderer';
 
 const DB_NAME = 'FeslineEngineeringDocsDB';
 const DB_VERSION = 2;
@@ -130,6 +131,18 @@ export async function saveDocumentsPersistently(docs: DocumentItem[]): Promise<v
   }
 }
 
+function sanitizeLoadedDoc<T>(d: T): T {
+  if (!d || typeof d !== 'object') return d;
+  const doc = { ...(d as any) };
+  if (doc.previewImageDataUrl && isMockDrawingPreview(doc.previewImageDataUrl)) {
+    doc.previewImageDataUrl = undefined;
+  }
+  if (doc.previewUrl && isMockDrawingPreview(doc.previewUrl)) {
+    doc.previewUrl = undefined;
+  }
+  return doc as T;
+}
+
 /**
  * Load documents from IndexedDB if available, otherwise fallback to localStorage
  */
@@ -149,7 +162,10 @@ export async function loadDocumentsPersistently(): Promise<DocumentItem[]> {
     });
 
     if (allDocs && allDocs.length > 0) {
-      return sortDocumentsDescending(allDocs.filter((d) => d && d.id && !deletedIds.has(d.id)));
+      const cleaned = allDocs
+        .filter((d) => d && d.id && !deletedIds.has(d.id))
+        .map(sanitizeLoadedDoc);
+      return sortDocumentsDescending(cleaned);
     }
   } catch (e) {
     console.warn('IndexedDB read failed, falling back to localStorage:', e);
@@ -161,7 +177,10 @@ export async function loadDocumentsPersistently(): Promise<DocumentItem[]> {
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        return sortDocumentsDescending(parsed.filter((d) => d && d.id && !deletedIds.has(d.id)));
+        const cleaned = parsed
+          .filter((d) => d && d.id && !deletedIds.has(d.id))
+          .map(sanitizeLoadedDoc);
+        return sortDocumentsDescending(cleaned);
       }
     }
   } catch {}
@@ -286,7 +305,10 @@ export async function loadHubDocumentsPersistently<T extends { id: string }>(): 
     });
 
     if (allDocs && allDocs.length > 0) {
-      return sortDocumentsDescending(allDocs.filter((d) => d && d.id && !deletedIds.has(d.id)));
+      const cleaned = allDocs
+        .filter((d) => d && d.id && !deletedIds.has(d.id))
+        .map(sanitizeLoadedDoc);
+      return sortDocumentsDescending(cleaned);
     }
   } catch (e) {
     console.warn('IndexedDB hub read failed, trying localStorage:', e);
@@ -298,7 +320,10 @@ export async function loadHubDocumentsPersistently<T extends { id: string }>(): 
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return sortDocumentsDescending(parsed.filter((d: any) => d && d.id && !deletedIds.has(d.id)) as T[]);
+        const cleaned = parsed
+          .filter((d: any) => d && d.id && !deletedIds.has(d.id))
+          .map(sanitizeLoadedDoc);
+        return sortDocumentsDescending(cleaned as T[]);
       }
     }
   } catch {}

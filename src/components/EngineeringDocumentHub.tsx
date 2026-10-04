@@ -40,7 +40,7 @@ import {
   ArrowUpDown
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
-import { renderPdfFirstPageToImage, generateDocumentDrawingPreview } from '../utils/pdfRenderer';
+import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 import {
   saveHubDocumentsPersistently,
   loadHubDocumentsPersistently,
@@ -283,10 +283,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           firestoreDocs.forEach((fDoc) => {
             if (fDoc && fDoc.id && !deletedIds.has(fDoc.id)) {
               const existing = docsMap.get(fDoc.id);
+              const validPreview = (fDoc.previewUrl && !isMockDrawingPreview(fDoc.previewUrl))
+                ? fDoc.previewUrl
+                : (existing?.previewUrl && !isMockDrawingPreview(existing?.previewUrl))
+                ? existing.previewUrl
+                : undefined;
               docsMap.set(fDoc.id, {
                 ...fDoc,
                 dataUrl: existing?.dataUrl || fDoc.dataUrl,
-                previewUrl: fDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(fDoc.fileName),
+                previewUrl: validPreview,
               });
             }
           });
@@ -309,10 +314,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             json.documents.forEach((sDoc: any) => {
               if (sDoc && sDoc.id && !currentDeleted.has(sDoc.id)) {
                 const existing = docsMap.get(sDoc.id);
+                const validPreview = (sDoc.previewUrl && !isMockDrawingPreview(sDoc.previewUrl))
+                  ? sDoc.previewUrl
+                  : (existing?.previewUrl && !isMockDrawingPreview(existing?.previewUrl))
+                  ? existing.previewUrl
+                  : undefined;
                 docsMap.set(sDoc.id, {
                   ...sDoc,
                   dataUrl: sDoc.dataUrl || existing?.dataUrl,
-                  previewUrl: sDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(sDoc.fileName),
+                  previewUrl: validPreview,
                 });
               }
             });
@@ -347,10 +357,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             firestoreDocs.forEach((fDoc) => {
               if (fDoc && fDoc.id && !currentDeleted.has(fDoc.id)) {
                 const existing = prev.find((p) => p.id === fDoc.id);
+                const validPreview = (fDoc.previewUrl && !isMockDrawingPreview(fDoc.previewUrl))
+                  ? fDoc.previewUrl
+                  : (existing?.previewUrl && !isMockDrawingPreview(existing?.previewUrl))
+                  ? existing.previewUrl
+                  : undefined;
                 map.set(fDoc.id, {
                   ...fDoc,
                   dataUrl: existing?.dataUrl || fDoc.dataUrl,
-                  previewUrl: fDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(fDoc.fileName),
+                  previewUrl: validPreview,
                 });
               }
             });
@@ -431,29 +446,23 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       let preview: string | null = null;
 
-      // Generate preview safely
+      // Generate preview safely for real images and PDFs only
       if (file.type.startsWith('image/')) {
-        preview = await new Promise<string>((resolve) => {
+        preview = await new Promise<string | null>((resolve) => {
           const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = () => resolve(generateDocumentDrawingPreview(file.name));
+          reader.onload = (e) => resolve((e.target?.result as string) || null);
+          reader.onerror = () => resolve(null);
           reader.readAsDataURL(file);
         });
-      } else if (file.name.toLowerCase().endsWith('.pdf')) {
+      } else if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
         try {
           const buffer = await file.arrayBuffer();
-          const pdfPromise = renderPdfFirstPageToImage(buffer, 800, file.name);
-          const timeoutPromise = new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 3500)
-          );
-          preview = await Promise.race([pdfPromise, timeoutPromise]).catch(() =>
-            generateDocumentDrawingPreview(file.name)
-          );
+          preview = await renderPdfFirstPageToImage(buffer, 800);
         } catch {
-          preview = generateDocumentDrawingPreview(file.name);
+          preview = null;
         }
       } else {
-        preview = generateDocumentDrawingPreview(file.name);
+        preview = null;
       }
 
       newQueueItems.push({
@@ -553,7 +562,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             uploadTimestamp: timestamp,
             downloadCount: 0,
             tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
-            previewUrl: item.previewUrl || generateDocumentDrawingPreview(item.file.name),
+            previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : undefined,
             dataUrl: fileDataUrl,
             downloadUrl: `/api/documents/files/${docId}`,
             hasServerFile: true,
@@ -1000,7 +1009,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               >
                 {/* Card Top: Preview Thumbnail & Format Badge */}
                 <div className="relative w-full h-44 bg-slate-50 overflow-hidden border-b border-slate-200">
-                  {doc.previewUrl ? (
+                  {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) ? (
                     <img
                       src={doc.previewUrl}
                       alt={doc.title}
@@ -1029,7 +1038,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
                   {/* Preview Button */}
                   <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
-                    {doc.previewUrl && (
+                    {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && (
                       <button
                         onClick={() => setPreviewModalDoc(doc)}
                         className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"

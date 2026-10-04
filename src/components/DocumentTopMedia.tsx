@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Eye, FileCode, Layers, Upload, Download, Lock, Check, Loader2 } from 'lucide-react';
+import { Eye, FileCode, Layers, Upload, Download, Check, Loader2, BookOpen, FileText } from 'lucide-react';
 import { DocumentItem } from '../utils/profileState';
-import { renderPdfFirstPageToImage, generateDocumentDrawingPreview } from '../utils/pdfRenderer';
+import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 
 interface DocumentTopMediaProps {
   doc: DocumentItem;
@@ -22,9 +22,9 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
   onUpdatePreviewUrl,
   onDirectAttachFile,
 }) => {
-  const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(doc.previewImageDataUrl || null);
+  const initialPreview = doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) ? doc.previewImageDataUrl : null;
+  const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(initialPreview);
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
-  const [renderError, setRenderError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf =
@@ -33,14 +33,14 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     Boolean(doc.attachmentName && /\.pdf$/i.test(doc.attachmentName));
 
   const isImage =
-    Boolean(doc.previewImageDataUrl && !isPdf) ||
+    Boolean(doc.previewImageDataUrl && !isPdf && !isMockDrawingPreview(doc.previewImageDataUrl)) ||
     Boolean(doc.fileType?.toLowerCase().includes('image')) ||
     Boolean(doc.attachmentDataUrl?.startsWith('data:image/')) ||
     Boolean(doc.attachmentName && /\.(png|jpe?g|webp|svg|gif|bmp|heic|heif)$/i.test(doc.attachmentName));
 
   // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 on the fly
   useEffect(() => {
-    if (doc.previewImageDataUrl) {
+    if (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl)) {
       setRenderedPdfImage(doc.previewImageDataUrl);
       return;
     }
@@ -48,40 +48,35 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     if (isPdf && doc.attachmentDataUrl) {
       let isMounted = true;
       setIsRenderingPdf(true);
-      setRenderError(false);
 
-      const safetyTimer = setTimeout(() => {
-        if (isMounted) {
-          setIsRenderingPdf(false);
-          setRenderedPdfImage(generateDocumentDrawingPreview(doc.attachmentName || doc.title));
-        }
-      }, 3600);
-
-      renderPdfFirstPageToImage(doc.attachmentDataUrl, 900, doc.attachmentName || doc.title)
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 900)
         .then((imgDataUrl) => {
-          clearTimeout(safetyTimer);
           if (isMounted) {
-            setRenderedPdfImage(imgDataUrl);
-            setIsRenderingPdf(false);
-            if (onUpdatePreviewUrl) {
-              onUpdatePreviewUrl(doc.id, imgDataUrl);
+            if (imgDataUrl) {
+              setRenderedPdfImage(imgDataUrl);
+              if (onUpdatePreviewUrl) {
+                onUpdatePreviewUrl(doc.id, imgDataUrl);
+              }
+            } else {
+              setRenderedPdfImage(null);
             }
+            setIsRenderingPdf(false);
           }
         })
         .catch((err) => {
-          clearTimeout(safetyTimer);
-          console.warn('PDF on-the-fly rendering warning:', err);
+          console.warn('PDF rendering note:', err);
           if (isMounted) {
             setIsRenderingPdf(false);
-            setRenderError(true);
-            setRenderedPdfImage(generateDocumentDrawingPreview(doc.attachmentName || doc.title));
+            setRenderedPdfImage(null);
           }
         });
 
       return () => {
         isMounted = false;
-        clearTimeout(safetyTimer);
       };
+    } else {
+      setRenderedPdfImage(null);
+      setIsRenderingPdf(false);
     }
   }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, onUpdatePreviewUrl]);
 
@@ -102,7 +97,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     fileInputRef.current?.click();
   };
 
-  // 1. RENDER PDF CONTENT ON DARK COLORED TOP
+  // 1. RENDER PDF CONTENT ON DARK COLORED TOP (Real first-page PDF render or clean PDF badge)
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
@@ -110,13 +105,12 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
         className="w-full h-56 sm:h-64 bg-slate-950 border-b border-slate-700/80 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Click to view full PDF document"
       >
-        {/* Subtle grid pattern background for dark engineering feel */}
         <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 pointer-events-none" />
 
         {isRenderingPdf && !renderedPdfImage ? (
           <div className="flex flex-col items-center justify-center text-slate-300 gap-2 p-4 z-10">
             <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-            <span className="text-xs font-mono font-medium">Loading PDF document content...</span>
+            <span className="text-xs font-mono font-medium">Loading document content...</span>
           </div>
         ) : renderedPdfImage ? (
           /* Rendered First Page of PDF */
@@ -130,13 +124,13 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             </div>
           </div>
         ) : (
-          /* Fallback if PDF data is present but rendering failed */
+          /* Clean Professional PDF Header */
           <div className="flex flex-col items-center justify-center text-center p-4 z-10">
-            <div className="w-12 h-12 rounded-xl bg-rose-500/20 border border-rose-400/40 flex items-center justify-center text-rose-400 mb-2">
-              <FileCode className="w-6 h-6" />
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 mb-2.5 shadow-inner">
+              <FileCode className="w-7 h-7" />
             </div>
-            <p className="font-bold text-xs text-white max-w-[240px] truncate">{doc.attachmentName || doc.title}</p>
-            <span className="text-[11px] text-slate-400 font-mono mt-0.5">PDF Document Content Attached</span>
+            <p className="font-bold text-xs sm:text-sm text-white max-w-[240px] truncate">{doc.attachmentName || doc.title}</p>
+            <span className="text-[11px] text-slate-400 font-mono mt-0.5">PDF Document Attached · Click to Expand</span>
           </div>
         )}
 
@@ -158,7 +152,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
           </span>
           <span className="text-[11px] font-sans font-semibold text-cyan-300 flex items-center gap-1 group-hover/pdf:text-cyan-200 transition-colors shrink-0">
             <Eye className="w-3.5 h-3.5" />
-            <span>Click to Expand</span>
+            <span>Click to View Full</span>
           </span>
         </div>
       </div>
@@ -167,45 +161,48 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
 
   // 2. RENDER IMAGE CONTENT ON DARK COLORED TOP
   if (isImage && (doc.attachmentDataUrl || doc.previewImageDataUrl)) {
-    const imgSrc = doc.previewImageDataUrl || doc.attachmentDataUrl;
-    return (
-      <div
-        onClick={() => onOpenPreview(doc)}
-        className="w-full h-56 sm:h-64 bg-slate-950 border-b border-slate-700/80 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
-        title="Click to zoom / view full document image"
-      >
-        <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 pointer-events-none" />
+    const rawSrc = doc.previewImageDataUrl || doc.attachmentDataUrl;
+    const imgSrc = rawSrc && !isMockDrawingPreview(rawSrc) ? rawSrc : null;
+    if (imgSrc) {
+      return (
+        <div
+          onClick={() => onOpenPreview(doc)}
+          className="w-full h-56 sm:h-64 bg-slate-950 border-b border-slate-700/80 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          title="Click to zoom / view full document image"
+        >
+          <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 pointer-events-none" />
 
-        <div className="relative w-full h-full p-2.5 sm:p-3 flex items-center justify-center z-10">
-          <img
-            src={imgSrc}
-            alt={doc.title}
-            className="max-h-52 sm:max-h-60 max-w-full object-contain rounded shadow-lg transition-transform duration-300 group-hover/img:scale-[1.02]"
-          />
-        </div>
+          <div className="relative w-full h-full p-2.5 sm:p-3 flex items-center justify-center z-10">
+            <img
+              src={imgSrc}
+              alt={doc.title}
+              className="max-h-52 sm:max-h-60 max-w-full object-contain rounded shadow-lg transition-transform duration-300 group-hover/img:scale-[1.02]"
+            />
+          </div>
 
-        {/* Top Floating Badge */}
-        <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 pointer-events-none">
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-cyan-700/90 text-white shadow-xs tracking-wider">
-            IMAGE / SCAN
-          </span>
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-slate-900/80 border border-slate-700 text-slate-300 backdrop-blur-xs">
-            {doc.category}
-          </span>
-        </div>
+          {/* Top Floating Badge */}
+          <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 pointer-events-none">
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-cyan-700/90 text-white shadow-xs tracking-wider">
+              IMAGE / SCAN
+            </span>
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-slate-900/80 border border-slate-700 text-slate-300 backdrop-blur-xs">
+              {doc.category}
+            </span>
+          </div>
 
-        {/* Bottom Expand Overlay */}
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/60 to-transparent p-2.5 flex items-center justify-between text-white z-20 pointer-events-none">
-          <span className="text-[11px] font-sans font-medium text-slate-300 truncate max-w-[180px] sm:max-w-[240px]">
-            {doc.attachmentName || doc.title}
-          </span>
-          <span className="text-[11px] font-sans font-semibold text-cyan-300 flex items-center gap-1 group-hover/img:text-cyan-200 transition-colors shrink-0">
-            <Eye className="w-3.5 h-3.5" />
-            <span>Click to View Full</span>
-          </span>
+          {/* Bottom Expand Overlay */}
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/60 to-transparent p-2.5 flex items-center justify-between text-white z-20 pointer-events-none">
+            <span className="text-[11px] font-sans font-medium text-slate-300 truncate max-w-[180px] sm:max-w-[240px]">
+              {doc.attachmentName || doc.title}
+            </span>
+            <span className="text-[11px] font-sans font-semibold text-cyan-300 flex items-center gap-1 group-hover/img:text-cyan-200 transition-colors shrink-0">
+              <Eye className="w-3.5 h-3.5" />
+              <span>Click to View Full</span>
+            </span>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
   }
 
   // 3. RENDER CAD / STEP / OTHER FILE ATTACHMENT
@@ -234,7 +231,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
         </div>
 
         <div className="flex items-center justify-between pt-3 border-t border-white/10 font-sans">
-          <span className="text-[11px] text-slate-300 font-mono">CAD / Data File</span>
+          <span className="text-[11px] text-slate-300 font-mono">Document Record</span>
           {isOwnerAuthenticated ? (
             <button
               type="button"
@@ -247,7 +244,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
           ) : (
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-sans font-medium">
               <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Verified Technical Record</span>
+              <span>Verified Document</span>
             </span>
           )}
         </div>
@@ -269,7 +266,11 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
-            <Layers className="w-5 h-5 text-cyan-300" />
+            {(doc.category as string) === 'Christians Book' || (doc.category as string) === 'Inspirational Book' ? (
+              <BookOpen className="w-5 h-5 text-amber-400" />
+            ) : (
+              <Layers className="w-5 h-5 text-cyan-300" />
+            )}
           </div>
           <div>
             <span className="text-[10px] font-mono tracking-wider text-cyan-400 uppercase font-bold block">

@@ -537,8 +537,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         setDocAttachmentDataUrl(dataUrl);
 
         try {
-          const previewImg = await renderPdfFirstPageToImage(dataUrl, 900, file.name);
-          setDocPreviewImageDataUrl(previewImg);
+          const previewImg = await renderPdfFirstPageToImage(dataUrl, 900);
+          setDocPreviewImageDataUrl(previewImg || undefined);
         } catch (err) {
           console.warn('PDF preview render error:', err);
         } finally {
@@ -603,7 +603,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         const dataUrl = ev.target?.result as string;
         let previewImg: string | undefined;
         try {
-          previewImg = await renderPdfFirstPageToImage(dataUrl, 900, file.name);
+          const resImg = await renderPdfFirstPageToImage(dataUrl, 900);
+          previewImg = resImg || undefined;
         } catch (err) {
           console.warn('PDF render error:', err);
         }

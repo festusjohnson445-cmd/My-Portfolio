@@ -429,7 +429,7 @@ app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
     const defaultLogo = path.resolve(process.cwd(), 'public/assets/fesline_logo.svg');
     if (fs.existsSync(defaultLogo)) {
       res.setHeader('Content-Type', 'image/svg+xml');
-      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
       return res.sendFile(defaultLogo);
     }
 
