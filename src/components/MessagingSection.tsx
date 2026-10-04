@@ -18,18 +18,39 @@ import {
   ShieldCheck,
   RotateCcw,
   Clock,
-  UserCheck
+  UserCheck,
+  Download,
+  Eye,
+  Mic,
+  MicOff,
+  User,
+  Volume2,
+  History,
+  Copy,
+  Check,
+  MessageSquare,
+  Loader2
 } from 'lucide-react';
 import {
-  useProfileSync
+  useProfileSync,
+  compressImage
 } from '../utils/profileState';
+import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
+import {
+  deleteConversationFromFirestore,
+  deleteDirectInquiryFromFirestore,
+} from '../utils/firebase';
+import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
+import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
+import { generateDemoVoiceNote, formatDuration } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
   name: string;
   size: string;
-  type: 'image' | 'pdf' | 'cad' | 'doc';
+  type: 'image' | 'pdf' | 'cad' | 'doc' | 'audio' | 'voice';
   url?: string;
+  duration?: number;
 }
 
 export interface ChatMessage {
@@ -39,14 +60,17 @@ export interface ChatMessage {
   timestamp: string;
   status: 'seen' | 'unseen';
   attachments?: ChatAttachment[];
+  voiceNote?: VoiceNoteData;
 }
 
 export interface Conversation {
   id: string;
   defaultLabel: string; // e.g. "Messenger 1"
   customName?: string;  // e.g. "David Miller (Optomechanics Lead)"
+  visitorName?: string; // Visitor's custom display name
   roleOrCompany?: string;
   avatarColor?: string;
+  avatarUrl?: string;   // Visitor's custom uploaded picture
   lastMessage?: string;
   lastTimestamp?: string;
   unread: boolean;
@@ -56,6 +80,23 @@ export interface Conversation {
 
 const STORAGE_KEY_CHATS = 'fesline_whatsapp_conversations';
 const STORAGE_KEY_VISITOR_ID = 'fesline_current_visitor_id';
+const STORAGE_KEY_VISITOR_PROFILE = 'fesline_visitor_messaging_profile';
+
+const getInitialVisitorProfile = (): VisitorMessagingProfile => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_VISITOR_PROFILE);
+    if (saved) {
+      const p = JSON.parse(saved);
+      if (p && typeof p.name === 'string') return p;
+    }
+  } catch {}
+  return {
+    name: 'Visitor',
+    roleOrCompany: 'Visitor Direct Chat',
+    avatarUrl: '',
+    avatarColor: 'bg-slate-700',
+  };
+};
 
 // Topic suggestions requested
 const TOPIC_SUGGESTIONS = [
@@ -74,12 +115,52 @@ const TOPIC_SUGGESTIONS = [
 
 const DEFAULT_CONVERSATIONS: Conversation[] = [];
 
+// Helper to fetch chats from server
+async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Conversation[] | null> {
+  try {
+    const res = await fetch('/api/chats');
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.success && Array.isArray(json.conversations)) {
+        if (Array.isArray(json.deletedIds) && deletedSet) {
+          json.deletedIds.forEach((id: string) => deletedSet.add(id));
+          try {
+            localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedSet)));
+          } catch {}
+        }
+        return json.conversations;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch chats from server:', err);
+  }
+  return null;
+}
+
+// Helper to push chats to server
+async function pushChatsToServer(conversations: Conversation[], overwrite = false) {
+  try {
+    await fetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversations, overwrite }),
+    });
+  } catch (err) {
+    console.warn('Failed to push chats to server:', err);
+  }
+}
+
 // Helper to get or create a visitor conversation with NO auto messages
 const getOrCreateVisitorId = (): string => {
   try {
-    const existing = sessionStorage.getItem(STORAGE_KEY_VISITOR_ID);
-    if (existing && existing.trim()) return existing;
+    const existing = localStorage.getItem(STORAGE_KEY_VISITOR_ID) || sessionStorage.getItem(STORAGE_KEY_VISITOR_ID);
+    if (existing && existing.trim()) {
+      localStorage.setItem(STORAGE_KEY_VISITOR_ID, existing);
+      sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, existing);
+      return existing;
+    }
     const newId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    localStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
     sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
     return newId;
   } catch {
@@ -92,7 +173,13 @@ export const MessagingSection: React.FC = () => {
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
 
-  const [visitorId] = useState<string>(getOrCreateVisitorId);
+  const [visitorId, setVisitorId] = useState<string>(getOrCreateVisitorId);
+
+  // Visitor Resume / Continue Chat modal states
+  const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
+  const [resumeInput, setResumeInput] = useState('');
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [copiedVisitorId, setCopiedVisitorId] = useState(false);
 
   // Master persistent multi-chat database (shared between visitor submissions & owner replies)
   const [conversations, setConversations] = useState<Conversation[]>(() => {
@@ -100,14 +187,31 @@ export const MessagingSection: React.FC = () => {
       const saved = localStorage.getItem(STORAGE_KEY_CHATS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
+          const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
+          return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
+        }
       }
     } catch {}
     return DEFAULT_CONVERSATIONS;
   });
 
+  // For visitor: messaging profile state (picture, name, role)
+  const [visitorProfile, setVisitorProfile] = useState<VisitorMessagingProfile>(getInitialVisitorProfile);
+  const [isVisitorProfileModalOpen, setIsVisitorProfileModalOpen] = useState(false);
+
   // For visitor: clear chat confirmation modal state
   const [isVisitorClearModalOpen, setIsVisitorClearModalOpen] = useState(false);
+
+  // Voice note recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
 
   // For owner: active selected conversation in the sidebar
   const [activeOwnerConvId, setActiveOwnerConvId] = useState<string>(() => {
@@ -119,30 +223,87 @@ export const MessagingSection: React.FC = () => {
 
   // Delete chat confirmation modal state
   const [deletingConv, setDeletingConv] = useState<Conversation | null>(null);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
 
-  // Persist master conversations to localStorage whenever updated
-  useEffect(() => {
+  // Track deleted conversation IDs to permanently prevent any resurrection glimpse
+  const deletedConvIdsRef = useRef<Set<string>>((() => {
     try {
-      localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(conversations));
-    } catch (e) {
-      console.warn('LocalStorage save error for chats:', e);
-    }
-  }, [conversations]);
+      const savedLocal = localStorage.getItem('fesline_deleted_conv_ids');
+      if (savedLocal) return new Set<string>(JSON.parse(savedLocal));
+      const saved = sessionStorage.getItem('fesline_deleted_conv_ids');
+      if (saved) return new Set<string>(JSON.parse(saved));
+    } catch {}
+    return new Set<string>();
+  })());
 
-  // Sync across storage events (when Owner replies in another tab or Visitor sends message)
+  // Fetch chats from server
+  const fetchChatsFromServer = async () => {
+    const fetched = await fetchChatsFromServerHelper(deletedConvIdsRef.current);
+    if (fetched && Array.isArray(fetched)) {
+      const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
+      setConversations(prev => {
+        const currentStr = JSON.stringify(prev);
+        const cleanedStr = JSON.stringify(cleaned);
+        if (currentStr !== cleanedStr) {
+          try {
+            localStorage.setItem(STORAGE_KEY_CHATS, cleanedStr);
+          } catch {}
+          return cleaned;
+        }
+        return prev;
+      });
+    }
+  };
+
+  // Real-time synchronization between visitor and owner
   useEffect(() => {
+    let isMounted = true;
+
+    fetchChatsFromServer();
+
+    // Periodic poll every 4 seconds while active
+    const pollInterval = setInterval(() => {
+      if (isMounted && document.visibilityState === 'visible') {
+        fetchChatsFromServer();
+      }
+    }, 4000);
+
     const handleStorage = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY_CHATS && e.newValue) {
         try {
           const updated = JSON.parse(e.newValue);
           if (Array.isArray(updated)) {
-            setConversations(updated);
+            const cleaned = updated.filter((c: any) => !deletedConvIdsRef.current.has(c.id));
+            setConversations(cleaned);
           }
         } catch {}
       }
     };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchChatsFromServer();
+      }
+    };
+
+    const unsubMem = subscribeToDynamicMemory((ev) => {
+      if (ev.category === 'chats') {
+        fetchChatsFromServer();
+      }
+    });
+
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener('focus', fetchChatsFromServer);
+    window.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      isMounted = false;
+      unsubMem();
+      clearInterval(pollInterval);
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('focus', fetchChatsFromServer);
+      window.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   // Active conversation depending on whether user is Owner or Visitor
@@ -150,11 +311,23 @@ export const MessagingSection: React.FC = () => {
     if (!isOwner) {
       // Find visitor's conversation in master list, or return empty clean initial chat
       const found = conversations.find((c) => c.id === visitorId);
-      if (found) return found;
+      if (found) {
+        return {
+          ...found,
+          visitorName: visitorProfile.name || found.visitorName || found.customName,
+          customName: visitorProfile.name || found.customName,
+          avatarUrl: visitorProfile.avatarUrl !== undefined ? visitorProfile.avatarUrl : found.avatarUrl,
+          roleOrCompany: visitorProfile.roleOrCompany || found.roleOrCompany,
+        };
+      }
       return {
         id: visitorId,
-        defaultLabel: 'Direct Message',
-        roleOrCompany: 'Visitor Inquiry',
+        defaultLabel: visitorProfile.name || 'Direct Message',
+        customName: visitorProfile.name || '',
+        visitorName: visitorProfile.name || '',
+        avatarUrl: visitorProfile.avatarUrl || '',
+        roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Inquiry',
+        avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
         unread: false,
         important: false,
         messages: [] // NO automatic welcome message!
@@ -171,7 +344,7 @@ export const MessagingSection: React.FC = () => {
       important: false,
       messages: []
     };
-  }, [isOwner, visitorId, conversations, activeOwnerConvId]);
+  }, [isOwner, visitorId, conversations, activeOwnerConvId, visitorProfile]);
 
   // Header Avatar Size Adjustment ('sm' | 'md' | 'lg')
   const [headerAvatarSize, setHeaderAvatarSize] = useState<'sm' | 'md' | 'lg'>('md');
@@ -182,8 +355,79 @@ export const MessagingSection: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFilterType, setSearchFilterType] = useState<'all' | 'messages' | 'files'>('all');
 
-  // Input message state
-  const [inputMessage, setInputMessage] = useState('');
+  // Input message state with auto-draft restore across page visits
+  const [inputMessage, setInputMessage] = useState<string>(() => {
+    try {
+      return localStorage.getItem('fesline_chat_draft') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const updateInputMessage = (val: string) => {
+    setInputMessage(val);
+    try {
+      if (val.trim()) {
+        localStorage.setItem('fesline_chat_draft', val);
+      } else {
+        localStorage.removeItem('fesline_chat_draft');
+      }
+    } catch {}
+  };
+
+  const handleResumeConversation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResumeError(null);
+    const target = resumeInput.trim();
+    if (!target) {
+      setResumeError('Please enter your Visitor Session ID, Name, or Email.');
+      return;
+    }
+
+    const cleanTarget = target.toLowerCase();
+    // 1. Search existing conversations
+    let match = conversations.find(
+      (c) =>
+        c.id.toLowerCase() === cleanTarget ||
+        (c.visitorName && c.visitorName.toLowerCase() === cleanTarget) ||
+        (c.customName && c.customName.toLowerCase() === cleanTarget) ||
+        (c.defaultLabel && c.defaultLabel.toLowerCase() === cleanTarget)
+    );
+
+    // 2. Query server if not found in memory
+    if (!match) {
+      try {
+        const fresh = await fetchChatsFromServerHelper();
+        if (fresh && Array.isArray(fresh)) {
+          match = fresh.find(
+            (c) =>
+              c.id.toLowerCase() === cleanTarget ||
+              (c.visitorName && c.visitorName.toLowerCase() === cleanTarget) ||
+              (c.customName && c.customName.toLowerCase() === cleanTarget) ||
+              (c.defaultLabel && c.defaultLabel.toLowerCase() === cleanTarget)
+          );
+          if (match) {
+            setConversations(fresh);
+          }
+        }
+      } catch {}
+    }
+
+    if (match) {
+      setVisitorId(match.id);
+      try {
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
+        sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
+        document.cookie = `fesline_visitor_id=${encodeURIComponent(match.id)}; path=/; max-age=31536000; SameSite=Lax`;
+      } catch {}
+      setIsResumeModalOpen(false);
+      setResumeInput('');
+      setShowMailNotice(`Welcome back ${match.visitorName || match.customName || 'Visitor'}! Continued conversation from where you left off.`);
+    } else {
+      setResumeError(`No prior conversation found matching "${target}". Please check and try again, or continue with your current chat.`);
+    }
+  };
+
   const [attachedFiles, setAttachedFiles] = useState<ChatAttachment[]>([]);
 
   // Rename contact modal state (Owner only)
@@ -196,6 +440,9 @@ export const MessagingSection: React.FC = () => {
 
   // Direct mail notification toast
   const [showMailNotice, setShowMailNotice] = useState<string | null>(null);
+
+  // Full-screen image preview modal state
+  const [selectedChatImage, setSelectedChatImage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -239,25 +486,106 @@ export const MessagingSection: React.FC = () => {
     );
   };
 
-  // Owner initiates chat deletion
-  const handlePromptDelete = (conv: Conversation, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
+  // Owner or visitor initiates inquiry deletion
+  const handlePromptDelete = (conv: Conversation | null | undefined, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    if (!conv || conv.id === 'inbox-empty' || (isOwner && conversations.length === 0)) {
+      setShowMailNotice('No active inquiry available to delete.');
+      return;
+    }
     setDeletingConv(conv);
   };
 
-  // Owner confirms chat deletion
-  const handleConfirmDelete = () => {
-    if (!deletingConv) return;
+  // Confirms chat / inquiry deletion (supports both owner and visitor)
+  const handleConfirmDelete = async () => {
+    if (!deletingConv || isDeletingChat) return;
+    setIsDeletingChat(true);
     const targetId = deletingConv.id;
-    const remaining = conversations.filter((c) => c.id !== targetId);
+    const displayName = deletingConv.visitorName || deletingConv.customName || deletingConv.defaultLabel || 'Inquiry';
 
-    setConversations(remaining);
-    if (activeOwnerConvId === targetId) {
-      setActiveOwnerConvId(remaining[0]?.id || '');
+    try {
+      // 1. Permanently record tombstone in sets & storage
+      deletedConvIdsRef.current.add(targetId);
+      try {
+        localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedConvIdsRef.current)));
+        sessionStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedConvIdsRef.current)));
+      } catch {}
+
+      // 2. Clear input drafts and attachments
+      updateInputMessage('');
+      setAttachedFiles([]);
+
+      // 3. Immediately remove from React state & local storage
+      const remaining = conversations.filter((c) => c.id !== targetId);
+      setConversations(remaining);
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(remaining));
+      } catch {}
+
+      if (activeOwnerConvId === targetId) {
+        setActiveOwnerConvId(remaining[0]?.id || '');
+      }
+
+      // 4. If visitor deleted their active inquiry, reset session with a clean new visitorId
+      if (visitorId === targetId) {
+        const freshId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        try {
+          localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+          sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+          document.cookie = `fesline_visitor_id=${encodeURIComponent(freshId)}; path=/; max-age=31536000; SameSite=Lax`;
+        } catch {}
+        setVisitorId(freshId);
+      }
+
+      // 5. Clean up from Firestore if active
+      deleteConversationFromFirestore(targetId).catch(() => {});
+      deleteDirectInquiryFromFirestore(targetId).catch(() => {});
+
+      // 6. Delete from backend database (Cloud SQL / PostgreSQL) with SSE broadcast
+      const res = await fetch(`/api/chats/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        console.warn('Backend delete returned status:', res.status);
+      }
+
+      setShowMailNotice(`Inquiry "${displayName}" deleted permanently.`);
+      window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
+      broadcastMemoryEvent('chats', 'inquiry_deleted', { targetId });
+    } catch (err) {
+      console.warn('Delete error:', err);
+      setShowMailNotice(`Inquiry "${displayName}" deleted.`);
+    } finally {
+      setIsDeletingChat(false);
+      setDeletingConv(null);
     }
+  };
 
-    setDeletingConv(null);
-    setShowMailNotice(`Conversation "${deletingConv.customName || deletingConv.defaultLabel}" deleted successfully.`);
+  // Delete a specific message within the active conversation
+  const handleDeleteMessage = (convId: string, msgId: string) => {
+    setConversations((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === convId) {
+          const remainingMsgs = c.messages.filter((m) => m.id !== msgId);
+          return {
+            ...c,
+            messages: remainingMsgs,
+            lastMessage: remainingMsgs[remainingMsgs.length - 1]?.text || (remainingMsgs.length > 0 ? 'Message sent' : ''),
+          };
+        }
+        return c;
+      });
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    fetch(`/api/chats/${convId}/messages/${msgId}`, { method: 'DELETE' }).catch((err) => {
+      console.warn('Failed to delete message on backend:', err);
+    });
+    window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
+    setShowMailNotice('Message deleted.');
   };
 
   // Owner creates a new conversation manually
@@ -317,16 +645,281 @@ export const MessagingSection: React.FC = () => {
   const handleVisitorClearChat = () => {
     const freshId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     try {
+      localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
       sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+      document.cookie = `fesline_visitor_id=${encodeURIComponent(freshId)}; path=/; max-age=31536000; SameSite=Lax`;
     } catch {}
+    setVisitorId(freshId);
     setIsVisitorClearModalOpen(false);
-    setShowMailNotice('Chat cleared on your screen. Any messages you previously sent remain securely in Festus’s inbox.');
-    window.location.reload();
+    setShowMailNotice('Chat cleared on your screen. Started a fresh conversation.');
   };
 
   const handleOwnerLogout = () => {
     setOwner(false);
     setShowMailNotice('Logged out of Owner Mode. Switched to public visitor view.');
+  };
+
+  // Visitor updates their messaging profile (photo and name)
+  const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile) => {
+    setVisitorProfile(updated);
+    try {
+      localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updated));
+    } catch {}
+
+    // Update in local conversations state
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id === visitorId) {
+          return {
+            ...c,
+            customName: updated.name,
+            visitorName: updated.name,
+            roleOrCompany: updated.roleOrCompany,
+            avatarUrl: updated.avatarUrl,
+            avatarColor: updated.avatarColor || c.avatarColor,
+          };
+        }
+        return c;
+      })
+    );
+
+    // Sync to backend
+    try {
+      await fetch('/api/chats/visitor-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          visitorId,
+          name: updated.name,
+          avatarUrl: updated.avatarUrl,
+          roleOrCompany: updated.roleOrCompany,
+        }),
+      });
+    } catch (err) {
+      console.warn('Failed to sync visitor profile:', err);
+    }
+
+    setShowMailNotice('Your messaging profile has been updated! Festus will now see your photo and name.');
+  };
+
+  // Send voice note between owner and visitor
+  const sendVoiceNoteMessage = (audioUrl: string, duration: number) => {
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const voiceData: VoiceNoteData = {
+      url: audioUrl,
+      duration,
+    };
+
+    if (isOwner) {
+      const festusMsg: ChatMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        sender: 'festus',
+        text: '',
+        timestamp: timeStr,
+        status: 'seen',
+        voiceNote: voiceData,
+      };
+
+      setConversations((prev) => {
+        const updated = prev.map((c) => {
+          if (c.id === activeOwnerConvId) {
+            return {
+              ...c,
+              unread: false,
+              messages: [...c.messages, festusMsg],
+              lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
+              lastTimestamp: timeStr,
+            };
+          }
+          return c;
+        });
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      fetch('/api/chats/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: activeOwnerConvId,
+          message: festusMsg,
+          conversationMetadata: {
+            defaultLabel: activeConversation.defaultLabel,
+            customName: activeConversation.customName,
+            visitorName: activeConversation.visitorName,
+            avatarUrl: activeConversation.avatarUrl,
+            roleOrCompany: activeConversation.roleOrCompany,
+          },
+        }),
+      }).catch((err) => console.warn('Send error:', err));
+    } else {
+      const visitorMsg: ChatMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        sender: 'visitor',
+        text: '',
+        timestamp: timeStr,
+        status: 'unseen',
+        voiceNote: voiceData,
+      };
+
+      setConversations((prev) => {
+        const existingIdx = prev.findIndex((c) => c.id === visitorId);
+        let updated: Conversation[];
+        if (existingIdx >= 0) {
+          updated = prev.map((c, idx) => {
+            if (idx === existingIdx) {
+              return {
+                ...c,
+                unread: true,
+                messages: [...c.messages, visitorMsg],
+                lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
+                lastTimestamp: timeStr,
+              };
+            }
+            return c;
+          });
+        } else {
+          const nextIndex = prev.length + 1;
+          const newVisitorRecord: Conversation = {
+            id: visitorId,
+            defaultLabel: visitorProfile.name || `Messenger ${nextIndex}`,
+            customName: visitorProfile.name || '',
+            visitorName: visitorProfile.name || '',
+            avatarUrl: visitorProfile.avatarUrl || '',
+            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+            unread: true,
+            important: false,
+            messages: [visitorMsg],
+            lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
+            lastTimestamp: timeStr,
+          };
+          updated = [newVisitorRecord, ...prev];
+        }
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      fetch('/api/chats/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: visitorId,
+          message: visitorMsg,
+          conversationMetadata: {
+            defaultLabel: visitorProfile.name || 'Direct Message',
+            customName: visitorProfile.name || '',
+            visitorName: visitorProfile.name || '',
+            avatarUrl: visitorProfile.avatarUrl || '',
+            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Inquiry',
+            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+          },
+        }),
+      }).catch((err) => console.warn('Send error:', err));
+    }
+  };
+
+  // Start physical microphone recording
+  const startVoiceRecording = async () => {
+    if (isRecording) return;
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setShowMailNotice('Microphone access is not supported by this browser environment. You can use the Demo Audio button.');
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+          mimeType = 'audio/ogg;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      recordingStartTimeRef.current = Date.now();
+      setRecordingSeconds(0);
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const durationSeconds = Math.max(1, Math.round((Date.now() - recordingStartTimeRef.current) / 1000));
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Audio = reader.result as string;
+          sendVoiceNoteMessage(base64Audio, durationSeconds);
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      mediaRecorder.start(250);
+      setIsRecording(true);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err: any) {
+      console.warn('Microphone recording error:', err);
+      setShowMailNotice(
+        err?.name === 'NotAllowedError'
+          ? 'Microphone permission denied in browser. Click "Audio Memo" to test voice notes.'
+          : `Microphone unavailable: ${err?.message || 'Permission denied'}`
+      );
+    }
+  };
+
+  const cancelVoiceRecording = () => {
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((t) => t.stop());
+    }
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.onstop = () => {};
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    setIsRecording(false);
+    setRecordingSeconds(0);
+  };
+
+  const stopAndSendVoiceRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (mediaRecorderRef.current && isRecording) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    setIsRecording(false);
+  };
+
+  const handleSendDemoAudio = async () => {
+    try {
+      setShowMailNotice('Generating engineering voice memo...');
+      const demo = await generateDemoVoiceNote(5, 'Voice Note');
+      sendVoiceNoteMessage(demo.url, demo.duration);
+      setShowMailNotice('Voice note sent!');
+    } catch (err) {
+      console.warn(err);
+    }
   };
 
   // Send message
@@ -341,7 +934,7 @@ export const MessagingSection: React.FC = () => {
     if (isOwner) {
       // 1. OWNER SENDS REAL REPLY
       const festusMsg: ChatMessage = {
-        id: `msg-${Date.now()}`,
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         sender: 'festus',
         text: currentText,
         timestamp: timeStr,
@@ -349,24 +942,45 @@ export const MessagingSection: React.FC = () => {
         attachments: currentAttachments.length > 0 ? currentAttachments : undefined
       };
 
-      setConversations((prev) =>
-        prev.map((c) => {
+      setConversations((prev) => {
+        const updated = prev.map((c) => {
           if (c.id === activeOwnerConvId) {
             return {
               ...c,
               unread: false,
               messages: [...c.messages, festusMsg],
-              lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : ''),
+              lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
               lastTimestamp: timeStr
             };
           }
           return c;
-        })
-      );
+        });
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      // Dispatch immediately to backend with SSE broadcast
+      fetch('/api/chats/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: activeOwnerConvId,
+          message: festusMsg,
+          conversationMetadata: {
+            defaultLabel: activeConversation.defaultLabel,
+            customName: activeConversation.customName,
+            visitorName: activeConversation.visitorName,
+            avatarUrl: activeConversation.avatarUrl,
+            roleOrCompany: activeConversation.roleOrCompany,
+          }
+        }),
+      }).catch((err) => console.warn('Send error:', err));
     } else {
       // 2. VISITOR SENDS MESSAGE (NO AUTO-REPLY, NO BOT SIMULATION, NO TIMEOUT)
       const visitorMsg: ChatMessage = {
-        id: `msg-${Date.now()}`,
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         sender: 'visitor',
         text: currentText,
         timestamp: timeStr,
@@ -377,14 +991,15 @@ export const MessagingSection: React.FC = () => {
       // Record this message into master conversations database
       setConversations((prev) => {
         const existingIdx = prev.findIndex((c) => c.id === visitorId);
+        let updated: Conversation[];
         if (existingIdx >= 0) {
-          return prev.map((c, idx) => {
+          updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
               return {
                 ...c,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
-                lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : ''),
+                lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
                 lastTimestamp: timeStr
               };
             }
@@ -394,34 +1009,61 @@ export const MessagingSection: React.FC = () => {
           const nextIndex = prev.length + 1;
           const newVisitorRecord: Conversation = {
             id: visitorId,
-            defaultLabel: `Messenger ${nextIndex}`,
-            customName: '',
-            roleOrCompany: 'Visitor Direct Chat',
-            avatarColor: 'bg-emerald-600',
+            defaultLabel: visitorProfile.name || `Messenger ${nextIndex}`,
+            customName: visitorProfile.name || '',
+            visitorName: visitorProfile.name || '',
+            avatarUrl: visitorProfile.avatarUrl || '',
+            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
             unread: true,
             important: false,
             messages: [visitorMsg],
             lastMessage: currentText || 'New visitor message',
             lastTimestamp: timeStr
           };
-          return [newVisitorRecord, ...prev];
+          updated = [newVisitorRecord, ...prev];
         }
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
+        return updated;
       });
+
+      // Dispatch immediately to backend with SSE broadcast
+      fetch('/api/chats/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: visitorId,
+          message: visitorMsg,
+          conversationMetadata: {
+            defaultLabel: visitorProfile.name || 'Direct Message',
+            customName: visitorProfile.name || '',
+            visitorName: visitorProfile.name || '',
+            avatarUrl: visitorProfile.avatarUrl || '',
+            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Inquiry',
+            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+          }
+        }),
+      }).catch((err) => console.warn('Send error:', err));
     }
 
-    setInputMessage('');
+    updateInputMessage('');
     setAttachedFiles([]);
   };
 
-  // File Upload Attachment
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // File Upload Attachment (Base64 encoded for cross-visitor persistence)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const newAttachments: ChatAttachment[] = Array.from(files).map((file) => {
+    const fileList = Array.from(files);
+    const newAttachments: ChatAttachment[] = [];
+
+    for (const file of fileList) {
       const extension = file.name.split('.').pop()?.toLowerCase() || '';
       let type: 'image' | 'pdf' | 'cad' | 'doc' = 'doc';
-      if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) type = 'image';
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg'].includes(extension)) type = 'image';
       else if (['pdf'].includes(extension)) type = 'pdf';
       else if (['step', 'stp', 'sldprt', 'iges', 'dwg', 'dxf'].includes(extension)) type = 'cad';
 
@@ -429,19 +1071,35 @@ export const MessagingSection: React.FC = () => {
       const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
       const sizeFormatted = file.size > 1024 * 1024 ? `${sizeMb} MB` : `${sizeKb} KB`;
 
-      let url: string | undefined = undefined;
-      if (type === 'image') {
-        url = URL.createObjectURL(file);
+      let url = '';
+      try {
+        if (type === 'image' && file.size > 600000) {
+          url = await compressImage(file, 1200, 0.85);
+        } else {
+          url = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(file);
+          });
+        }
+      } catch {
+        url = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(file);
+        });
       }
 
-      return {
+      newAttachments.push({
         id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         name: file.name,
         size: sizeFormatted,
         type,
-        url
-      };
-    });
+        url: url || undefined,
+      });
+    }
 
     setAttachedFiles((prev) => [...prev, ...newAttachments]);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -632,8 +1290,8 @@ export const MessagingSection: React.FC = () => {
                   ) : (
                     filteredConversations.map((conv) => {
                       const isActive = conv.id === activeOwnerConvId;
-                      const displayName = conv.customName || conv.defaultLabel;
-                      const isRenamed = !!conv.customName;
+                      const displayName = conv.visitorName || conv.customName || conv.defaultLabel;
+                      const isRenamed = !!(conv.visitorName || conv.customName);
                       const lastMsg = conv.messages[conv.messages.length - 1];
 
                       return (
@@ -642,15 +1300,19 @@ export const MessagingSection: React.FC = () => {
                           onClick={() => handleSelectConversation(conv.id)}
                           className={`p-3 flex items-start gap-2.5 cursor-pointer transition-colors relative group select-none ${
                             isActive
-                              ? 'bg-[#e3f2fd] border-l-4 border-[#1e88e5]'
+                              ? 'bg-[#e2e8f0] border-l-4 border-[#243346]'
                               : 'hover:bg-[#f1f5f9]'
                           }`}
                         >
                           {/* Avatar */}
                           <div
-                            className={`w-8 h-8 rounded-full ${conv.avatarColor || 'bg-cyan-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
+                            className={`w-8 h-8 rounded-full overflow-hidden ${conv.avatarColor || 'bg-slate-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
                           >
-                            {displayName.charAt(0)}
+                            {conv.avatarUrl ? (
+                              <img src={conv.avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                            ) : (
+                              displayName.charAt(0)
+                            )}
                           </div>
 
                           {/* Info */}
@@ -675,7 +1337,7 @@ export const MessagingSection: React.FC = () => {
                             <div className="flex items-center justify-between text-[11px] text-slate-500">
                               <span className="truncate pr-2">
                                 {lastMsg ? (
-                                  lastMsg.sender === 'festus' ? `You: ${lastMsg.text}` : lastMsg.text
+                                  lastMsg.sender === 'festus' ? `You: ${lastMsg.text || (lastMsg.voiceNote ? '🎤 Voice note' : 'File')}` : (lastMsg.text || (lastMsg.voiceNote ? '🎤 Voice note' : 'File'))
                                 ) : (
                                   'Awaiting initial message'
                                 )}
@@ -685,7 +1347,7 @@ export const MessagingSection: React.FC = () => {
                               {lastMsg && (
                                 <span className="shrink-0">
                                   {lastMsg.status === 'seen' ? (
-                                    <span className="text-[#1e88e5] font-bold text-xs" title="Seen (marked twice blue)">
+                                    <span className="text-[#243346] font-bold text-xs" title="Seen (marked twice)">
                                       ✓✓
                                     </span>
                                   ) : (
@@ -726,7 +1388,7 @@ export const MessagingSection: React.FC = () => {
                             <button
                               type="button"
                               onClick={(e) => handlePromptDelete(conv, e)}
-                              className="opacity-70 sm:opacity-0 group-hover:opacity-100 p-1 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition-opacity cursor-pointer"
+                              className="p-1 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition-colors cursor-pointer"
                               title={`Delete ${conv.customName || conv.defaultLabel} from inquiries`}
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -756,8 +1418,8 @@ export const MessagingSection: React.FC = () => {
             {/* ==================================================== */}
             <div className="flex-1 flex flex-col bg-[#efeae2] relative min-w-0 h-full overflow-hidden">
 
-              {/* 1. SLIM & COMPACT BLUE HEADER */}
-              <div className="bg-[#1e88e5] px-3 sm:px-4 py-2 flex items-center justify-between shadow-xs text-white select-none z-10 shrink-0">
+              {/* 1. SLIM & COMPACT SLATE HEADER (MATCHES NAVBAR THEME) */}
+              <div className="bg-[#243346] border-b border-[#1b2634] px-3 sm:px-4 py-2.5 flex items-center justify-between shadow-xs text-white select-none z-10 shrink-0">
                 
                 {/* Left Header Group: Drawer Toggle (Owner mobile) & Profile Avatar */}
                 <div className="flex items-center gap-2 sm:gap-3 min-w-0">
@@ -774,7 +1436,7 @@ export const MessagingSection: React.FC = () => {
 
                   {/* Profile Avatar */}
                   <div
-                    className={`relative ${avatarSizeClass} rounded-full overflow-hidden border border-white/90 shadow-xs bg-slate-200 shrink-0 ${
+                    className={`relative ${avatarSizeClass} rounded-full overflow-hidden border border-white/90 shadow-xs bg-slate-200 shrink-0 flex items-center justify-center ${
                       isOwner ? 'cursor-pointer' : ''
                     }`}
                     onClick={() => {
@@ -782,12 +1444,16 @@ export const MessagingSection: React.FC = () => {
                     }}
                     title={isOwner ? "Click to adjust avatar size" : profileName}
                   >
-                    <img
-                      src={profileAvatar}
-                      alt={profileName}
-                      className="w-full h-full object-cover"
-                    />
-                    <span className="absolute bottom-0 right-0 block h-2 w-2 rounded-full bg-emerald-400 ring-1 ring-[#1e88e5]" />
+                    {profileAvatar ? (
+                      <img
+                        src={profileAvatar}
+                        alt={profileName}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <User className="w-1/2 h-1/2 text-slate-500" />
+                    )}
+                    <span className="absolute bottom-0 right-0 block h-2 w-2 rounded-full bg-emerald-400 ring-1 ring-[#243346]" />
                   </div>
 
                   {/* Contact Info & Title */}
@@ -796,7 +1462,7 @@ export const MessagingSection: React.FC = () => {
                       <h2 className="text-xs sm:text-sm font-bold tracking-tight truncate">
                         {profileName}
                       </h2>
-                      <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-white text-[#1e88e5] text-[9px] font-bold">
+                      <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-white text-[#243346] text-[9px] font-bold">
                         ✓
                       </span>
 
@@ -808,17 +1474,17 @@ export const MessagingSection: React.FC = () => {
                       )}
                     </div>
 
-                    <div className="text-[10px] sm:text-[11px] text-cyan-100 font-medium flex items-center gap-1.5 truncate">
-                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+                    <div className="text-[10px] sm:text-[11px] text-slate-300 font-medium flex items-center gap-1.5 truncate">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                       <span className="truncate">
-                        online {isOwner ? `· In conversation with ${activeConversation.customName || activeConversation.defaultLabel}` : '· Direct Channel'}
+                        online {isOwner ? `· In conversation with ${activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel}` : '· Direct Channel'}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {/* Right Header Group: Search, Visitor Clear, Owner Controls, Direct Mail */}
-                <div className="flex items-center gap-1 sm:gap-1.5 text-cyan-100">
+                {/* Right Header Group: Search, Visitor Edit Profile, Visitor Clear, Owner Controls, Direct Mail */}
+                <div className="flex items-center gap-1 sm:gap-1.5 text-slate-200">
                   {/* Search Button */}
                   <button
                     onClick={() => setIsSearchOpen(!isSearchOpen)}
@@ -830,20 +1496,46 @@ export const MessagingSection: React.FC = () => {
                     <Search className="w-4 h-4" />
                   </button>
 
-                  {/* Visitor Controls: Clear Chat Option */}
+                  {/* Visitor Controls: Continue Chat, Edit Profile & Clear Chat */}
                   {!isOwner && (
-                    <button
-                      type="button"
-                      onClick={() => setIsVisitorClearModalOpen(true)}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-white/20 shadow-xs"
-                      title="Clear your chat screen"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Clear Chat</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResumeError(null);
+                          setResumeInput('');
+                          setIsResumeModalOpen(true);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-emerald-400/50 shadow-xs"
+                        title="Resume your conversation from where you left off"
+                      >
+                        <History className="w-3.5 h-3.5 text-emerald-200" />
+                        <span className="hidden sm:inline">Continue Chat</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsVisitorProfileModalOpen(true)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-white/20 shadow-xs"
+                        title="Edit your messaging profile (picture & name)"
+                      >
+                        <User className="w-3.5 h-3.5 text-cyan-200" />
+                        <span className="hidden sm:inline">Edit Profile</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsVisitorClearModalOpen(true)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-white/15 shadow-xs"
+                        title="Clear your chat screen"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Clear Chat</span>
+                      </button>
+                    </>
                   )}
 
-                  {/* Owner Controls: Star Important, Rename, Delete */}
+                  {/* Owner Controls: Star Important, Rename */}
                   {isOwner && (
                     <>
                       <button
@@ -864,14 +1556,6 @@ export const MessagingSection: React.FC = () => {
                         <Edit2 className="w-3 h-3" />
                         <span>Rename</span>
                       </button>
-
-                      <button
-                        onClick={() => handlePromptDelete(activeConversation)}
-                        className="p-1.5 hover:bg-red-500/30 rounded-full text-white transition-colors cursor-pointer"
-                        title={`Delete ${activeConversation.customName || activeConversation.defaultLabel} from inquiries`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
                     </>
                   )}
 
@@ -883,6 +1567,32 @@ export const MessagingSection: React.FC = () => {
                   >
                     <Mail className="w-4 h-4" />
                   </a>
+
+                  {/* Delete Inquiry Action Button */}
+                  <button
+                    type="button"
+                    disabled={isOwner && (conversations.length === 0 || activeConversation.id === 'inbox-empty')}
+                    onClick={(e) => {
+                      if (isOwner && (conversations.length === 0 || activeConversation.id === 'inbox-empty')) {
+                        setShowMailNotice('No active inquiries in inbox to delete.');
+                        return;
+                      }
+                      handlePromptDelete(activeConversation, e);
+                    }}
+                    className={`p-1.5 rounded-full transition-colors flex items-center gap-1 cursor-pointer ${
+                      isOwner && (conversations.length === 0 || activeConversation.id === 'inbox-empty')
+                        ? 'opacity-40 cursor-not-allowed hover:bg-transparent text-slate-400'
+                        : 'hover:bg-red-500/25 text-red-200 hover:text-white'
+                    }`}
+                    title={
+                      isOwner && (conversations.length === 0 || activeConversation.id === 'inbox-empty')
+                        ? 'No inquiries to delete'
+                        : 'Delete this inquiry thread'
+                    }
+                  >
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                    <span className="hidden md:inline text-[11px] font-semibold text-red-100">Delete</span>
+                  </button>
 
                   {/* Header Size / Density Settings (Owner Only) */}
                   {isOwner && (
@@ -899,26 +1609,58 @@ export const MessagingSection: React.FC = () => {
 
               {/* Density Bar (Owner Only) */}
               {isOwner && showHeaderSettings && (
-                <div className="bg-[#1565c0] px-4 py-1.5 text-white flex items-center justify-between text-[11px] font-medium border-b border-[#0d47a1] animate-fade-in">
+                <div className="bg-[#1a2533] px-4 py-1.5 text-white flex items-center justify-between text-[11px] font-medium border-b border-slate-700 animate-fade-in">
                   <span className="flex items-center gap-1">
                     <Sliders className="w-3 h-3 text-cyan-200" />
                     Adjust Profile Icon &amp; Header Density:
                   </span>
-                  <div className="flex items-center gap-1.5 bg-black/20 p-0.5 rounded-md">
+                  <div className="flex items-center gap-1.5 bg-black/30 p-0.5 rounded-md">
                     {(['sm', 'md', 'lg'] as const).map((size) => (
                       <button
                         key={size}
                         onClick={() => setHeaderAvatarSize(size)}
                         className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase transition-colors cursor-pointer ${
                           headerAvatarSize === size
-                            ? 'bg-white text-[#1565c0] shadow-xs'
-                            : 'text-cyan-100 hover:bg-white/10'
+                            ? 'bg-white text-[#243346] shadow-xs'
+                            : 'text-slate-300 hover:bg-white/10'
                         }`}
                       >
                         {size === 'sm' ? 'Compact' : size === 'md' ? 'Default' : 'Large'}
                       </button>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* VISITOR PERSONA STATUS BANNER */}
+              {!isOwner && (
+                <div className="bg-[#e4ebf3] border-b border-[#b8c6d4] px-3 sm:px-4 py-1.5 flex items-center justify-between text-xs text-slate-700 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-6 h-6 rounded-full overflow-hidden bg-slate-300 border border-slate-400 shrink-0 flex items-center justify-center font-bold text-[10px] text-white shadow-2xs">
+                      {visitorProfile.avatarUrl ? (
+                        <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className={`w-full h-full ${visitorProfile.avatarColor || 'bg-slate-700'} flex items-center justify-center`}>
+                          {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <div className="truncate text-[11px]">
+                      <span className="text-slate-500 font-medium">Messaging as: </span>
+                      <span className="font-bold text-slate-900">{visitorProfile.name || 'Visitor'}</span>
+                      {visitorProfile.roleOrCompany && (
+                        <span className="text-slate-500 ml-1">· {visitorProfile.roleOrCompany}</span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsVisitorProfileModalOpen(true)}
+                    className="text-[11px] text-[#243346] hover:text-black font-bold hover:underline flex items-center gap-1 cursor-pointer shrink-0"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    <span>Edit Name &amp; Photo</span>
+                  </button>
                 </div>
               )}
 
@@ -1026,7 +1768,7 @@ export const MessagingSection: React.FC = () => {
                     key={idx}
                     type="button"
                     onClick={() => handleQuickTopicChip(chip)}
-                    className="px-2.5 py-0.5 rounded-full bg-white hover:bg-[#1e88e5] hover:text-white text-slate-700 border border-[#b8c6d4] transition-colors whitespace-nowrap cursor-pointer shadow-xs font-medium"
+                    className="px-2.5 py-0.5 rounded-full bg-white hover:bg-[#243346] hover:text-white text-slate-700 border border-[#b8c6d4] transition-colors whitespace-nowrap cursor-pointer shadow-xs font-medium"
                   >
                     {chip}
                   </button>
@@ -1059,7 +1801,7 @@ export const MessagingSection: React.FC = () => {
                       Direct Messaging with Festus Johnson
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Send a message, design review request, or project specification below. Messages are delivered directly to Festus's private inbox.
+                      Send a message, design review request, voice note, or project specification below. Messages are delivered directly to Festus's private inbox.
                     </p>
                   </div>
                 )}
@@ -1083,9 +1825,15 @@ export const MessagingSection: React.FC = () => {
                               alt={profileName}
                               className="w-full h-full object-cover"
                             />
+                          ) : activeConversation.avatarUrl ? (
+                            <img
+                              src={activeConversation.avatarUrl}
+                              alt={activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel}
+                              className="w-full h-full object-cover"
+                            />
                           ) : (
-                            <span className="bg-cyan-700 w-full h-full flex items-center justify-center">
-                              {(activeConversation.customName || activeConversation.defaultLabel).charAt(0)}
+                            <span className={`${activeConversation.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
+                              {(activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel).charAt(0).toUpperCase()}
                             </span>
                           )}
                         </div>
@@ -1093,7 +1841,7 @@ export const MessagingSection: React.FC = () => {
 
                       {/* Message Bubble */}
                       <div
-                        className={`max-w-[85%] sm:max-w-md md:max-w-lg px-3 py-2 rounded-xl text-[11.5px] sm:text-[12.5px] leading-snug shadow-xs relative ${
+                        className={`max-w-[85%] sm:max-w-md md:max-w-lg px-3 py-2 rounded-xl text-[11.5px] sm:text-[12.5px] leading-snug shadow-xs relative group/msg ${
                           isLeft
                             ? 'bg-white text-slate-900 rounded-bl-xs border border-slate-200'
                             : 'bg-[#dcf8c6] text-slate-950 rounded-br-xs border border-[#c4e8aa]'
@@ -1104,45 +1852,94 @@ export const MessagingSection: React.FC = () => {
                           <p className="whitespace-pre-wrap font-sans">{msg.text}</p>
                         )}
 
+                        {/* Voice Note Player */}
+                        {msg.voiceNote && (
+                          <div className="my-1">
+                            <VoiceNotePlayer
+                              voiceNote={msg.voiceNote}
+                              isSender={!isLeft}
+                              senderName={isLeft ? (isOwner ? (activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel) : profileName) : undefined}
+                            />
+                          </div>
+                        )}
+
                         {/* Shared Files & Attachments */}
                         {msg.attachments && msg.attachments.length > 0 && (
-                          <div className="mt-1.5 space-y-1 pt-1 border-t border-black/10">
+                          <div className="mt-2 space-y-2 pt-1.5 border-t border-black/10">
                             {msg.attachments.map((att) => (
                               <div
                                 key={att.id}
-                                className="p-2 rounded-lg bg-black/5 flex items-center justify-between gap-2 text-xs"
+                                className="p-2 rounded-xl bg-black/5 flex flex-col gap-2 text-xs border border-black/10 overflow-hidden"
                               >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  {att.type === 'pdf' ? (
-                                    <FileText className="w-4 h-4 text-red-600 shrink-0" />
-                                  ) : att.type === 'cad' ? (
-                                    <FileText className="w-4 h-4 text-cyan-700 shrink-0" />
-                                  ) : (
-                                    <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-                                  )}
-                                  <div className="min-w-0">
-                                    <p className="font-semibold truncate text-[11px] text-slate-900">
-                                      {att.name}
-                                    </p>
-                                    <span className="text-[10px] text-slate-500">{att.size}</span>
+                                {/* Image Preview Card */}
+                                {att.type === 'image' && att.url && (
+                                  <div className="w-full max-h-56 overflow-hidden rounded-lg bg-slate-900/10 flex items-center justify-center relative group/img">
+                                    <img
+                                      src={att.url}
+                                      alt={att.name}
+                                      className="max-h-56 w-full object-contain cursor-pointer hover:scale-102 transition-transform"
+                                      onClick={() => setSelectedChatImage(att.url!)}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedChatImage(att.url!)}
+                                      className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/70 text-white opacity-0 group-hover/img:opacity-100 transition-opacity text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Eye className="w-3 h-3" />
+                                      <span>Expand</span>
+                                    </button>
                                   </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 min-w-0">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {att.type === 'pdf' ? (
+                                      <FileText className="w-4 h-4 text-red-600 shrink-0" />
+                                    ) : att.type === 'cad' ? (
+                                      <FileText className="w-4 h-4 text-cyan-700 shrink-0" />
+                                    ) : (
+                                      <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="font-semibold truncate text-[11px] text-slate-900" title={att.name}>
+                                        {att.name}
+                                      </p>
+                                      <span className="text-[10px] text-slate-500">{att.size}</span>
+                                    </div>
+                                  </div>
+
+                                  {/* Download / View Button */}
+                                  {att.url ? (
+                                    <a
+                                      href={att.url}
+                                      download={att.name}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-[10px] bg-[#243346] hover:bg-[#1a2533] text-white font-bold px-2.5 py-1 rounded-lg shadow-2xs shrink-0 flex items-center gap-1 cursor-pointer transition-colors"
+                                      title={`Download ${att.name}`}
+                                    >
+                                      <Download className="w-3 h-3" />
+                                      <span>Download</span>
+                                    </a>
+                                  ) : (
+                                    <span className="text-[10px] text-[#243346] font-bold bg-white/80 px-1.5 py-0.5 rounded shadow-xs shrink-0">
+                                      Shared File
+                                    </span>
+                                  )}
                                 </div>
-                                <span className="text-[10px] text-cyan-800 font-bold bg-white/80 px-1.5 py-0.5 rounded shadow-xs shrink-0">
-                                  Shared File
-                                </span>
                               </div>
                             ))}
                           </div>
                         )}
 
-                        {/* Timestamp and Seen/Unseen Checkmark Indicators */}
-                        <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-slate-500 font-mono">
+                        {/* Timestamp, Seen/Unseen Checkmark Indicators, and Delete Message action */}
+                        <div className="mt-1 flex items-center justify-end gap-1.5 text-[10px] text-slate-500 font-mono">
                           <span>{msg.timestamp}</span>
 
                           {msg.status === 'seen' ? (
                             <span
-                              className="text-[#1e88e5] font-bold text-xs"
-                              title="Seen (marked twice blue)"
+                              className="text-[#243346] font-bold text-xs"
+                              title="Seen (marked twice)"
                             >
                               ✓✓
                             </span>
@@ -1154,8 +1951,31 @@ export const MessagingSection: React.FC = () => {
                               ✓
                             </span>
                           )}
+
+                          {/* Quick Message Delete Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMessage(activeConversation.id, msg.id)}
+                            className="opacity-0 group-hover/msg:opacity-100 p-0.5 hover:bg-black/10 rounded text-slate-400 hover:text-red-600 transition-opacity cursor-pointer"
+                            title="Delete this message"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                         </div>
                       </div>
+
+                      {/* Right Avatar for Visitor */}
+                      {!isLeft && !isOwner && (
+                        <div className="w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
+                          {visitorProfile.avatarUrl ? (
+                            <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <span className={`${visitorProfile.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
+                              {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1175,7 +1995,7 @@ export const MessagingSection: React.FC = () => {
                       key={att.id}
                       className="flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-slate-300 shadow-xs"
                     >
-                      <FileText className="w-3 h-3 text-cyan-700" />
+                      <FileText className="w-3 h-3 text-[#243346]" />
                       <span className="text-[11px] max-w-[120px] truncate">{att.name}</span>
                       <button
                         type="button"
@@ -1189,69 +2009,141 @@ export const MessagingSection: React.FC = () => {
                 </div>
               )}
 
-              {/* 3. COMPACT BOTTOM INPUT BAR & SEND BUTTON */}
-              <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0">
-                <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
-                  
-                  {/* File Attachment Button */}
-                  <div className="relative">
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      onChange={handleFileUpload}
-                      multiple
-                      className="hidden"
-                      id="chat-file-input"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="p-2 rounded-full hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer shrink-0"
-                      title="Attach documents, CAD files or images"
-                    >
-                      <Paperclip className="w-4 h-4 text-slate-600" />
-                    </button>
+              {/* 3. COMPACT BOTTOM INPUT BAR & SEND / VOICE RECORDING BUTTONS */}
+              {isRecording ? (
+                /* LIVE VOICE RECORDING BAR */
+                <div className="bg-[#fdedeb] p-2 sm:p-2.5 border-t border-red-200 shrink-0 animate-fade-in flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-3 h-3 rounded-full bg-red-600 animate-pulse shrink-0" />
+                    <span className="text-xs font-mono font-bold text-red-700 whitespace-nowrap">
+                      REC {formatDuration(recordingSeconds)}
+                    </span>
+                    {/* Animated sound wave bars */}
+                    <div className="hidden sm:flex items-center gap-1 h-5">
+                      {[10, 18, 12, 22, 16, 20, 14, 24, 12, 16].map((h, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            height: `${h}px`,
+                            animationDelay: `${i * 120}ms`
+                          }}
+                          className="w-1 bg-red-500 rounded-full animate-bounce"
+                        />
+                      ))}
+                    </div>
+                    <span className="text-[11px] text-red-600 truncate hidden md:inline">
+                      Recording voice note...
+                    </span>
                   </div>
 
-                  {/* Message Input Box */}
-                  <div className="flex-1 relative">
-                    <input
-                      type="text"
-                      placeholder={
-                        isOwner
-                          ? `Reply to ${activeConversation.customName || activeConversation.defaultLabel} as Festus...`
-                          : `Type message to Festus Johnson...`
-                      }
-                      value={inputMessage}
-                      onChange={(e) => setInputMessage(e.target.value)}
-                      className="w-full px-3 py-2 bg-white rounded-xl text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1e88e5] shadow-xs pr-8"
-                    />
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => setInputMessage((prev) => prev + ' ⚙️ ')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                      title="Engineering symbol"
+                      onClick={cancelVoiceRecording}
+                      className="px-3 py-1.5 rounded-lg border border-red-300 hover:bg-red-100 text-red-700 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Discard recording"
                     >
-                      <Smile className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Discard</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={stopAndSendVoiceRecording}
+                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                      title="Send voice note"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send Note</span>
                     </button>
                   </div>
+                </div>
+              ) : (
+                /* STANDARD MESSAGE & ATTACHMENT INPUT BAR */
+                <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0">
+                  <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
+                    
+                    {/* File Attachment Button */}
+                    <div className="relative">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileUpload}
+                        multiple
+                        className="hidden"
+                        id="chat-file-input"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
+                        title="Attach documents, CAD files or images"
+                      >
+                        <Paperclip className="w-4 h-4 text-[#243346]" />
+                      </button>
+                    </div>
 
-                  {/* Compact Message Send Button */}
-                  <button
-                    type="submit"
-                    disabled={!inputMessage.trim() && attachedFiles.length === 0}
-                    className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs ${
-                      inputMessage.trim() || attachedFiles.length > 0
-                        ? 'bg-[#1e88e5] hover:bg-[#1565c0] text-white'
-                        : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                    }`}
-                    title="Send message"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline text-xs">Send</span>
-                  </button>
-                </form>
-              </div>
+                    {/* Microphone Voice Note Button */}
+                    <button
+                      type="button"
+                      onClick={startVoiceRecording}
+                      className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
+                      title="Record Voice Note"
+                    >
+                      <Mic className="w-4 h-4 text-[#243346]" />
+                    </button>
+
+                    {/* Quick Demo Audio Button for quick testing */}
+                    <button
+                      type="button"
+                      onClick={handleSendDemoAudio}
+                      className="hidden md:inline-flex p-1.5 rounded-lg bg-slate-200/80 hover:bg-slate-300 text-slate-700 text-[10px] font-bold items-center gap-1 cursor-pointer shrink-0 transition-colors"
+                      title="Send sample voice memo"
+                    >
+                      <Volume2 className="w-3 h-3 text-[#243346]" />
+                      <span>Audio Memo</span>
+                    </button>
+
+                    {/* Message Input Box */}
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        placeholder={
+                          isOwner
+                            ? `Reply to ${activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel} as Festus...`
+                            : `Type message to Festus Johnson...`
+                        }
+                        value={inputMessage}
+                        onChange={(e) => updateInputMessage(e.target.value)}
+                        className="w-full px-3 py-2 bg-white rounded-xl text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#243346] shadow-xs pr-8"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => updateInputMessage(inputMessage + ' ⚙️ ')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                        title="Engineering symbol"
+                      >
+                        <Smile className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Compact Message Send Button */}
+                    <button
+                      type="submit"
+                      disabled={!inputMessage.trim() && attachedFiles.length === 0}
+                      className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs ${
+                        inputMessage.trim() || attachedFiles.length > 0
+                          ? 'bg-[#243346] hover:bg-[#1a2533] text-white'
+                          : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                      }`}
+                      title="Send message"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline text-xs">Send</span>
+                    </button>
+                  </form>
+                </div>
+              )}
 
             </div>
 
@@ -1273,7 +2165,7 @@ export const MessagingSection: React.FC = () => {
               </button>
 
               <div className="flex items-center gap-2.5 mb-3">
-                <div className="w-8 h-8 rounded-full bg-[#1e88e5]/15 text-[#1e88e5] flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-full bg-[#243346]/15 text-[#243346] flex items-center justify-center font-bold">
                   <Edit2 className="w-4 h-4" />
                 </div>
                 <div>
@@ -1293,7 +2185,7 @@ export const MessagingSection: React.FC = () => {
                     placeholder="e.g. Sarah Jenkins (Tesla Robotics)"
                     value={editNameInput}
                     onChange={(e) => setEditNameInput(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1e88e5]"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#243346]"
                   />
                 </div>
 
@@ -1306,7 +2198,7 @@ export const MessagingSection: React.FC = () => {
                     placeholder="e.g. Lead Hardware Engineer Consultation"
                     value={editRoleInput}
                     onChange={(e) => setEditRoleInput(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1e88e5]"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#243346]"
                   />
                 </div>
 
@@ -1320,7 +2212,7 @@ export const MessagingSection: React.FC = () => {
                   </button>
                   <button
                     type="submit"
-                    className="px-3.5 py-1.5 rounded-lg bg-[#1e88e5] hover:bg-[#1565c0] text-white font-bold cursor-pointer"
+                    className="px-3.5 py-1.5 rounded-lg bg-[#243346] hover:bg-[#1a2533] text-white font-bold cursor-pointer"
                   >
                     Save Name
                   </button>
@@ -1344,7 +2236,7 @@ export const MessagingSection: React.FC = () => {
               </button>
 
               <div className="flex items-center gap-2.5 mb-3">
-                <div className="w-9 h-9 rounded-full bg-cyan-50 text-[#1e88e5] flex items-center justify-center shrink-0">
+                <div className="w-9 h-9 rounded-full bg-cyan-50 text-[#243346] flex items-center justify-center shrink-0">
                   <RotateCcw className="w-5 h-5" />
                 </div>
                 <div>
@@ -1358,7 +2250,7 @@ export const MessagingSection: React.FC = () => {
                   You can choose to <strong>remain in this conversation</strong> or <strong>clear your screen</strong> for a fresh start.
                 </p>
                 <div className="text-slate-600 text-[11px] bg-slate-50 p-2.5 rounded-lg border border-slate-200 leading-normal">
-                  🔒 <strong>Note:</strong> Clearing your chat only resets your personal screen. All messages you sent remain safely delivered to Festus in his inquiries inbox.
+                  🔒 <strong>Note:</strong> Clearing your chat only resets your personal screen. All messages and voice notes you sent remain safely delivered to Festus in his inquiries inbox.
                 </div>
               </div>
 
@@ -1373,12 +2265,130 @@ export const MessagingSection: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleVisitorClearChat}
-                  className="px-3.5 py-1.5 rounded-lg bg-[#1e88e5] hover:bg-[#1565c0] text-white font-bold cursor-pointer text-xs flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-lg bg-[#243346] hover:bg-[#1a2533] text-white font-bold cursor-pointer text-xs flex items-center gap-1.5"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>Clear Screen</span>
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* VISITOR MESSAGING PROFILE MODAL (PICTURE & NAME EDIT)    */}
+        {/* ======================================================== */}
+        <VisitorProfileModal
+          isOpen={isVisitorProfileModalOpen}
+          onClose={() => setIsVisitorProfileModalOpen(false)}
+          currentProfile={visitorProfile}
+          onSave={handleSaveVisitorProfile}
+        />
+
+        {/* ======================================================== */}
+        {/* RESUME / CONTINUE CONVERSATION MODAL (VISITOR RECONNECT)  */}
+        {/* Enables visitor to continue chat even after leaving group */}
+        {/* ======================================================== */}
+        {isResumeModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs animate-fade-in font-sans">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-300 max-w-md w-full p-5 relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsResumeModalOpen(false);
+                  setResumeError(null);
+                }}
+                className="absolute right-4 top-4 p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-2.5 mb-3">
+                <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-950">Continue Conversation</h3>
+                  <p className="text-xs text-slate-500">Pick up where you left off with Festus</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 mb-3.5 leading-relaxed">
+                Leaving the group or changing pages never erases your messages. All messages are securely saved. Reconnect using your <strong>Visitor Session ID</strong>, your <strong>Name</strong>, or <strong>Email</strong>.
+              </p>
+
+              {/* Current Visitor Session Chip */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 mb-4 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
+                  <span>YOUR CURRENT SESSION ID:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(visitorId);
+                      setCopiedVisitorId(true);
+                      setTimeout(() => setCopiedVisitorId(false), 2500);
+                    }}
+                    className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-bold cursor-pointer"
+                  >
+                    {copiedVisitorId ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copy ID</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <code className="block text-xs font-mono font-bold text-slate-800 select-all bg-white px-2 py-1 rounded border border-slate-200 truncate">
+                  {visitorId}
+                </code>
+              </div>
+
+              <form onSubmit={handleResumeConversation} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Enter Previous Session ID or Name:
+                  </label>
+                  <input
+                    type="text"
+                    value={resumeInput}
+                    onChange={(e) => setResumeInput(e.target.value)}
+                    placeholder="e.g. visitor-172... or John Smith"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    autoFocus
+                  />
+                </div>
+
+                {resumeError && (
+                  <p className="text-xs text-rose-600 font-medium bg-rose-50 p-2.5 rounded-lg border border-rose-200">
+                    {resumeError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsResumeModalOpen(false);
+                      setResumeError(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer font-medium text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 shadow-sm"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Reconnect &amp; Continue</span>
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
@@ -1401,32 +2411,91 @@ export const MessagingSection: React.FC = () => {
                   <Trash2 className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-950">Delete Inquiry?</h3>
+                  <h3 className="text-sm font-bold text-slate-950">
+                    {deletingConv.messages && deletingConv.messages.length > 0 ? 'Delete Inquiry Thread?' : 'Reset Inquiry Channel?'}
+                  </h3>
                   <p className="text-[11px] text-slate-500 truncate font-semibold">
-                    {deletingConv.customName ? `${deletingConv.customName} (${deletingConv.defaultLabel})` : deletingConv.defaultLabel}
+                    {deletingConv.visitorName ? `${deletingConv.visitorName} (${deletingConv.defaultLabel})` : (deletingConv.customName ? `${deletingConv.customName} (${deletingConv.defaultLabel})` : deletingConv.defaultLabel)}
                   </p>
                 </div>
               </div>
 
               <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-                Are you sure you want to permanently delete this inquiry (<strong>{deletingConv.defaultLabel}</strong>) and all its shared messages from your visitor inquiries?
+                {deletingConv.messages && deletingConv.messages.length > 0 ? (
+                  <>
+                    Are you sure you want to permanently delete this inquiry (<strong>{deletingConv.visitorName || deletingConv.customName || deletingConv.defaultLabel}</strong>) and all its {deletingConv.messages.length} message{deletingConv.messages.length === 1 ? '' : 's'}? This cannot be undone.
+                  </>
+                ) : (
+                  <>
+                    Are you sure you want to reset this inquiry session and clear all unsent message drafts and attachments?
+                  </>
+                )}
               </p>
 
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
+                  disabled={isDeletingChat}
                   onClick={() => setDeletingConv(null)}
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer font-medium text-xs"
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer font-medium text-xs disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
+                  disabled={isDeletingChat}
                   onClick={handleConfirmDelete}
-                  className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-xs"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete Inquiry</span>
+                  {isDeletingChat ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{deletingConv.messages && deletingConv.messages.length > 0 ? 'Delete Permanently' : 'Reset & Clear'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* FULL-SCREEN CHAT IMAGE LIGHTBOX MODAL                     */}
+        {/* ======================================================== */}
+        {selectedChatImage && (
+          <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+            <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center justify-center">
+              <button
+                onClick={() => setSelectedChatImage(null)}
+                className="absolute -top-10 right-0 p-2 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                title="Close Lightbox"
+              >
+                <X className="w-6 h-6" />
+              </button>
+              <img
+                src={selectedChatImage}
+                alt="Shared Image Full Resolution"
+                className="max-h-[80vh] max-w-full object-contain rounded-2xl border border-slate-700 shadow-2xl"
+              />
+              <div className="mt-3 flex items-center gap-3">
+                <a
+                  href={selectedChatImage}
+                  download="shared_image.png"
+                  className="px-4 py-2 rounded-xl bg-[#243346] hover:bg-[#1a2533] text-white text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download Image</span>
+                </a>
+                <button
+                  onClick={() => setSelectedChatImage(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold cursor-pointer transition-colors"
+                >
+                  Close
                 </button>
               </div>
             </div>

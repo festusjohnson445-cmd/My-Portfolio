@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Eye, FileCode, Layers, Upload, Download, Lock, Check, Loader2 } from 'lucide-react';
 import { DocumentItem } from '../utils/profileState';
-import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
+import { renderPdfFirstPageToImage, generateDocumentDrawingPreview } from '../utils/pdfRenderer';
 
 interface DocumentTopMediaProps {
   doc: DocumentItem;
@@ -50,8 +50,16 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       setIsRenderingPdf(true);
       setRenderError(false);
 
-      renderPdfFirstPageToImage(doc.attachmentDataUrl, 900)
+      const safetyTimer = setTimeout(() => {
+        if (isMounted) {
+          setIsRenderingPdf(false);
+          setRenderedPdfImage(generateDocumentDrawingPreview(doc.attachmentName || doc.title));
+        }
+      }, 3600);
+
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 900, doc.attachmentName || doc.title)
         .then((imgDataUrl) => {
+          clearTimeout(safetyTimer);
           if (isMounted) {
             setRenderedPdfImage(imgDataUrl);
             setIsRenderingPdf(false);
@@ -61,15 +69,18 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
           }
         })
         .catch((err) => {
+          clearTimeout(safetyTimer);
           console.warn('PDF on-the-fly rendering warning:', err);
           if (isMounted) {
             setIsRenderingPdf(false);
             setRenderError(true);
+            setRenderedPdfImage(generateDocumentDrawingPreview(doc.attachmentName || doc.title));
           }
         });
 
       return () => {
         isMounted = false;
+        clearTimeout(safetyTimer);
       };
     }
   }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, onUpdatePreviewUrl]);
@@ -234,15 +245,10 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
               <span>Download File</span>
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={onRequireAuth}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-              title="admin"
-            >
-              <Lock className="w-3 h-3 text-amber-500" />
-              <span>admin</span>
-            </button>
+            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-sans font-medium">
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Verified Technical Record</span>
+            </span>
           )}
         </div>
       </div>

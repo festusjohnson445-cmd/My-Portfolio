@@ -1,25 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Download,
-  Zap,
-  ShieldCheck,
-  ChevronRight,
-  Filter,
-  CheckCircle2,
-  Layers,
-  Ruler,
-  Calculator,
-  Award,
-  FileText,
-  Mail,
-  ArrowRight,
-  ArrowLeft,
-  Wrench,
-  Compass,
-  LayoutList,
-  User,
-  FolderOpen
-} from 'lucide-react';
+import { ArrowRight, ArrowUp } from 'lucide-react';
 import { PROJECTS } from './data/projectsData';
 import { Project, ProjectCategory } from './types/portfolio';
 import { Navbar, PortfolioPart } from './components/Navbar';
@@ -28,27 +8,30 @@ import { ProfileView } from './components/ProfileView';
 import { HomeView } from './components/HomeView';
 import { ResumeDownloadModal } from './components/ResumeDownloadModal';
 import { RecruiterScanMode } from './components/RecruiterScanMode';
-import { ProjectCard } from './components/ProjectCard';
 import { ProjectDetailModal } from './components/ProjectDetailModal';
 import { WhitepaperModal } from './components/WhitepaperModal';
-import { ToolboxSection } from './components/ToolboxSection';
 import { MessagingSection } from './components/MessagingSection';
 import { EaseStudyView } from './components/EaseStudyView';
-import { CredentialsSection } from './components/CredentialsSection';
-import { ContactSection } from './components/ContactSection';
-import { MathematicalInventionGenerator } from './components/MathematicalInventionGenerator';
 import { generateAndDownloadResume } from './utils/generateResumePdf';
-import { getStoredBio, getStoredDocuments } from './utils/profileState';
+import { getStoredBio, getStoredDocuments, syncGlobalProfileWithServer } from './utils/profileState';
 
 export default function App() {
   const [activePart, setActivePart] = useState<PortfolioPart>('home');
-  const [viewMode, setViewMode] = useState<'tabbed' | 'continuous'>('tabbed');
   const [selectedCategory, setSelectedCategory] = useState<ProjectCategory>('All');
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [whitepaperProject, setWhitepaperProject] = useState<Project | null>(null);
   const [isResumeOpen, setIsResumeOpen] = useState(false);
   const [isRecruiterScanOpen, setIsRecruiterScanOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowScrollTop(window.scrollY > 350);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const handleOneClickResumeDownload = () => {
     setResumeDownloadCount((c) => c + 1);
@@ -66,7 +49,7 @@ export default function App() {
         degree: bio.degree || 'B.S. in Mechanical Engineering (BSME)',
         academicHonors: bio.academicHonors || 'ABET Accredited · Honors (GPA 3.84 / 4.00)',
         leadership: bio.leadership || 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead',
-        skills: bio.skills || 'SolidWorks (CSWP), PTC Creo, Ansys Workbench (Static / Modal / Thermal FEA), ASME Y14.5 GD&T, 5-Axis CNC Milling',
+        skills: bio.skills || 'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, Design Calculation, CNC Machine, Laser Engraver/Cutter, 3D Animation, 3D Maxs, React.js & Full-Stack Web Development, Web Developer, C/C++, IT, AI & Machine Learning, Cybersecurity, Graphic Design, Microsoft Office',
         description: bio.description || 'Lead Mechanical Design Engineer with 6+ years of specialized experience in high-precision hardware mechanisms, complex flight-rated assemblies, and mission-critical robotic systems.',
         documents: docs.length > 0 ? docs.map((d: any) => ({
           title: d.title,
@@ -83,16 +66,15 @@ export default function App() {
     }
   };
 
-  // Synchronize initial URL hash
+  // Synchronize initial URL hash and pull global profile from server for visitors
   useEffect(() => {
+    syncGlobalProfileWithServer().catch(() => {});
     const hash = window.location.hash.replace('#', '');
     if (hash === 'profile') {
       setActivePart('profile');
-    } else if (hash === 'overview' || hash === 'hub') {
+    } else if (hash === 'overview' || hash === 'hub' || hash === 'projects' || hash === 'case-studies') {
       setActivePart('overview');
-    } else if (hash === 'projects' || hash === 'case-studies') {
-      setActivePart('projects');
-    } else if (hash === 'easestudy') {
+    } else if (hash === 'easestudy' || hash === 'modelme' || hash === 'modeling' || hash === 'model') {
       setActivePart('easestudy');
     } else if (hash === 'metrology' || hash === 'cad-comparison' || hash === 'gdt-drawings' || hash === 'messaging' || hash === 'toolbox' || hash === 'chat' || hash === 'credentials' || hash === 'contact') {
       setActivePart('messaging');
@@ -104,14 +86,7 @@ export default function App() {
   const handleSelectPart = (part: PortfolioPart) => {
     setActivePart(part);
     window.history.replaceState(null, '', `#${part}`);
-    if (viewMode === 'continuous') {
-      const el = document.getElementById(part);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth' });
-      }
-    } else {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const filteredProjects = selectedCategory === 'All'
@@ -128,24 +103,22 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#dce1e8] text-slate-900 flex flex-col font-serif selection:bg-slate-300 selection:text-slate-950">
+    <div className="min-h-screen w-full max-w-full bg-[#dce1e8] text-slate-900 flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden">
       {/* 1. Sticky Navigation Bar */}
       <Navbar
         activePart={activePart}
         onSelectPart={handleSelectPart}
-        viewMode={viewMode}
-        onToggleViewMode={() => setViewMode(v => v === 'tabbed' ? 'continuous' : 'tabbed')}
         onResumeClick={handleOneClickResumeDownload}
         onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
         resumeDownloadCount={resumeDownloadCount}
       />
 
-      <main className="flex-1">
+      <main className="flex-1 w-full flex flex-col">
         {/* ======================================================== */}
         {/* 01. LANDING HOME VIEW (HERO & WELCOMING MESSAGE & CTA)  */}
         {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'home') && (
-          <section id="home" className="relative">
+        {activePart === 'home' && (
+          <section id="home" className="relative flex-1 w-full flex flex-col">
             <LandingHomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={handleOneClickResumeDownload}
@@ -157,17 +130,8 @@ export default function App() {
         {/* ======================================================== */}
         {/* 02. MY PROFILE VIEW (BIO, RESUME, CERTIFICATIONS, FORM)  */}
         {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'profile') && (
-          <section id="profile" className="relative border-b border-[#b0bece]">
-            {viewMode === 'continuous' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-[#e8eef5] border border-[#b8c6d4] text-xs font-sans text-cyan-900 shadow-sm">
-                  <span className="font-bold">PART 02</span>
-                  <span className="text-slate-400">·</span>
-                  <span>MY PROFILE &amp; VERIFIED CREDENTIALS</span>
-                </div>
-              </div>
-            )}
+        {activePart === 'profile' && (
+          <section id="profile" className="relative flex-1 w-full flex flex-col border-b border-[#b0bece]">
             <ProfileView
               onResumeClick={handleOneClickResumeDownload}
               onNavigatePart={handleSelectPart}
@@ -175,39 +139,28 @@ export default function App() {
             />
 
             {/* Bottom Navigator */}
-            {viewMode === 'tabbed' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14">
-                <div className="p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="text-sm sm:text-base text-slate-700">
-                    <span className="text-cyan-900 font-bold font-sans">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
-                  </div>
-                  <button
-                    onClick={() => handleSelectPart('overview')}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-sm sm:text-base font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    <span>Proceed to Engineering Hub</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14 mt-auto">
+              <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="text-[11px] sm:text-[13px] text-slate-700">
+                  <span className="text-cyan-900 font-bold font-sans">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
                 </div>
+                <button
+                  onClick={() => handleSelectPart('overview')}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <span>Proceed to Engineering Hub</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
               </div>
-            )}
+            </div>
           </section>
         )}
 
         {/* ======================================================== */}
         {/* 03. ENGINEERING HUB (DOCUMENT REPOSITORY & DEVICE UPLOAD)*/}
         {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'overview') && (
-          <section id="overview" className="relative border-b border-[#b0bece]">
-            {viewMode === 'continuous' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-[#e8eef5] border border-[#b8c6d4] text-xs font-sans text-cyan-900 shadow-sm">
-                  <span className="font-bold">PART 03</span>
-                  <span className="text-slate-400">·</span>
-                  <span>ENGINEERING HUB &amp; DOCUMENT REPOSITORY</span>
-                </div>
-              </div>
-            )}
+        {activePart === 'overview' && (
+          <section id="overview" className="relative flex-1 w-full flex flex-col border-b border-[#b0bece]">
             <HomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={() => setIsResumeOpen(true)}
@@ -215,137 +168,55 @@ export default function App() {
             />
 
             {/* Bottom Sequential Navigator */}
-            {viewMode === 'tabbed' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-                <div className="p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="text-sm sm:text-base text-slate-700">
-                    <span className="text-cyan-900 font-bold font-sans">OVERVIEW COMPLETE:</span> Ready to inspect deep technical calculations and FEA boundary conditions?
-                  </div>
-                  <button
-                    onClick={() => handleSelectPart('projects')}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-sm sm:text-base font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    <span>Proceed to Case Studies &amp; DFM</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
+              <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="text-[11px] sm:text-[13px] text-slate-700">
+                  <span className="text-cyan-900 font-bold font-sans">OVERVIEW COMPLETE:</span> Ready to analyze technical documents, extract key concepts, and generate practice exams with EaseStudy AI?
                 </div>
+                <button
+                  onClick={() => handleSelectPart('easestudy')}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <span>Proceed to EaseStudy AI Suite (Part 04)</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
               </div>
-            )}
-          </section>
-        )}
-
-        {/* ======================================================== */}
-        {/* 04. CASE STUDIES & DFM POST-MORTEMS                      */}
-        {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'projects') && (
-          <section id="projects" className="min-h-[calc(100vh-8.5rem)] py-6 sm:py-8 border-b border-[#b0bece] bg-[#dce1e8] flex flex-col">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full flex-1 flex flex-col space-y-6">
-              {/* Filter Tabs in a row flexbox */}
-              <div className="flex flex-row items-center gap-2 p-1.5 bg-[#e4eaf1] rounded-xl border border-[#b4c2d1] shadow-inner text-xs sm:text-sm self-start overflow-x-auto">
-                {(['All', 'CAD'] as ProjectCategory[]).map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`px-3.5 py-1.5 rounded-lg whitespace-nowrap font-sans font-semibold transition-all cursor-pointer ${
-                      selectedCategory === cat
-                        ? 'bg-slate-900 text-white shadow-sm'
-                        : 'text-slate-700 hover:text-slate-950 hover:bg-[#d8e0ea]'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-
-              {/* Projects Grid */}
-              {filteredProjects.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6">
-                  {filteredProjects.map((project) => (
-                    <ProjectCard
-                      key={project.id}
-                      project={project}
-                      onSelect={(p) => setActiveProject(p)}
-                      onOpenWhitepaper={(p) => setWhitepaperProject(p)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="p-8 sm:p-12 text-center bg-[#edf2f8] border border-[#b8c6d4] rounded-2xl shadow-sm my-2">
-                  <FolderOpen className="w-10 h-10 text-slate-400 mx-auto mb-2" />
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900 font-serif">No Case Studies Currently Listed</h3>
-                  <p className="text-xs sm:text-sm text-slate-600 mt-1 max-w-md mx-auto">
-                    New engineering case studies, 3D CAD post-mortems, and technical designs will appear here.
-                  </p>
-                </div>
-              )}
-
-              {/* Mathematical Model & Invention Generator Studio */}
-              <MathematicalInventionGenerator />
             </div>
-
-            {/* Bottom Navigator */}
-            {viewMode === 'tabbed' && (
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14 w-full">
-                <div className="p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="text-sm sm:text-base text-slate-700">
-                    <span className="text-cyan-900 font-bold font-sans">NEXT:</span> Analyze study documents, extract key concepts, and generate practice exams with EaseStudy AI.
-                  </div>
-                  <button
-                    onClick={() => handleSelectPart('easestudy')}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-sm sm:text-base font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    <span>Proceed to EaseStudy</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
           </section>
         )}
 
         {/* ======================================================== */}
-        {/* 05. EASESTUDY (AI DOCUMENT / IMAGE EXAM & STUDY STUDIO)  */}
+        {/* 04. EASESTUDY (AI DOCUMENT / IMAGE EXAM & STUDY STUDIO)  */}
         {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'easestudy') && (
-          <section id="easestudy" className="relative border-b border-[#b0bece] py-8 sm:py-10 bg-[#dce1e8]">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              {viewMode === 'continuous' && (
-                <div className="pb-6">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-[#e8eef5] border border-[#b8c6d4] text-xs font-sans text-cyan-900 shadow-sm">
-                    <span className="font-bold">PART 05</span>
-                    <span className="text-slate-400">·</span>
-                    <span>EASESTUDY AI STUDY &amp; EXAM SUITE</span>
-                  </div>
-                </div>
-              )}
+        {activePart === 'easestudy' && (
+          <section id="easestudy" className="relative flex-1 w-full flex flex-col border-b border-[#b0bece] py-8 sm:py-10 bg-[#dce1e8] justify-between">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full flex-1">
               <EaseStudyView onNavigatePart={handleSelectPart} />
 
-              {/* Bottom Navigator */}
-              {viewMode === 'tabbed' && (
-                <div className="pt-10">
-                  <div className="p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div className="text-sm sm:text-base text-slate-700">
-                      <span className="text-cyan-900 font-bold font-sans">EASESTUDY COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
-                    </div>
-                    <button
-                      onClick={() => handleSelectPart('messaging')}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-sm sm:text-base font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-                    >
-                      <span>Proceed to Messaging</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
+              {/* Bottom Navigator (Center Justified, Text size reduced by 10%) */}
+              <div className="pt-8 mt-auto flex justify-center">
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-center text-center gap-3.5 sm:gap-6 max-w-4xl mx-auto w-full">
+                  <div className="text-[12.5px] sm:text-[14px] text-slate-700 text-center">
+                    <span className="text-cyan-900 font-bold font-sans">EASESTUDY COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
                   </div>
+                  <button
+                    onClick={() => handleSelectPart('messaging')}
+                    className="inline-flex items-center justify-center gap-2 px-4.5 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[12px] sm:text-[13.5px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <span>Proceed to Messaging (Part 05)</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
           </section>
         )}
 
         {/* ======================================================== */}
-        {/* 07. FULL PAGE MESSAGING SECTION ONLY                     */}
+        {/* 05. FULL PAGE MESSAGING SECTION ONLY                     */}
         {/* ======================================================== */}
-        {(viewMode === 'continuous' || activePart === 'messaging') && (
-          <section id="messaging" className="h-[calc(100vh-4rem)] sm:h-[calc(100vh-4.5rem)] bg-[#dce1e8] flex flex-col overflow-hidden">
+        {activePart === 'messaging' && (
+          <section id="messaging" className="h-[calc(100vh-4rem)] sm:h-[calc(100vh-4.5rem)] w-full bg-[#dce1e8] flex flex-col overflow-hidden">
             <MessagingSection />
           </section>
         )}
@@ -353,7 +224,7 @@ export default function App() {
 
       {/* Footer (Hidden on messaging page) */}
       {activePart !== 'messaging' && (
-        <footer className="py-4 border-t border-[#b8c6d4] bg-[#d2d8e1] text-xs text-slate-700 font-sans text-center">
+        <footer className="shrink-0 w-full py-4 border-t border-[#b8c6d4] bg-[#d2d8e1] text-xs text-slate-700 font-sans text-center mt-auto">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-center">
             <p className="text-xs text-slate-700">
               © 2026 Festus, Olorunsogo Johnson · Fesline Mechanical Engineering
@@ -386,7 +257,7 @@ export default function App() {
         isOpen={isRecruiterScanOpen}
         onClose={() => setIsRecruiterScanOpen(false)}
         onSelectProject={(id) => {
-          handleSelectPart('projects');
+          handleSelectPart('overview');
           handleSelectProjectById(id);
         }}
         onResumeClick={() => {
@@ -394,6 +265,19 @@ export default function App() {
           handleOneClickResumeDownload();
         }}
       />
+
+      {/* Floating Scroll to Top Quick Action */}
+      {showScrollTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="fixed bottom-6 right-6 z-40 p-2.5 rounded-full bg-slate-900/90 hover:bg-slate-950 text-white shadow-xl border border-slate-700 hover:border-cyan-400 transition-all cursor-pointer group focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+          aria-label="Scroll to top of page"
+          title="Scroll to Top"
+        >
+          <ArrowUp className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" />
+        </button>
+      )}
     </div>
   );
 }

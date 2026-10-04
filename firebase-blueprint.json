@@ -1,0 +1,131 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Global administrator, engineer portfolio profile, bio specifications, credentials, and settings",
+      "type": "object",
+      "properties": {
+        "avatar": {
+          "type": "string",
+          "description": "Avatar image URL in Firebase Storage"
+        },
+        "bio": {
+          "type": "object",
+          "description": "Comprehensive biographical data, contact info, and engineering specs"
+        },
+        "documents": {
+          "type": "array",
+          "description": "Verified certificates, licenses, and accreditation items"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      }
+    },
+    "HubDocument": {
+      "title": "HubDocument",
+      "description": "Technical drawing, CAD specification, blueprint, or document stored in Firebase",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileSize": { "type": "string" },
+        "fileType": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "author": { "type": "string" },
+        "uploaderName": { "type": "string" },
+        "uploaderType": { "type": "string", "enum": ["owner", "visitor"] },
+        "status": { "type": "string", "enum": ["approved", "pending"] },
+        "uploadDate": { "type": "string" },
+        "uploadTimestamp": { "type": "number" },
+        "downloadCount": { "type": "number" },
+        "downloadUrl": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "tags": { "type": "array" },
+        "previewUrl": { "type": "string" }
+      },
+      "required": ["id", "title", "fileName", "category"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Direct chat discussion, job inquiry, or recruiter thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "defaultLabel": { "type": "string" },
+        "customName": { "type": "string" },
+        "visitorName": { "type": "string" },
+        "roleOrCompany": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "lastTimestamp": { "type": "string" },
+        "unread": { "type": "boolean" },
+        "important": { "type": "boolean" },
+        "messages": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "LearningSession": {
+      "title": "LearningSession",
+      "description": "EaseStudy AI study guide, concept flashcards, and exam suite",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "topic": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "summary": { "type": "string" },
+        "concepts": { "type": "array" },
+        "flashcards": { "type": "array" },
+        "examSuite": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "topic"]
+    },
+    "DirectInquiry": {
+      "title": "DirectInquiry",
+      "description": "Recruiter contact inquiry, consultation request, or project brief",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "company": { "type": "string" },
+        "roleTitle": { "type": "string" },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "message"]
+    }
+  },
+  "firestore": {
+    "/profiles/{profileId}": {
+      "schema": "UserProfile",
+      "description": "Global portfolio profile records"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles and settings"
+    },
+    "/documents/{documentId}": {
+      "schema": "HubDocument",
+      "description": "Engineering document hub and archive collection"
+    },
+    "/conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "Direct chat conversations and recruiter discussions"
+    },
+    "/learning_sessions/{sessionId}": {
+      "schema": "LearningSession",
+      "description": "EaseStudy AI generated study sessions and exams"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": "DirectInquiry",
+      "description": "Direct inquiries and contact requests"
+    }
+  }
+}

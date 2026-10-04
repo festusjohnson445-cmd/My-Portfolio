@@ -26,6 +26,7 @@ import {
   Info,
   Lock,
   Unlock,
+  Key,
   KeyRound,
   User,
   Briefcase,
@@ -36,10 +37,18 @@ import {
   Eye,
   Paperclip,
   Image as ImageIcon,
-  Loader2
+  Loader2,
+  ZoomIn,
+  RotateCw,
+  Compass,
+  Code,
+  Wrench,
+  Users,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
+import { SkillSelector } from './SkillSelector';
+import { categorizeSkills, SkillCategoryName } from '../data/skillsData';
 import {
   saveStoredAvatar,
   resetStoredAvatar,
@@ -50,10 +59,15 @@ import {
   notifyProfileUpdated,
   OWNER_EMAIL,
   OWNER_PASSWORD,
+  useProfileSync,
+  DEFAULT_AVATAR,
+  DEFAULT_BIO_DATA,
+  type ProfileBioData,
+  type DocumentItem,
 } from '../utils/profileState';
 import { DocumentTopMedia } from './DocumentTopMedia';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
-import { loadDocumentsPersistently } from '../utils/documentStorage';
+import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
 
 interface ProfileViewProps {
   onResumeClick?: () => void;
@@ -120,131 +134,70 @@ export const ENGINEERING_DEGREES_LIST = [
   'Other Engineering Course / Degree'
 ];
 
-export interface ProfileBioData {
-  fullName: string;
-  email: string;
-  discipline: string;
-  badges: string;
-  country: string;
-  header: string;
-  degree: string;
-  academicHonors: string;
-  leadership: string;
-  skills: string;
-  description: string;
-  availabilityStatus?: string;
-  workClearance?: string;
-  targetLocations?: string;
-  // Follow Me Social Links
-  linkedinUrl?: string;
-  facebookUrl?: string;
-  indeedUrl?: string;
-  emailUrl?: string;
-  twitterUrl?: string;
-  tiktokUrl?: string;
-  instagramUrl?: string;
-}
-
-export interface DocumentItem {
-  id: string;
-  title: string;
-  issuer: string;
-  credentialId: string;
-  date: string;
-  category: 'Certification' | 'Accreditation' | 'Technical Report' | 'CAD Specification' | 'Engineering License' | 'Patent' | 'Technical Drawing' | 'Other Document';
-  description: string;
-  competencies: string[];
-  attachmentName?: string;
-  attachmentDataUrl?: string;
-  attachmentSize?: string;
-  fileType?: string;
-  verifiedLink?: string;
-  previewImageDataUrl?: string;
-}
-
-const DEFAULT_BIO_DATA: ProfileBioData = {
-  fullName: 'Festus, Olorunsogo Johnson',
-  email: 'festusjohnson028@gmail.com',
-  discipline: 'Mechanical & Optomechanical Design Engineering',
-  badges: 'Verified Engineer · CSWP · ASME GDTP Senior · FE EIT · Active & Available',
-  country: 'United States',
-  header: 'A mechanical Engineer with knowledge on, Precision mechanism design, non-linear structural & thermal FEA, CNC and Laser cutting/engraving machine, for flight-ready aerospace, quantum computing, and robotics systems.',
-  degree: 'B.S. in Mechanical Engineering (BSME)',
-  academicHonors: 'ABET Accredited · Honors (GPA 3.84 / 4.00)',
-  leadership: 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead · ASME Section Officer · Senior Capstone Design Lead',
-  skills: 'SolidWorks (CSWP), PTC Creo, Ansys Workbench (Static / Modal / Transient / Thermal FEA), ASME Y14.5-2018 GD&T, 5-Axis CNC Milling (Haas/Mastercam), Wire EDM, Zeiss CMM Metrology',
-  description: 'Lead Mechanical Design Engineer with 6+ years of specialized experience in high-precision hardware mechanisms, complex flight-rated assemblies, and mission-critical robotic systems. My engineering philosophy is founded on first-principles physics: rigorous hand calculations that provide mathematical sanity checks before computational FEA, and continuous DFM integration that respects physical shop-floor realities.\n\nThroughout my career, I have taken mechanical systems from initial constraint definition and napkin sketches through topology optimization, multi-DOF dynamic vibration simulation, and 5-axis CNC fabrication. My technical contributions include cutting the structural mass of an airborne optical gimbal yoke by 41.8% (1,420g down to 826g) while raising natural resonance from 180 Hz to 342 Hz, engineering a 115 N·m zero-backlash harmonic robotic actuator, and generating more than $120,000 in quantifiable manufacturing cost reductions.\n\nAs a certified practitioner of ASME Y14.5 GD&T and a Certified SolidWorks Professional (CSWP), I ensure that all 2D manufacturing drawings convey unequivocal design intent with maximum allowable tolerances under Maximum Material Condition (MMC), eliminating assembly interference and vendor scrap.',
-  availabilityStatus: 'Active & Available for Q4 2026 Roles',
-  workClearance: 'US Authorized · No Visa Sponsorship Required',
-  targetLocations: 'San Francisco / Silicon Valley, Seattle, Austin, Boston',
-  linkedinUrl: 'https://linkedin.com',
-  facebookUrl: 'https://facebook.com',
-  indeedUrl: 'https://indeed.com',
-  emailUrl: 'mailto:festusjohnson028@gmail.com',
-  twitterUrl: 'https://x.com',
-  tiktokUrl: 'https://tiktok.com',
-  instagramUrl: 'https://instagram.com',
-};
-
-const DEFAULT_AVATAR = '/src/assets/images/engineer_profile_portrait_1790197188682.jpg';
-
 export const ProfileView: React.FC<ProfileViewProps> = ({
   onResumeClick,
   resumeDownloadCount: initialResumeDownloadCount,
 }) => {
-  // 1. Profile Picture State & LocalStorage
-  const [profileAvatar, setProfileAvatar] = useState<string>(() => {
-    return localStorage.getItem('fesline_custom_profile_avatar') || DEFAULT_AVATAR;
-  });
+  // 1. Profile State synchronized across all visitors and server
+  const {
+    avatar: profileAvatar,
+    bio: bioData,
+    documents,
+    saveAvatar: syncSaveAvatar,
+    resetAvatar: syncResetAvatar,
+    saveBio: syncSaveBio,
+    saveDocuments: saveSyncDocuments,
+    isOwner: syncIsOwner,
+    setOwner: syncSetOwner
+  } = useProfileSync();
+
   const fileInputAvatarRef = useRef<HTMLInputElement>(null);
 
-  // 2. Profile Bio Data State & LocalStorage
-  const [bioData, setBioData] = useState<ProfileBioData>(() => {
-    try {
-      const saved = localStorage.getItem('fesline_custom_profile_bio');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return {
-          ...DEFAULT_BIO_DATA,
-          ...parsed,
-          email: parsed.email || DEFAULT_BIO_DATA.email,
-          header: parsed.header || DEFAULT_BIO_DATA.header,
-          discipline: parsed.discipline || DEFAULT_BIO_DATA.discipline,
-          badges: parsed.badges || DEFAULT_BIO_DATA.badges,
-          country: parsed.country || DEFAULT_BIO_DATA.country,
-          degree: parsed.degree || DEFAULT_BIO_DATA.degree,
-          academicHonors: parsed.academicHonors || DEFAULT_BIO_DATA.academicHonors,
-          leadership: parsed.leadership || DEFAULT_BIO_DATA.leadership,
-          skills: parsed.skills || DEFAULT_BIO_DATA.skills,
-          description: parsed.description || DEFAULT_BIO_DATA.description,
-        };
-      }
-    } catch {
-      // fallback
-    }
-    return DEFAULT_BIO_DATA;
-  });
-
+  // 2. Profile Bio Editing State
   const [isEditingBio, setIsEditingBio] = useState(false);
   const [editBioForm, setEditBioForm] = useState<ProfileBioData>(bioData);
+  const [editAvatar, setEditAvatar] = useState<string>(profileAvatar);
   const [bioSaveNotice, setBioSaveNotice] = useState<string | null>(null);
 
-  // 3. Documents State: NO PRE-EXISTING HARDCODED TEMPLATES.
-  // Template cards appear ONLY when user uploads documents.
-  const [documents, setDocuments] = useState<DocumentItem[]>(() => {
+  // Delete Profile Picture Modal State
+  const [isDeleteAvatarModalOpen, setIsDeleteAvatarModalOpen] = useState(false);
+  const [isDeletingAvatar, setIsDeletingAvatar] = useState(false);
+
+  const handleConfirmDeleteAvatar = async () => {
     try {
-      const saved = localStorage.getItem('fesline_custom_documents');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
-      }
-    } catch {
-      // fallback
+      setIsDeletingAvatar(true);
+      await syncResetAvatar();
+      setEditAvatar('');
+      setIsDeleteAvatarModalOpen(false);
+      setBioSaveNotice('Profile picture removed successfully.');
+      setTimeout(() => setBioSaveNotice(null), 4000);
+    } catch (err) {
+      console.warn('Error deleting avatar:', err);
+    } finally {
+      setIsDeletingAvatar(false);
     }
-    return [];
-  });
+  };
+
+  useEffect(() => {
+    if (!isEditingBio) {
+      setEditBioForm(bioData);
+      setEditAvatar(profileAvatar);
+    }
+  }, [bioData, profileAvatar, isEditingBio]);
+
+  const setDocuments = (updater: DocumentItem[] | ((prev: DocumentItem[]) => DocumentItem[])) => {
+    const current = typeof updater === 'function' ? updater(documents) : updater;
+    saveSyncDocuments(current);
+  };
+
+  // Profile picture placement & crop modal states
+  const [isCropModalOpen, setIsCropModalOpen] = useState(false);
+  const [cropSourceImage, setCropSourceImage] = useState<string | null>(null);
+  const [cropZoom, setCropZoom] = useState<number>(1);
+  const [cropPan, setCropPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [cropRotate, setCropRotate] = useState<number>(0);
+  const [isDraggingCrop, setIsDraggingCrop] = useState<boolean>(false);
+  const cropDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Lightbox preview for full image/document view
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState<DocumentItem | null>(null);
@@ -269,25 +222,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docFormError, setDocFormError] = useState<string | null>(null);
   const docAttachmentInputRef = useRef<HTMLInputElement>(null);
 
-  // Load persistent documents from IndexedDB on initial mount
+  // Load persistent documents from IndexedDB on initial mount safely
   useEffect(() => {
     loadDocumentsPersistently()
       .then((savedDocs) => {
         if (savedDocs && savedDocs.length > 0) {
-          setDocuments((current) => {
-            if (current.length === 0) return savedDocs;
-            return current.map((c) => {
-              const match = savedDocs.find((s) => s.id === c.id);
-              if (match) {
-                return {
-                  ...c,
-                  attachmentDataUrl: match.attachmentDataUrl || c.attachmentDataUrl,
-                  previewImageDataUrl: match.previewImageDataUrl || c.previewImageDataUrl,
-                };
-              }
-              return c;
-            });
-          });
+          saveSyncDocuments(savedDocs);
         }
       })
       .catch((e) => console.warn('Could not load persistent documents:', e));
@@ -297,9 +237,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docToDelete, setDocToDelete] = useState<{ id: string; title: string } | null>(null);
 
   // 4. OWNER ACCESS CONTROL (Restricting changes to Festus Johnson only)
-  const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('fesline_owner_auth') === 'true';
-  });
+  const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState<boolean>(syncIsOwner);
+  useEffect(() => {
+    setIsOwnerAuthenticated(syncIsOwner);
+  }, [syncIsOwner]);
+
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   // Email starts empty so nothing is displayed until the user types it
   const [authEmail, setAuthEmail] = useState('');
@@ -311,15 +253,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     const saved = localStorage.getItem('fesline_resume_download_count');
     return saved ? parseInt(saved, 10) : initialResumeDownloadCount || 0;
   });
-
-  // Sync documents to localStorage and across website
-  useEffect(() => {
-    try {
-      saveStoredDocuments(documents);
-    } catch (e) {
-      console.warn('Could not persist documents to localStorage', e);
-    }
-  }, [documents]);
 
   const handleOwnerLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -338,7 +271,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
 
     // Success
-    setOwnerAuthenticated(true);
+    syncSetOwner(true);
     setIsOwnerAuthenticated(true);
     setIsAuthModalOpen(false);
     setAuthPin('');
@@ -347,17 +280,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleOwnerLogout = () => {
-    setOwnerAuthenticated(false);
+    syncSetOwner(false);
     setIsOwnerAuthenticated(false);
     setIsEditingBio(false);
     setIsDocumentModalOpen(false);
     showNotification('Owner mode locked. Profile is in public visitor view.');
   };
 
-  // Direct Mail Form State
+  // Direct Mail Status
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [copiedAts, setCopiedAts] = useState(false);
-  const [isSendingMail, setIsSendingMail] = useState(false);
   const [mailSentNotice, setMailSentNotice] = useState<string | null>(() => {
     try {
       const notice = sessionStorage.getItem('fesline_direct_mail_sent_notice');
@@ -371,15 +303,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return null;
   });
 
-  const [formState, setFormState] = useState({
-    name: '',
-    email: '',
-    company: '',
-    roleTitle: '',
-    message: '',
-  });
-
-  // Handle Profile Picture Upload (Owner Gated)
+  // Handle Profile Picture Upload (Owner Gated) - Instantly saves new image on selection & opens position modal
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
@@ -390,40 +314,83 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      alert('Please select a valid image file (PNG, JPG, WebP, etc.).');
+      showNotification('Please select a valid image file (PNG, JPG, WebP, etc.).');
       return;
     }
 
     try {
-      // Compress and optimize image to ensure safe localStorage storage and instant website-wide rendering
-      const compressed = await compressImage(file, 640, 0.88);
-      setProfileAvatar(compressed);
-      saveStoredAvatar(compressed);
-      showNotification('Profile picture updated successfully! Saved across the website.');
+      // 1. Immediately compress and process newly chosen image
+      const compressedUrl = await compressImage(file, 640, 0.88);
+      
+      // 2. Instantly accept and save selected profile picture permanently
+      setEditAvatar(compressedUrl);
+      await syncSaveAvatar(compressedUrl);
+      showNotification('New profile picture accepted & saved permanently!');
+
+      // 3. Open cropper modal for fine-tuning zoom/pan
+      setCropSourceImage(compressedUrl);
+      setCropZoom(1);
+      setCropPan({ x: 0, y: 0 });
+      setCropRotate(0);
+      setIsCropModalOpen(true);
     } catch (err) {
-      console.warn('Fallback to standard FileReader', err);
-      const reader = new FileReader();
-      reader.onload = (uploadEvent) => {
-        const result = uploadEvent.target?.result as string;
-        if (result) {
-          setProfileAvatar(result);
-          saveStoredAvatar(result);
-          showNotification('Profile picture updated successfully!');
-        }
-      };
-      reader.readAsDataURL(file);
+      console.warn('Avatar image compression:', err);
+    } finally {
+      e.target.value = '';
     }
-    e.target.value = '';
   };
 
-  const handleResetAvatar = () => {
-    if (!isOwnerAuthenticated) {
-      setIsAuthModalOpen(true);
-      return;
-    }
-    setProfileAvatar(DEFAULT_AVATAR);
-    resetStoredAvatar();
-    showNotification('Profile picture reset to default portrait.');
+  // Render & save positioned profile picture to canvas and push across site
+  const handleSaveCroppedAvatar = () => {
+    if (!cropSourceImage) return;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      const canvas = document.createElement('canvas');
+      const size = 640;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Solid background
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, size, size);
+
+      ctx.save();
+      // Center
+      ctx.translate(size / 2, size / 2);
+      // Rotate
+      ctx.rotate((cropRotate * Math.PI) / 180);
+      // Pan (scaled to canvas size relative to 280px preview container)
+      const scaleFactor = size / 280;
+      ctx.translate(cropPan.x * scaleFactor, cropPan.y * scaleFactor);
+      // Zoom
+      ctx.scale(cropZoom, cropZoom);
+
+      // Draw image centered keeping aspect ratio
+      const imgAspect = img.width / img.height;
+      let drawW = size;
+      let drawH = size;
+      if (imgAspect > 1) {
+        drawW = size * imgAspect;
+        drawH = size;
+      } else {
+        drawW = size;
+        drawH = size / imgAspect;
+      }
+      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+
+      const finalDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+      setIsCropModalOpen(false);
+      setCropSourceImage(null);
+      setEditAvatar(finalDataUrl);
+      await syncSaveAvatar(finalDataUrl);
+      showNotification('Profile picture updated successfully!');
+    };
+    img.src = cropSourceImage;
   };
 
   // Handle Bio Edit Save (Owner Gated)
@@ -433,33 +400,24 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       return;
     }
     setEditBioForm({ ...bioData });
+    setEditAvatar(profileAvatar || DEFAULT_AVATAR);
     setIsEditingBio(true);
   };
 
-  const handleSaveBio = (e: React.FormEvent) => {
+  const handleSaveBio = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
       return;
     }
-    setBioData(editBioForm);
-    saveStoredBio(editBioForm);
     setIsEditingBio(false);
-    showNotification('Profile and Bio updated successfully!');
-  };
-
-  const handleResetBioToDefault = () => {
-    if (!isOwnerAuthenticated) {
-      setIsAuthModalOpen(true);
-      return;
+    await syncSaveBio(editBioForm);
+    if (editAvatar === '' && profileAvatar) {
+      await syncResetAvatar();
+    } else if (editAvatar && editAvatar !== profileAvatar) {
+      await syncSaveAvatar(editAvatar);
     }
-    if (window.confirm('Reset all profile and bio fields back to standard defaults?')) {
-      setBioData(DEFAULT_BIO_DATA);
-      setEditBioForm(DEFAULT_BIO_DATA);
-      saveStoredBio(DEFAULT_BIO_DATA);
-      setIsEditingBio(false);
-      showNotification('Profile and Bio reset to defaults.');
-    }
+    showNotification('Profile details updated successfully!');
   };
 
   // Helper notification toast
@@ -498,10 +456,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setLocalDownloadCount(newCount);
     localStorage.setItem('fesline_resume_download_count', newCount.toString());
     showNotification('Professional Resume generated & downloaded in one click!');
-    
-    if (onResumeClick) {
-      onResumeClick();
-    }
   };
 
   // --- DOCUMENT FORM HANDLING (ONE AFTER ANOTHER) ---
@@ -583,7 +537,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         setDocAttachmentDataUrl(dataUrl);
 
         try {
-          const previewImg = await renderPdfFirstPageToImage(dataUrl, 900);
+          const previewImg = await renderPdfFirstPageToImage(dataUrl, 900, file.name);
           setDocPreviewImageDataUrl(previewImg);
         } catch (err) {
           console.warn('PDF preview render error:', err);
@@ -649,7 +603,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         const dataUrl = ev.target?.result as string;
         let previewImg: string | undefined;
         try {
-          previewImg = await renderPdfFirstPageToImage(dataUrl, 900);
+          previewImg = await renderPdfFirstPageToImage(dataUrl, 900, file.name);
         } catch (err) {
           console.warn('PDF render error:', err);
         }
@@ -769,28 +723,28 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
     if (editingDocId) {
       // Update existing document
-      setDocuments((prev) =>
-        prev.map((d) =>
-          d.id === editingDocId
-            ? {
-                ...d,
-                title: docTitle.trim(),
-                issuer: docIssuer.trim(),
-                credentialId: docCredentialId.trim() || 'VERIFIED-DOC',
-                date: docDate.trim() || 'Verified',
-                category: docCategory,
-                fileType: docFileType,
-                description: docDescription.trim(),
-                competencies: compList.length > 0 ? compList : ['Technical competence verified'],
-                attachmentName: docAttachmentName,
-                attachmentDataUrl: docAttachmentDataUrl,
-                attachmentSize: docAttachmentSize,
-                previewImageDataUrl: docPreviewImageDataUrl,
-                verifiedLink: docVerifiedLink.trim() || undefined,
-              }
-            : d
-        )
+      const updated = documents.map((d) =>
+        d.id === editingDocId
+          ? {
+              ...d,
+              title: docTitle.trim(),
+              issuer: docIssuer.trim(),
+              credentialId: docCredentialId.trim() || 'VERIFIED-DOC',
+              date: docDate.trim() || 'Verified',
+              category: docCategory,
+              fileType: docFileType,
+              description: docDescription.trim(),
+              competencies: compList.length > 0 ? compList : ['Technical competence verified'],
+              attachmentName: docAttachmentName,
+              attachmentDataUrl: docAttachmentDataUrl,
+              attachmentSize: docAttachmentSize,
+              previewImageDataUrl: docPreviewImageDataUrl,
+              verifiedLink: docVerifiedLink.trim() || undefined,
+            }
+          : d
       );
+      setDocuments(updated);
+      saveStoredDocuments(updated);
       showNotification(`Document "${docTitle}" updated successfully!`);
       setIsDocumentModalOpen(false);
     } else {
@@ -812,7 +766,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         verifiedLink: docVerifiedLink.trim() || undefined,
       };
 
-      setDocuments((prev) => [newDoc, ...prev]);
+      const updated = [newDoc, ...documents];
+      setDocuments(updated);
+      saveStoredDocuments(updated);
       showNotification(`Document "${newDoc.title}" uploaded successfully!`);
 
       if (uploadAnother) {
@@ -841,10 +797,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setIsAuthModalOpen(true);
       return;
     }
-    if (window.confirm(`Are you sure you want to remove "${title}" from your documents?`)) {
-      setDocuments((prev) => prev.filter((d) => d.id !== id));
-      showNotification(`"${title}" was removed.`);
+    const updated = documents.filter((d) => d.id !== id);
+    setDocuments(updated);
+    saveStoredDocuments(updated);
+    deleteDocumentPersistently(id).catch(() => {});
+    fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch(() => {});
+    fetch(`/api/profile/documents/${id}`, { method: 'DELETE' }).catch(() => {});
+    if (selectedPreviewDoc?.id === id) {
+      setSelectedPreviewDoc(null);
     }
+    showNotification(`"${title}" deleted immediately.`);
   };
 
   const isImageAttachment = (doc: DocumentItem) => {
@@ -863,12 +825,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleDownloadAttachment = (doc: DocumentItem) => {
-    // Download option is strictly available only for the owner (Festus Johnson)
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
       return;
     }
-
     try {
       if (doc.attachmentDataUrl) {
         const filename = doc.attachmentName || `${doc.title.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
@@ -915,7 +875,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         showNotification(`Downloading "${filename}"...`);
       }
     } catch (err) {
-      console.error('Download error:', err);
+      console.warn('Download notice:', err);
       if (doc.attachmentDataUrl) {
         const link = document.createElement('a');
         link.href = doc.attachmentDataUrl;
@@ -963,103 +923,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
     setTimeout(() => setCopiedAts(false), 2000);
   };
 
-  const handleClearMailForm = () => {
-    setFormState({
-      name: '',
-      email: '',
-      company: '',
-      roleTitle: '',
-      message: '',
-    });
-    try {
-      localStorage.removeItem('fesline_direct_mail_saved_form');
-      sessionStorage.removeItem('fesline_direct_mail_saved_form');
-    } catch {}
-    showNotification('Direct mail form cleared.');
-  };
-
-  const handleSubmitForm = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    const cleanName = formState.name.trim();
-    const cleanEmail = formState.email.trim();
-    const cleanCompany = formState.company.trim() || 'Not Specified';
-    const cleanRoleTitle = formState.roleTitle.trim() || 'General Engineering Inquiry';
-    const cleanMessage = formState.message.trim();
-
-    if (!cleanName || !cleanEmail || !cleanMessage) {
-      showNotification('Please fill in your name, email, and message before sending.');
-      return;
-    }
-
-    setIsSendingMail(true);
-
-    const targetRecipient = 'festusjohnson028@gmail.com';
-    const sentDateStr = new Date().toLocaleString('en-US', {
-      dateStyle: 'full',
-      timeStyle: 'medium',
-    });
-
-    const emailSubject =
-      cleanRoleTitle && cleanRoleTitle !== 'General Engineering Inquiry'
-        ? `[Direct Mail] ${cleanRoleTitle} — From ${cleanName} (${cleanCompany})`
-        : `[Direct Mail] Inquiry from ${cleanName} (${cleanCompany})`;
-
-    // Dispatch well-composed structured email to festusjohnson028@gmail.com via direct FormSubmit API without redirecting
-    try {
-      await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          _subject: emailSubject,
-          _replyto: cleanEmail,
-          _template: 'table',
-          _captcha: 'false',
-          "Subject / Title": emailSubject,
-          "Sender Full Name": cleanName,
-          "Sender Email Address": cleanEmail,
-          "Company / Organization": cleanCompany,
-          "Target Role / Inquiry Topic": cleanRoleTitle,
-          "Message Content": cleanMessage,
-          "Sent Timestamp": sentDateStr,
-          "Source": "Festus Johnson Engineering Portfolio Profile",
-        }),
-      });
-    } catch (netErr) {
-      console.warn('Direct mail background dispatch note:', netErr);
-    }
-
-    // Clear form and remove any existing input from storage
-    setFormState({
-      name: '',
-      email: '',
-      company: '',
-      roleTitle: '',
-      message: '',
-    });
-
-    try {
-      localStorage.removeItem('fesline_direct_mail_saved_form');
-      sessionStorage.removeItem('fesline_direct_mail_saved_form');
-      sessionStorage.setItem(
-        'fesline_direct_mail_sent_notice',
-        `Your direct mail "${emailSubject}" was successfully delivered to Festus Johnson (${targetRecipient}). Thank you!`
-      );
-    } catch (storageErr) {
-      console.warn('Storage sync error:', storageErr);
-    }
-
-    // Refresh the page without the existing input
-    setTimeout(() => {
-      window.location.reload();
-    }, 450);
-  };
-
   return (
-    <div className="space-y-6 sm:space-y-8 py-6 font-serif pb-16">
+    <div className="flex-1 w-full space-y-6 sm:space-y-8 py-6 font-serif pb-16">
       {/* Hidden file input for uploading profile picture */}
       <input
         type="file"
@@ -1111,16 +976,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             {/* Right: Actions Group */}
             <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
-              {/* Quick Upload Profile Picture Button */}
-              <button
-                onClick={() => fileInputAvatarRef.current?.click()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#edf2f8] hover:bg-slate-200 text-slate-800 text-xs font-semibold border border-[#b8c6d4] transition-colors cursor-pointer shadow-xs"
-                title="Upload new headshot image file"
-              >
-                <Camera className="w-3.5 h-3.5 text-cyan-800" />
-                <span>Upload Picture</span>
-              </button>
-
               {/* Add Document Button */}
               <button
                 onClick={handleOpenAddDocument}
@@ -1167,9 +1022,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         </section>
       )}
 
-      {/* ======================================================== */}
-      {/* INLINE BIO EDITING PANEL (WHEN ACTIVE IN OWNER MODE)     */}
-      {/* ======================================================== */}
       {isEditingBio && isOwnerAuthenticated && (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <form
@@ -1188,16 +1040,75 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   Update your profile information and about me details. Changes persist to your verified profile.
                 </p>
               </div>
+            </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleResetBioToDefault}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Reset to Defaults</span>
-                </button>
+            {/* PROFILE PICTURE & AVATAR EDIT SECTION */}
+            <div className="p-4 sm:p-5 rounded-xl bg-[#f1f5f9] border border-[#cbd5e1] space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-cyan-800" />
+                  <span>Profile Picture &amp; Photo Upload</span>
+                </label>
+                <span className="text-[11px] text-slate-500 font-mono">JPG, PNG, WebP (Max 10MB)</span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                {/* Avatar Circle Preview */}
+                <div className="relative group shrink-0">
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border-2 border-cyan-800/40 shadow-md bg-slate-900 flex items-center justify-center">
+                    <img
+                      src={editAvatar || profileAvatar || DEFAULT_AVATAR}
+                      alt={editBioForm.fullName || 'Engineer Profile Avatar'}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fileInputAvatarRef.current?.click()}
+                    className="absolute -bottom-1 -right-1 p-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white shadow-md transition-all cursor-pointer border border-white"
+                    title="Upload / Change Photo"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Controls */}
+                <div className="flex-1 w-full space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputAvatarRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Choose Photo to Upload</span>
+                    </button>
+                    {editAvatar && (
+                      <button
+                        type="button"
+                        onClick={() => setEditAvatar('')}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold text-xs transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        <span>Delete / Remove Photo</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Direct Image URL fallback input */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
+                      Or paste direct Image / CDN URL:
+                    </label>
+                    <input
+                      type="url"
+                      value={editAvatar.startsWith('data:') ? '' : editAvatar}
+                      onChange={(e) => setEditAvatar(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-md border border-[#b8c6d4] bg-white text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-700 font-mono"
+                      placeholder="https://images.unsplash.com/... or CDN URL"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1376,17 +1287,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   />
                 </div>
 
-                {/* 4. Skills */}
+                {/* 4. Skills Selection (Engineering, IT, Finance) */}
                 <div className="md:col-span-2">
-                  <label className="block text-xs sm:text-sm font-semibold text-slate-700 mb-1">
-                    Skills *
-                  </label>
-                  <textarea
-                    rows={2}
+                  <SkillSelector
                     value={editBioForm.skills}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, skills: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
-                    placeholder="SolidWorks (CSWP), PTC Creo, Ansys Workbench (Static / Modal / Thermal FEA), ASME Y14.5 GD&T, 5-Axis CNC Milling..."
+                    onChange={(newSkills) => setEditBioForm({ ...editBioForm, skills: newSkills })}
+                    label="Skills & Core Competencies (Engineering, IT, Finance)"
+                    required
                   />
                 </div>
 
@@ -1582,24 +1489,57 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             
             {/* Profile Picture Frame */}
             <div className="relative shrink-0 group">
-              <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-xl overflow-hidden border-2 border-white shadow-md bg-slate-200 relative">
-                <img
-                  src={profileAvatar}
-                  alt={`${bioData.fullName} - Lead Mechanical Design Engineer`}
-                  className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
-                  loading="eager"
-                  referrerPolicy="no-referrer"
-                />
-
-                {/* Hover overlay to change picture (Owner Gated) */}
-                {isOwnerAuthenticated && (
+              <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-xl overflow-hidden border-2 border-white shadow-md bg-slate-200 relative flex items-center justify-center">
+                {profileAvatar ? (
+                  <img
+                    src={profileAvatar}
+                    alt={`${bioData.fullName} - Lead Mechanical Design Engineer`}
+                    className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
+                    loading="eager"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
                   <div 
-                    onClick={() => fileInputAvatarRef.current?.click()}
-                    className="absolute inset-0 bg-slate-950/65 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white cursor-pointer p-3 text-center"
+                    onClick={() => {
+                      if (isOwnerAuthenticated) {
+                        fileInputAvatarRef.current?.click();
+                      } else {
+                        setIsAuthModalOpen(true);
+                      }
+                    }}
+                    className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 p-4 text-center cursor-pointer hover:bg-slate-200/80 transition-colors"
                   >
-                    <Camera className="w-6 h-6 text-cyan-400 mb-1.5" />
-                    <span className="font-sans font-bold text-xs sm:text-sm">Upload Picture</span>
-                    <span className="text-[10px] text-slate-300 font-sans mt-0.5">Click to choose image</span>
+                    <User className="w-16 h-16 sm:w-20 sm:h-20 text-slate-300 stroke-[1.2]" />
+                    <span className="text-xs font-sans font-medium text-slate-500 mt-2">
+                      {isOwnerAuthenticated ? 'Click to Upload Photo' : 'No photo uploaded'}
+                    </span>
+                  </div>
+                )}
+
+                {/* Hover overlay to change/delete picture (Owner Gated) */}
+                {isOwnerAuthenticated && (
+                  <div className={`absolute inset-0 bg-slate-950/75 ${profileAvatar ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity flex flex-col items-center justify-center text-white p-2.5 text-center gap-2`}>
+                    <button
+                      type="button"
+                      onClick={() => fileInputAvatarRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                    >
+                      <Camera className="w-3.5 h-3.5 text-cyan-200" />
+                      <span>{profileAvatar ? 'Change Photo' : 'Upload Photo'}</span>
+                    </button>
+                    {profileAvatar && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsDeleteAvatarModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-100" />
+                        <span>Delete Photo</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1618,18 +1558,31 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Verified Engineer</span>
               </button>
-
-              {/* Reset to default photo trigger if changed (Owner Gated) */}
-              {isOwnerAuthenticated && profileAvatar !== DEFAULT_AVATAR && (
-                <button
-                  onClick={handleResetAvatar}
-                  className="absolute -top-2 -right-2 p-1.5 rounded-full bg-slate-800 hover:bg-slate-900 text-white shadow-sm border border-slate-600 transition-colors cursor-pointer"
-                  title="Reset to default portrait"
-                >
-                  <RotateCcw className="w-3 h-3 text-slate-300" />
-                </button>
-              )}
             </div>
+
+            {/* Quick Owner Photo Actions (Visible on Mobile/Desktop below photo for ease of access) */}
+            {isOwnerAuthenticated && profileAvatar && (
+              <div className="flex items-center justify-center gap-2 pt-2.5">
+                <button
+                  type="button"
+                  onClick={() => fileInputAvatarRef.current?.click()}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-[#b8c6d4] text-slate-700 hover:bg-slate-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
+                  title="Upload / Change Profile Picture"
+                >
+                  <Camera className="w-3 h-3 text-cyan-800" />
+                  <span>Change</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteAvatarModalOpen(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
+                  title="Permanently Delete Profile Picture"
+                >
+                  <Trash2 className="w-3 h-3 text-red-600" />
+                  <span>Delete</span>
+                </button>
+              </div>
+            )}
 
             {/* Profile Identity & Direct Action */}
             <div className="flex-1 text-center lg:text-left space-y-3">
@@ -1700,7 +1653,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   title="Download dynamic, ATS-standard PDF resume in 1 click"
                 >
                   <Download className="w-3.5 h-3.5 text-cyan-200 group-hover:translate-y-0.5 transition-transform" />
-                  <span>Download Verified Resume (PDF)</span>
+                  <span>Download Resume</span>
                   {localDownloadCount > 0 && (
                     <span className="px-1.5 py-0.5 rounded-md bg-white/20 text-[10px] font-mono text-cyan-100 font-bold tabular-nums">
                       {localDownloadCount}
@@ -1737,11 +1690,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4">
           <div className="border-b border-[#cbd5e1] pb-3 flex flex-col sm:flex-row items-center justify-between text-center gap-2">
-            <div className="w-full text-center">
-              <span className="inline-block text-sm sm:text-base font-sans font-extrabold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-3 py-1 rounded">
+            <div className="w-full text-center flex flex-col items-center justify-center">
+              <span className="inline-block text-[9px] sm:text-[10px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs">
                 BIOGRAPHY
               </span>
-              <h2 className="text-base sm:text-lg font-bold text-slate-950 mt-1.5 font-serif text-center">
+              <h2 className="text-xs sm:text-sm md:text-[14px] font-bold text-slate-950 mt-1 font-serif text-center">
                 About {bioData.fullName}
               </h2>
             </div>
@@ -1763,40 +1716,148 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             </div>
 
             {/* Academic & Professional Snapshot Box with ONLY Degree, Honors, Leadership, Skills */}
-            <div className="space-y-3 p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs w-full overflow-hidden">
-              <h3 className="text-sm sm:text-base font-bold text-slate-950 flex items-center gap-1.5 font-sans">
+            <div className="space-y-3 p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs w-full overflow-hidden font-['Times_New_Roman',_Times,_serif] font-serif">
+              <h3 className="text-[13.3px] sm:text-[15.2px] font-bold text-slate-950 flex items-center gap-1.5 font-['Times_New_Roman',_Times,_serif]">
                 <GraduationCap className="w-4 h-4 text-cyan-800 shrink-0" />
                 <span>Academic &amp; Core Specs</span>
               </h3>
 
-              <div className="space-y-2.5 text-xs sm:text-sm font-sans">
+              <div className="space-y-2.5 text-[11.4px] sm:text-[13.3px] font-['Times_New_Roman',_Times,_serif]">
                 <div>
-                  <span className="text-slate-500 block text-[11px]">Degree:</span>
-                  <strong className="text-slate-900 font-bold block text-xs sm:text-sm break-words">
+                  <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif]">Degree:</span>
+                  <strong className="text-slate-900 font-bold block text-[11.4px] sm:text-[13.3px] break-words font-['Times_New_Roman',_Times,_serif]">
                     {bioData.degree}
                   </strong>
                   {bioData.academicHonors && (
-                    <span className="text-slate-600 text-[11px] block mt-0.5 break-words">
+                    <span className="text-slate-600 text-[10.5px] block mt-0.5 break-words font-['Times_New_Roman',_Times,_serif]">
                       {bioData.academicHonors}
                     </span>
                   )}
                 </div>
 
                 {bioData.leadership && (
-                  <div className="pt-2 border-t border-[#e2e8f0]">
-                    <span className="text-slate-500 block text-[11px]">Leadership:</span>
-                    <span className="text-slate-900 font-semibold block text-xs sm:text-sm break-words">
-                      {bioData.leadership}
+                  <div className="pt-2.5 border-t border-[#e2e8f0]">
+                    <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif] font-semibold mb-1.5 uppercase tracking-wide">
+                      Leadership &amp; Key Appointments:
                     </span>
+                    <ul className="space-y-1 text-[11.4px] text-slate-800 font-['Times_New_Roman',_Times,_serif] list-disc list-inside">
+                      {bioData.leadership
+                        .split(/\n|•|;|·/)
+                        .map((item) => item.trim())
+                        .filter(Boolean)
+                        .map((leadItem, lIdx) => (
+                          <li key={lIdx} className="leading-relaxed text-justify">
+                            <span className="font-semibold text-slate-900 font-['Times_New_Roman',_Times,_serif]">{leadItem}</span>
+                          </li>
+                        ))}
+                    </ul>
                   </div>
                 )}
 
+                {/* Categorized Skills Template (Generate, Educational, Handful, Personal, IT) */}
                 {bioData.skills && (
-                  <div className="pt-2 border-t border-[#e2e8f0]">
-                    <span className="text-slate-500 block text-[11px]">Skills:</span>
-                    <span className="text-slate-900 font-semibold block text-xs sm:text-sm break-words">
-                      {bioData.skills}
-                    </span>
+                  <div className="pt-3 border-t border-[#e2e8f0] space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif] font-semibold uppercase tracking-wide">
+                        Categorized Skills &amp; Competencies:
+                      </span>
+                    </div>
+
+                    {/* Properly arranged category template */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {(() => {
+                        const categorized = categorizeSkills(bioData.skills);
+                        const categoryMeta: Array<{
+                          name: SkillCategoryName;
+                          label: string;
+                          subLabel: string;
+                          icon: React.ReactNode;
+                          badgeClass: string;
+                          borderClass: string;
+                        }> = [
+                          {
+                            name: 'Generate Skills',
+                            label: 'Generate Skills',
+                            subLabel: 'CAD, FEA & Mechanisms',
+                            icon: <Sparkles className="w-3.5 h-3.5 text-cyan-700" />,
+                            badgeClass: 'bg-cyan-100 text-cyan-900 border-cyan-300',
+                            borderClass: 'border-cyan-200 bg-cyan-50/50',
+                          },
+                          {
+                            name: 'Educational Skills',
+                            label: 'Educational Skills',
+                            subLabel: 'Academic & Theory',
+                            icon: <GraduationCap className="w-3.5 h-3.5 text-blue-700" />,
+                            badgeClass: 'bg-blue-100 text-blue-900 border-blue-300',
+                            borderClass: 'border-blue-200 bg-blue-50/50',
+                          },
+                          {
+                            name: 'Handful Skills',
+                            label: 'Handful Skills',
+                            subLabel: '5-Axis CNC & Shop',
+                            icon: <Wrench className="w-3.5 h-3.5 text-amber-700" />,
+                            badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
+                            borderClass: 'border-amber-200 bg-amber-50/50',
+                          },
+                          {
+                            name: 'Personal Skills',
+                            label: 'Personal Skills',
+                            subLabel: 'Leadership & DFM',
+                            icon: <Users className="w-3.5 h-3.5 text-purple-700" />,
+                            badgeClass: 'bg-purple-100 text-purple-900 border-purple-300',
+                            borderClass: 'border-purple-200 bg-purple-50/50',
+                          },
+                          {
+                            name: 'IT Skills',
+                            label: 'IT Skills',
+                            subLabel: 'Code & Software',
+                            icon: <Code className="w-3.5 h-3.5 text-emerald-700" />,
+                            badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300',
+                            borderClass: 'border-emerald-200 bg-emerald-50/50',
+                          },
+                        ];
+
+                        const activeCategories = categoryMeta.filter(
+                          (cat) => categorized[cat.name] && categorized[cat.name].length > 0
+                        );
+
+                        const toRender = activeCategories.length > 0 ? activeCategories : categoryMeta;
+
+                        return toRender.map((cat, cIdx) => (
+                          <div
+                            key={cat.name}
+                            className={`p-2.5 rounded-xl border ${cat.borderClass} flex flex-col justify-between space-y-1.5 shadow-2xs font-['Times_New_Roman',_Times,_serif] ${
+                              toRender.length % 2 !== 0 && cIdx === toRender.length - 1 ? 'sm:col-span-2' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1.5 border-b border-black/5 pb-1">
+                              <div className="flex items-center gap-1.5">
+                                {cat.icon}
+                                <span className="text-[11.4px] font-bold text-slate-900 font-['Times_New_Roman',_Times,_serif]">{cat.label}</span>
+                              </div>
+                              <span className={`text-[9.5px] font-['Times_New_Roman',_Times,_serif] font-bold px-1.5 py-0.5 rounded border ${cat.badgeClass}`}>
+                                {cat.subLabel}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              {categorized[cat.name] && categorized[cat.name].length > 0 ? (
+                                categorized[cat.name].map((skill, sIdx) => (
+                                  <span
+                                    key={`${skill}-${sIdx}`}
+                                    className="inline-flex items-center px-2 py-0.5 rounded text-[10.5px] font-medium bg-white text-slate-800 border border-slate-300 font-['Times_New_Roman',_Times,_serif] shadow-2xs"
+                                  >
+                                    {skill}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-[9.5px] text-slate-400 italic font-['Times_New_Roman',_Times,_serif]">No skills added in this group</span>
+                              )}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1812,24 +1873,24 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       {/* ======================================================== */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4 w-full overflow-hidden">
-          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div>
-              <span className="text-xs font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded inline-block">
+          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col items-center justify-center text-center gap-2">
+            <div className="flex flex-col items-center justify-center max-w-xl mx-auto">
+              <span className="text-[9.5px] sm:text-[10.5px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs inline-block">
                 VERIFIED CREDENTIALS
               </span>
-              <h2 className="text-xl sm:text-2xl font-bold text-slate-950 mt-1.5 font-serif">
+              <h2 className="text-[13.5px] sm:text-[15.5px] md:text-[16.5px] font-bold text-slate-950 mt-1 font-serif text-center">
                 Verified Documents &amp; Credentials
               </h2>
-              <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
+              <p className="text-[10px] sm:text-[11.5px] text-slate-600 mt-0.5 text-center leading-relaxed max-w-lg">
                 Official certificates, verified credentials, technical files, and CAD blueprints uploaded on file.
               </p>
             </div>
 
             {isOwnerAuthenticated ? (
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                 <button
                   onClick={() => (isEditingBio ? setIsEditingBio(false) : handleOpenEditBio())}
-                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-sans font-semibold transition-colors cursor-pointer ${
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-sans font-semibold transition-colors cursor-pointer ${
                     isEditingBio
                       ? 'bg-rose-100 text-rose-900 border border-rose-300 hover:bg-rose-200'
                       : 'bg-white hover:bg-slate-100 text-slate-800 border border-[#cbd5e1] shadow-2xs'
@@ -1842,7 +1903,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
                 <button
                   onClick={handleOpenAddDocument}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-sans text-xs sm:text-sm font-semibold shadow-xs hover:shadow-sm transition-all cursor-pointer shrink-0"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-sans text-xs sm:text-sm font-semibold shadow-xs hover:shadow-sm transition-all cursor-pointer shrink-0"
                 >
                   <Plus className="w-4 h-4 text-cyan-200" />
                   <span>+ Upload Document</span>
@@ -1850,7 +1911,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </div>
             ) : (
               documents.length > 0 && (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-[#b8c6d4] text-slate-700 font-sans text-xs font-semibold shadow-xs shrink-0">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white border border-[#b8c6d4] text-slate-700 font-sans text-xs font-semibold shadow-xs">
                   <FileCheck className="w-3.5 h-3.5 text-emerald-600" />
                   <span>{documents.length} Verified Document{documents.length > 1 ? 's' : ''}</span>
                 </div>
@@ -1881,10 +1942,10 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <FileUp className="w-6 h-6" />
               </div>
               <div className="space-y-1">
-                <h4 className="text-base sm:text-lg font-bold text-slate-900 font-serif">
+                <h4 className="text-[13.5px] sm:text-[15.5px] font-bold text-slate-900 font-serif text-center">
                   No Documents Uploaded Yet
                 </h4>
-                <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto">
+                <p className="text-[10px] sm:text-[11px] text-slate-600 max-w-md mx-auto text-center leading-relaxed">
                   {isOwnerAuthenticated
                     ? 'Click the button below to upload your certificates, technical reports, or CAD drawing files with details.'
                     : 'Engineering documents, certifications, and technical files will appear here once published.'}
@@ -1986,8 +2047,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           </div>
 
                           {/* Action Button: Available for Owner Only */}
-                          <div className="shrink-0">
-                            {isOwnerAuthenticated ? (
+                          {isOwnerAuthenticated && (
+                            <div className="shrink-0">
                               <button
                                 type="button"
                                 onClick={() => handleDownloadAttachment(doc)}
@@ -1997,18 +2058,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                 <Download className="w-3.5 h-3.5" />
                                 <span className="hidden sm:inline">Download</span>
                               </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setIsAuthModalOpen(true)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-medium transition-colors cursor-pointer"
-                                title="Download restricted to admin. Click to verify."
-                              >
-                                <Lock className="w-3 h-3 text-slate-500" />
-                                <span>admin</span>
-                              </button>
-                            )}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       ))}
                   </div>
@@ -2052,10 +2103,10 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
                       {/* 2. Document Title & Issuer */}
                       <div>
-                        <h3 className="text-base sm:text-lg font-bold text-slate-950 font-serif leading-snug group-hover:text-cyan-950 transition-colors">
+                        <h3 className="text-base sm:text-lg font-bold text-slate-950 font-serif leading-snug group-hover:text-cyan-950 transition-colors text-justify">
                           {doc.title}
                         </h3>
-                        <div className="flex flex-wrap items-center gap-2 mt-1 font-sans text-xs text-slate-600">
+                        <div className="flex flex-wrap items-center gap-2 mt-1 font-sans text-xs text-slate-600 text-justify">
                           <span className="font-semibold text-slate-800">{doc.issuer}</span>
                         </div>
                       </div>
@@ -2078,9 +2129,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           </span>
                           <ul className="space-y-1 text-xs text-slate-700">
                             {doc.competencies.map((comp, cIdx) => (
-                              <li key={cIdx} className="flex items-start gap-1.5">
+                              <li key={cIdx} className="flex items-start gap-1.5 text-justify leading-relaxed">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                                <span>{comp}</span>
+                                <span className="text-justify">{comp}</span>
                               </li>
                             ))}
                           </ul>
@@ -2089,28 +2140,30 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     </div>
 
                     {/* Footer Actions */}
-                    <div className="pt-3 border-t border-[#cbd5e1] flex items-center justify-between gap-2 text-xs font-sans">
-                      <div className="flex items-center gap-2">
-                        {doc.attachmentDataUrl && (
-                          isOwnerAuthenticated ? (
-                            <button
-                              onClick={() => handleDownloadAttachment(doc)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Download</span>
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => setIsAuthModalOpen(true)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
-                              title="admin"
-                            >
-                              <Lock className="w-3 h-3 text-amber-600" />
-                              <span>admin</span>
-                            </button>
-                          )
+                    <div className="pt-3 border-t border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-xs font-sans">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {isOwnerAuthenticated && doc.attachmentDataUrl && (
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadAttachment(doc)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
+                            title="Download document attachment"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download</span>
+                          </button>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPreviewDoc(doc)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
+                          title="Preview document details"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                          <span>Preview</span>
+                        </button>
+
                         {doc.verifiedLink && (
                           <a
                             href={doc.verifiedLink}
@@ -2124,10 +2177,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         )}
                       </div>
 
-                      {/* Owner Delete & Edit Controls - Activated only on Edit Profile */}
-                      {isOwnerAuthenticated && isEditingBio && (
-                        <div className="flex items-center gap-2 animate-fade-in">
+                      {/* Owner Delete & Edit Controls VS Visitor Verified Badge */}
+                      {isOwnerAuthenticated ? (
+                        <div className="flex items-center gap-1.5 shrink-0 animate-fade-in">
                           <button
+                            type="button"
                             onClick={() => handleOpenEditDocument(doc)}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors cursor-pointer text-xs font-semibold"
                             title="Edit document details"
@@ -2136,13 +2190,19 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                             <span>Edit</span>
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleDeleteDocument(doc.id, doc.title)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
                             title="Delete this document permanently"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Delete</span>
                           </button>
+                        </div>
+                      ) : (
+                        <div className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-sans">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span className="font-medium">ASME / Verified</span>
                         </div>
                       )}
                     </div>
@@ -2160,29 +2220,31 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       {/* ======================================================== */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4">
-          <div className="border-b border-[#cbd5e1] pb-3">
-            <span className="text-xs font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded">
-              DIRECT INQUIRY &amp; COMMUNICATION
-            </span>
-            <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-950 mt-1.5 font-serif">
-              Direct Contact &amp; Inquiry Channels
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-              Reach out directly to discuss senior mechanical engineering roles, mechanism design reviews, or technical inquiries.
-            </p>
+          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col items-center justify-center text-center">
+            <div className="flex flex-col items-center justify-center max-w-xl mx-auto">
+              <span className="text-[9.5px] sm:text-[10.5px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs inline-block">
+                DIRECT INQUIRY &amp; COMMUNICATION
+              </span>
+              <h2 className="text-[13.5px] sm:text-[15.5px] md:text-[16.5px] font-bold text-slate-950 mt-1 font-serif text-center">
+                Direct Contact &amp; Inquiry Channels
+              </h2>
+              <p className="text-[10px] sm:text-[11.5px] text-slate-600 mt-0.5 text-center leading-relaxed max-w-lg">
+                Reach out directly to discuss senior mechanical engineering roles, mechanism design reviews, or technical inquiries.
+              </p>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Primary Email */}
-            <div className="p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-2">
-              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-xs">
-                <Mail className="w-4 h-4 text-cyan-800" />
+            <div className="p-3.5 sm:p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-1.5">
+              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-[10.5px] sm:text-[11px] text-justify">
+                <Mail className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
                 <span>Primary Direct Email</span>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <a
                   href={`mailto:${bioData.email}`}
-                  className="text-sm sm:text-base font-bold text-slate-950 hover:text-cyan-900 hover:underline break-all"
+                  className="text-xs sm:text-[13.5px] font-bold text-slate-950 hover:text-cyan-900 hover:underline break-all text-justify"
                 >
                   {bioData.email}
                 </a>
@@ -2191,24 +2253,24 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   className="p-1.5 rounded-lg bg-[#edf2f8] hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer shrink-0"
                   title="Copy Email Address"
                 >
-                  {copiedEmail ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                  {copiedEmail ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
               </div>
-              <span className="text-xs font-sans text-slate-500 block">
+              <span className="text-[10px] sm:text-[10.5px] font-sans text-slate-500 block text-justify leading-relaxed">
                 Checked daily · Direct line for recruiters &amp; engineering hiring teams.
               </span>
             </div>
 
             {/* Country & Mobility */}
-            <div className="p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-2">
-              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-xs">
-                <Globe className="w-4 h-4 text-cyan-800" />
+            <div className="p-3.5 sm:p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-1.5">
+              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-[10.5px] sm:text-[11px] text-justify">
+                <Globe className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
                 <span>Country &amp; Mobility</span>
               </div>
-              <p className="text-sm sm:text-base font-bold text-slate-950 font-serif">
+              <p className="text-xs sm:text-[13.5px] font-bold text-slate-950 font-serif text-justify">
                 {bioData.country}
               </p>
-              <span className="text-xs font-sans text-slate-600 block">
+              <span className="text-[10px] sm:text-[10.5px] font-sans text-slate-600 block text-justify leading-relaxed">
                 Open to on-site, hybrid, and remote engineering engagements worldwide.
               </span>
             </div>
@@ -2220,25 +2282,25 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       {/* 5. FOLLOW ME                                             */}
       {/* ======================================================== */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs text-center space-y-4">
+        <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs text-center space-y-3">
           <div>
-            <h2 className="text-xl sm:text-2xl font-bold text-slate-950 font-serif tracking-tight">
+            <h2 className="text-base sm:text-lg font-bold text-slate-950 font-serif tracking-tight">
               Follow Me
             </h2>
           </div>
 
           {/* Social Icons Only: LinkedIn, Facebook, Indeed, Email, Twitter/X, TikTok, Instagram */}
-          <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 pt-1">
+          <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-2.5 pt-0.5">
             {/* 1. LinkedIn */}
             <a
               href={bioData.linkedinUrl || 'https://linkedin.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-[#0077b5] text-slate-700 hover:text-white hover:bg-[#0077b5] shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-[#0077b5] text-slate-700 hover:text-white hover:bg-[#0077b5] shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="LinkedIn"
               aria-label="LinkedIn"
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.46 8.76c.97 0 1.75-.79 1.75-1.76s-.78-1.75-1.75-1.75c-.97 0-1.76.78-1.76 1.75s.79 1.76 1.76 1.76m1.4 9.74v-8.37H5.06v8.37h2.8z" />
               </svg>
             </a>
@@ -2248,11 +2310,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               href={bioData.facebookUrl || 'https://facebook.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-[#1877f2] text-slate-700 hover:text-white hover:bg-[#1877f2] shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-[#1877f2] text-slate-700 hover:text-white hover:bg-[#1877f2] shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="Facebook"
               aria-label="Facebook"
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.84 3.44 8.87 8 9.8V15H8v-3h2V9.5C10 7.57 11.57 6 13.5 6H16v3h-2c-.55 0-1 .45-1 1v2h3v3h-3v6.95c5.05-.5 9-4.76 9-9.95z" />
               </svg>
             </a>
@@ -2262,11 +2324,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               href={bioData.indeedUrl || 'https://indeed.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-[#2164f3] text-slate-700 hover:text-white hover:bg-[#2164f3] shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-[#2164f3] text-slate-700 hover:text-white hover:bg-[#2164f3] shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="Indeed"
               aria-label="Indeed"
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M11.566 21.978h-3.79V9.852h3.79v12.126zm-1.895-13.88c-1.282 0-2.322-1.04-2.322-2.322 0-1.283 1.04-2.323 2.322-2.323 1.283 0 2.323 1.04 2.323 2.323 0 1.282-1.04 2.322-2.323 2.322zm10.539 7.794c0-3.41-1.748-5.992-4.996-5.992-2.28 0-3.64 1.233-4.22 2.352v-2.4h-3.79v12.126h3.79v-6.382c0-1.77 1.298-2.95 2.91-2.95 1.583 0 2.516 1.096 2.516 2.895v6.437h3.79V15.892z" />
               </svg>
             </a>
@@ -2274,11 +2336,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             {/* 4. Email */}
             <a
               href={bioData.emailUrl || `mailto:${bioData.email || 'festusjohnson028@gmail.com'}`}
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-800 text-slate-700 hover:text-white hover:bg-cyan-800 shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-cyan-800 text-slate-700 hover:text-white hover:bg-cyan-800 shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title={`Email: ${bioData.email || 'festusjohnson028@gmail.com'}`}
               aria-label="Email"
             >
-              <svg className="w-5 h-5 fill-none stroke-current stroke-2 stroke-linecap-round stroke-linejoin-round" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-none stroke-current stroke-2 stroke-linecap-round stroke-linejoin-round" viewBox="0 0 24 24">
                 <rect width="20" height="16" x="2" y="4" rx="2" />
                 <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
               </svg>
@@ -2289,11 +2351,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               href={bioData.twitterUrl || 'https://x.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-black text-slate-700 hover:text-white hover:bg-black shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-black text-slate-700 hover:text-white hover:bg-black shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="Twitter / X"
               aria-label="Twitter / X"
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
               </svg>
             </a>
@@ -2303,11 +2365,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               href={bioData.tiktokUrl || 'https://tiktok.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-black text-slate-700 hover:text-white hover:bg-black shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-black text-slate-700 hover:text-white hover:bg-black shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="TikTok"
               aria-label="TikTok"
             >
-              <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.298-.002.595.042.88.13V9.4a6.33 6.33 0 0 0-1-.08A6.34 6.34 0 0 0 3 15.66a6.34 6.34 0 0 0 10.86 4.43c.09-.09.18-.18.26-.27a6.29 6.29 0 0 0 1.69-4.15V8.62a8.27 8.27 0 0 0 4.78 1.52V6.69z" />
               </svg>
             </a>
@@ -2317,11 +2379,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               href={bioData.instagramUrl || 'https://instagram.com'}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white border border-[#b8c6d4] hover:border-[#e1306c] text-slate-700 hover:text-white hover:bg-gradient-to-tr hover:from-[#f09433] hover:via-[#dc2743] hover:to-[#bc1888] shadow-xs hover:shadow-md transition-all duration-200 flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 sm:w-8.5 sm:h-8.5 rounded-lg bg-white border border-[#b8c6d4] hover:border-[#e1306c] text-slate-700 hover:text-white hover:bg-gradient-to-tr hover:from-[#f09433] hover:via-[#dc2743] hover:to-[#bc1888] shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center justify-center cursor-pointer"
               title="Instagram"
               aria-label="Instagram"
             >
-              <svg className="w-5 h-5 fill-none stroke-current stroke-2 stroke-linecap-round stroke-linejoin-round" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5 fill-none stroke-current stroke-2 stroke-linecap-round stroke-linejoin-round" viewBox="0 0 24 24">
                 <rect width="20" height="20" x="2" y="2" rx="5" ry="5" />
                 <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
                 <line x1="17.5" x2="17.51" y1="6.5" y2="6.5" />
@@ -2393,25 +2455,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             <div className="w-full pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
               <span>{selectedPreviewDoc.issuer} · {selectedPreviewDoc.date}</span>
-              {isOwnerAuthenticated ? (
+              {isOwnerAuthenticated && (
                 <button
                   onClick={() => handleDownloadAttachment(selectedPreviewDoc)}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Download</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => {
-                    setSelectedPreviewDoc(null);
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition-colors cursor-pointer"
-                  title="admin"
-                >
-                  <Lock className="w-3.5 h-3.5 text-amber-500" />
-                  <span>admin</span>
                 </button>
               )}
             </div>
@@ -2681,14 +2731,31 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 />
               </div>
 
-              {/* Modal Actions - SHOW ONLY "Update" BUTTON */}
-              <div className="pt-4 border-t border-[#cbd5e1] flex items-center justify-end">
+              {/* Modal Actions */}
+              <div className="pt-4 border-t border-[#cbd5e1] flex items-center justify-between">
+                {editingDocId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = editingDocId;
+                      const title = docTitle;
+                      setIsDocumentModalOpen(false);
+                      handleDeleteDocument(id, title);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-bold text-xs sm:text-sm transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Document</span>
+                  </button>
+                ) : (
+                  <div />
+                )}
                 <button
                   type="submit"
                   className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs sm:text-sm font-bold shadow-md transition-colors cursor-pointer"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Update</span>
+                  <span>{editingDocId ? 'Update Document' : 'Save Document'}</span>
                 </button>
               </div>
             </form>
@@ -2793,46 +2860,298 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* 8. DELETE DOCUMENT CONFIRMATION MODAL (OWNER ONLY)       */}
-      {/* ======================================================== */}
-      {docToDelete && isOwnerAuthenticated && (
-        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 font-sans space-y-4 animate-fade-in">
-            <div className="flex items-center gap-3 text-rose-600">
-              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center shrink-0">
-                <Trash2 className="w-5 h-5 text-rose-600" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900 font-serif">Delete Document</h3>
-                <p className="text-xs text-slate-500">This action will remove the document permanently.</p>
-              </div>
-            </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs sm:text-sm text-slate-700 space-y-1">
-              <p>Are you sure you want to remove this document?</p>
-              <p className="font-bold text-slate-950 font-serif text-sm">"{docToDelete.title}"</p>
-            </div>
 
-            <div className="flex items-center justify-end gap-2.5 pt-2">
+      {/* ======================================================== */}
+      {/* 9. POSITION & PLACE PROFILE PICTURE MODAL (OWNER GATED)  */}
+      {/* Allows placing, panning, zooming, and rotating before     */}
+      {/* final upload and saving across the website               */}
+      {/* ======================================================== */}
+      {isCropModalOpen && cropSourceImage && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full border border-slate-300 shadow-2xl p-5 sm:p-7 font-sans space-y-5 animate-fade-in text-slate-800 my-8">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-800">
+                  <Camera className="w-5 h-5 text-cyan-700" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900 font-serif">
+                    Place Profile Picture
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Adjust position, zoom, and orientation before saving.
+                  </p>
+                </div>
+              </div>
               <button
                 type="button"
-                onClick={() => setDocToDelete(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors cursor-pointer"
+                onClick={() => {
+                  setIsCropModalOpen(false);
+                  setCropSourceImage(null);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                title="Cancel placement"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Viewport Frame with Live Circular Crop Mask */}
+            <div className="space-y-2">
+              <div
+                className="relative w-full h-72 sm:h-80 bg-slate-900 rounded-2xl overflow-hidden flex items-center justify-center select-none cursor-grab active:cursor-grabbing border-2 border-slate-700"
+                onMouseDown={(e) => {
+                  setIsDraggingCrop(true);
+                  cropDragStartRef.current = { x: e.clientX - cropPan.x, y: e.clientY - cropPan.y };
+                }}
+                onMouseMove={(e) => {
+                  if (!isDraggingCrop) return;
+                  setCropPan({
+                    x: e.clientX - cropDragStartRef.current.x,
+                    y: e.clientY - cropDragStartRef.current.y,
+                  });
+                }}
+                onMouseUp={() => setIsDraggingCrop(false)}
+                onMouseLeave={() => setIsDraggingCrop(false)}
+                onTouchStart={(e) => {
+                  if (e.touches[0]) {
+                    setIsDraggingCrop(true);
+                    cropDragStartRef.current = {
+                      x: e.touches[0].clientX - cropPan.x,
+                      y: e.touches[0].clientY - cropPan.y,
+                    };
+                  }
+                }}
+                onTouchMove={(e) => {
+                  if (!isDraggingCrop || !e.touches[0]) return;
+                  setCropPan({
+                    x: e.touches[0].clientX - cropDragStartRef.current.x,
+                    y: e.touches[0].clientY - cropDragStartRef.current.y,
+                  });
+                }}
+                onTouchEnd={() => setIsDraggingCrop(false)}
+              >
+                {/* Background image transformed */}
+                <div
+                  className="absolute pointer-events-none transition-transform duration-75 ease-out"
+                  style={{
+                    transform: `translate(${cropPan.x}px, ${cropPan.y}px) rotate(${cropRotate}deg) scale(${cropZoom})`,
+                  }}
+                >
+                  <img
+                    src={cropSourceImage}
+                    alt="Placement preview"
+                    className="max-w-none max-h-none pointer-events-none select-none"
+                    style={{ width: '280px', height: 'auto' }}
+                  />
+                </div>
+
+                {/* Circular Target Overlay Mask */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div className="w-56 h-56 rounded-full border-4 border-cyan-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.65)] relative">
+                    <div className="absolute inset-0 rounded-full border border-dashed border-white/60" />
+                    {/* Crosshair guide lines */}
+                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-cyan-300/40 -translate-x-1/2" />
+                    <div className="absolute top-1/2 left-0 right-0 h-px bg-cyan-300/40 -translate-y-1/2" />
+                  </div>
+                </div>
+
+                {/* Instruction Pill */}
+                <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/70 backdrop-blur-xs text-white text-[11px] font-medium tracking-wide flex items-center gap-1.5 pointer-events-none shadow-sm">
+                  <span>✋ Click &amp; drag anywhere to position</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Position & Zoom Controls */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+              {/* Zoom Slider */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-slate-700 font-semibold">
+                  <span className="flex items-center gap-1">
+                    <ZoomIn className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>Zoom Scale</span>
+                  </span>
+                  <span className="font-mono text-cyan-900 font-bold">{Math.round(cropZoom * 100)}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCropZoom((z) => Math.max(0.6, Number((z - 0.1).toFixed(2))))}
+                    className="w-8 h-8 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 flex items-center justify-center font-bold text-base cursor-pointer shadow-2xs"
+                    title="Zoom out"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="range"
+                    min="0.6"
+                    max="3.0"
+                    step="0.05"
+                    value={cropZoom}
+                    onChange={(e) => setCropZoom(parseFloat(e.target.value))}
+                    className="flex-1 accent-cyan-700 cursor-pointer h-2 bg-slate-200 rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCropZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
+                    className="w-8 h-8 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 flex items-center justify-center font-bold text-base cursor-pointer shadow-2xs"
+                    title="Zoom in"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {/* Pan Directional Buttons & Rotation */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200">
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-[11px] font-semibold text-slate-500 mr-1">Fine Pan:</span>
+                  <button
+                    type="button"
+                    onClick={() => setCropPan((p) => ({ ...p, x: p.x + 15 }))}
+                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
+                    title="Move right"
+                  >
+                    ←
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCropPan((p) => ({ ...p, x: p.x - 15 }))}
+                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
+                    title="Move left"
+                  >
+                    →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCropPan((p) => ({ ...p, y: p.y + 15 }))}
+                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
+                    title="Move down"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCropPan((p) => ({ ...p, y: p.y - 15 }))}
+                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
+                    title="Move up"
+                  >
+                    ↓
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setCropRotate((r) => (r + 90) % 360)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold cursor-pointer shadow-2xs"
+                    title="Rotate 90 degrees"
+                  >
+                    <RotateCw className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Rotate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCropPan({ x: 0, y: 0 });
+                      setCropZoom(1);
+                      setCropRotate(0);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold cursor-pointer shadow-2xs"
+                    title="Center image"
+                  >
+                    <Compass className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Center</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Actions */}
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCropModalOpen(false);
+                  setCropSourceImage(null);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveCroppedAvatar}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs sm:text-sm font-bold shadow-md transition-all cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>Save &amp; Apply Profile Picture</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* DELETE PROFILE PICTURE CONFIRMATION MODAL (OWNER ONLY)   */}
+      {/* ======================================================== */}
+      {isDeleteAvatarModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fade-in font-sans">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-300 max-w-sm w-full p-5 relative">
+            <button
+              onClick={() => setIsDeleteAvatarModalOpen(false)}
+              className="absolute right-4 top-4 p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-9 h-9 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-950">
+                  Delete Profile Picture?
+                </h3>
+                <p className="text-[11px] text-slate-500 font-medium">
+                  {bioData.fullName}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              Are you sure you want to permanently delete this profile picture? It will be removed across all visitor views and web browsers.
+            </p>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isDeletingAvatar}
+                onClick={() => setIsDeleteAvatarModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer font-medium text-xs disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setDocuments((prev) => prev.filter((d) => d.id !== docToDelete.id));
-                  showNotification(`"${docToDelete.title}" was deleted.`);
-                  setDocToDelete(null);
-                }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+                disabled={isDeletingAvatar}
+                onClick={handleConfirmDeleteAvatar}
+                className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-xs"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Confirm Delete</span>
+                {isDeletingAvatar ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Picture</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

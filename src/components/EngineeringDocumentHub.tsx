@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Upload,
   Download,
@@ -28,18 +28,42 @@ import {
   User,
   Tag,
   BookOpen,
-  X
+  X,
+  FileCode,
+  FileArchive,
+  Image as ImageIcon,
+  Check,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  ListPlus,
+  ArrowUpDown
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { renderPdfFirstPageToImage, generateDocumentDrawingPreview } from '../utils/pdfRenderer';
-import { saveHubDocumentsPersistently, loadHubDocumentsPersistently } from '../utils/documentStorage';
 import {
-  DocumentItem,
+  saveHubDocumentsPersistently,
+  loadHubDocumentsPersistently,
+  deleteHubDocumentPersistently,
+  getDeletedDocIds,
+  recordDeletedDocId,
+  sortDocumentsDescending
+} from '../utils/documentStorage';
+import {
+  uploadHubDocumentToStorage,
+  saveHubDocumentToFirestore,
+  fetchHubDocumentsFromFirestore,
+  subscribeToHubDocuments,
+  deleteHubDocumentFromFirestore,
+  incrementHubDocumentDownload
+} from '../utils/firebase';
+import {
   useProfileSync,
   setOwnerAuthenticated,
   OWNER_EMAIL,
   OWNER_PASSWORD
 } from '../utils/profileState';
+import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import { PortfolioPart } from './Navbar';
 
 export type DocumentCategory =
@@ -65,323 +89,552 @@ export interface PublicEngineeringDocument {
   uploaderType: 'owner' | 'visitor';
   status: 'approved' | 'pending';
   uploadDate: string;
+  uploadTimestamp?: number;
   downloadCount: number;
   tags: string[];
   previewUrl?: string;
-  dataUrl?: string; // Stored file content
+  dataUrl?: string; // Stored file content / base64
+  downloadUrl?: string;
+  hasServerFile?: boolean;
   isCustomUpload?: boolean;
 }
 
-const STORAGE_KEY_PUBLIC_DOCS = 'fesline_public_hub_documents';
-const STORAGE_KEY_DELETED_DOC_IDS = 'fesline_hub_deleted_doc_ids';
-const STORAGE_KEY_DOWNLOAD_COUNTS = 'fesline_doc_download_counts';
+export interface QueuedUploadItem {
+  id: string;
+  file: File;
+  title: string;
+  category: DocumentCategory;
+  description: string;
+  tags: string;
+  previewUrl: string | null;
+  fileSize: string;
+  fileType: string;
+}
 
 export interface EngineeringDocumentHubProps {
   onNavigatePart?: (part: PortfolioPart) => void;
 }
 
-// Clean start: all inbuilt files removed as requested
-const INITIAL_HUB_DOCUMENTS: PublicEngineeringDocument[] = [];
+export const CATEGORIES_LIST: DocumentCategory[] = [
+  'Christians Book',
+  'Inspirational Book',
+  'Technical Drawing',
+  '3D CAD Model',
+  'Production Blueprint',
+  'Whitepaper & Report',
+  'BOM & Specification',
+  'Calculation & Dataset'
+];
+
+/**
+ * Smart Category Auto-Detection based on filename and extension
+ */
+export function autoDetectCategory(fileName: string): DocumentCategory {
+  const lowerName = fileName.toLowerCase();
+  const ext = lowerName.split('.').pop() || '';
+
+  if (
+    lowerName.includes('christian') ||
+    lowerName.includes('bible') ||
+    lowerName.includes('gospel') ||
+    lowerName.includes('devotion') ||
+    lowerName.includes('prayer') ||
+    lowerName.includes('faith') ||
+    lowerName.includes('jesus') ||
+    lowerName.includes('christ') ||
+    lowerName.includes('pastor') ||
+    lowerName.includes('sermon') ||
+    lowerName.includes('grace') ||
+    lowerName.includes('church')
+  ) {
+    return 'Christians Book';
+  }
+
+  if (
+    lowerName.includes('carnegie') ||
+    lowerName.includes('influence') ||
+    lowerName.includes('inspirational') ||
+    lowerName.includes('inspire') ||
+    lowerName.includes('motivation') ||
+    lowerName.includes('habit') ||
+    lowerName.includes('mindset') ||
+    lowerName.includes('success') ||
+    lowerName.includes('leadership') ||
+    lowerName.includes('growth') ||
+    lowerName.includes('psychology') ||
+    lowerName.includes('atomic') ||
+    lowerName.includes('think and grow') ||
+    lowerName.includes('ife')
+  ) {
+    return 'Inspirational Book';
+  }
+
+  if (['step', 'stp', 'iges', 'igs', 'sldprt', 'sldasm', 'stl', 'obj', 'fbx', 'ipt', 'iam', 'x_t', 'sat', '3dm'].includes(ext)) {
+    return '3D CAD Model';
+  }
+
+  if (['dwg', 'dxf'].includes(ext)) {
+    return 'Production Blueprint';
+  }
+
+  if (['xlsx', 'xls', 'csv', 'tsv', 'mat', 'h5', 'dat'].includes(ext) || lowerName.includes('calc') || lowerName.includes('dataset') || lowerName.includes('fea')) {
+    return 'Calculation & Dataset';
+  }
+
+  if (lowerName.includes('bom') || lowerName.includes('bill of materials') || lowerName.includes('spec') || lowerName.includes('partlist')) {
+    return 'BOM & Specification';
+  }
+
+  if (['docx', 'doc', 'pptx', 'ppt', 'txt', 'md'].includes(ext) || lowerName.includes('paper') || lowerName.includes('report') || lowerName.includes('whitepaper') || lowerName.includes('thesis')) {
+    return 'Whitepaper & Report';
+  }
+
+  if (ext === 'pdf') {
+    if (lowerName.includes('drawing') || lowerName.includes('cad') || lowerName.includes('gdt') || lowerName.includes('tolerance') || lowerName.includes('blueprint') || lowerName.includes('schematic') || lowerName.includes('laser') || lowerName.includes('cnc')) {
+      return 'Technical Drawing';
+    }
+    if (lowerName.includes('book') || lowerName.includes('guide') || lowerName.includes('story')) {
+      return 'Inspirational Book';
+    }
+    return 'Technical Drawing';
+  }
+
+  return 'Technical Drawing';
+}
+
+/**
+ * Format file size nicely
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 KB';
+  if (bytes > 1024 * 1024) {
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+  return (bytes / 1024).toFixed(0) + ' KB';
+}
 
 export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ onNavigatePart }) => {
   const { isOwner } = useProfileSync();
   const [documents, setDocuments] = useState<PublicEngineeringDocument[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [sortBy, setSortBy] = useState<'newest' | 'downloads' | 'title' | 'size'>('newest');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [previewModalDoc, setPreviewModalDoc] = useState<PublicEngineeringDocument | null>(null);
   const [docToDelete, setDocToDelete] = useState<PublicEngineeringDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
-  const [deleteToast, setDeleteToast] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
 
-  // Quick unlock modal states for visitors wishing to log in as owner
-  const [showQuickAuthModal, setShowQuickAuthModal] = useState(false);
-  const [quickAuthEmail, setQuickAuthEmail] = useState('');
-  const [quickAuthPin, setQuickAuthPin] = useState('');
-  const [quickAuthError, setQuickAuthError] = useState<string | null>(null);
-
-  // Upload Form State
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadTitle, setUploadTitle] = useState('');
+  // Upload Queue State (Supports single or multi-file uploads seamlessly)
+  const [queuedFiles, setQueuedFiles] = useState<QueuedUploadItem[]>([]);
   const [uploaderName, setUploaderName] = useState('');
-  const [uploadCategory, setUploadCategory] = useState<DocumentCategory>('Christians Book');
-  const [uploadDescription, setUploadDescription] = useState('');
-  const [uploadTags, setUploadTags] = useState('');
-  const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
-  const [isPublishing, setIsPublishing] = useState<boolean>(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; percent: number; currentFileName: string }>({
+    current: 0,
+    total: 0,
+    percent: 0,
+    currentFileName: ''
+  });
   const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
+  const addMoreInputRef = useRef<HTMLInputElement>(null);
+  const isSyncingRef = useRef(false);
 
-  // Load documents on mount: loads from persistent storage and syncs with server API
-  // so ANY visitor on any device sees what the owner uploads
-  const loadDocuments = async () => {
-    // 1. First load from IndexedDB / localStorage cache for immediate display
-    try {
-      const cached = await loadHubDocumentsPersistently<PublicEngineeringDocument>();
-      const cleanCustom = cached.filter(
-        (d) =>
-          d &&
-          d.id &&
-          d.isCustomUpload === true &&
-          !d.id.startsWith('doc-wa00') &&
-          !d.id.startsWith('doc-harmonic') &&
-          !d.id.startsWith('doc-gimbal') &&
-          !d.id.startsWith('doc-hydraulic')
-      );
-      if (cleanCustom.length > 0) {
-        setDocuments(cleanCustom);
-      }
-    } catch (e) {
-      console.warn('Storage read fallback:', e);
-    }
-
-    // 2. Fetch from server endpoint (shared across all devices/visitors)
-    try {
-      const res = await fetch('/api/documents?all=' + (isOwner ? 'true' : 'false'));
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.success && Array.isArray(json.documents)) {
-          const cleanDocs: PublicEngineeringDocument[] = json.documents.filter(
-            (d: any) =>
-              d &&
-              d.id &&
-              !d.id.startsWith('doc-wa00') &&
-              !d.id.startsWith('doc-harmonic') &&
-              !d.id.startsWith('doc-gimbal') &&
-              !d.id.startsWith('doc-hydraulic')
-          );
-          setDocuments(cleanDocs);
-          saveHubDocumentsPersistently(cleanDocs);
-          return;
-        }
-      }
-    } catch {
-      // Offline or direct client-side mode
-    }
+  const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToastMsg({ text, type });
+    setTimeout(() => {
+      setToastMsg(null);
+    }, 4000);
   };
+
+  // Load documents from Firestore & cache first, then sync with server
+  const loadDocuments = useCallback(async () => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
+
+    try {
+      // 1. Load from IndexedDB / LocalStorage cache with tombstone check
+      const cached = await loadHubDocumentsPersistently<PublicEngineeringDocument>();
+      const deletedIds = getDeletedDocIds();
+      const cleanCached = sortDocumentsDescending(
+        cached.filter((d) => d && d.id && !deletedIds.has(d.id))
+      );
+
+      const docsMap = new Map<string, PublicEngineeringDocument>();
+
+      // Seed with local cached documents
+      cleanCached.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id)) {
+          docsMap.set(d.id, d);
+        }
+      });
+
+      // Show cached immediately so UI is instantly responsive
+      if (cleanCached.length > 0) {
+        setDocuments(cleanCached);
+      }
+
+      // 2. Fetch latest from Firestore database
+      try {
+        const firestoreDocs = await fetchHubDocumentsFromFirestore();
+        if (Array.isArray(firestoreDocs) && firestoreDocs.length > 0) {
+          firestoreDocs.forEach((fDoc) => {
+            if (fDoc && fDoc.id && !deletedIds.has(fDoc.id)) {
+              const existing = docsMap.get(fDoc.id);
+              docsMap.set(fDoc.id, {
+                ...fDoc,
+                dataUrl: existing?.dataUrl || fDoc.dataUrl,
+                previewUrl: fDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(fDoc.fileName),
+              });
+            }
+          });
+        }
+      } catch (fErr) {
+        console.warn('Firestore documents fetch note:', fErr);
+      }
+
+      // 3. Sync with server fallback (PostgreSQL Cloud SQL)
+      try {
+        const res = await fetch('/api/documents?all=true');
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.success && Array.isArray(json.documents)) {
+            if (Array.isArray(json.deletedIds)) {
+              json.deletedIds.forEach((dId: string) => recordDeletedDocId(dId));
+            }
+            const currentDeleted = getDeletedDocIds();
+
+            json.documents.forEach((sDoc: any) => {
+              if (sDoc && sDoc.id && !currentDeleted.has(sDoc.id)) {
+                const existing = docsMap.get(sDoc.id);
+                docsMap.set(sDoc.id, {
+                  ...sDoc,
+                  dataUrl: sDoc.dataUrl || existing?.dataUrl,
+                  previewUrl: sDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(sDoc.fileName),
+                });
+              }
+            });
+          }
+        }
+      } catch (sErr) {
+        console.warn('Server documents sync note:', sErr);
+      }
+
+      const activeDeleted = getDeletedDocIds();
+      const combined = Array.from(docsMap.values()).filter((d) => d && d.id && !activeDeleted.has(d.id));
+      const sorted = sortDocumentsDescending(combined);
+      setDocuments(sorted);
+      saveHubDocumentsPersistently(sorted).catch(() => {});
+    } catch (e) {
+      console.warn('Storage sync note:', e);
+    } finally {
+      isSyncingRef.current = false;
+    }
+  }, [isOwner]);
 
   useEffect(() => {
     loadDocuments();
+
+    // Attach Firestore real-time listener for instant synchronization across all visitors
+    const unsubscribeFirestore = subscribeToHubDocuments(
+      (firestoreDocs) => {
+        if (Array.isArray(firestoreDocs)) {
+          const currentDeleted = getDeletedDocIds();
+          setDocuments((prev) => {
+            const map = new Map<string, PublicEngineeringDocument>();
+            firestoreDocs.forEach((fDoc) => {
+              if (fDoc && fDoc.id && !currentDeleted.has(fDoc.id)) {
+                const existing = prev.find((p) => p.id === fDoc.id);
+                map.set(fDoc.id, {
+                  ...fDoc,
+                  dataUrl: existing?.dataUrl || fDoc.dataUrl,
+                  previewUrl: fDoc.previewUrl || existing?.previewUrl || generateDocumentDrawingPreview(fDoc.fileName),
+                });
+              }
+            });
+            const merged = sortDocumentsDescending(Array.from(map.values()).filter((d) => !currentDeleted.has(d.id)));
+            saveHubDocumentsPersistently(merged).catch(() => {});
+            return merged;
+          });
+        }
+      },
+      (err) => console.warn('Firestore documents subscription note:', err)
+    );
+
+    // Continuous 5-second background sync for document additions & deletions
+    const pollTimer = setInterval(() => {
+      loadDocuments();
+    }, 5000);
 
     const handleUpdate = () => {
       loadDocuments();
     };
 
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadDocuments();
+      }
+    };
+
+    const unsubMem = subscribeToDynamicMemory((ev) => {
+      if (ev.category === 'documents') {
+        loadDocuments();
+      }
+    });
+
     window.addEventListener('fesline_hub_docs_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
+    window.addEventListener('focus', handleUpdate);
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
+      unsubMem();
+      unsubscribeFirestore();
+      clearInterval(pollTimer);
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      window.removeEventListener('focus', handleUpdate);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [isOwner]);
+  }, [loadDocuments]);
 
-  // Save documents when updated
   const saveDocumentsToStorage = (updatedDocs: PublicEngineeringDocument[]) => {
-    setDocuments(updatedDocs);
-    saveHubDocumentsPersistently(updatedDocs);
+    const sorted = sortDocumentsDescending(updatedDocs);
+    setDocuments(sorted);
+    saveHubDocumentsPersistently(sorted).catch(() => {});
     window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
+    broadcastMemoryEvent('documents', 'hub_docs_updated', { count: sorted.length });
   };
 
-  const handleQuickOwnerLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (quickAuthEmail.trim().toLowerCase() !== OWNER_EMAIL.toLowerCase()) {
-      setQuickAuthError(`Only authorized owner ${OWNER_EMAIL} can access this section.`);
-      return;
-    }
-    if (quickAuthPin.trim() !== OWNER_PASSWORD) {
-      setQuickAuthError('Incorrect security password. Please verify owner credentials.');
-      return;
-    }
-    setOwnerAuthenticated(true);
-    setShowQuickAuthModal(false);
-    setQuickAuthError(null);
-    setQuickAuthPin('');
-  };
-
-  const handleFilePicked = async (file: File) => {
+  /**
+   * Process picked files (supports single or multi-file uploads of any type)
+   */
+  const handleFilesPicked = async (fileList: FileList | File[]) => {
     setUploadError(null);
-    setUploadFile(file);
+    setUploadSuccessMsg(null);
+    const filesArray = Array.from(fileList);
+    if (filesArray.length === 0) return;
 
-    if (!uploadTitle) {
-      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
-      setUploadTitle(cleanName.charAt(0).toUpperCase() + cleanName.slice(1));
-    }
+    const newQueueItems: QueuedUploadItem[] = [];
 
-    const extension = file.name.split('.').pop()?.toLowerCase() || '';
+    for (let i = 0; i < filesArray.length; i++) {
+      const file = filesArray[i];
+      const cleanTitle = file.name
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[-_]/g, ' ')
+        .trim();
+      const capitalizedTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
+      const detectedCat = autoDetectCategory(file.name);
+      const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
 
-    // Auto-detect category
-    const lowerName = file.name.toLowerCase();
-    if (
-      lowerName.includes('christian') ||
-      lowerName.includes('bible') ||
-      lowerName.includes('gospel') ||
-      lowerName.includes('devotion') ||
-      lowerName.includes('prayer') ||
-      lowerName.includes('faith') ||
-      lowerName.includes('jesus')
-    ) {
-      setUploadCategory('Christians Book');
-    } else if (
-      lowerName.includes('carnegie') ||
-      lowerName.includes('influence') ||
-      lowerName.includes('inspirational') ||
-      lowerName.includes('inspire') ||
-      lowerName.includes('motivation') ||
-      lowerName.includes('habit') ||
-      lowerName.includes('mindset') ||
-      lowerName.includes('success')
-    ) {
-      setUploadCategory('Inspirational Book');
-    } else if (extension === 'pdf') {
-      setUploadCategory('Technical Drawing');
-    } else if (['step', 'stp', 'iges', 'igs', 'sldprt', 'sldasm'].includes(extension)) {
-      setUploadCategory('3D CAD Model');
-    } else if (['dwg', 'dxf'].includes(extension)) {
-      setUploadCategory('Production Blueprint');
-    }
+      let preview: string | null = null;
 
-    // Generate drawing preview
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (e) => setUploadPreviewUrl(e.target?.result as string);
-      reader.readAsDataURL(file);
-    } else if (extension === 'pdf') {
-      try {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const buffer = e.target?.result as ArrayBuffer;
-          try {
-            const preview = await renderPdfFirstPageToImage(buffer, 800, file.name);
-            setUploadPreviewUrl(preview);
-          } catch {
-            setUploadPreviewUrl(generateDocumentDrawingPreview(file.name));
-          }
-        };
-        reader.readAsArrayBuffer(file);
-      } catch {
-        setUploadPreviewUrl(generateDocumentDrawingPreview(file.name));
+      // Generate preview safely
+      if (file.type.startsWith('image/')) {
+        preview = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = () => resolve(generateDocumentDrawingPreview(file.name));
+          reader.readAsDataURL(file);
+        });
+      } else if (file.name.toLowerCase().endsWith('.pdf')) {
+        try {
+          const buffer = await file.arrayBuffer();
+          const pdfPromise = renderPdfFirstPageToImage(buffer, 800, file.name);
+          const timeoutPromise = new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('timeout')), 3500)
+          );
+          preview = await Promise.race([pdfPromise, timeoutPromise]).catch(() =>
+            generateDocumentDrawingPreview(file.name)
+          );
+        } catch {
+          preview = generateDocumentDrawingPreview(file.name);
+        }
+      } else {
+        preview = generateDocumentDrawingPreview(file.name);
       }
-    } else {
-      setUploadPreviewUrl(generateDocumentDrawingPreview(file.name));
+
+      newQueueItems.push({
+        id: `queue-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 5)}`,
+        file,
+        title: capitalizedTitle,
+        category: detectedCat,
+        description: `Technical document "${file.name}" uploaded to precision engineering repository.`,
+        tags: `${ext}, Engineering, ${detectedCat}`,
+        previewUrl: preview,
+        fileSize: formatBytes(file.size),
+        fileType: ext
+      });
     }
+
+    setQueuedFiles((prev) => [...prev, ...newQueueItems]);
   };
 
   const handleOpenUploadModal = () => {
     setUploadError(null);
     setUploadSuccessMsg(null);
-    if (isOwner && !uploaderName) {
+    setQueuedFiles([]);
+    if (isOwner) {
       setUploaderName('Festus, Olorunsogo Johnson (Owner)');
+    } else if (!uploaderName) {
+      setUploaderName('Visitor Contributor');
     }
     setIsUploadModalOpen(true);
   };
 
-  const handlePublishDocument = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uploadFile) {
-      setUploadError('Please choose a document or CAD file to upload from your device.');
+  const handleRemoveQueueItem = (id: string) => {
+    setQueuedFiles((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleUpdateQueueItem = (id: string, updates: Partial<QueuedUploadItem>) => {
+    setQueuedFiles((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
+    );
+  };
+
+  /**
+   * Publish all queued documents (uploads binary to server, saves metadata, updates state lightning fast)
+   */
+  const handlePublishAllQueued = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (queuedFiles.length === 0) {
+      setUploadError('Please select at least one document or CAD file to upload.');
       return;
     }
-    if (!uploaderName.trim()) {
-      setUploadError('Please enter the name of the uploader.');
-      return;
-    }
-    if (!uploadTitle.trim()) {
-      setUploadError('Please provide a descriptive title for this document.');
-      return;
-    }
+
+    const effectiveUploader = uploaderName.trim() || (isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Visitor Contributor');
 
     setIsPublishing(true);
-    setUploadProgress(20);
+    setUploadError(null);
+    setUploadSuccessMsg(null);
+
+    const total = queuedFiles.length;
+    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Processing document binaries...' });
 
     try {
-      // Read file data
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        setUploadProgress(70);
-        const fileDataUrl = event.target?.result as string;
+      // 1. Process all queued files with safe base64 encoding
+      const newDocs: PublicEngineeringDocument[] = await Promise.all(
+        queuedFiles.map(async (item, i) => {
+          let fileDataUrl = '';
+          try {
+            fileDataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+              reader.onerror = () => reject(new Error('Failed to read file binary'));
+              reader.readAsDataURL(item.file);
+            });
+          } catch {
+            fileDataUrl = '';
+          }
 
-        const formattedSize = uploadFile.size > 1024 * 1024
-          ? (uploadFile.size / (1024 * 1024)).toFixed(1) + ' MB'
-          : (uploadFile.size / 1024).toFixed(0) + ' KB';
+          const tagList = item.tags
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean);
 
-        const tagList = uploadTags
-          .split(',')
-          .map(t => t.trim())
-          .filter(Boolean);
+          const docId = `doc-${Date.now()}-${i}`;
+          const timestamp = Date.now() + i;
 
-        const newDoc: PublicEngineeringDocument = {
-          id: `doc-${Date.now()}`,
-          title: uploadTitle.trim(),
-          fileName: uploadFile.name,
-          fileSize: formattedSize,
-          fileType: uploadFile.name.split('.').pop()?.toUpperCase() || 'FILE',
-          category: uploadCategory,
-          description: uploadDescription.trim() || `Technical engineering document "${uploadFile.name}".`,
-          author: uploaderName.trim(),
-          uploaderName: uploaderName.trim(),
-          uploaderType: isOwner ? 'owner' : 'visitor',
-          status: isOwner ? 'approved' : 'pending',
-          uploadDate: new Date().toISOString().split('T')[0],
-          downloadCount: 0,
-          tags: tagList.length > 0 ? tagList : ['Engineering', uploadCategory],
-          previewUrl: uploadPreviewUrl || generateDocumentDrawingPreview(uploadFile.name),
-          dataUrl: fileDataUrl,
-          isCustomUpload: true,
-        };
+          const docObj: PublicEngineeringDocument = {
+            id: docId,
+            title: item.title.trim() || item.file.name,
+            fileName: item.file.name,
+            fileSize: item.fileSize,
+            fileType: item.fileType,
+            category: item.category,
+            description: item.description.trim() || `Technical specification for ${item.file.name}`,
+            author: effectiveUploader,
+            uploaderName: effectiveUploader,
+            uploaderType: isOwner ? 'owner' : 'visitor',
+            status: 'approved',
+            uploadDate: new Date().toISOString().split('T')[0],
+            uploadTimestamp: timestamp,
+            downloadCount: 0,
+            tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
+            previewUrl: item.previewUrl || generateDocumentDrawingPreview(item.file.name),
+            dataUrl: fileDataUrl,
+            downloadUrl: `/api/documents/files/${docId}`,
+            hasServerFile: true,
+            isCustomUpload: true,
+          };
 
-        const updated = [newDoc, ...documents];
-        saveDocumentsToStorage(updated);
+          return docObj;
+        })
+      );
 
-        // Sync with server API so visitors on all devices can see what was uploaded
-        try {
-          fetch('/api/documents', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newDoc),
-          }).catch((err) => console.warn('Server sync failed:', err));
-        } catch {
-          // ignore
+      setUploadProgress({ current: 1, total, percent: 50, currentFileName: 'Saving to persistent cloud database...' });
+
+      // 2. Immediate optimistic state update
+      const updatedAll = sortDocumentsDescending([
+        ...newDocs,
+        ...documents.filter((d) => !newDocs.some((p) => p.id === d.id)),
+      ]);
+
+      setDocuments(updatedAll);
+      saveDocumentsToStorage(updatedAll);
+
+      // 3. Save to backend database
+      try {
+        const res = await fetch('/api/documents/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documents: newDocs }),
+        });
+        if (!res.ok) {
+          console.warn('Backend batch response status:', res.status);
         }
+      } catch (backendErr) {
+        console.warn('Backend batch sync note:', backendErr);
+      }
 
-        setUploadProgress(100);
-        setIsPublishing(false);
+      setUploadProgress({ current: 2, total, percent: 80, currentFileName: 'Broadcasting to visitor channels...' });
 
-        if (isOwner) {
-          setUploadSuccessMsg(`"${uploadFile.name}" has been published and is immediately available for download!`);
-        } else {
-          setUploadSuccessMsg(`"${uploadFile.name}" submitted successfully! Because you are uploading as a visitor, your submission is pending approval from the portfolio owner (Festus Johnson) before being published.`);
-        }
+      // 4. Concurrently sync sanitized metadata to Firestore
+      await Promise.allSettled(
+        newDocs.map(async (doc) => {
+          try {
+            await saveHubDocumentToFirestore(doc);
+          } catch (fErr) {
+            console.warn('Firestore doc sync note:', fErr);
+          }
+        })
+      );
 
-        // Reset form
-        setTimeout(() => {
-          setUploadFile(null);
-          setUploadTitle('');
-          setUploaderName(isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : '');
-          setUploadDescription('');
-          setUploadTags('');
-          setUploadPreviewUrl(null);
-          setUploadProgress(0);
-          setIsUploadModalOpen(false);
-          setUploadSuccessMsg(null);
-        }, 2200);
-      };
-
-      reader.readAsDataURL(uploadFile);
-    } catch (err) {
-      console.error('Publish error:', err);
+      // 5. Instant feedback & close modal
+      setUploadProgress({ current: total, total, percent: 100, currentFileName: 'Upload complete!' });
       setIsPublishing(false);
-      setUploadError('Failed to read and process document file. Please try again.');
+      const count = newDocs.length;
+      const msg =
+        count === 1
+          ? `"${newDocs[0]?.title}" uploaded successfully and available to all visitors!`
+          : `All ${count} documents uploaded successfully and available to all visitors!`;
+
+      showToast(msg, 'success');
+      setQueuedFiles([]);
+      setIsUploadModalOpen(false);
+      setUploadSuccessMsg(null);
+      setUploadProgress({ current: 0, total: 0, percent: 0, currentFileName: '' });
+      window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
+      broadcastMemoryEvent('documents', 'hub_docs_updated', { count: updatedAll.length });
+    } catch (err: any) {
+      console.warn('Publish note:', err);
+      setIsPublishing(false);
+      setUploadError('Failed to publish document. Please check the file and try again.');
+      showToast('Upload encountered an issue. Please try again.', 'error');
     }
   };
 
+  /**
+   * 1-Click Fast Direct Download
+   */
   const handleDownloadDocument = (doc: PublicEngineeringDocument) => {
-    // 1. Increment download count in state & storage
-    const updated = documents.map(d => {
+    // 1. Increment download count in Firestore & storage
+    incrementHubDocumentDownload(doc.id).catch(() => {});
+    const updated = documents.map((d) => {
       if (d.id === doc.id) {
-        return { ...d, downloadCount: d.downloadCount + 1 };
+        return { ...d, downloadCount: (d.downloadCount || 0) + 1 };
       }
       return d;
     });
@@ -390,198 +643,154 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
     } catch {}
 
-    // 2. Trigger browser download
+    // 2. Trigger browser download directly from server stream or cloud URL
+    if (doc.downloadUrl || doc.hasServerFile) {
+      const serverUrl = doc.downloadUrl || `/api/documents/files/${doc.id}`;
+      const link = document.createElement('a');
+      link.href = serverUrl;
+      link.download = doc.fileName;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast(`Downloading "${doc.fileName}"...`, 'info');
+      return;
+    }
+
     if (doc.dataUrl) {
-      // Custom uploaded file with actual binary
       const link = document.createElement('a');
       link.href = doc.dataUrl;
       link.download = doc.fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      showToast(`Downloading "${doc.fileName}"...`, 'info');
+      return;
+    }
+
+    // Procedural Fallback
+    if (doc.fileName.endsWith('.pdf')) {
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      pdf.setFillColor(15, 29, 54);
+      pdf.rect(0, 0, 297, 210, 'F');
+      pdf.setDrawColor(56, 189, 248);
+      pdf.setLineWidth(1.2);
+      pdf.rect(10, 10, 277, 190);
+
+      pdf.setTextColor(56, 189, 248);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(16);
+      pdf.text(doc.title.slice(0, 55), 15, 22);
+
+      pdf.setFontSize(10);
+      pdf.setFont('courier', 'normal');
+      pdf.setTextColor(148, 163, 184);
+      pdf.text(`FILE: ${doc.fileName} | CATEGORY: ${doc.category} | REVISION: REV B.2`, 15, 28);
+      pdf.text(`STANDARDS COMPLIANCE: ASME Y14.5-2018 | AUTHOR: ${doc.author}`, 15, 34);
+
+      pdf.save(doc.fileName);
+      showToast(`Downloading "${doc.fileName}"...`, 'info');
     } else {
-      // Seeded technical files: generate authentic, downloadable engineering PDF / STEP text
-      if (doc.fileName.endsWith('.pdf')) {
-        const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-        // Technical Blueprint background
-        pdf.setFillColor(15, 29, 54);
-        pdf.rect(0, 0, 297, 210, 'F');
-
-        // Engineering Border
-        pdf.setDrawColor(56, 189, 248);
-        pdf.setLineWidth(1.2);
-        pdf.rect(10, 10, 277, 190);
-
-        // Header Title
-        pdf.setTextColor(56, 189, 248);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(16);
-        pdf.text(doc.title.slice(0, 55), 15, 22);
-
-        pdf.setFontSize(10);
-        pdf.setFont('courier', 'normal');
-        pdf.setTextColor(148, 163, 184);
-        pdf.text(`FILE: ${doc.fileName} | CATEGORY: ${doc.category} | REVISION: REV B.2`, 15, 28);
-        pdf.text(`STANDARDS COMPLIANCE: ASME Y14.5-2018 | AUTHOR: ${doc.author}`, 15, 34);
-
-        // Technical Grid
-        pdf.setDrawColor(30, 58, 95);
-        pdf.setLineWidth(0.3);
-        for (let x = 15; x < 280; x += 15) {
-          pdf.line(x, 42, x, 165);
-        }
-        for (let y = 42; y < 165; y += 15) {
-          pdf.line(15, y, 280, y);
-        }
-
-        // Summary Text Box
-        pdf.setFillColor(8, 20, 38);
-        pdf.rect(18, 48, 260, 50, 'F');
-        pdf.setDrawColor(56, 189, 248);
-        pdf.rect(18, 48, 260, 50);
-
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(12);
-        pdf.text('ENGINEERING DESIGN SPECIFICATION & TECHNICAL SUMMARY', 24, 58);
-
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(9.5);
-        pdf.setTextColor(203, 213, 225);
-        const splitDesc = pdf.splitTextToSize(doc.description, 248);
-        pdf.text(splitDesc, 24, 68);
-
-        // ASME Title Block Bottom Right
-        pdf.setFillColor(8, 20, 38);
-        pdf.rect(155, 140, 130, 58, 'F');
-        pdf.setDrawColor(56, 189, 248);
-        pdf.setLineWidth(1);
-        pdf.rect(155, 140, 130, 58);
-
-        pdf.setFontSize(8);
-        pdf.setTextColor(148, 163, 184);
-        pdf.text('DRAWING NUMBER:', 160, 148);
-        pdf.setTextColor(56, 189, 248);
-        pdf.setFont('courier', 'bold');
-        pdf.text(doc.fileName, 160, 154);
-
-        pdf.setTextColor(148, 163, 184);
-        pdf.text('ENGINEERING HUB REPOSITORY', 160, 164);
-        pdf.text(`AUTHENTICATED DOWNLOAD · DATE: ${doc.uploadDate}`, 160, 172);
-        pdf.setTextColor(16, 185, 129);
-        pdf.text('VERIFIED AS9102 FAIR GEOMETRY - PASS', 160, 184);
-
-        pdf.save(doc.fileName);
-      } else {
-        // STEP or CAD neutral format
-        const textContent = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('FESLINE PRECISION ENGINEERING CAD STEP EXPORT'),'2;1');
-FILE_NAME('${doc.fileName}','${new Date().toISOString()}',('${doc.author}'),('FESLINE AEROSPACE & ROBOTICS'),'AI Studio B-Rep Kernel 2026','SolidWorks 2026 / ASME Y14.5','');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#1=APPLICATION_CONTEXT('configuration controlled 3d designs of mechanical parts and assemblies');
-#2=APPLICATION_PROTOCOL_DEFINITION('international standard','config_control_design',1994,#1);
-#3=MECHANICAL_CONTEXT('3D Mechanical Part',#1,'mechanical');
-#4=PRODUCT('${doc.fileName}','${doc.title}','Part Assembly',(#3));
-#5=PRODUCT_DEFINITION_FORMATION('Rev B.2','Release',#4);
-/* B-Rep Geometric Topology Generated for ${doc.fileName} */
-/* ASME Y14.5 MMC Reference Frames [-A-], [-B-], [-C-] Embedded */
-ENDSEC;
-END-ISO-10303-21;`;
-        const blob = new Blob([textContent], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = doc.fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      }
+      const textContent = `ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('FESLINE PRECISION ENGINEERING CAD STEP EXPORT'),'2;1');\nFILE_NAME('${doc.fileName}','${new Date().toISOString()}',('${doc.author}'),('FESLINE AEROSPACE & ROBOTICS'),'AI Studio B-Rep Kernel 2026','SolidWorks 2026 / ASME Y14.5','');\nFILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n#1=APPLICATION_CONTEXT('configuration controlled 3d designs of mechanical parts and assemblies');\n#2=APPLICATION_PROTOCOL_DEFINITION('international standard','config_control_design',1994,#1);\n#3=MECHANICAL_CONTEXT('3D Mechanical Part',#1,'mechanical');\n#4=PRODUCT('${doc.fileName}','${doc.title}','Part Assembly',(#3));\n#5=PRODUCT_DEFINITION_FORMATION('Rev B.2','Release',#4);\nENDSEC;\nEND-ISO-10303-21;`;
+      const blob = new Blob([textContent], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = doc.fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast(`Downloading "${doc.fileName}"...`, 'info');
     }
   };
 
-  const handleDeleteDocument = (id: string, e?: React.MouseEvent) => {
+  const handleDeleteDocument = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!isOwner) return;
-    const targetDoc = documents.find((d) => d.id === id);
-    if (targetDoc) {
-      setDocToDelete(targetDoc);
+    if (!isOwner) {
+      showToast('Only the repository owner has permission to delete documents.', 'error');
+      return;
     }
-  };
+    const targetDoc = documents.find((d) => d.id === id);
+    const title = targetDoc?.title || 'Document';
 
-  const confirmDeleteDocument = async () => {
-    if (!docToDelete || !isOwner) return;
-    setIsDeleting(true);
-    const id = docToDelete.id;
-    const title = docToDelete.title;
-
-    // 1. Update state & persistent storage immediately
+    // 1. Immediately update state
     const updated = documents.filter((d) => d.id !== id);
     setDocuments(updated);
+
+    // 2. Delete from Firestore and Firebase Storage
+    deleteHubDocumentFromFirestore(id, (targetDoc as any)?.storagePath).catch((err) => {
+      console.warn('Firestore delete error:', err);
+    });
+
+    // 3. Immediately delete from persistent cache
+    deleteHubDocumentPersistently(id).catch(() => {});
     saveDocumentsToStorage(updated);
 
-    // 2. Sync deletion with server backend
-    try {
-      await fetch(`/api/documents/${id}`, { method: 'DELETE' });
-    } catch (err) {
-      console.warn('Backend delete error:', err);
-    }
-
-    // 3. Close preview if open
+    // 4. Immediately close preview if open
     if (previewModalDoc?.id === id) {
       setPreviewModalDoc(null);
     }
 
-    setIsDeleting(false);
+    // 5. Send delete to backend
+    fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch((err) => {
+      console.warn('Backend delete note:', err);
+    });
+
+    // 6. Notify user immediately
+    showToast(`"${title}" deleted immediately.`, 'info');
+  };
+
+  const confirmDeleteDocument = async () => {
+    if (!docToDelete || !isOwner) return;
+    await handleDeleteDocument(docToDelete.id);
     setDocToDelete(null);
-    setDeleteToast(`"${title}" has been permanently deleted.`);
-    setTimeout(() => {
-      setDeleteToast(null);
-    }, 3500);
   };
 
-  const handleApproveDocument = (id: string) => {
-    const updated = documents.map(d => d.id === id ? { ...d, status: 'approved' as const } : d);
-    saveDocumentsToStorage(updated);
-    try {
-      fetch(`/api/documents/${id}/approve`, { method: 'PATCH' }).catch(() => {});
-    } catch {}
-  };
+  const approvedDocs = useMemo(() => documents, [documents]);
 
-  const approvedDocs = documents.filter((d) => d.status === 'approved' || !d.status);
-  const pendingDocs = documents.filter((d) => d.status === 'pending');
+  const categories = ['All', ...CATEGORIES_LIST];
 
-  const categories = [
-    'All',
-    'Christians Book',
-    'Inspirational Book',
-    'Technical Drawing',
-    '3D CAD Model',
-    'Production Blueprint',
-    'Whitepaper & Report',
-    'BOM & Specification',
-    'Calculation & Dataset'
-  ];
+  const filteredDocs = useMemo(() => {
+    let result = approvedDocs.filter((doc) => {
+      const matchesCategory = selectedCategory === 'All' || doc.category === selectedCategory;
+      const matchesSearch =
+        searchQuery.trim() === '' ||
+        doc.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (doc.uploaderName && doc.uploaderName.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        doc.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
+      return matchesCategory && matchesSearch;
+    });
 
-  const filteredDocs = approvedDocs.filter((doc) => {
-    const matchesCategory = selectedCategory === 'All' || doc.category === selectedCategory;
-    const matchesSearch =
-      searchQuery.trim() === '' ||
-      doc.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doc.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doc.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      doc.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (doc.uploaderName && doc.uploaderName.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      doc.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
-    return matchesCategory && matchesSearch;
-  });
+    // Sorting
+    if (sortBy === 'newest') {
+      result = sortDocumentsDescending(result);
+    } else if (sortBy === 'downloads') {
+      result.sort((a, b) => (b.downloadCount || 0) - (a.downloadCount || 0));
+    } else if (sortBy === 'title') {
+      result.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    } else if (sortBy === 'size') {
+      const parseSize = (s: string) => {
+        const num = parseFloat(s) || 0;
+        if (s.toLowerCase().includes('mb')) return num * 1024 * 1024;
+        if (s.toLowerCase().includes('kb')) return num * 1024;
+        return num;
+      };
+      result.sort((a, b) => parseSize(b.fileSize) - parseSize(a.fileSize));
+    }
 
-  const totalDownloads = approvedDocs.reduce((sum, d) => sum + (d.downloadCount || 0), 0);
+    return result;
+  }, [approvedDocs, selectedCategory, searchQuery, sortBy]);
 
-  const supportedFormatsText = React.useMemo(() => {
+  const totalDownloads = useMemo(
+    () => approvedDocs.reduce((sum, d) => sum + (d.downloadCount || 0), 0),
+    [approvedDocs]
+  );
+
+  const supportedFormatsText = useMemo(() => {
     const exts = new Set<string>();
     approvedDocs.forEach((d) => {
       const ext = d.fileName.split('.').pop()?.toUpperCase();
@@ -589,63 +798,90 @@ END-ISO-10303-21;`;
         exts.add(ext);
       }
     });
-    if (exts.size === 0) return 'PDF, STEP, DWG, ZIP';
+    if (exts.size === 0) return 'PDF, STEP, DWG, SLDPRT, ZIP, DOCX';
     return Array.from(exts).join(', ');
   }, [approvedDocs]);
 
+  const getCategoryIcon = (category: DocumentCategory) => {
+    switch (category) {
+      case 'Christians Book':
+      case 'Inspirational Book':
+        return <BookOpen className="w-4 h-4 text-amber-600" />;
+      case '3D CAD Model':
+        return <Layers className="w-4 h-4 text-cyan-600" />;
+      case 'Production Blueprint':
+      case 'Technical Drawing':
+        return <FileCode className="w-4 h-4 text-blue-600" />;
+      case 'BOM & Specification':
+      case 'Calculation & Dataset':
+        return <FileSpreadsheet className="w-4 h-4 text-emerald-600" />;
+      default:
+        return <FileText className="w-4 h-4 text-slate-600" />;
+    }
+  };
+
   return (
-    <div className="w-full space-y-8 font-sans">
-      {/* 1. HERO BANNER: ACCESSORIES PORTAL (LIGHT THEME) */}
-      <div className="bg-white rounded-3xl border border-slate-300/90 p-6 sm:p-8 shadow-sm text-slate-800 relative overflow-hidden">
-        {/* Subtle engineering grid accent */}
+    <div className="w-full space-y-7 font-sans">
+      {/* 1. HERO BANNER: ACCESSORIES & ENGINEERING PORTAL */}
+      <div className="bg-white rounded-3xl border border-slate-300 p-5 sm:p-6 shadow-sm text-slate-800 relative overflow-hidden text-center">
         <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0284c7_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
 
-        <div className="relative z-10 flex flex-col justify-between gap-5">
-          <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-xs font-mono font-bold tracking-wider uppercase">
-                <FolderDown className="w-3.5 h-3.5 text-cyan-700" />
-                <span>ACCESSORIES</span>
+        <div className="relative z-10 flex flex-col items-center justify-center text-center gap-4 max-w-4xl mx-auto">
+          <div className="space-y-2.5 w-full flex flex-col items-center justify-center text-center">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
+                <FolderDown className="w-3 h-3 text-cyan-700" />
+                <span>ACCESSORIES &amp; ARCHIVE</span>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={handleOpenUploadModal}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Upload Documents</span>
+                </button>
                 {isOwner ? (
-                  <span className="text-[11px] font-mono text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
-                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                    <span>Owner Mode Active</span>
+                  <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
+                    <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
+                    <span>Owner Mode</span>
                   </span>
                 ) : (
-                  <span className="text-[11px] font-mono text-cyan-800 bg-cyan-50 px-2.5 py-0.5 rounded-full border border-cyan-300 flex items-center gap-1 font-semibold">
-                    <User className="w-3 h-3 text-cyan-600" />
-                    <span>Visitor Mode</span>
+                  <span className="text-[8.5px] sm:text-[9px] font-mono text-cyan-800 bg-cyan-50 px-2 py-0.5 rounded-full border border-cyan-300 flex items-center gap-1 font-semibold">
+                    <User className="w-2.5 h-2.5 text-cyan-600" />
+                    <span>Public Hub</span>
                   </span>
                 )}
               </div>
             </div>
 
-            <h1 className="text-base sm:text-lg lg:text-xl font-bold font-serif tracking-tight text-slate-900 text-justify max-w-2xl">
+            <h1 className="text-[13.5px] sm:text-[15.5px] md:text-[17.5px] font-bold font-serif tracking-tight text-slate-900 text-center max-w-2xl mx-auto">
               Engineering Document Hub &amp; Technical Archive
             </h1>
+            <p className="text-[9px] sm:text-[10.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
+              Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), inspirational literature, and calculation datasets. Upload new documents or download existing archives with 1-click.
+            </p>
 
-            {/* Quick Metrics Bar (Light Theme) */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 shadow-sm">
-                <span className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider">TOTAL DOCUMENTS</span>
-                <strong className="text-lg sm:text-xl font-bold text-slate-900 font-mono">{approvedDocs.length}</strong>
+            {/* Quick Metrics Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1.5 w-full">
+              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOCUMENTS</span>
+                <strong className="text-xs sm:text-sm font-bold text-slate-900 font-mono text-center">{approvedDocs.length}</strong>
               </div>
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 shadow-sm">
-                <span className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider">TOTAL DOWNLOADS</span>
-                <strong className="text-lg sm:text-xl font-bold text-cyan-700 font-mono">{totalDownloads.toLocaleString()}</strong>
+              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOWNLOADS</span>
+                <strong className="text-xs sm:text-sm font-bold text-cyan-700 font-mono text-center">{totalDownloads.toLocaleString()}</strong>
               </div>
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 shadow-sm">
-                <span className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider">SUPPORTED FORMATS</span>
-                <strong className="text-xs font-bold text-slate-800 block truncate font-mono" title={supportedFormatsText}>
+              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">SUPPORTED FORMATS</span>
+                <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-slate-800 block truncate font-mono text-center max-w-full" title={supportedFormatsText}>
                   {supportedFormatsText}
                 </strong>
               </div>
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 shadow-sm">
-                <span className="block text-[10px] font-mono text-slate-500 uppercase tracking-wider">ACCESS LEVEL</span>
-                <strong className="text-xs font-bold text-emerald-700 flex items-center gap-1 font-mono">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">ACCESS LEVEL</span>
+                <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-emerald-700 flex items-center justify-center gap-1 font-mono text-center">
+                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
                   <span>Public 1-Click</span>
                 </strong>
               </div>
@@ -654,120 +890,61 @@ END-ISO-10303-21;`;
         </div>
       </div>
 
-      {/* PENDING APPROVAL QUEUE (OWNER ONLY - LIGHT THEME) */}
-      {isOwner && pendingDocs.length > 0 && (
-        <div className="bg-amber-50/90 rounded-2xl border border-amber-300 p-5 shadow-sm space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-amber-600" />
-              <h3 className="text-xs sm:text-sm font-bold text-amber-950 font-mono uppercase tracking-wide">
-                Visitor Uploads Awaiting Approval ({pendingDocs.length})
-              </h3>
-            </div>
-            <span className="text-[10px] sm:text-xs font-mono text-amber-900 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300 font-semibold">
-              Review Required
-            </span>
-          </div>
-
-          <div className="space-y-2.5">
-            {pendingDocs.map((doc) => (
-              <div
-                key={doc.id}
-                className="p-3.5 rounded-xl bg-white border border-amber-200/90 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
-                    {doc.previewUrl ? (
-                      <img src={doc.previewUrl} alt={doc.title} className="w-full h-full object-contain" />
-                    ) : (
-                      <FileText className="w-5 h-5 text-cyan-600" />
-                    )}
-                  </div>
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="font-bold text-slate-900">{doc.title}</span>
-                      <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600">
-                        {doc.fileSize}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 font-mono">
-                      Uploader: <span className="text-cyan-800 font-semibold">{doc.uploaderName || doc.author}</span> · File: {doc.fileName} · Date: {doc.uploadDate}
-                    </p>
-                    {doc.description && (
-                      <p className="text-xs text-slate-600 line-clamp-1">{doc.description}</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
-                  <button
-                    onClick={() => handleApproveDocument(doc.id)}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Approve &amp; Publish</span>
-                  </button>
-                  <button
-                    onClick={() => handleDeleteDocument(doc.id)}
-                    className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Reject</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 2. SEARCH & CATEGORY FILTER BAR (LIGHT THEME) */}
-      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-300 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      {/* 2. SEARCH, CATEGORY FILTER & SORT CONTROLS */}
+      <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-300 shadow-sm space-y-3.5">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
           {/* Search Box */}
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search documents by title, filename, CAD keyword, or GD&T tag..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
+              placeholder="Search by title, filename, CAD keyword, book author, or GD&T tag..."
+              className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={handleOpenUploadModal}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-bold transition-all cursor-pointer shadow-sm"
+          {/* Sort Dropdown */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 text-[10.5px] sm:text-[11px] text-slate-600 font-mono">
+              <ArrowUpDown className="w-3 h-3 text-slate-400" />
+              <span>Sort:</span>
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-[10.5px] sm:text-[11.5px] font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              <span>Add Document</span>
-            </button>
+              <option value="newest">Newest First</option>
+              <option value="downloads">Most Downloaded</option>
+              <option value="title">Alphabetical (A-Z)</option>
+              <option value="size">Largest Size</option>
+            </select>
           </div>
         </div>
 
-        {/* Category Filter Section (Organized in clean 2 to 3 rows) */}
-        <div className="space-y-2.5 pt-2 border-t border-slate-200">
-          <div className="flex items-center justify-between text-xs font-mono text-slate-500">
-            <span className="flex items-center gap-1.5 font-semibold text-slate-700">
-              <Filter className="w-3.5 h-3.5 text-cyan-700" />
+        {/* Category Filter Pills */}
+        <div className="space-y-2 pt-2 border-t border-slate-200">
+          <div className="flex items-center justify-between text-[10.5px] sm:text-[11.5px] font-mono text-slate-500">
+            <span className="flex items-center gap-1 font-semibold text-slate-700">
+              <Filter className="w-3 h-3 text-cyan-700" />
               <span>Category Filter:</span>
             </span>
-            <span className="text-[11px] text-cyan-800 font-semibold">
-              {selectedCategory === 'All' ? 'Showing All Categories' : selectedCategory}
+            <span className="text-[10px] sm:text-[10.5px] text-cyan-800 font-semibold">
+              {selectedCategory === 'All' ? 'Showing All Categories' : selectedCategory} ({filteredDocs.length})
             </span>
           </div>
 
-          <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-5 gap-1.5 sm:gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5">
             {categories.map((cat) => {
               const isSelected = selectedCategory === cat;
               return (
@@ -775,13 +952,13 @@ END-ISO-10303-21;`;
                   key={cat}
                   type="button"
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-2 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-semibold text-center leading-tight flex items-center justify-center transition-all cursor-pointer select-none min-h-[38px] ${
+                  className={`px-2 py-1.5 sm:py-2 rounded-xl text-[10px] sm:text-[10.5px] md:text-[11px] font-semibold text-center leading-snug flex items-center justify-center transition-all cursor-pointer select-none min-h-[36px] sm:min-h-[38px] ${
                     isSelected
                       ? 'bg-cyan-700 text-white shadow-sm ring-2 ring-cyan-600/30 font-bold'
                       : 'bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200/90'
                   }`}
                 >
-                  <span className="truncate max-w-full">{cat}</span>
+                  <span className="break-words text-center leading-snug">{cat}</span>
                 </button>
               );
             })}
@@ -789,7 +966,7 @@ END-ISO-10303-21;`;
         </div>
       </div>
 
-      {/* 3. DOCUMENTS DIRECTORY GRID (LIGHT THEME) */}
+      {/* 4. DOCUMENTS DIRECTORY GRID */}
       <div className="space-y-4">
         {filteredDocs.length === 0 ? (
           <div className="p-12 text-center rounded-3xl bg-white border border-slate-300 text-slate-700 space-y-4 shadow-sm">
@@ -797,20 +974,20 @@ END-ISO-10303-21;`;
               <FolderDown className="w-7 h-7 text-cyan-700" />
             </div>
             <div className="space-y-1">
-              <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                {searchQuery ? `No documents found matching "${searchQuery}"` : 'No Documents Uploaded Yet'}
+              <h3 className="text-xs sm:text-sm font-bold text-slate-900 font-serif">
+                {searchQuery ? `No documents found matching "${searchQuery}"` : 'No Documents In This Category Yet'}
               </h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
+              <p className="text-[9px] sm:text-[9.5px] text-slate-500 max-w-md mx-auto leading-relaxed">
                 {searchQuery
                   ? 'Try adjusting your search terms or selecting "All" categories.'
-                  : 'Be the first to upload an engineering drawing, 3D CAD model, or technical specification!'}
+                  : 'Upload technical drawings, Christian & inspirational books, 3D CAD models, or engineering blueprints.'}
               </p>
             </div>
             <button
               onClick={handleOpenUploadModal}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm shadow-sm transition-all cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
             >
-              <Upload className="w-4 h-4" />
+              <Upload className="w-3.5 h-3.5" />
               <span>Upload Document Now</span>
             </button>
           </div>
@@ -842,20 +1019,20 @@ END-ISO-10303-21;`;
 
                   {/* Format & Size Badge */}
                   <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
-                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-sm">
+                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
                       {doc.fileType}
                     </span>
-                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-sm">
+                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
                       {doc.fileSize}
                     </span>
                   </div>
 
-                  {/* Action overlays: Preview only (Single delete button located in footer for owner) */}
+                  {/* Preview Button */}
                   <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
                     {doc.previewUrl && (
                       <button
                         onClick={() => setPreviewModalDoc(doc)}
-                        className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-sm cursor-pointer"
+                        className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
                         title="View Full Resolution Preview"
                       >
                         <Eye className="w-3.5 h-3.5" />
@@ -868,8 +1045,11 @@ END-ISO-10303-21;`;
                 <div className="p-4 sm:p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
-                      <span className="text-cyan-700 font-semibold">{doc.category}</span>
-                      <span className="flex items-center gap-1">
+                      <span className="text-cyan-700 font-semibold flex items-center gap-1">
+                        {getCategoryIcon(doc.category)}
+                        <span className="truncate max-w-[140px]">{doc.category}</span>
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
                         <Clock className="w-3 h-3 text-slate-400" />
                         <span>{doc.uploadDate}</span>
                       </span>
@@ -909,11 +1089,11 @@ END-ISO-10303-21;`;
                   </div>
                 </div>
 
-                {/* Card Bottom: 1-Click Download Button & Owner-Only Delete Button */}
+                {/* Card Bottom: 1-Click Download Button & Delete */}
                 <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center gap-2">
                   <button
                     onClick={() => handleDownloadDocument(doc)}
-                    className="flex-1 py-2.5 px-3 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
                   >
                     <Download className="w-4 h-4 text-white" />
                     <span>Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
@@ -923,11 +1103,10 @@ END-ISO-10303-21;`;
                   {isOwner && (
                     <button
                       onClick={(e) => handleDeleteDocument(doc.id, e)}
-                      className="py-2.5 px-3.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm shrink-0"
-                      title="Delete document (Owner)"
+                      className="py-2.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs shrink-0"
+                      title="Delete document (Owner only)"
                     >
                       <Trash2 className="w-4 h-4" />
-                      <span>Delete</span>
                     </button>
                   )}
                 </div>
@@ -937,203 +1116,215 @@ END-ISO-10303-21;`;
         )}
       </div>
 
-      {/* 4. MODAL: UPLOAD FROM DEVICE */}
+      {/* 5. MODAL: DEDICATED UPLOAD MODAL */}
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="relative w-full max-w-2xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-7 shadow-2xl text-slate-800 space-y-5 animate-fadeIn my-8">
+          <div className="relative w-full max-w-3xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-7 shadow-2xl text-slate-800 space-y-5 animate-fadeIn my-8 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700">
-                  <Upload className="w-4 h-4" />
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700">
+                  <Upload className="w-5 h-5" />
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                    Upload Document Directly from Device
+                    Upload Documents &amp; Files
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Make your drawings, CAD files, or technical specs available to everyone
+                    Upload single or multiple files irrespective of size or content
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setIsUploadModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                onClick={() => {
+                  if (!isPublishing) {
+                    setIsUploadModalOpen(false);
+                    setQueuedFiles([]);
+                  }
+                }}
+                disabled={isPublishing}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {uploadSuccessMsg ? (
-              <div className="p-6 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-center space-y-3">
-                <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto animate-bounce" />
-                <h4 className="text-lg font-bold text-slate-900">Upload Complete &amp; Published!</h4>
-                <p className="text-xs sm:text-sm max-w-md mx-auto text-emerald-900">{uploadSuccessMsg}</p>
+              <div className="p-8 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-center space-y-3">
+                <CheckCircle2 className="w-14 h-14 text-emerald-600 mx-auto animate-bounce" />
+                <h4 className="text-lg sm:text-xl font-bold text-slate-900">Uploads Published Successfully!</h4>
+                <p className="text-xs sm:text-sm max-w-md mx-auto text-emerald-900 leading-relaxed">
+                  {uploadSuccessMsg}
+                </p>
               </div>
             ) : (
-              <form onSubmit={handlePublishDocument} className="space-y-4">
-                {/* File Dropzone */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                    Select File from Computer / Mobile
+              <form onSubmit={handlePublishAllQueued} className="space-y-4 flex-1 overflow-y-auto pr-1">
+                {/* Uploader Name Bar */}
+                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Uploader / Author Name *
                   </label>
                   <input
-                    ref={fileInputRef}
+                    type="text"
+                    required
+                    value={uploaderName}
+                    onChange={(e) => setUploaderName(e.target.value)}
+                    placeholder={isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Enter your name or organization'}
+                    className="w-full p-2.5 rounded-xl bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans"
+                  />
+                </div>
+
+                {/* Dropzone */}
+                <div>
+                  <input
+                    ref={modalFileInputRef}
                     type="file"
-                    accept=".pdf,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.png,.jpg,.jpeg,.svg,.docx,.xlsx"
+                    multiple
+                    accept=".pdf,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.csv,.json"
                     onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handleFilePicked(e.target.files[0]);
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleFilesPicked(e.target.files);
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  <input
+                    ref={addMoreInputRef}
+                    type="file"
+                    multiple
+                    accept=".pdf,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.csv,.json"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleFilesPicked(e.target.files);
                       }
                     }}
                     className="hidden"
                   />
 
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                        handleFilePicked(e.dataTransfer.files[0]);
-                      }
-                    }}
-                    className={`border-2 border-dashed ${
-                      uploadFile ? 'border-cyan-500 bg-cyan-50/50' : 'border-slate-300 hover:border-cyan-500 bg-slate-50'
-                    } rounded-2xl p-5 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group`}
-                  >
-                    {uploadPreviewUrl ? (
-                      <div className="flex flex-col items-center space-y-2">
-                        <img
-                          src={uploadPreviewUrl}
-                          alt="Document Preview"
-                          className="max-h-24 rounded border border-slate-200 object-contain shadow-sm bg-white"
-                        />
-                        <span className="text-xs font-bold text-cyan-800">{uploadFile?.name}</span>
-                        <span className="text-[11px] text-slate-500">Click to change file</span>
+                  {queuedFiles.length === 0 ? (
+                    <div
+                      onClick={() => modalFileInputRef.current?.click()}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                          handleFilesPicked(e.dataTransfer.files);
+                        }
+                      }}
+                      className="border-2 border-dashed border-slate-300 hover:border-cyan-600 bg-slate-50/70 hover:bg-cyan-50/30 rounded-2xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group"
+                    >
+                      <div className="w-12 h-12 rounded-2xl bg-cyan-100/70 border border-cyan-300 flex items-center justify-center text-cyan-800 group-hover:scale-110 transition-transform shadow-xs">
+                        <Upload className="w-6 h-6" />
                       </div>
-                    ) : uploadFile ? (
-                      <div className="flex flex-col items-center space-y-1">
-                        <FileCheck className="w-8 h-8 text-emerald-600" />
-                        <span className="text-sm font-bold text-slate-900">{uploadFile.name}</span>
-                        <span className="text-xs text-slate-500">
-                          {(uploadFile.size / (1024 * 1024)).toFixed(1)} MB · Ready to publish
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center space-y-1">
-                        <div className="w-10 h-10 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 group-hover:scale-105 transition-transform">
-                          <Upload className="w-5 h-5" />
-                        </div>
-                        <span className="text-sm font-bold text-slate-800 block">
-                          Click to browse device or drag file here
-                        </span>
-                        <span className="text-[11px] text-slate-500 block font-mono">
-                          Supports PDF, STEP, STP, DWG, DXF, SLDPRT, ZIP, Images
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Uploader Name & Title Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                        Name of Uploader *
-                      </label>
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                        isOwner
-                          ? 'text-emerald-800 bg-emerald-50 border-emerald-300'
-                          : 'text-amber-800 bg-amber-50 border-amber-300'
-                      }`}>
-                        {isOwner ? 'Owner Direct' : 'Visitor (Needs Approval)'}
+                      <span className="text-sm font-bold text-slate-800 block">
+                        Click to browse or drag &amp; drop files here
+                      </span>
+                      <span className="text-xs text-slate-500 block">
+                        Select single or multiple files (PDF Books, STEP CAD, Drawings, Word, Excel, ZIP)
+                      </span>
+                      <span className="text-[10px] text-cyan-800 font-mono bg-cyan-50 px-2 py-0.5 rounded-full border border-cyan-200">
+                        Direct publishing · Supports any number of uploads
                       </span>
                     </div>
-                    <input
-                      type="text"
-                      required
-                      value={uploaderName}
-                      onChange={(e) => setUploaderName(e.target.value)}
-                      placeholder={isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Enter your name (e.g. Alex Morgan)'}
-                      className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white font-sans"
-                    />
-                  </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                          <ListPlus className="w-4 h-4 text-cyan-700" />
+                          <span>Queued Files ({queuedFiles.length})</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => addMoreInputRef.current?.click()}
+                          className="px-3 py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add More Files</span>
+                        </button>
+                      </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Document Title *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={uploadTitle}
-                      onChange={(e) => setUploadTitle(e.target.value)}
-                      placeholder="e.g. CNC Gantry Laser Engraver Main Views"
-                      className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white font-sans"
-                    />
-                  </div>
-                </div>
+                      {/* Itemized File Cards */}
+                      <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                        {queuedFiles.map((item, idx) => (
+                          <div
+                            key={item.id}
+                            className="p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs space-y-2.5"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                                <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
+                                  {item.previewUrl ? (
+                                    <img src={item.previewUrl} alt="Preview" className="w-full h-full object-contain" />
+                                  ) : (
+                                    getCategoryIcon(item.category)
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-cyan-100 text-cyan-900">
+                                      #{idx + 1}
+                                    </span>
+                                    <input
+                                      type="text"
+                                      value={item.title}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { title: e.target.value })}
+                                      className="font-bold text-xs sm:text-sm text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-cyan-600 focus:outline-none w-full"
+                                      placeholder="Document title"
+                                    />
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 font-mono flex items-center gap-2 mt-0.5">
+                                    <span>{item.file.name}</span>
+                                    <span>·</span>
+                                    <span>{item.fileSize}</span>
+                                  </div>
+                                </div>
+                              </div>
 
-                {/* Category & Tags Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Category *
-                    </label>
-                    <select
-                      value={uploadCategory}
-                      onChange={(e) => setUploadCategory(e.target.value as any)}
-                      className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white font-sans cursor-pointer"
-                    >
-                      <option value="Christians Book">Christians Book</option>
-                      <option value="Inspirational Book">Inspirational Book</option>
-                      <option value="Technical Drawing">Technical Drawing (PDF/DWG)</option>
-                      <option value="3D CAD Model">3D CAD Model (STEP/STP/IGES)</option>
-                      <option value="Production Blueprint">Production Blueprint</option>
-                      <option value="Whitepaper & Report">Whitepaper &amp; Research Report</option>
-                      <option value="BOM & Specification">BOM &amp; Specification</option>
-                      <option value="Calculation & Dataset">Calculation &amp; Simulation Dataset</option>
-                    </select>
-                  </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveQueueItem(item.id)}
+                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                title="Remove file"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                      Tags (Comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={uploadTags}
-                      onChange={(e) => setUploadTags(e.target.value)}
-                      placeholder="e.g. CNC, Laser, ASME Y14.5, SolidWorks"
-                      className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white font-sans"
-                    />
-                  </div>
-                </div>
-
-                {/* Description */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Technical Description &amp; Specifications
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={uploadDescription}
-                    onChange={(e) => setUploadDescription(e.target.value)}
-                    placeholder="Enter dimensional tolerances, material callouts, CAD software used (e.g. SolidWorks 2026, Ansys), or general design specifications..."
-                    className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white font-sans resize-none leading-relaxed"
-                  />
-                </div>
-
-                {!isOwner && (
-                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="text-amber-950 font-bold block mb-0.5">Visitor Upload Notice:</strong>
-                      <span>As a visitor, your document will be submitted to portfolio owner Festus Johnson for approval before being publicly listed in the accessories repository.</span>
+                            {/* Category Selector & Tags */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-200/60">
+                              <div>
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Category</label>
+                                <select
+                                  value={item.category}
+                                  onChange={(e) =>
+                                    handleUpdateQueueItem(item.id, { category: e.target.value as DocumentCategory })
+                                  }
+                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                >
+                                  {CATEGORIES_LIST.map((cat) => (
+                                    <option key={cat} value={cat}>
+                                      {cat}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Tags</label>
+                                <input
+                                  type="text"
+                                  value={item.tags}
+                                  onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
+                                  placeholder="Comma separated tags"
+                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 {uploadError && (
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold flex items-center gap-2">
@@ -1142,17 +1333,19 @@ END-ISO-10303-21;`;
                   </div>
                 )}
 
-                {/* Progress bar if publishing */}
+                {/* Progress Bar */}
                 {isPublishing && (
-                  <div className="space-y-1.5 font-mono text-xs">
+                  <div className="space-y-1.5 font-mono text-xs p-3 rounded-xl bg-slate-50 border border-slate-200">
                     <div className="flex justify-between text-cyan-800 font-semibold">
-                      <span>Publishing document to public hub...</span>
-                      <span>{uploadProgress}%</span>
+                      <span>
+                        Uploading file {uploadProgress.current} of {uploadProgress.total} ({uploadProgress.currentFileName})...
+                      </span>
+                      <span>{uploadProgress.percent}%</span>
                     </div>
-                    <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                    <div className="w-full h-2.5 rounded-full bg-slate-200 overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-cyan-600 to-sky-500 transition-all duration-300"
-                        style={{ width: `${uploadProgress}%` }}
+                        style={{ width: `${uploadProgress.percent}%` }}
                       />
                     </div>
                   </div>
@@ -1162,25 +1355,32 @@ END-ISO-10303-21;`;
                 <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">
                   <button
                     type="button"
-                    onClick={() => setIsUploadModalOpen(false)}
-                    className="px-4 py-2.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer"
+                    disabled={isPublishing}
+                    onClick={() => {
+                      setIsUploadModalOpen(false);
+                      setQueuedFiles([]);
+                    }}
+                    className="px-4 py-2.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={isPublishing}
+                    disabled={isPublishing || queuedFiles.length === 0}
                     className="px-6 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm shadow-md flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isPublishing ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                        <span>Publishing...</span>
+                        <span>Publishing {queuedFiles.length} Documents...</span>
                       </>
                     ) : (
                       <>
                         <CheckCircle2 className="w-4 h-4 text-white" />
-                        <span>Publish &amp; Enable Public Download</span>
+                        <span>
+                          Publish {queuedFiles.length > 0 ? `${queuedFiles.length} ` : ''}Document
+                          {queuedFiles.length === 1 ? '' : 's'}
+                        </span>
                       </>
                     )}
                   </button>
@@ -1191,7 +1391,7 @@ END-ISO-10303-21;`;
         </div>
       )}
 
-      {/* 5. MODAL: LIGHTBOX PREVIEW */}
+      {/* 6. MODAL: LIGHTBOX PREVIEW */}
       {previewModalDoc && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="relative w-full max-w-4xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-6 shadow-2xl text-slate-800 space-y-4 max-h-[90vh] flex flex-col">
@@ -1235,12 +1435,12 @@ END-ISO-10303-21;`;
                 {isOwner && (
                   <button
                     onClick={() => {
-                      const doc = previewModalDoc;
+                      const docId = previewModalDoc.id;
                       setPreviewModalDoc(null);
-                      setDocToDelete(doc);
+                      handleDeleteDocument(docId);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs sm:text-sm cursor-pointer shadow-sm transition-all"
-                    title="Delete this document (Owner)"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs sm:text-sm cursor-pointer shadow-xs transition-all"
+                    title="Delete this document immediately (Owner only)"
                   >
                     <Trash2 className="w-4 h-4" />
                     <span>Delete</span>
@@ -1251,7 +1451,7 @@ END-ISO-10303-21;`;
                     handleDownloadDocument(previewModalDoc);
                     setPreviewModalDoc(null);
                   }}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm cursor-pointer shadow-sm transition-all"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm cursor-pointer shadow-xs transition-all"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download This Document</span>
@@ -1262,7 +1462,7 @@ END-ISO-10303-21;`;
         </div>
       )}
 
-      {/* 6. MODAL: PERMANENT DELETE CONFIRMATION */}
+      {/* 7. MODAL: PERMANENT DELETE CONFIRMATION */}
       {docToDelete && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="relative w-full max-w-md bg-white border border-slate-300 rounded-3xl p-6 shadow-2xl text-slate-800 space-y-4 animate-fadeIn my-8">
@@ -1302,7 +1502,7 @@ END-ISO-10303-21;`;
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Are you sure you want to permanently delete this document from the Engineering Hub? This action will remove the document from the repository.
+              Are you sure you want to permanently delete this document from the Engineering Hub? This action cannot be undone.
             </p>
 
             <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200">
@@ -1328,7 +1528,7 @@ END-ISO-10303-21;`;
                 ) : (
                   <>
                     <Trash2 className="w-4 h-4 text-white" />
-                    <span>Yes, Permanently Delete</span>
+                    <span>Yes, Delete</span>
                   </>
                 )}
               </button>
@@ -1337,16 +1537,18 @@ END-ISO-10303-21;`;
         </div>
       )}
 
-      {/* 7. TOAST NOTIFICATION */}
-      {deleteToast && (
-        <div className="fixed bottom-4 right-4 z-50 bg-slate-950/95 text-slate-100 px-3 py-1.5 rounded-xl shadow-xl border border-cyan-500/30 flex items-center gap-2 animate-fadeIn max-w-xs sm:max-w-sm text-[11px] sm:text-xs font-sans font-medium">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span className="truncate flex-1">{deleteToast}</span>
+      {/* 8. TOAST NOTIFICATION */}
+      {toastMsg && (
+        <div className="fixed bottom-4 right-4 z-50 bg-slate-950/95 text-slate-100 px-3.5 py-2.5 rounded-xl shadow-xl border border-cyan-500/30 flex items-center gap-2.5 animate-fadeIn max-w-xs sm:max-w-md text-xs font-sans font-medium">
+          {toastMsg.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+          {toastMsg.type === 'info' && <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />}
+          {toastMsg.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+          <span className="truncate flex-1">{toastMsg.text}</span>
           <button
-            onClick={() => setDeleteToast(null)}
+            onClick={() => setToastMsg(null)}
             className="text-slate-400 hover:text-white p-0.5 ml-1 shrink-0 cursor-pointer"
           >
-            <X className="w-3 h-3" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}

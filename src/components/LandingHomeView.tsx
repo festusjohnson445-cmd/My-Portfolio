@@ -2,25 +2,10 @@ import React from 'react';
 import {
   User,
   ArrowRight,
-  Download,
-  ShieldCheck,
-  Award,
   Layers,
-  Wrench,
-  CheckCircle2,
-  FileText,
   Zap,
-  Sparkles,
-  ChevronRight,
-  Briefcase,
-  Compass,
   MessageSquare,
-  Cpu,
-  Gauge,
-  Activity,
-  Box,
-  BrainCircuit,
-  Video
+  BrainCircuit
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
@@ -41,7 +26,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   const dynamicCertifications = getRightBadgeCertifications(bio, documents);
 
   return (
-    <div className="w-full font-serif text-slate-800 text-[0.95em]">
+    <div className="flex-1 w-full flex flex-col font-serif text-slate-800 text-[0.95em]">
       {/* ======================================================== */}
       {/* 1. HERO SECTION WITH MODERN ENGINEERING STYLING          */}
       {/* ======================================================== */}
@@ -141,7 +126,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-5xl mx-auto">
             {/* Card 1: My Profile */}
             <div 
               onClick={() => onNavigatePart('profile')}
@@ -198,7 +183,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                   Engineering Hub
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Access different categories of Engineering Documents and Technical Archive, Inspirational Books, Christian literature and more
+                  Access different categories of Engineering Documents and Technical Archive, Inspirational Books, Christian literature and more. Direct 1-click device uploads.
                 </p>
               </div>
 
@@ -208,33 +193,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               </div>
             </div>
 
-            {/* Card 3: Case Studies */}
-            <div 
-              onClick={() => onNavigatePart('projects')}
-              className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
-                    <Briefcase className="w-5 h-5 text-cyan-800" />
-                  </div>
-                </div>
-
-                <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  Case Studies
-                </h3>
-                <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Deep engineering post-mortems: physical constraints, hand calculations, 3D CAD modeling, and interactive Bill of Materials.
-                </p>
-              </div>
-
-              <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Inspect Case Studies</span>
-                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-
-            {/* Card 4: EaseStudy Studio */}
+            {/* Card 3: EaseStudy Studio */}
             <div 
               onClick={() => onNavigatePart('easestudy')}
               className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
@@ -263,7 +222,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               </div>
             </div>
 
-            {/* Card 5: Direct Messaging & Inquiry Channel */}
+            {/* Card 4: Direct Messaging & Inquiry Channel */}
             <div 
               onClick={() => onNavigatePart('messaging')}
               className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"

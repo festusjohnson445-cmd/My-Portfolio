@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   BrainCircuit,
   BookOpen,
@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { PortfolioPart } from './Navbar';
+import { saveLearningSessionToFirestore } from '../utils/firebase';
 
 export interface EaseStudyResponse {
   topic: string;
@@ -83,7 +84,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
   // Configuration options
   const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
-  const [questionCount, setQuestionCount] = useState<number>(8);
+  const [questionCount, setQuestionCount] = useState<number>(20);
   const [focusArea, setFocusArea] = useState<string>('');
 
   // Processing & result state
@@ -99,6 +100,19 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const [activeFlashcardIndex, setActiveFlashcardIndex] = useState(0);
   const [isFlashcardFlipped, setIsFlashcardFlipped] = useState(false);
   const [copiedNotification, setCopiedNotification] = useState(false);
+
+  // Restore previous study session from local cache on mount
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem('fesline_easestudy_last_result');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.topic && parsed.summary) {
+          setStudyResult(parsed);
+        }
+      }
+    } catch {}
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -196,11 +210,27 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
       if (data && data.success && data.result) {
         setStudyResult(data.result);
         setActiveOutputTab('summary');
+        
+        try {
+          localStorage.setItem('fesline_easestudy_last_result', JSON.stringify(data.result));
+        } catch {}
+
+        // Persist AI-generated learning session & exam suite to Firestore
+        saveLearningSessionToFirestore({
+          id: `session-${Date.now()}`,
+          topic: data.result.topic || 'Engineering Study Guide',
+          difficulty: data.result.difficulty || difficulty,
+          summary: data.result.summary || '',
+          concepts: data.result.keyConcepts || [],
+          flashcards: data.result.flashcards || [],
+          examSuite: data.result.examSuite || null,
+          createdAt: new Date().toISOString(),
+        }).catch((e) => console.warn('Could not persist study session to Firestore note:', e));
       } else {
         throw new Error(data?.message || 'Unable to generate study summary and exam questions.');
       }
     } catch (err: any) {
-      console.error('EaseStudy error:', err);
+      console.warn('EaseStudy note:', err);
       setAnalysisError(err.message || 'An error occurred during AI study processing. Please try again.');
     } finally {
       setIsAnalyzing(false);
@@ -396,7 +426,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
       pdf.save(`EaseStudy_${studyResult.topic.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
     } catch (err) {
-      console.error('PDF export error:', err);
+      console.warn('PDF export note:', err);
     }
   };
 
@@ -432,68 +462,66 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   };
 
   return (
-    <div className="w-full space-y-8 font-sans">
-      {/* 1. HERO HEADER BANNER */}
-      <div className="bg-white rounded-3xl border border-slate-300 p-6 sm:p-8 shadow-sm text-slate-800 relative overflow-hidden">
+    <div className="w-full space-y-7 font-sans">
+      {/* 1. HERO HEADER BANNER (Center Justified, Text size reduced by 10%) */}
+      <div className="bg-white rounded-3xl border border-slate-300 p-5 sm:p-7 shadow-sm text-slate-800 relative overflow-hidden text-center flex flex-col items-center justify-center">
         <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0891b2_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
 
-        <div className="relative z-10 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-xs font-mono font-bold tracking-wider uppercase">
-              <BrainCircuit className="w-3.5 h-3.5 text-cyan-700" />
-              <span>EASESTUDY SUITE</span>
-            </div>
+        <div className="relative z-10 space-y-2.5 max-w-3xl mx-auto flex flex-col items-center justify-center text-center">
+          <div className="inline-flex items-center justify-center gap-1.5 px-3 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[10px] sm:text-[11px] font-mono font-bold tracking-wider uppercase shadow-2xs">
+            <BrainCircuit className="w-3.5 h-3.5 text-cyan-700" />
+            <span>EASESTUDY SUITE</span>
           </div>
 
-          <div className="space-y-1">
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold font-serif tracking-tight text-slate-900">
+          <div className="space-y-1 text-center">
+            <h1 className="text-[17px] sm:text-[21px] lg:text-[23px] font-bold font-serif tracking-tight text-slate-900 text-center">
               EaseStudy - Studio
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 max-w-3xl leading-relaxed">
+            <p className="text-[10px] sm:text-[11.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
               Upload Handouts, PDF papers, engineering drawings, lecture slides, or handwritten diagrams and generate instant executive summaries, key concept breakdowns, and complete interactive practice exams with step-by-step solution
             </p>
           </div>
         </div>
       </div>
 
-      {/* 2. INPUT WORKSPACE CARD */}
-      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-300 shadow-sm space-y-6">
+      {/* 2. INPUT WORKSPACE CARD (Screenshot 3: Text size reduced by 6%, Minimum 20 Questions) */}
+      <div className="bg-white p-4.5 sm:p-6 rounded-3xl border border-slate-300 shadow-sm space-y-5">
         {/* Input Method Switcher */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
-          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200 w-full sm:w-auto sm:min-w-[280px]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-200 pb-3.5">
+          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200 w-full sm:w-auto sm:min-w-[260px]">
             <button
               onClick={() => setActiveInputTab('upload')}
-              className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer text-center ${
+              className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] sm:text-[12px] font-bold transition-all cursor-pointer text-center ${
                 activeInputTab === 'upload'
                   ? 'bg-cyan-700 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Upload className="w-4 h-4 shrink-0" />
+              <Upload className="w-3.5 h-3.5 shrink-0" />
               <span>Upload</span>
             </button>
 
             <button
               onClick={() => setActiveInputTab('text')}
-              className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer text-center ${
+              className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] sm:text-[12px] font-bold transition-all cursor-pointer text-center ${
                 activeInputTab === 'text'
                   ? 'bg-cyan-700 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <FileText className="w-4 h-4 shrink-0" />
+              <FileText className="w-3.5 h-3.5 shrink-0" />
               <span>Paste Note</span>
             </button>
           </div>
 
-          <span className="text-[11px] font-mono text-slate-500">
+          <span className="text-[9.5px] sm:text-[10px] font-mono text-slate-500">
             Accepts PDFs, PNG, JPG, WEBP, DOCX, &amp; Raw Text
           </span>
         </div>
 
         {/* Tab 1: Upload Dropzone */}
         {activeInputTab === 'upload' && (
-          <div className="space-y-4">
+          <div className="space-y-3.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -517,40 +545,40 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
               }}
               className={`border-2 border-dashed ${
                 uploadedFile ? 'border-cyan-600 bg-cyan-50/40' : 'border-slate-300 hover:border-cyan-600 bg-slate-50'
-              } rounded-2xl p-6 sm:p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-3 group`}
+              } rounded-2xl p-5 sm:p-7 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2.5 group`}
             >
               {filePreviewUrl ? (
-                <div className="flex flex-col items-center space-y-2">
+                <div className="flex flex-col items-center space-y-1.5">
                   <img
                     src={filePreviewUrl}
                     alt="Uploaded Preview"
-                    className="max-h-40 rounded-xl border border-slate-300 object-contain shadow-sm bg-white"
+                    className="max-h-36 rounded-xl border border-slate-300 object-contain shadow-sm bg-white"
                   />
-                  <span className="text-sm font-bold text-slate-900">{uploadedFile?.name}</span>
-                  <span className="text-xs text-slate-500">
+                  <span className="text-[12.5px] sm:text-[13.5px] font-bold text-slate-900">{uploadedFile?.name}</span>
+                  <span className="text-[10.5px] sm:text-[11px] text-slate-500">
                     {((uploadedFile?.size || 0) / 1024).toFixed(0)} KB · Click to change file
                   </span>
                 </div>
               ) : uploadedFile ? (
-                <div className="flex flex-col items-center space-y-2">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-300 flex items-center justify-center text-emerald-700">
-                    <FileText className="w-6 h-6" />
+                <div className="flex flex-col items-center space-y-1.5">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-300 flex items-center justify-center text-emerald-700">
+                    <FileText className="w-5 h-5" />
                   </div>
-                  <span className="text-sm font-bold text-slate-900">{uploadedFile.name}</span>
-                  <span className="text-xs text-emerald-700 font-mono font-semibold">
+                  <span className="text-[12.5px] sm:text-[13.5px] font-bold text-slate-900">{uploadedFile.name}</span>
+                  <span className="text-[10.5px] sm:text-[11px] text-emerald-700 font-mono font-semibold">
                     {((uploadedFile.size || 0) / 1024).toFixed(0)} KB · Ready to generate study summary &amp; exam
                   </span>
                 </div>
               ) : (
                 <div className="flex flex-col items-center space-y-2">
-                  <div className="w-12 h-12 rounded-2xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 group-hover:scale-105 transition-transform">
-                    <Upload className="w-6 h-6" />
+                  <div className="w-11 h-11 rounded-2xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 group-hover:scale-105 transition-transform">
+                    <Upload className="w-5 h-5" />
                   </div>
-                  <div className="space-y-0.5">
-                    <span className="text-sm sm:text-base font-bold text-slate-800 block">
+                  <div className="space-y-0.5 text-center">
+                    <span className="text-[12.5px] sm:text-[14px] font-bold text-slate-800 block text-center">
                       Click to choose document or image, or drag &amp; drop file here
                     </span>
-                    <span className="text-xs text-slate-500 block font-mono">
+                    <span className="text-[10px] sm:text-[11px] text-slate-500 block font-mono text-center">
                       PDFs, Textbook Snapshots, Handwritten Lecture Notes, Slides, Diagrams
                     </span>
                   </div>
@@ -562,30 +590,30 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
         {/* Tab 2: Text Area */}
         {activeInputTab === 'text' && (
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+          <div className="space-y-1.5">
+            <label className="block text-[10.5px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider">
               Paste Study Text, Lecture Notes, or Textbook Chapter Content:
             </label>
             <textarea
-              rows={7}
+              rows={6}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               placeholder="Paste text directly from your lecture notes, textbook syllabus, research summary, or study guide..."
-              className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white leading-relaxed font-sans"
+              className="w-full p-3.5 rounded-2xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white leading-relaxed font-sans"
             />
           </div>
         )}
 
-        {/* Study Configuration Parameters */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-200">
+        {/* Study Configuration Parameters (Screenshot 3) */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2 border-t border-slate-200">
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+            <label className="block text-[10.5px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
               Target Difficulty
             </label>
             <select
               value={difficulty}
               onChange={(e) => setDifficulty(e.target.value as any)}
-              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs sm:text-sm font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
+              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-[11.5px] sm:text-[12.5px] font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
             >
               <option value="beginner">Fundamental / Introductory</option>
               <option value="intermediate">Undergraduate / Practical</option>
@@ -595,23 +623,23 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+            <label className="block text-[10.5px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
               Exam Questions Count
             </label>
             <select
               value={questionCount}
               onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs sm:text-sm font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
+              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-[11.5px] sm:text-[12.5px] font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
             >
-              <option value={5}>Quick Review (5 Questions)</option>
-              <option value={8}>Standard Practice (8 Questions)</option>
-              <option value={12}>Full Comprehensive Exam (12 Questions)</option>
-              <option value={15}>Mastery Intensive (15 Questions)</option>
+              <option value={20}>Standard Practice (20 Questions)</option>
+              <option value={25}>Deep-Dive Mastery (25 Questions)</option>
+              <option value={30}>Full Comprehensive Exam (30 Questions)</option>
+              <option value={40}>Mastery Intensive (40 Questions)</option>
             </select>
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+            <label className="block text-[10.5px] sm:text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
               Custom Focus / Topic Directive (Optional)
             </label>
             <input
@@ -619,37 +647,37 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
               value={focusArea}
               onChange={(e) => setFocusArea(e.target.value)}
               placeholder="e.g. Focus heavily on calculation formulas..."
-              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600"
+              className="w-full p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] font-sans focus:outline-none focus:ring-2 focus:ring-cyan-600"
             />
           </div>
         </div>
 
         {analysisError && (
-          <div className="p-4 rounded-2xl bg-rose-50 border border-rose-300 text-rose-800 text-xs sm:text-sm font-semibold flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+          <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-800 text-[11.5px] sm:text-[12.5px] font-semibold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
             <span>{analysisError}</span>
           </div>
         )}
 
         {/* Action Button */}
-        <div className="flex items-center justify-between pt-2 border-t border-slate-200">
-          <span className="text-xs text-slate-500 font-mono">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-slate-200">
+          <span className="text-[10px] sm:text-[11px] text-slate-500 font-mono">
             {uploadedFile ? `Attached: ${uploadedFile.name}` : inputText ? `Text loaded (${inputText.length} chars)` : ''}
           </span>
 
           <button
             onClick={handleRunAnalysis}
             disabled={isAnalyzing}
-            className="px-6 py-3 rounded-2xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm shadow-md flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+            className="w-full sm:w-auto px-5 py-2.5 sm:py-3 rounded-2xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[11.5px] sm:text-[13px] shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
           >
             {isAnalyzing ? (
               <>
-                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
                 <span>Analyzing &amp; Generating Study Suite...</span>
               </>
             ) : (
               <>
-                <Sparkles className="w-4 h-4 text-cyan-200" />
+                <Sparkles className="w-3.5 h-3.5 text-cyan-200" />
                 <span>Generate Summary &amp; Exam Questions</span>
               </>
             )}

@@ -12,6 +12,9 @@
     scroll-behavior: smooth;
     background-color: #dce1e8;
     color: #0f172a;
+    width: 100%;
+    min-height: 100%;
+    overflow-x: hidden;
   }
 
   body {
@@ -20,6 +23,18 @@
     color: #0f172a;
     font-size: 1rem;
     line-height: 1.6;
+    width: 100%;
+    min-height: 100%;
+    overflow-x: hidden;
+    margin: 0;
+    padding: 0;
+  }
+
+  #root {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
 
   p, span, a, button, input, textarea, label, li, td, th, h1, h2, h3, h4, h5, h6 {
@@ -29,55 +44,6 @@
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
-}
-
-/* Fairly silver metallic styling & blueprint grids */
-.bg-silver-base {
-  background-color: #dce1e8;
-}
-
-.bg-silver-surface {
-  background: linear-gradient(180deg, #f0f4f8 0%, #e2e8f0 100%);
-}
-
-.bg-silver-card {
-  background: linear-gradient(145deg, #f4f7fb 0%, #e5ebf2 100%);
-}
-
-.bg-silver-metallic {
-  background: linear-gradient(135deg, #e4e9f0 0%, #cbd4de 50%, #dfe5ec 100%);
-}
-
-.bg-silver-header {
-  background-color: rgba(220, 226, 233, 0.94);
-}
-
-.border-silver-strong {
-  border-color: #9cb0c4;
-}
-
-.border-silver-subtle {
-  border-color: #cad5e2;
-}
-
-/* Subtle blueprint / engineering coordinate grid tuned for silver backdrops */
-.bg-grid-pattern {
-  background-size: 32px 32px;
-  background-image: 
-    linear-gradient(to right, rgba(100, 116, 139, 0.12) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(100, 116, 139, 0.12) 1px, transparent 1px);
-}
-
-.bg-blueprint-grid {
-  background-size: 40px 40px;
-  background-image: 
-    linear-gradient(to right, rgba(2, 132, 199, 0.12) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(2, 132, 199, 0.12) 1px, transparent 1px);
-}
-
-/* Crosshair cursor for metrology inspection */
-.cursor-crosshair-inspect {
-  cursor: crosshair;
 }
 
 /* Silver-toned scrollbars */

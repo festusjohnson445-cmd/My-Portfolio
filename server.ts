@@ -1,12 +1,49 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import compression from 'compression';
 import mammoth from 'mammoth';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  getGlobalProfileFromDb,
+  saveGlobalProfileToDb,
+  getProfilePictureFromDb,
+  saveProfilePictureToDb,
+  deleteProfilePictureFromDb,
+  getDocumentsFromDb,
+  getDocumentByIdFromDb,
+  saveDocumentToDb,
+  deleteDocumentFromDb,
+  incrementDocumentDownloadCountInDb,
+  getDeletedDocumentIdsFromDb,
+  getConversationsFromDb,
+  saveConversationToDb,
+  saveConversationsBatchToDb,
+  deleteConversationFromDb,
+  deleteMessageFromDb,
+  getDeletedConversationIdsFromDb,
+  getLearningSessionsFromDb,
+  getLearningSessionByIdFromDb,
+  saveLearningSessionToDb,
+  deleteLearningSessionFromDb,
+} from './src/db/storage.ts';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Enable Gzip and Brotli compression for fast loading and reduced bandwidth
+app.use(compression({
+  threshold: 1024,
+  level: 6,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
 
 // Initialize Google Gen AI with server-side API Key
 const ai = new GoogleGenAI({
@@ -18,14 +55,24 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Set 50MB payload limit to handle PDF books, technical drawings, and 3D CAD models
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Set 300MB payload limit to handle large PDF books, complex technical drawings, and 3D CAD models
+app.use(express.json({ limit: '300mb' }));
+app.use(express.urlencoded({ extended: true, limit: '300mb' }));
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DATA_FILE = path.join(DATA_DIR, 'public_documents.json');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
-const SESSIONS_FILE = path.join(DATA_DIR, 'learning_sessions.json');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+
+// Ensure local cache directories exist
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(RECORDINGS_DIR)) {
+  fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Clean error message helper to parse stringified JSON error objects from Gemini SDK
 function cleanErrorMessage(err: any): string {
@@ -41,214 +88,798 @@ function cleanErrorMessage(err: any): string {
   return msg;
 }
 
-// Ensure data directories exist
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!fs.existsSync(RECORDINGS_DIR)) {
-  fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+// Helper to determine mime type by extension
+function getMimeTypeByExt(ext: string): string {
+  const map: Record<string, string> = {
+    pdf: 'application/pdf',
+    step: 'application/octet-stream',
+    stp: 'application/octet-stream',
+    iges: 'application/octet-stream',
+    igs: 'application/octet-stream',
+    sldprt: 'application/octet-stream',
+    sldasm: 'application/octet-stream',
+    dwg: 'application/acad',
+    dxf: 'application/dxf',
+    zip: 'application/zip',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    txt: 'text/plain',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
+  };
+  return map[ext.toLowerCase()] || 'application/octet-stream';
 }
 
-function loadDocuments(): any[] {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const content = fs.readFileSync(DATA_FILE, 'utf-8');
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) return parsed;
+// Standardized profile format for frontend
+function formatProfileResponse(row: any) {
+  if (!row) return null;
+  const custom = (row.customFields && typeof row.customFields === 'object') ? row.customFields : {};
+  const resolvedHeader = row.header || row.headline || custom.header || custom.headline || 'Lead Mechanical Design Engineer · Precision Mechanisms';
+  const resolvedDescription = row.description !== undefined && row.description !== null ? row.description : (row.bio || custom.description || custom.bio || '');
+  const resolvedEmail = row.email || row.primaryEmail || custom.email || 'festusjohnson028@gmail.com';
+
+  return {
+    ...row,
+    avatar: row.avatar || custom.avatar || '',
+    header: resolvedHeader,
+    bio: {
+      fullName: row.fullName || custom.fullName || 'Festus, Olorunsogo Johnson',
+      email: resolvedEmail,
+      discipline: row.discipline !== undefined && row.discipline !== '' ? row.discipline : (custom.discipline || 'Mechanical Hardware & Thermal Systems'),
+      badges: row.badges !== undefined && row.badges !== '' ? row.badges : (custom.badges || 'Verified Engineer · CSWP · ASME GDTP Senior · FE EIT'),
+      country: row.country !== undefined && row.country !== '' ? row.country : (custom.country || 'United States'),
+      header: resolvedHeader,
+      degree: row.degree !== undefined && row.degree !== '' ? row.degree : (custom.degree || 'B.S. in Mechanical Engineering (BSME)'),
+      academicHonors: row.academicHonors !== undefined && row.academicHonors !== '' ? row.academicHonors : (custom.academicHonors || 'ABET Accredited · Honors (GPA 3.84 / 4.00)'),
+      leadership: row.leadership !== undefined && row.leadership !== '' ? row.leadership : (custom.leadership || 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead · ASME Section Officer'),
+      skills: row.skills !== undefined && row.skills !== '' ? row.skills : (custom.skills || 'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, CNC Machine, Laser Engraver/Cutter, 3D Animation, FEA Analysis'),
+      description: resolvedDescription,
+      shortSummary: row.shortSummary || custom.shortSummary || '',
+      availabilityStatus: row.availabilityStatus || custom.availabilityStatus || 'Active & Available for Q4 2026 Roles',
+      workClearance: row.workClearance || custom.workClearance || 'US Authorized · No Visa Sponsorship Required',
+      targetLocations: row.targetLocations || custom.targetLocations || 'San Francisco / Silicon Valley, Seattle, Austin, Boston',
+      linkedinUrl: row.linkedinUrl !== undefined ? row.linkedinUrl : (custom.linkedinUrl || 'https://linkedin.com'),
+      facebookUrl: row.facebookUrl !== undefined ? row.facebookUrl : (custom.facebookUrl || 'https://facebook.com'),
+      indeedUrl: row.indeedUrl !== undefined ? row.indeedUrl : (custom.indeedUrl || 'https://indeed.com'),
+      emailUrl: custom.emailUrl || (resolvedEmail ? `mailto:${resolvedEmail}` : 'mailto:festusjohnson028@gmail.com'),
+      twitterUrl: row.twitterUrl !== undefined ? row.twitterUrl : (custom.twitterUrl || 'https://x.com'),
+      tiktokUrl: custom.tiktokUrl || row.tiktokUrl || 'https://tiktok.com',
+      instagramUrl: row.instagramUrl !== undefined ? row.instagramUrl : (custom.instagramUrl || 'https://instagram.com'),
+    },
+    documents: Array.isArray(row.documents) ? row.documents : (Array.isArray(custom.documents) ? custom.documents : []),
+  };
+}
+
+// Active SSE clients for instant sub-millisecond message and chat delivery
+const chatSseClients = new Set<express.Response>();
+
+function broadcastChats(conversationsList: any[], deletedId?: string): void {
+  const data = `data: ${JSON.stringify({ type: 'update', conversations: conversationsList, deletedId })}\n\n`;
+  for (const client of chatSseClients) {
+    try {
+      client.write(data);
+    } catch {
+      chatSseClients.delete(client);
     }
-  } catch (err) {
-    console.error('Error loading documents:', err);
-  }
-  return [];
-}
-
-function saveDocuments(docs: any[]): void {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(docs, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving documents:', err);
   }
 }
 
-function loadLearningSessions(): any[] {
+// =================================================================
+// 1. REAL-TIME CHAT & INQUIRY STREAM (SSE)
+// =================================================================
+app.get('/api/chats/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
   try {
-    if (fs.existsSync(SESSIONS_FILE)) {
-      const content = fs.readFileSync(SESSIONS_FILE, 'utf-8');
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) return parsed;
+    const currentChats = await getConversationsFromDb();
+    res.write(`data: ${JSON.stringify({ type: 'init', conversations: currentChats })}\n\n`);
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ type: 'init', conversations: [] })}\n\n`);
+  }
+
+  chatSseClients.add(res);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      chatSseClients.delete(res);
     }
-  } catch (err) {
-    console.error('Error loading learning sessions:', err);
-  }
-  return [];
-}
+  }, 12000);
 
-function saveLearningSessions(sessions: any[]): void {
-  try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving learning sessions:', err);
-  }
-}
-
-// 1. Get all documents (visitors get approved documents, owners get all)
-app.get('/api/documents', (req, res) => {
-  const docs = loadDocuments();
-  const includePending = req.query.all === 'true';
-  if (includePending) {
-    return res.json({ success: true, documents: docs });
-  }
-  const approvedDocs = docs.filter((d) => d.status === 'approved' || !d.status);
-  res.json({ success: true, documents: approvedDocs });
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    chatSseClients.delete(res);
+  });
 });
 
-// 2. Publish or submit a document
-app.post('/api/documents', (req, res) => {
+// =================================================================
+// 2. CHATS & INQUIRIES API (CLOUDSQL PERSISTED)
+// =================================================================
+
+// Get all chats & inquiries for real-time sync between visitors and owner
+app.get(['/api/chats', '/api/conversations'], async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const chats = await getConversationsFromDb();
+    const deletedIds = await getDeletedConversationIdsFromDb();
+    res.json({
+      success: true,
+      conversations: chats,
+      deletedIds: Array.from(deletedIds),
+    });
+  } catch (err: any) {
+    console.error('Error fetching chats from db:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch chats' });
+  }
+});
+
+// Send a single message with instant database persistence & SSE broadcast
+app.post('/api/chats/send', async (req, res) => {
+  try {
+    const { conversationId, message, conversationMetadata } = req.body;
+    if (!conversationId || !message) {
+      return res.status(400).json({ success: false, message: 'Missing conversationId or message' });
+    }
+
+    const chats = await getConversationsFromDb();
+    const existing = chats.find((c: any) => c.id === conversationId);
+    const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
+    const lastTimestamp = message.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    let convToSave: any;
+    if (existing) {
+      const existingMsgs = Array.isArray(existing.messages) ? (existing.messages as any[]) : [];
+      const newMsgs = [...existingMsgs.filter((m: any) => m.id !== message.id), message];
+      convToSave = {
+        ...existing,
+        ...(conversationMetadata || {}),
+        messages: newMsgs,
+        lastMessage: lastSnippet,
+        lastTimestamp,
+        unread: message.sender === 'visitor',
+      };
+    } else {
+      convToSave = {
+        id: conversationId,
+        defaultLabel: conversationMetadata?.defaultLabel || 'Direct Message',
+        customName: conversationMetadata?.customName || '',
+        visitorName: conversationMetadata?.visitorName || '',
+        avatarUrl: conversationMetadata?.avatarUrl || '',
+        roleOrCompany: conversationMetadata?.roleOrCompany || 'Visitor Inquiry',
+        avatarColor: conversationMetadata?.avatarColor || 'bg-emerald-600',
+        unread: message.sender === 'visitor',
+        important: false,
+        messages: [message],
+        lastMessage: lastSnippet,
+        lastTimestamp,
+      };
+    }
+
+    await saveConversationToDb(convToSave);
+    const updatedChats = await getConversationsFromDb();
+    broadcastChats(updatedChats);
+    res.json({ success: true, conversations: updatedChats });
+  } catch (err: any) {
+    console.error('Error saving chat message to database:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to send message' });
+  }
+});
+
+// Update visitor messaging profile (custom name, avatar picture, role)
+app.post('/api/chats/visitor-profile', async (req, res) => {
+  try {
+    const { visitorId, name, avatarUrl, roleOrCompany } = req.body;
+    if (!visitorId) {
+      return res.status(400).json({ success: false, message: 'Missing visitorId' });
+    }
+    const chats = await getConversationsFromDb();
+    const existing = chats.find((c: any) => c.id === visitorId);
+    let convToSave: any;
+    if (existing) {
+      convToSave = {
+        ...existing,
+        customName: name !== undefined ? name : existing.customName,
+        visitorName: name !== undefined ? name : existing.visitorName,
+        avatarUrl: avatarUrl !== undefined ? avatarUrl : existing.avatarUrl,
+        roleOrCompany: roleOrCompany !== undefined ? roleOrCompany : existing.roleOrCompany,
+      };
+    } else {
+      convToSave = {
+        id: visitorId,
+        defaultLabel: name || 'Visitor',
+        customName: name || '',
+        visitorName: name || '',
+        avatarUrl: avatarUrl || '',
+        roleOrCompany: roleOrCompany || 'Visitor Direct Chat',
+        avatarColor: 'bg-emerald-600',
+        unread: false,
+        important: false,
+        messages: [],
+        lastMessage: '',
+        lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+    }
+
+    await saveConversationToDb(convToSave);
+    const updated = await getConversationsFromDb();
+    broadcastChats(updated);
+    res.json({ success: true, conversations: updated });
+  } catch (err: any) {
+    console.error('Error updating visitor profile:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update visitor profile' });
+  }
+});
+
+// Update or save chats batch (messages, attachments)
+app.post('/api/chats', async (req, res) => {
+  try {
+    const { conversations: incoming, overwrite } = req.body;
+    if (Array.isArray(incoming)) {
+      const finalChats = await saveConversationsBatchToDb(incoming, Boolean(overwrite));
+      broadcastChats(finalChats);
+      return res.json({ success: true, conversations: finalChats });
+    }
+    res.status(400).json({ success: false, message: 'Invalid conversations array' });
+  } catch (err: any) {
+    console.error('Error saving chats batch:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save chats' });
+  }
+});
+
+// Delete a full conversation thread / inquiry by id
+app.delete('/api/chats/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await deleteConversationFromDb(id);
+    const updated = await getConversationsFromDb();
+    broadcastChats(updated, id);
+    res.json({ success: true, conversations: updated, deletedId: id });
+  } catch (err: any) {
+    console.error('Error deleting chat from database:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to delete chat' });
+  }
+});
+
+// Delete a specific message within a conversation
+app.delete('/api/chats/:convId/messages/:msgId', async (req, res) => {
+  try {
+    const { convId, msgId } = req.params;
+    await deleteMessageFromDb(convId, msgId);
+    const updated = await getConversationsFromDb();
+    broadcastChats(updated);
+    res.json({ success: true, conversations: updated, deletedMessageId: msgId });
+  } catch (err: any) {
+    console.error('Error deleting message from database:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to delete message' });
+  }
+});
+
+// =================================================================
+// 3. GLOBAL PROFILE (CLOUDSQL PERSISTED)
+// =================================================================
+
+// Get global profile (avatar picture, bio, and custom profile documents)
+app.get('/api/profile', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const profile = await getGlobalProfileFromDb();
+    res.json({ success: true, profile: formatProfileResponse(profile) });
+  } catch (err: any) {
+    console.error('Error loading global profile from db:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch global profile' });
+  }
+});
+
+// Dedicated profile picture image fetch/stream endpoint (Separate persistent cloud database)
+app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
+  try {
+    // 1. Try dedicated profile_pictures table
+    const picRecord = await getProfilePictureFromDb('global');
+    if (picRecord && picRecord.fileBinary) {
+      const raw = picRecord.fileBinary;
+      let mimeType = picRecord.mimeType || 'image/jpeg';
+      let buffer: Buffer | null = null;
+
+      if (raw.startsWith('data:')) {
+        const match = raw.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          mimeType = match[1];
+          buffer = Buffer.from(match[2], 'base64');
+        }
+      } else if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        return res.redirect(raw);
+      } else {
+        buffer = Buffer.from(raw, 'base64');
+      }
+
+      if (buffer && buffer.length > 0) {
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        if (picRecord.updatedAt) {
+          res.setHeader('ETag', `"${new Date(picRecord.updatedAt).getTime()}"`);
+        }
+        return res.send(buffer);
+      }
+    }
+
+    // 2. Fallback to profiles table if present
+    const profile = await getGlobalProfileFromDb();
+    const avatar = profile?.avatar;
+    if (avatar && avatar.startsWith('data:image/')) {
+      const match = avatar.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        return res.send(buffer);
+      }
+    } else if (avatar && (avatar.startsWith('http://') || avatar.startsWith('https://')) && !avatar.includes('/api/profile/picture')) {
+      return res.redirect(avatar);
+    }
+
+    // 3. Fallback to default avatar svg or empty
+    const defaultLogo = path.resolve(process.cwd(), 'public/assets/fesline_logo.svg');
+    if (fs.existsSync(defaultLogo)) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      return res.sendFile(defaultLogo);
+    }
+
+    res.status(204).end();
+  } catch (err) {
+    res.status(204).end();
+  }
+});
+
+// Dedicated profile picture upload & update endpoint
+app.post(['/api/profile/picture', '/api/profile/avatar'], async (req, res) => {
+  try {
+    const avatarData = req.body.avatar || req.body.picture || req.body.image || req.body.fileBinary;
+    if (avatarData === undefined) {
+      return res.status(400).json({ success: false, message: 'Missing avatar image data' });
+    }
+
+    if (avatarData === '') {
+      await deleteProfilePictureFromDb('global');
+      return res.json({ success: true, url: '', avatar: '' });
+    }
+
+    const saved = await saveProfilePictureToDb({
+      id: 'global',
+      fileBinary: avatarData,
+      mimeType: req.body.mimeType || 'image/jpeg',
+      fileSize: req.body.fileSize || 'Standard',
+      dimensions: req.body.dimensions || '640 x 640 px',
+    });
+
+    res.json({
+      success: true,
+      url: saved.avatarUrl,
+      avatar: saved.avatarUrl,
+      updatedAt: saved.updatedAt,
+    });
+  } catch (err: any) {
+    console.error('Error saving profile picture to separate database:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save profile picture' });
+  }
+});
+
+// Remove profile picture endpoint
+app.delete(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
+  try {
+    await deleteProfilePictureFromDb('global');
+    res.json({ success: true, message: 'Profile picture removed successfully', url: '', avatar: '' });
+  } catch (err: any) {
+    console.error('Error removing profile picture from db:', err);
+    res.status(500).json({ success: false, message: 'Failed to remove profile picture' });
+  }
+});
+
+// Delete an inquiry by id (Dedicated endpoint for inquiries deletion)
+app.delete('/api/inquiries/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await deleteConversationFromDb(id);
+    const updated = await getConversationsFromDb();
+    broadcastChats(updated, id);
+    res.json({ success: true, message: 'Inquiry deleted successfully', deletedId: id });
+  } catch (err: any) {
+    console.error('Error deleting inquiry:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to delete inquiry' });
+  }
+});
+
+// Diagnostic System Health Check Endpoint
+app.get('/api/diagnostics', async (_req, res) => {
+  try {
+    let cloudSqlStatus = 'ok';
+    let cloudSqlError = null;
+    let profilesCount = 0;
+    let hasDedicatedAvatar = false;
+
+    try {
+      const profile = await getGlobalProfileFromDb();
+      profilesCount = profile ? 1 : 0;
+      const pic = await getProfilePictureFromDb('global');
+      hasDedicatedAvatar = Boolean(pic && pic.fileBinary);
+    } catch (sqlErr: any) {
+      cloudSqlStatus = 'error';
+      cloudSqlError = sqlErr.message;
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      database: {
+        cloudSql: {
+          status: cloudSqlStatus,
+          error: cloudSqlError,
+          profilesCount,
+          hasDedicatedAvatar,
+        },
+        firestore: {
+          status: 'ok',
+          databaseId: 'ai-studio-feslinemechanica-42e2df6f-07f3-451a-8be5-0d901fd6aa68',
+        },
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Update global profile (admin/owner uploads, bio changes, avatar)
+app.post('/api/profile', async (req, res) => {
+  try {
+    const updated = await saveGlobalProfileToDb(req.body);
+    const formatted = formatProfileResponse(updated);
+    res.json({ success: true, profile: formatted });
+  } catch (err: any) {
+    console.error('Error saving global profile to db:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save global profile' });
+  }
+});
+
+// Delete a document from global profile
+app.delete('/api/profile/documents/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const profile = await getGlobalProfileFromDb();
+    if (profile && Array.isArray(profile.documents)) {
+      const remainingDocs = profile.documents.filter((d: any) => d.id !== id);
+      const updated = await saveGlobalProfileToDb({ ...profile, documents: remainingDocs });
+      return res.json({ success: true, profile: formatProfileResponse(updated) });
+    }
+    res.json({ success: true, profile: formatProfileResponse(profile) });
+  } catch (err: any) {
+    console.error('Error deleting profile document:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to delete profile document' });
+  }
+});
+
+// =================================================================
+// 4. ENGINEERING HUB DOCUMENTS & CLOUD STORAGE (CLOUDSQL PERSISTED)
+// =================================================================
+
+// Get all documents (visitors get approved documents, owners get all)
+app.get('/api/documents', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const includePending = req.query.all === 'true';
+    const docs = await getDocumentsFromDb(includePending);
+    const deletedIds = await getDeletedDocumentIdsFromDb();
+
+    res.json({ 
+      success: true, 
+      documents: docs,
+      deletedIds: Array.from(deletedIds),
+    });
+  } catch (err: any) {
+    console.error('Error loading documents from db:', err);
+    res.status(500).json({ success: false, message: 'Failed to load documents' });
+  }
+});
+
+// Download / stream binary document file directly from persistent cloud database
+app.get('/api/documents/files/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await getDocumentByIdFromDb(id);
+
+    if (!doc) {
+      return res.status(404).send('Document not found');
+    }
+
+    const ext = (doc.fileName || '').split('.').pop() || 'bin';
+    const mimeType = doc.mimeType || getMimeTypeByExt(ext);
+
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName || 'document')}"`);
+    res.setHeader('Content-Type', mimeType);
+
+    // 1. Serve binary data from database (fileBinary or dataUrl)
+    const rawData = doc.fileBinary || doc.dataUrl;
+    if (rawData && typeof rawData === 'string') {
+      if (rawData.startsWith('data:')) {
+        const parts = rawData.split(',');
+        if (parts.length > 1) {
+          const buffer = Buffer.from(parts[1], 'base64');
+          return res.send(buffer);
+        }
+      } else if (rawData.length > 50) {
+        const buffer = Buffer.from(rawData, 'base64');
+        return res.send(buffer);
+      }
+    }
+
+    // 2. Fallback: check uploads disk cache if present
+    const filePath = path.join(UPLOADS_DIR, `${id}.${ext}`);
+    const binPath = path.join(UPLOADS_DIR, `${id}.bin`);
+    if (fs.existsSync(filePath)) {
+      return fs.createReadStream(filePath).pipe(res);
+    }
+    if (fs.existsSync(binPath)) {
+      return fs.createReadStream(binPath).pipe(res);
+    }
+
+    res.status(404).send('Document file content not found on server');
+  } catch (err: any) {
+    console.error('File download error:', err);
+    res.status(500).send('Error downloading file');
+  }
+});
+
+// Publish or submit a single document with permanent database storage
+app.post('/api/documents', async (req, res) => {
   try {
     const newDoc = req.body;
     if (!newDoc || !newDoc.title) {
       return res.status(400).json({ success: false, message: 'Invalid document data' });
     }
-    const docs = loadDocuments();
-    // Insert new document at the beginning
-    const updated = [newDoc, ...docs.filter((d) => d.id !== newDoc.id)];
-    saveDocuments(updated);
-    res.json({ success: true, document: newDoc });
+
+    const docId = newDoc.id || `doc-${Date.now()}`;
+    const ext = (newDoc.fileName || '').split('.').pop() || 'bin';
+    const uploadTimestamp = newDoc.uploadTimestamp || Date.now();
+    const mimeType = newDoc.mimeType || getMimeTypeByExt(ext);
+
+    let fileBinary = newDoc.fileBinary || newDoc.dataUrl || '';
+    if (newDoc.dataUrl && typeof newDoc.dataUrl === 'string' && newDoc.dataUrl.startsWith('data:')) {
+      fileBinary = newDoc.dataUrl;
+      try {
+        const parts = newDoc.dataUrl.split(',');
+        if (parts.length > 1) {
+          const buffer = Buffer.from(parts[1], 'base64');
+          fs.writeFileSync(path.join(UPLOADS_DIR, `${docId}.${ext}`), buffer);
+        }
+      } catch {}
+    }
+
+    const docToSave = {
+      ...newDoc,
+      id: docId,
+      uploadTimestamp,
+      fileBinary,
+      mimeType,
+      downloadUrl: `/api/documents/files/${docId}`,
+      hasServerFile: true,
+      dataUrl: newDoc.dataUrl && newDoc.dataUrl.length > 500000 ? undefined : newDoc.dataUrl,
+    };
+
+    const saved = await saveDocumentToDb(docToSave);
+    const allDocs = await getDocumentsFromDb(true);
+    res.json({ success: true, document: saved, documents: allDocs });
   } catch (err: any) {
+    console.error('Document save error:', err);
     res.status(500).json({ success: false, message: err?.message || 'Failed to save document' });
   }
 });
 
-// 3. Approve a pending visitor document
-app.patch('/api/documents/:id/approve', (req, res) => {
-  const { id } = req.params;
-  const docs = loadDocuments();
-  const updated = docs.map((d) => (d.id === id ? { ...d, status: 'approved' } : d));
-  saveDocuments(updated);
-  res.json({ success: true, documents: updated });
+// Batch publish multiple documents at once with persistent storage
+app.post('/api/documents/batch', async (req, res) => {
+  try {
+    const { documents: incomingDocs } = req.body;
+    if (!Array.isArray(incomingDocs) || incomingDocs.length === 0) {
+      return res.status(400).json({ success: false, message: 'No documents provided for batch upload' });
+    }
+
+    const savedBatch: any[] = [];
+    for (let i = 0; i < incomingDocs.length; i++) {
+      const newDoc = incomingDocs[i];
+      if (!newDoc || !newDoc.title) continue;
+
+      const docId = newDoc.id || `doc-${Date.now()}-${i}`;
+      const ext = (newDoc.fileName || '').split('.').pop() || 'bin';
+      const uploadTimestamp = newDoc.uploadTimestamp || (Date.now() + i);
+      const mimeType = newDoc.mimeType || getMimeTypeByExt(ext);
+
+      let fileBinary = newDoc.fileBinary || newDoc.dataUrl || '';
+      if (newDoc.dataUrl && typeof newDoc.dataUrl === 'string' && newDoc.dataUrl.startsWith('data:')) {
+        fileBinary = newDoc.dataUrl;
+        try {
+          const parts = newDoc.dataUrl.split(',');
+          if (parts.length > 1) {
+            fs.writeFileSync(path.join(UPLOADS_DIR, `${docId}.${ext}`), Buffer.from(parts[1], 'base64'));
+          }
+        } catch {}
+      }
+
+      const docToSave = {
+        ...newDoc,
+        id: docId,
+        uploadTimestamp,
+        fileBinary,
+        mimeType,
+        downloadUrl: `/api/documents/files/${docId}`,
+        hasServerFile: true,
+        dataUrl: newDoc.dataUrl && newDoc.dataUrl.length > 500000 ? undefined : newDoc.dataUrl,
+      };
+
+      const saved = await saveDocumentToDb(docToSave);
+      savedBatch.push(saved);
+    }
+
+    const allDocs = await getDocumentsFromDb(true);
+    res.json({ success: true, count: savedBatch.length, savedDocuments: savedBatch, documents: allDocs });
+  } catch (err: any) {
+    console.error('Batch document save error:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save batch documents' });
+  }
 });
 
-// 4. Delete an uploaded document
-app.delete('/api/documents/:id', (req, res) => {
-  const { id } = req.params;
-  const docs = loadDocuments();
-  const updated = docs.filter((d) => d.id !== id);
-  saveDocuments(updated);
-  res.json({ success: true, documents: updated });
+// Approve a pending visitor document
+app.patch('/api/documents/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await getDocumentByIdFromDb(id);
+    if (doc) {
+      await saveDocumentToDb({ ...doc, status: 'approved' });
+    }
+    const allDocs = await getDocumentsFromDb(true);
+    res.json({ success: true, documents: allDocs });
+  } catch (err: any) {
+    console.error('Error approving document:', err);
+    res.status(500).json({ success: false, message: 'Failed to approve document' });
+  }
 });
 
-// 5. Increment download count
-app.post('/api/documents/:id/download', (req, res) => {
-  const { id } = req.params;
-  const docs = loadDocuments();
-  const updated = docs.map((d) => (d.id === id ? { ...d, downloadCount: (d.downloadCount || 0) + 1 } : d));
-  saveDocuments(updated);
-  res.json({ success: true });
+// Delete an uploaded document permanently
+app.delete('/api/documents/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await deleteDocumentFromDb(id);
+    const allDocs = await getDocumentsFromDb(true);
+
+    // Clean up disk cache if present
+    try {
+      const ext = 'pdf';
+      const filePath = path.join(UPLOADS_DIR, `${id}.${ext}`);
+      const binPath = path.join(UPLOADS_DIR, `${id}.bin`);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+    } catch {}
+
+    res.json({ success: true, documents: allDocs, deletedId: id });
+  } catch (err: any) {
+    console.error('Error deleting document:', err);
+    res.status(500).json({ success: false, message: 'Failed to delete document' });
+  }
 });
 
-// 6. Learning: Get all teaching / training sessions
-app.get('/api/learning/sessions', (req, res) => {
-  const sessions = loadLearningSessions();
-  res.json({ success: true, sessions });
+// Increment download count
+app.post('/api/documents/:id/download', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await incrementDocumentDownloadCountInDb(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to increment download count' });
+  }
 });
 
-// 7. Learning: Save & upload a teaching session (with optional video base64)
-app.post('/api/learning/sessions', (req, res) => {
+// =================================================================
+// 5. TRAINING & LEARNING SESSIONS (CLOUDSQL PERSISTED)
+// =================================================================
+
+// Learning: Get all teaching / training sessions
+app.get('/api/learning/sessions', async (_req, res) => {
+  try {
+    const sessions = await getLearningSessionsFromDb();
+    res.json({ success: true, sessions });
+  } catch (err: any) {
+    console.error('Error fetching learning sessions:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch sessions' });
+  }
+});
+
+// Learning: Save & upload a teaching session (with optional video base64)
+app.post('/api/learning/sessions', async (req, res) => {
   try {
     const { sessionData, videoBase64, mimeType = 'video/webm' } = req.body;
     if (!sessionData || !sessionData.title) {
       return res.status(400).json({ success: false, message: 'Session title and metadata are required.' });
     }
 
-    const sessionId = sessionData.id || `session-${Date.now()}`;
-    let videoUrl = sessionData.videoUrl || '';
-    let hasRecordedVideo = Boolean(sessionData.hasRecordedVideo);
-
-    if (videoBase64) {
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      const videoFileName = `${sessionId}.${ext}`;
-      const videoFilePath = path.join(RECORDINGS_DIR, videoFileName);
-      
-      const buffer = Buffer.from(videoBase64, 'base64');
-      fs.writeFileSync(videoFilePath, buffer);
-      
-      videoUrl = `/api/learning/videos/${sessionId}`;
-      hasRecordedVideo = true;
-    }
-
-    const newSession = {
-      ...sessionData,
-      id: sessionId,
-      videoUrl,
-      hasRecordedVideo,
-      createdAt: new Date().toISOString(),
-    };
-
-    const existingSessions = loadLearningSessions();
-    const updated = [newSession, ...existingSessions.filter((s: any) => s.id !== sessionId)];
-    saveLearningSessions(updated);
-
-    res.json({ success: true, session: newSession });
+    const saved = await saveLearningSessionToDb(sessionData, videoBase64, mimeType);
+    res.json({ success: true, session: saved });
   } catch (err: any) {
     console.error('Error saving learning session:', err);
     res.status(500).json({ success: false, message: err?.message || 'Failed to save training session.' });
   }
 });
 
-// 8. Learning: Stream / serve recorded video with HTTP 206 Partial Content
-app.get('/api/learning/videos/:id', (req, res) => {
-  const { id } = req.params;
-  const webmPath = path.join(RECORDINGS_DIR, `${id}.webm`);
-  const mp4Path = path.join(RECORDINGS_DIR, `${id}.mp4`);
-  
-  let videoPath = '';
-  let contentType = 'video/webm';
+// Learning: Stream / serve recorded video with HTTP 206 Partial Content
+app.get('/api/learning/videos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const session = await getLearningSessionByIdFromDb(id);
 
-  if (fs.existsSync(webmPath)) {
-    videoPath = webmPath;
-    contentType = 'video/webm';
-  } else if (fs.existsSync(mp4Path)) {
-    videoPath = mp4Path;
-    contentType = 'video/mp4';
-  } else {
-    return res.status(404).send('Video recording not found');
-  }
+    if (session && session.videoData && session.videoData.length > 50) {
+      const buffer = Buffer.from(session.videoData, 'base64');
+      res.setHeader('Content-Type', 'video/webm');
+      res.setHeader('Content-Length', buffer.length);
+      return res.send(buffer);
+    }
 
-  const stat = fs.statSync(videoPath);
-  const fileSize = stat.size;
-  const range = req.headers.range;
+    const webmPath = path.join(RECORDINGS_DIR, `${id}.webm`);
+    const mp4Path = path.join(RECORDINGS_DIR, `${id}.mp4`);
+    let videoPath = '';
+    let contentType = 'video/webm';
 
-  if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunksize = end - start + 1;
-    const file = fs.createReadStream(videoPath, { start, end });
-    const head = {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': chunksize,
-      'Content-Type': contentType,
-    };
-    res.writeHead(206, head);
-    file.pipe(res);
-  } else {
-    const head = {
-      'Content-Length': fileSize,
-      'Content-Type': contentType,
-    };
-    res.writeHead(200, head);
-    fs.createReadStream(videoPath).pipe(res);
+    if (fs.existsSync(webmPath)) {
+      videoPath = webmPath;
+      contentType = 'video/webm';
+    } else if (fs.existsSync(mp4Path)) {
+      videoPath = mp4Path;
+      contentType = 'video/mp4';
+    } else {
+      return res.status(404).send('Video recording not found');
+    }
+
+    const stat = fs.statSync(videoPath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = end - start + 1;
+      const file = fs.createReadStream(videoPath, { start, end });
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': contentType,
+      };
+      res.writeHead(206, head);
+      file.pipe(res);
+    } else {
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+      };
+      res.writeHead(200, head);
+      fs.createReadStream(videoPath).pipe(res);
+    }
+  } catch (err: any) {
+    console.error('Error streaming video:', err);
+    res.status(500).send('Error streaming video');
   }
 });
 
-// 9. Learning: Delete a recorded session
-app.delete('/api/learning/sessions/:id', (req, res) => {
+// Learning: Delete a recorded session
+app.delete('/api/learning/sessions/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const existingSessions = loadLearningSessions();
-    const updated = existingSessions.filter((s: any) => s.id !== id);
-    saveLearningSessions(updated);
+    await deleteLearningSessionFromDb(id);
+    const updated = await getLearningSessionsFromDb();
 
     const webmPath = path.join(RECORDINGS_DIR, `${id}.webm`);
     const mp4Path = path.join(RECORDINGS_DIR, `${id}.mp4`);
@@ -261,6 +892,7 @@ app.delete('/api/learning/sessions/:id', (req, res) => {
 
     res.json({ success: true, sessions: updated });
   } catch (err: any) {
+    console.error('Error deleting session:', err);
     res.status(500).json({ success: false, message: err?.message || 'Failed to delete session' });
   }
 });
@@ -331,7 +963,7 @@ The output must be a valid JSON object matching the requested schema with:
       required: ['title', 'description', 'category', 'duration', 'durationSeconds', 'scenes', 'keyTakeaways', 'tags'],
     };
 
-    const candidateModels = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'];
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'];
     let lastError: any = null;
     let responseText = '';
 
@@ -434,13 +1066,32 @@ app.post('/api/easestudy/analyze', async (req, res) => {
       extractedDocxText ? `Uploaded Document Content (${fileData?.fileName || 'Document'}):\n${extractedDocxText}` : '',
     ].filter(Boolean).join('\n\n');
 
-    const promptText = `You are EaseStudy AI, an elite academic educator, syllabus specialist, and pedagogical examiner.
-Thoroughly analyze the provided study material, document, or image and generate a complete structured study package:
-1. Topic title and estimated reading time.
-2. A high-yield Executive Summary (clear narrative paragraph, 3 to 6 key takeaways, and core themes).
-3. Detailed Core Concepts breakdown with clear explanations, formulas / practical examples, and importance rating.
-4. An Exam Question Suite with exactly ${questionCount || 8} Multiple Choice Questions (each with 4 distinct options, clearly marked correct answer (e.g. "A", "B", "C", or "D"), and detailed explanation) AND 3 to 4 Short Answer / Conceptual Questions with ideal model answers and key grading points.
-5. 4 to 8 Interactive Flashcards (front: term/question, back: concise definition).
+    const targetQCount = Math.max(20, Number(questionCount) || 20);
+
+    const promptText = `You are EaseStudy AI, a world-class academic educator, university professor, and senior pedagogical examiner.
+Thoroughly analyze the provided study material, textbook content, engineering diagram, or lecture notes, and generate an exceptionally thorough, high-precision academic study package:
+
+1. Topic & Reading Time: Clear, accurate subject title and estimated study duration.
+2. Executive Summary:
+   - A deep, cohesive narrative summary paragraph explaining the foundational principles and practical significance.
+   - 4 to 8 high-yield key takeaways.
+   - Core thematic keywords & engineering taxonomy tags.
+3. Core Concepts Breakdown:
+   - 5 to 10 deep concept breakdowns.
+   - Each concept must feature clear theoretical explanation, explicit mathematical formulas / physics principles / working examples where applicable, and its critical exam importance.
+4. Exam Question Suite:
+   - Exactly ${targetQCount} Multiple Choice Questions:
+     * High-quality conceptual, numerical, and scenario-based exam questions covering all topics in depth.
+     * 4 realistic, distinct answer options per question labeled explicitly (e.g. "A) ...", "B) ...", "C) ...", "D) ...").
+     * The correct answer option.
+     * Step-by-step rigorous explanation and derivation for why the answer is correct and why the distractors are incorrect.
+   - 4 to 6 Short Answer / Analytical Questions:
+     * Complex conceptual or multi-step analysis questions.
+     * Complete model solution / ideal answer.
+     * Key criteria and essential formulas/points required for full credit.
+5. 6 to 12 High-Yield Active Recall Flashcards:
+   - Front: Essential definition, formula query, or mechanism challenge.
+   - Back: Accurate, concise, high-yield explanation.
 
 Target Difficulty: ${difficulty}
 ${focusArea ? `Special Focus Directive: ${focusArea}` : ''}
@@ -538,12 +1189,12 @@ ${combinedTextContent ? `\n\nStudy Material Text:\n${combinedTextContent}` : ''}
       required: ['topic', 'difficulty', 'readingTime', 'summary', 'keyConcepts', 'examSuite'],
     };
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+    const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-3.7-flash'];
     let lastError: any = null;
     let outputText = '';
 
     for (const modelName of candidateModels) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const response = await ai.models.generateContent({
             model: modelName,
@@ -561,8 +1212,8 @@ ${combinedTextContent ? `\n\nStudy Material Text:\n${combinedTextContent}` : ''}
         } catch (callErr: any) {
           lastError = callErr;
           console.warn(`Model ${modelName} attempt ${attempt} failed:`, callErr?.message || callErr);
-          // Wait 600ms before retrying
-          await new Promise((resolve) => setTimeout(resolve, 600));
+          // Wait with exponential backoff before retrying
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
         }
       }
       if (outputText) break;
@@ -591,9 +1242,36 @@ ${combinedTextContent ? `\n\nStudy Material Text:\n${combinedTextContent}` : ''}
 });
 
 async function startServer() {
+  // Serve public assets with browser caching and ETag support
+  app.use(express.static(path.resolve('public'), {
+    maxAge: '1d',
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      } else {
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+      }
+    }
+  }));
+
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve('dist')));
+    app.use(express.static(path.resolve('dist'), {
+      maxAge: '1y',
+      immutable: true,
+      etag: true,
+      lastModified: true,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        } else {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      }
+    }));
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.resolve('dist/index.html'));
     });
   } else {

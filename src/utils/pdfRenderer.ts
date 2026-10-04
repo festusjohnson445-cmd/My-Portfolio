@@ -243,7 +243,7 @@ export async function renderPdfFirstPageToImage(
   targetWidth = 900,
   fallbackFileName: string = 'document.pdf'
 ): Promise<string> {
-  try {
+  const renderTask = async () => {
     let loadingTask;
     if (typeof pdfDataUrlOrBuffer === 'string') {
       if (pdfDataUrlOrBuffer.startsWith('data:')) {
@@ -290,8 +290,16 @@ export async function renderPdfFirstPageToImage(
     await page.render(renderContext).promise;
 
     return canvas.toDataURL('image/jpeg', 0.9);
+  };
+
+  const timeoutTask = new Promise<string>((_, reject) =>
+    setTimeout(() => reject(new Error('PDF preview rendering timeout')), 3500)
+  );
+
+  try {
+    return await Promise.race([renderTask(), timeoutTask]);
   } catch (err) {
-    console.warn('PDF.js render encountered warning, generating dynamic drawing vector preview:', err);
+    console.warn('PDF.js render encountered warning or timeout, generating dynamic drawing vector preview:', err);
     return generateDocumentDrawingPreview(fallbackFileName);
   }
 }
