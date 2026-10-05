@@ -68,6 +68,7 @@ import {
   fetchMaterialsFromSupabaseTable,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
+  subscribeToSupabaseMaterialsChanges,
   getAuthenticatedOwnerUid,
 } from '../utils/supabase';
 import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
@@ -447,9 +448,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     window.addEventListener('focus', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibility);
 
+    const unsubscribeSupabase = subscribeToSupabaseMaterialsChanges(() => {
+      loadDocuments();
+    });
+
     return () => {
       unsubMem();
       unsubscribeFirestore();
+      unsubscribeSupabase();
       clearInterval(pollTimer);
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);

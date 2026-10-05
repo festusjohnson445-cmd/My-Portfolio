@@ -21,6 +21,7 @@ import {
   deleteAvatarFromSupabaseBucket,
   saveProfileToSupabaseTable,
   fetchProfileFromSupabaseTable,
+  subscribeToSupabaseProfileChanges,
   getAuthenticatedOwnerUid,
   supabaseSignInOwner,
   supabaseSignOutOwner,
@@ -260,7 +261,7 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
 
     isProfileHydrated = true;
 
-    // 3. Attach real-time listener if not already active
+    // 3. Attach real-time listeners if not already active
     if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
       isRealtimeListenerAttached = true;
       subscribeToProfile(
@@ -271,6 +272,17 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
         },
         (err) => console.warn('Realtime subscription notice:', err)
       );
+
+      subscribeToSupabaseProfileChanges((supaPayload) => {
+        if (supaPayload) {
+          applyPersistentProfile({
+            avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
+            bio: typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio,
+            documents: typeof supaPayload.documents === 'string' ? JSON.parse(supaPayload.documents) : supaPayload.documents,
+            updatedAt: supaPayload.updated_at || new Date().toISOString(),
+          });
+        }
+      });
     }
   } catch (err) {
     console.warn('Could not sync global profile from persistent storage:', err);
@@ -395,7 +407,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
   let rawBase64 = '';
 
   if (typeof avatarUrlOrFile === 'string') {
-    rawBase64 = avatarUrlOrFile;
+    rawBase64 = avatarUrlOrFile.trim();
   } else if (avatarUrlOrFile instanceof File || avatarUrlOrFile instanceof Blob) {
     rawBase64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -410,18 +422,38 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     return await resetStoredAvatar();
   }
 
-  let finalUrl = `/api/profile/picture?v=${Date.now()}`;
+  let finalUrl = '';
+  const ownerUid = getAuthenticatedOwnerUid();
 
-  // 1. Persist directly to dedicated Cloud SQL table (Separate persistent cloud database)
+  // 1. Direct HTTPS Link System or Upload to Supabase "avatars" Bucket
+  if (rawBase64.startsWith('http://') || rawBase64.startsWith('https://')) {
+    finalUrl = rawBase64;
+  } else {
+    try {
+      const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
+      if (supaRes && supaRes.publicUrl && supaRes.publicUrl.startsWith('http')) {
+        finalUrl = supaRes.publicUrl;
+      }
+    } catch (supaErr) {
+      console.warn('Supabase avatars bucket upload note:', supaErr);
+    }
+  }
+
+  // If Supabase upload didn't return an HTTPS URL, fallback to resilient server endpoint
+  if (!finalUrl) {
+    finalUrl = `/api/profile/picture?v=${Date.now()}`;
+  }
+
+  // 2. Persist directly to dedicated Cloud SQL table (Separate persistent cloud database)
   try {
     const res = await fetch('/api/profile/picture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ avatar: rawBase64 }),
+      body: JSON.stringify({ avatar: finalUrl.startsWith('http') ? finalUrl : rawBase64 }),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data && data.url) {
+      if (data && data.url && !finalUrl.startsWith('http')) {
         finalUrl = data.url;
       }
     }
@@ -429,13 +461,13 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Dedicated profile picture API note:', serverErr);
   }
 
-  // 2. Update in-memory and local browser caches
+  // 3. Update in-memory and local browser caches
   memoryAvatar = finalUrl;
   try {
     localStorage.setItem(STORAGE_KEY_AVATAR, finalUrl);
   } catch (err) {}
 
-  // 3. Save to IndexedDB
+  // 4. Save to IndexedDB
   try {
     await saveAvatarToIndexedDB({
       id: 'current_profile_avatar',
@@ -447,7 +479,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   notifyProfileUpdated();
 
-  // 4. Save lightweight URL reference to Firestore & Cloud SQL profile record
+  // 5. Save lightweight URL reference to Firestore & Cloud SQL profile record
   try {
     await saveProfileToFirestore({ avatar: finalUrl });
     pushProfileToServer({ avatar: finalUrl }).catch(() => {});
@@ -455,15 +487,11 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Firestore profile avatar update note:', dbErr);
   }
 
-  // 5. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
+  // 6. Save HTTPS URL to Supabase "profiles" table
   try {
-    const ownerUid = getAuthenticatedOwnerUid();
-    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
-    if (supaRes && supaRes.publicUrl) {
-      saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid).catch(() => {});
-    }
+    saveProfileToSupabaseTable({ avatarUrl: finalUrl }, ownerUid).catch(() => {});
   } catch (supaErr) {
-    console.warn('Supabase avatars bucket upload note:', supaErr);
+    console.warn('Supabase profiles table avatar note:', supaErr);
   }
 
   broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });

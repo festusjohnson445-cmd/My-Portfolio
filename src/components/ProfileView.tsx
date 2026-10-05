@@ -1489,6 +1489,12 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
                       loading="eager"
                       referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (!target.src.includes('/api/profile/picture')) {
+                          target.src = '/api/profile/picture';
+                        }
+                      }}
                     />
                   ) : (
                     <div 

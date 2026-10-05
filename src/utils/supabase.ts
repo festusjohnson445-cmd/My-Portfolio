@@ -375,9 +375,81 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
     if (error || !data) {
       return null;
     }
-    return data;
+
+    let parsedBio = data.bio;
+    if (typeof parsedBio === 'string') {
+      try {
+        parsedBio = JSON.parse(parsedBio);
+      } catch {}
+    }
+
+    let parsedDocs = data.documents;
+    if (typeof parsedDocs === 'string') {
+      try {
+        parsedDocs = JSON.parse(parsedDocs);
+      } catch {}
+    }
+
+    return {
+      fullName: data.full_name || data.fullName,
+      header: data.header,
+      bio: parsedBio || {},
+      avatar_url: data.avatar_url || data.avatarUrl || '',
+      documents: Array.isArray(parsedDocs) ? parsedDocs : [],
+      updated_at: data.updated_at,
+    };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Subscribe to Supabase Realtime Postgres Changes on the profiles table
+ */
+export function subscribeToSupabaseProfileChanges(callback: (profile: any) => void) {
+  try {
+    const channel = supabase
+      .channel('public:profiles_realtime_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        (payload) => {
+          if (payload?.new) {
+            callback(payload.new);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+/**
+ * Subscribe to Supabase Realtime Postgres Changes on the materials table
+ */
+export function subscribeToSupabaseMaterialsChanges(callback: () => void) {
+  try {
+    const channel = supabase
+      .channel('public:materials_realtime_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'materials' },
+        () => {
+          callback();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
   }
 }
 
