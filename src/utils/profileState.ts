@@ -15,7 +15,6 @@ import {
   subscribeToProfile, 
   type PersistentProfileRecord
 } from './firebase';
-import { broadcastMemoryEvent, subscribeToDynamicMemory } from './dynamicMemory';
 import {
   uploadAvatarToSupabaseBucket,
   deleteAvatarFromSupabaseBucket,
@@ -116,18 +115,31 @@ export function notifyProfileUpdated() {
 }
 
 /**
- * Compress an image data URL or file to fit safely and render quickly
+ * Compress or process an image data URL or file to fit safely and render quickly (accepts all image formats)
  */
-export function compressImage(file: File, maxDimension = 640, quality = 0.88): Promise<string> {
+export function compressImage(file: File, maxDimension = 800, quality = 0.92): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = reject;
+    reader.onerror = () => reject(new Error('Failed to read image file'));
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       if (!dataUrl) {
         reject(new Error('Failed to read image file'));
         return;
       }
+      // For SVG, animated GIF, or small images, return pristine data URL immediately
+      if (
+        file.type === 'image/svg+xml' ||
+        file.type === 'image/gif' ||
+        file.type.includes('svg') ||
+        file.name.toLowerCase().endsWith('.svg') ||
+        file.name.toLowerCase().endsWith('.gif') ||
+        file.size < 250000
+      ) {
+        resolve(dataUrl);
+        return;
+      }
+
       const img = new Image();
       img.onerror = () => resolve(dataUrl);
       img.onload = () => {
@@ -151,7 +163,8 @@ export function compressImage(file: File, maxDimension = 640, quality = 0.88): P
             return;
           }
           ctx.drawImage(img, 0, 0, width, height);
-          const compressed = canvas.toDataURL('image/jpeg', quality);
+          const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+          const compressed = canvas.toDataURL(mime, quality);
           resolve(compressed);
         } catch {
           resolve(dataUrl);
@@ -494,7 +507,6 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Supabase profiles table avatar note:', supaErr);
   }
 
-  broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });
   return finalUrl;
 }
 
@@ -513,7 +525,6 @@ export async function resetStoredAvatar(): Promise<string> {
     const ownerUid = getAuthenticatedOwnerUid();
     saveProfileToSupabaseTable({ avatarUrl: '' }, ownerUid).catch(() => {});
   } catch {}
-  broadcastMemoryEvent('profile', 'avatar_deleted', { avatar: '' });
   notifyProfileUpdated();
   return '';
 }
@@ -576,7 +587,6 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
     console.warn('LocalStorage save failed for bio:', err);
   }
   notifyProfileUpdated();
-  broadcastMemoryEvent('profile', 'bio_updated', { bio: mergedBio, avatar });
 
   // 2. Atomic, persistent Firestore database write & Cloud SQL write
   try {
@@ -638,7 +648,6 @@ export async function saveStoredDocuments(docs: DocumentItem[]): Promise<void> {
   // Persist to IndexedDB asynchronously for large attachments
   saveDocumentsPersistently(docs).catch((e) => console.warn('Persistent storage failed:', e));
   notifyProfileUpdated();
-  broadcastMemoryEvent('documents', 'profile_docs_updated', { count: docs.length });
 
   // 2. Atomic, persistent Firestore database write & Cloud SQL write
   try {
@@ -739,11 +748,6 @@ export function useProfileSync() {
 
   useEffect(() => {
     syncGlobalProfileWithServer().then(() => sync());
-    const unsubMemory = subscribeToDynamicMemory((ev) => {
-      if (ev.category === 'profile' || ev.category === 'documents') {
-        sync();
-      }
-    });
     window.addEventListener(EVENT_PROFILE_UPDATED, sync);
     window.addEventListener('storage', sync);
     window.addEventListener('focus', sync);
@@ -756,7 +760,6 @@ export function useProfileSync() {
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      unsubMemory();
       window.removeEventListener(EVENT_PROFILE_UPDATED, sync);
       window.removeEventListener('storage', sync);
       window.removeEventListener('focus', sync);

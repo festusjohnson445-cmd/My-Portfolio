@@ -35,7 +35,6 @@ import {
   useProfileSync,
   compressImage
 } from '../utils/profileState';
-import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import {
   deleteConversationFromFirestore,
   deleteDirectInquiryFromFirestore,
@@ -290,12 +289,6 @@ export const MessagingSection: React.FC = () => {
       }
     };
 
-    const unsubMem = subscribeToDynamicMemory((ev) => {
-      if (ev.category === 'chats') {
-        fetchChatsFromServer();
-      }
-    });
-
     // Supabase Realtime Channel Subscription for live multi-user messaging
     const unsubSupabaseRealtime = subscribeToSupabaseRealtimeChat((_payload) => {
       fetchChatsFromServer();
@@ -307,7 +300,6 @@ export const MessagingSection: React.FC = () => {
 
     return () => {
       isMounted = false;
-      unsubMem();
       unsubSupabaseRealtime();
       clearInterval(pollInterval);
       window.removeEventListener('storage', handleStorage);
@@ -562,7 +554,7 @@ export const MessagingSection: React.FC = () => {
 
       setShowMailNotice(`Inquiry "${displayName}" deleted permanently.`);
       window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
-      broadcastMemoryEvent('chats', 'inquiry_deleted', { targetId });
+      broadcastSupabaseChatMessage({ event: 'inquiry_deleted', targetId });
     } catch (err) {
       console.warn('Delete error:', err);
       setShowMailNotice(`Inquiry "${displayName}" deleted.`);

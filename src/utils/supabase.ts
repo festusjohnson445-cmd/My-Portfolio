@@ -182,17 +182,23 @@ export async function uploadAvatarToSupabaseBucket(
   try {
     const ownerUid = uid || getAuthenticatedOwnerUid();
     const timestamp = Date.now();
-    const fileName = `avatar_${timestamp}.jpg`;
-    const storagePath = `${ownerUid}/${fileName}`;
-
     let uploadBody: Blob | Uint8Array | File;
     let contentType = 'image/jpeg';
+    let ext = 'jpg';
 
     if (typeof fileOrBlobOrDataUrl === 'string') {
       if (fileOrBlobOrDataUrl.startsWith('data:')) {
         const parts = fileOrBlobOrDataUrl.split(',');
         const mimeMatch = parts[0].match(/:(.*?);/);
-        if (mimeMatch) contentType = mimeMatch[1];
+        if (mimeMatch) {
+          contentType = mimeMatch[1];
+          if (contentType.includes('png')) ext = 'png';
+          else if (contentType.includes('webp')) ext = 'webp';
+          else if (contentType.includes('gif')) ext = 'gif';
+          else if (contentType.includes('svg')) ext = 'svg';
+          else if (contentType.includes('avif')) ext = 'avif';
+          else if (contentType.includes('bmp')) ext = 'bmp';
+        }
         const binaryStr = atob(parts[1]);
         const len = binaryStr.length;
         const bytes = new Uint8Array(len);
@@ -202,12 +208,21 @@ export async function uploadAvatarToSupabaseBucket(
         uploadBody = bytes;
       } else {
         // If it's already an HTTP URL, return as is
-        return { publicUrl: fileOrBlobOrDataUrl, storagePath };
+        return { publicUrl: fileOrBlobOrDataUrl, storagePath: '' };
       }
     } else {
       uploadBody = fileOrBlobOrDataUrl;
       contentType = fileOrBlobOrDataUrl.type || 'image/jpeg';
+      if (contentType.includes('png')) ext = 'png';
+      else if (contentType.includes('webp')) ext = 'webp';
+      else if (contentType.includes('gif')) ext = 'gif';
+      else if (contentType.includes('svg')) ext = 'svg';
+      else if (contentType.includes('avif')) ext = 'avif';
+      else if (contentType.includes('bmp')) ext = 'bmp';
     }
+
+    const fileName = `avatar_${timestamp}.${ext}`;
+    const storagePath = `${ownerUid}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
       .from(SUPABASE_BUCKETS.AVATARS)
