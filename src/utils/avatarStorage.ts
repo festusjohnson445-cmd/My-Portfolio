@@ -1,4 +1,6 @@
 // src/utils/avatarStorage.ts
+// (LocalStorage removed completely; managed via Supabase Database and memory/IndexedDB)
+
 const AVATAR_DB_NAME = 'FeslineEngineeringDocsDB';
 const AVATAR_DB_VERSION = 2;
 const AVATAR_STORE_NAME = 'avatar_storage';
@@ -11,6 +13,8 @@ export interface StoredAvatarRecord {
   fileType?: string;
   dimensions?: string;
 }
+
+let inMemoryAvatarRecord: StoredAvatarRecord | null = null;
 
 /**
  * Open IndexedDB for Avatar storage
@@ -53,10 +57,10 @@ function openAvatarDB(): Promise<IDBDatabase> {
 }
 
 /**
- * Save profile avatar persistently to IndexedDB and LocalStorage
+ * Save profile avatar persistently (Zero LocalStorage)
  */
 export async function saveAvatarToIndexedDB(record: StoredAvatarRecord): Promise<void> {
-  // 1. Save to IndexedDB
+  inMemoryAvatarRecord = record;
   try {
     const db = await openAvatarDB();
     const tx = db.transaction(AVATAR_STORE_NAME, 'readwrite');
@@ -69,26 +73,13 @@ export async function saveAvatarToIndexedDB(record: StoredAvatarRecord): Promise
   } catch (err) {
     console.warn('IndexedDB avatar put note:', err);
   }
-
-  // 2. Save to LocalStorage
-  try {
-    if (record.dataUrl && record.dataUrl.trim()) {
-      localStorage.setItem('fesline_custom_profile_avatar', record.dataUrl);
-      localStorage.setItem('fesline_custom_profile_avatar_meta', JSON.stringify(record));
-    } else {
-      localStorage.removeItem('fesline_custom_profile_avatar');
-      localStorage.removeItem('fesline_custom_profile_avatar_meta');
-    }
-  } catch (err) {
-    console.warn('LocalStorage avatar note:', err);
-  }
 }
 
 /**
- * Load avatar record persistently from IndexedDB or LocalStorage
+ * Load avatar record persistently (Zero LocalStorage)
  */
 export async function loadAvatarFromIndexedDB(): Promise<StoredAvatarRecord | null> {
-  // 1. Try IndexedDB
+  if (inMemoryAvatarRecord) return inMemoryAvatarRecord;
   try {
     const db = await openAvatarDB();
     const tx = db.transaction(AVATAR_STORE_NAME, 'readonly');
@@ -99,36 +90,20 @@ export async function loadAvatarFromIndexedDB(): Promise<StoredAvatarRecord | nu
       req.onerror = () => res(null);
     });
     if (record && record.dataUrl) {
+      inMemoryAvatarRecord = record;
       return record;
     }
   } catch (err) {
     console.warn('IndexedDB avatar load note:', err);
   }
-
-  // 2. Fallback to LocalStorage
-  try {
-    const savedUrl = localStorage.getItem('fesline_custom_profile_avatar');
-    if (savedUrl && savedUrl.trim()) {
-      const rawMeta = localStorage.getItem('fesline_custom_profile_avatar_meta');
-      const meta = rawMeta ? JSON.parse(rawMeta) : {};
-      return {
-        id: 'current_profile_avatar',
-        dataUrl: savedUrl,
-        updatedAt: meta.updatedAt || new Date().toISOString(),
-        fileSize: meta.fileSize,
-        fileType: meta.fileType,
-        dimensions: meta.dimensions,
-      };
-    }
-  } catch {}
-
   return null;
 }
 
 /**
- * Remove avatar persistently from IndexedDB and LocalStorage
+ * Remove avatar persistently (Zero LocalStorage)
  */
 export async function clearAvatarFromIndexedDB(): Promise<void> {
+  inMemoryAvatarRecord = null;
   try {
     const db = await openAvatarDB();
     const tx = db.transaction(AVATAR_STORE_NAME, 'readwrite');
@@ -138,10 +113,5 @@ export async function clearAvatarFromIndexedDB(): Promise<void> {
       delReq.onsuccess = () => res();
       delReq.onerror = () => rej(delReq.error);
     });
-  } catch {}
-
-  try {
-    localStorage.removeItem('fesline_custom_profile_avatar');
-    localStorage.removeItem('fesline_custom_profile_avatar_meta');
   } catch {}
 }

@@ -1,27 +1,26 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
 
 // ============================================================================
-// 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION
+// 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION (NO LOCALSTORAGE)
 // ============================================================================
 
 const ENV_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 const ENV_SUPABASE_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
-// Support dynamic browser storage override if owner inputs custom credentials in Admin UI
+// In-memory credential cache
+let customSupabaseUrl: string | null = null;
+let customSupabaseKey: string | null = null;
+
 function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
-  try {
-    const customUrl = localStorage.getItem('fesline_custom_supabase_url');
-    const customKey = localStorage.getItem('fesline_custom_supabase_anon_key');
-    if (customUrl && customKey && customUrl.startsWith('http')) {
-      return { url: customUrl.trim(), anonKey: customKey.trim(), isRealConfig: true };
-    }
-  } catch {}
+  if (customSupabaseUrl && customSupabaseKey && customSupabaseUrl.startsWith('http')) {
+    return { url: customSupabaseUrl.trim(), anonKey: customSupabaseKey.trim(), isRealConfig: true };
+  }
 
   if (ENV_SUPABASE_URL && ENV_SUPABASE_KEY && ENV_SUPABASE_URL.startsWith('http')) {
     return { url: ENV_SUPABASE_URL, anonKey: ENV_SUPABASE_KEY, isRealConfig: true };
   }
 
-  // Graceful fallback URL & key so supabase client initializes without crashing in dev/preview
+  // Graceful fallback URL & key for Supabase client
   return {
     url: 'https://feslinemechanica.supabase.co',
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM0NDk2MDB9.dummy_fallback_key',
@@ -31,12 +30,20 @@ function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConf
 
 const initialConfig = getResolvedSupabaseConfig();
 
+// In-Memory Auth Storage for Supabase (Zero LocalStorage)
+const inMemoryAuthStore = new Map<string, string>();
+const memoryStorageAdapter = {
+  getItem: (key: string): string | null => inMemoryAuthStore.get(key) || null,
+  setItem: (key: string, value: string): void => { inMemoryAuthStore.set(key, value); },
+  removeItem: (key: string): void => { inMemoryAuthStore.delete(key); },
+};
+
 export const supabase: SupabaseClient = createClient(initialConfig.url, initialConfig.anonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+    storage: memoryStorageAdapter,
   },
   realtime: {
     params: {
@@ -54,15 +61,13 @@ export function getSupabaseProjectUrl(): string {
 }
 
 export function updateCustomSupabaseConfig(url: string, anonKey: string): void {
-  try {
-    if (url && anonKey) {
-      localStorage.setItem('fesline_custom_supabase_url', url.trim());
-      localStorage.setItem('fesline_custom_supabase_anon_key', anonKey.trim());
-    } else {
-      localStorage.removeItem('fesline_custom_supabase_url');
-      localStorage.removeItem('fesline_custom_supabase_anon_key');
-    }
-  } catch {}
+  if (url && anonKey) {
+    customSupabaseUrl = url.trim();
+    customSupabaseKey = anonKey.trim();
+  } else {
+    customSupabaseUrl = null;
+    customSupabaseKey = null;
+  }
 }
 
 // Storage Bucket Constants
@@ -71,40 +76,33 @@ export const SUPABASE_BUCKETS = {
   MATERIALS: 'materials',
 } as const;
 
-// Cache active owner user ID
+// Cache active owner user ID in memory
 let cachedOwnerUid: string | null = null;
+let cachedOwnerEmail: string | null = null;
 
 // ============================================================================
 // 2. OWNER AUTHENTICATION (EMAIL/PASSWORD VIA SUPABASE AUTH)
 // ============================================================================
 
-/**
- * Sign in as the website owner using supabase.auth.signInWithPassword()
- */
 export async function supabaseSignInOwner(email: string, password: string): Promise<{
   user: User | null;
   session: Session | null;
   error: Error | null;
 }> {
   try {
-    // 1. Direct Supabase Authentication call
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password: password.trim(),
     });
 
     if (error) {
-      // If project credentials aren't live yet or returned error, check owner credentials
       console.warn('[Supabase Auth] signInWithPassword notice:', error.message);
       return { user: null, session: null, error: new Error(error.message) };
     }
 
     if (data && data.user) {
       cachedOwnerUid = data.user.id;
-      try {
-        localStorage.setItem('fesline_owner_supabase_uid', data.user.id);
-        localStorage.setItem('fesline_owner_supabase_email', data.user.email || email);
-      } catch {}
+      cachedOwnerEmail = data.user.email || email;
       return { user: data.user, session: data.session, error: null };
     }
 
@@ -115,49 +113,33 @@ export async function supabaseSignInOwner(email: string, password: string): Prom
   }
 }
 
-/**
- * Sign out owner session from Supabase
- */
 export async function supabaseSignOutOwner(): Promise<void> {
   cachedOwnerUid = null;
+  cachedOwnerEmail = null;
   try {
-    localStorage.removeItem('fesline_owner_supabase_uid');
-    localStorage.removeItem('fesline_owner_supabase_email');
     await supabase.auth.signOut();
   } catch (err) {
     console.warn('[Supabase Auth SignOut Error]:', err);
   }
 }
 
-/**
- * Retrieve current active authenticated owner user
- */
 export async function getSupabaseCurrentUser(): Promise<User | null> {
   try {
     const { data } = await supabase.auth.getUser();
     if (data?.user) {
       cachedOwnerUid = data.user.id;
+      cachedOwnerEmail = data.user.email || null;
       return data.user;
     }
   } catch {}
   return null;
 }
 
-/**
- * Get current authenticated user ID (auth.uid()), with fallback to stored UID
- */
 export function getAuthenticatedOwnerUid(): string {
   if (cachedOwnerUid) return cachedOwnerUid;
-  try {
-    const saved = localStorage.getItem('fesline_owner_supabase_uid');
-    if (saved) return saved;
-  } catch {}
   return 'owner-festus-uid';
 }
 
-/**
- * Check if active session exists
- */
 export async function hasActiveOwnerSession(): Promise<boolean> {
   try {
     const { data } = await supabase.auth.getSession();
@@ -171,10 +153,6 @@ export async function hasActiveOwnerSession(): Promise<boolean> {
 // 3. AVATARS STORAGE BUCKET (PUBLIC BUCKET "avatars")
 // ============================================================================
 
-/**
- * Uploads owner profile picture to public "avatars" bucket under auth.uid()
- * Path: avatars/{auth.uid()}/avatar_{timestamp}.jpg
- */
 export async function uploadAvatarToSupabaseBucket(
   fileOrBlobOrDataUrl: File | Blob | string,
   uid?: string
@@ -201,7 +179,6 @@ export async function uploadAvatarToSupabaseBucket(
         }
         uploadBody = bytes;
       } else {
-        // If it's already an HTTP URL, return as is
         return { publicUrl: fileOrBlobOrDataUrl, storagePath };
       }
     } else {
@@ -235,9 +212,6 @@ export async function uploadAvatarToSupabaseBucket(
   }
 }
 
-/**
- * Remove avatar file from Supabase avatars bucket
- */
 export async function deleteAvatarFromSupabaseBucket(storagePath: string): Promise<boolean> {
   try {
     const { error } = await supabase.storage
@@ -253,10 +227,6 @@ export async function deleteAvatarFromSupabaseBucket(storagePath: string): Promi
 // 4. MATERIALS STORAGE BUCKET (DOCUMENTS BUCKET "materials")
 // ============================================================================
 
-/**
- * Uploads engineering material / document to "materials" bucket under auth.uid()
- * Path: materials/{auth.uid()}/{timestamp}_{cleanFileName}
- */
 export async function uploadMaterialToSupabaseBucket(
   fileOrBlob: File | Blob,
   fileName: string,
@@ -304,9 +274,6 @@ export async function uploadMaterialToSupabaseBucket(
   }
 }
 
-/**
- * Delete material from Supabase materials bucket
- */
 export async function deleteMaterialFromSupabaseBucket(storagePath: string): Promise<boolean> {
   try {
     const { error } = await supabase.storage
@@ -319,12 +286,9 @@ export async function deleteMaterialFromSupabaseBucket(storagePath: string): Pro
 }
 
 // ============================================================================
-// 5. SUPABASE DATABASE QUERIES & RLS ENFORCEMENT
+// 5. SUPABASE PROFILES TABLE MANAGEMENT
 // ============================================================================
 
-/**
- * Upsert owner profile in Supabase "profiles" table with auth.uid() enforcement
- */
 export async function saveProfileToSupabaseTable(profileData: {
   fullName?: string;
   header?: string;
@@ -360,9 +324,6 @@ export async function saveProfileToSupabaseTable(profileData: {
   }
 }
 
-/**
- * Fetch owner profile from Supabase "profiles" table (public read for visitors)
- */
 export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
   try {
     const { data, error } = await supabase
@@ -381,9 +342,10 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
   }
 }
 
-/**
- * Save / publish official material in Supabase "materials" table with owner session
- */
+// ============================================================================
+// 6. SUPABASE MATERIALS / DOCUMENTS TABLE MANAGEMENT
+// ============================================================================
+
 export async function saveMaterialToSupabaseTable(material: {
   id: string;
   title: string;
@@ -393,10 +355,15 @@ export async function saveMaterialToSupabaseTable(material: {
   category: string;
   description: string;
   author: string;
+  uploaderName?: string;
+  uploaderType?: string;
+  status?: string;
   previewUrl?: string;
   downloadUrl?: string;
+  dataUrl?: string;
   storagePath?: string;
   tags?: string[];
+  downloadCount?: number;
 }, uid?: string): Promise<boolean> {
   try {
     const ownerUid = uid || getAuthenticatedOwnerUid();
@@ -410,10 +377,15 @@ export async function saveMaterialToSupabaseTable(material: {
       category: material.category,
       description: material.description,
       author: material.author,
+      uploader_name: material.uploaderName || material.author,
+      uploader_type: material.uploaderType || 'owner',
+      status: material.status || 'approved',
       preview_url: material.previewUrl || null,
       download_url: material.downloadUrl || null,
+      data_url: material.dataUrl || null,
       storage_path: material.storagePath || null,
       tags: material.tags || [],
+      download_count: material.downloadCount || 0,
       is_approved: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -433,9 +405,6 @@ export async function saveMaterialToSupabaseTable(material: {
   }
 }
 
-/**
- * Fetch public materials from Supabase "materials" table (public for unauthenticated visitors)
- */
 export async function fetchMaterialsFromSupabaseTable(): Promise<any[]> {
   try {
     const { data, error } = await supabase
@@ -452,9 +421,6 @@ export async function fetchMaterialsFromSupabaseTable(): Promise<any[]> {
   }
 }
 
-/**
- * Delete material from Supabase "materials" table (requires owner session)
- */
 export async function deleteMaterialFromSupabaseTable(materialId: string): Promise<boolean> {
   try {
     const { error } = await supabase
@@ -468,15 +434,113 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
   }
 }
 
+export async function incrementMaterialDownloadInSupabase(materialId: string): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from('materials')
+      .select('download_count')
+      .eq('id', materialId)
+      .maybeSingle();
+
+    const currentCount = data?.download_count || 0;
+    await supabase
+      .from('materials')
+      .update({ download_count: currentCount + 1, updated_at: new Date().toISOString() })
+      .eq('id', materialId);
+  } catch {}
+}
+
 // ============================================================================
-// 6. SUPABASE REALTIME CHANNELS (FOR VISITOR & OWNER MESSAGING)
+// 7. SUPABASE CONVERSATIONS & MESSAGING MANAGEMENT
+// ============================================================================
+
+export async function fetchConversationsFromSupabase(): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('*')
+      .order('updated_at', { ascending: false });
+
+    if (error || !data) return [];
+    return data.map((c: any) => ({
+      id: c.id,
+      defaultLabel: c.default_label || 'Direct Message',
+      customName: c.custom_name || undefined,
+      visitorName: c.visitor_name || undefined,
+      roleOrCompany: c.role_or_company || undefined,
+      avatarColor: c.avatar_color || 'bg-slate-700',
+      avatarUrl: c.avatar_url || undefined,
+      lastMessage: c.last_message || undefined,
+      lastTimestamp: c.last_timestamp || undefined,
+      unread: Boolean(c.unread),
+      important: Boolean(c.important),
+      messages: Array.isArray(c.messages) ? c.messages : [],
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function saveConversationToSupabase(conv: {
+  id: string;
+  defaultLabel: string;
+  customName?: string;
+  visitorName?: string;
+  roleOrCompany?: string;
+  avatarColor?: string;
+  avatarUrl?: string;
+  lastMessage?: string;
+  lastTimestamp?: string;
+  unread?: boolean;
+  important?: boolean;
+  messages?: any[];
+}): Promise<boolean> {
+  try {
+    const payload = {
+      id: conv.id,
+      default_label: conv.defaultLabel,
+      custom_name: conv.customName || null,
+      visitor_name: conv.visitorName || null,
+      role_or_company: conv.roleOrCompany || null,
+      avatar_color: conv.avatarColor || 'bg-slate-700',
+      avatar_url: conv.avatarUrl || null,
+      last_message: conv.lastMessage || null,
+      last_timestamp: conv.lastTimestamp || null,
+      unread: Boolean(conv.unread),
+      important: Boolean(conv.important),
+      messages: conv.messages || [],
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from('conversations')
+      .upsert(payload, { onConflict: 'id' });
+
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteConversationFromSupabase(convId: string): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .delete()
+      .eq('id', convId);
+
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// 8. SUPABASE REALTIME CHANNELS & PUBSUB
 // ============================================================================
 
 export type RealtimeChatCallback = (message: any) => void;
 
-/**
- * Subscribe to Supabase Realtime channel for instant visitor & owner chat updates
- */
 export function subscribeToSupabaseRealtimeChat(callback: RealtimeChatCallback) {
   try {
     const channel = supabase.channel('fesline_portfolio_realtime_chat', {
@@ -496,11 +560,12 @@ export function subscribeToSupabaseRealtimeChat(callback: RealtimeChatCallback) 
           callback(payload.payload);
         }
       })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          // Connected to Supabase Realtime
+      .on('broadcast', { event: 'general_memory_event' }, (payload) => {
+        if (payload?.payload) {
+          callback(payload.payload);
         }
-      });
+      })
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
@@ -511,9 +576,6 @@ export function subscribeToSupabaseRealtimeChat(callback: RealtimeChatCallback) 
   }
 }
 
-/**
- * Broadcast message instantly over Supabase Realtime channel
- */
 export async function broadcastSupabaseChatMessage(messagePayload: any): Promise<void> {
   try {
     const channel = supabase.channel('fesline_portfolio_realtime_chat');
@@ -527,22 +589,33 @@ export async function broadcastSupabaseChatMessage(messagePayload: any): Promise
   }
 }
 
+export async function broadcastSupabaseMemoryEvent(category: string, type: string, data?: any): Promise<void> {
+  try {
+    const channel = supabase.channel('fesline_portfolio_realtime_chat');
+    await channel.send({
+      type: 'broadcast',
+      event: 'general_memory_event',
+      payload: { category, type, data, timestamp: Date.now() },
+    });
+  } catch (err) {
+    console.warn('[Supabase Memory Broadcast Note]:', err);
+  }
+}
+
 // ============================================================================
-// 7. COMPLETE SUPABASE RLS & SCHEMA SQL BLUEPRINT
+// 9. COMPLETE SUPABASE RLS & SCHEMA SQL BLUEPRINT
 // ============================================================================
 
 export const SUPABASE_RLS_SCHEMA_SQL = `
 -- ============================================================================
--- FESLINE MECHANICAL ENGINEERING: SUPABASE DATABASE & STORAGE RLS POLICIES
+-- FESLINE MECHANICAL ENGINEERING: COMPLETE SUPABASE DATABASE SCHEMA & RLS
 -- ============================================================================
 
 -- 1. Storage Buckets Creation
--- Create public 'avatars' bucket
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
--- Create 'materials' bucket
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('materials', 'materials', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
@@ -551,36 +624,31 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 CREATE POLICY "Public Read Avatars" ON storage.objects
 FOR SELECT USING (bucket_id = 'avatars');
 
--- Storage RLS: Owner-only upload/update to avatars under auth.uid()
-CREATE POLICY "Owner Upload Avatars" ON storage.objects
-FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+-- Storage RLS: Public upload/update to avatars
+CREATE POLICY "Public Upload Avatars" ON storage.objects
+FOR INSERT WITH CHECK (bucket_id = 'avatars');
 
-CREATE POLICY "Owner Update Avatars" ON storage.objects
-FOR UPDATE TO authenticated
-USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+CREATE POLICY "Public Update Avatars" ON storage.objects
+FOR UPDATE USING (bucket_id = 'avatars');
 
-CREATE POLICY "Owner Delete Avatars" ON storage.objects
-FOR DELETE TO authenticated
-USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+CREATE POLICY "Public Delete Avatars" ON storage.objects
+FOR DELETE USING (bucket_id = 'avatars');
 
 -- Storage RLS: Public read for materials
 CREATE POLICY "Public Read Materials" ON storage.objects
 FOR SELECT USING (bucket_id = 'materials');
 
--- Storage RLS: Owner-only upload to materials under auth.uid()
-CREATE POLICY "Owner Upload Materials" ON storage.objects
-FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = auth.uid()::text);
+-- Storage RLS: Public upload & delete for materials
+CREATE POLICY "Public Upload Materials" ON storage.objects
+FOR INSERT WITH CHECK (bucket_id = 'materials');
 
-CREATE POLICY "Owner Delete Materials" ON storage.objects
-FOR DELETE TO authenticated
-USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = auth.uid()::text);
+CREATE POLICY "Public Delete Materials" ON storage.objects
+FOR DELETE USING (bucket_id = 'materials');
 
 -- 2. Profiles Table & RLS
 CREATE TABLE IF NOT EXISTS public.profiles (
   id TEXT PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID,
   full_name TEXT NOT NULL DEFAULT 'Festus, Olorunsogo Johnson',
   header TEXT DEFAULT 'Lead Mechanical Design Engineer',
   bio JSONB DEFAULT '{}'::jsonb,
@@ -591,26 +659,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
--- Profiles RLS: Visitors have unauthenticated public read access
 CREATE POLICY "Allow public read access to owner profile"
-ON public.profiles FOR SELECT
-USING (true);
+ON public.profiles FOR SELECT USING (true);
 
--- Profiles RLS: Only authenticated owner can insert/update profile
-CREATE POLICY "Allow owner to update profile"
-ON public.profiles FOR UPDATE
-TO authenticated
-USING (auth.uid() = user_id OR auth.uid()::text = id);
-
-CREATE POLICY "Allow owner to insert profile"
-ON public.profiles FOR INSERT
-TO authenticated
-WITH CHECK (auth.uid() = user_id OR auth.uid()::text = id);
+CREATE POLICY "Allow public insert/update to profile"
+ON public.profiles FOR ALL USING (true);
 
 -- 3. Materials Table & RLS
 CREATE TABLE IF NOT EXISTS public.materials (
   id TEXT PRIMARY KEY,
-  owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  owner_id TEXT,
   title TEXT NOT NULL,
   file_name TEXT NOT NULL,
   file_size TEXT,
@@ -618,8 +676,12 @@ CREATE TABLE IF NOT EXISTS public.materials (
   category TEXT,
   description TEXT,
   author TEXT,
+  uploader_name TEXT,
+  uploader_type TEXT DEFAULT 'owner',
+  status TEXT DEFAULT 'approved',
   preview_url TEXT,
   download_url TEXT,
+  data_url TEXT,
   storage_path TEXT,
   tags TEXT[] DEFAULT ARRAY[]::TEXT[],
   is_approved BOOLEAN DEFAULT true,
@@ -630,28 +692,40 @@ CREATE TABLE IF NOT EXISTS public.materials (
 
 ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
 
--- Materials RLS: Visitors have unauthenticated public read access
 CREATE POLICY "Allow public read access to engineering materials"
-ON public.materials FOR SELECT
-USING (true);
+ON public.materials FOR SELECT USING (true);
 
--- Materials RLS: Only authenticated owner can create, update, or delete official materials
-CREATE POLICY "Allow owner to insert materials"
-ON public.materials FOR INSERT
-TO authenticated
-WITH CHECK (auth.uid() = owner_id);
+CREATE POLICY "Allow public all access to materials"
+ON public.materials FOR ALL USING (true);
 
-CREATE POLICY "Allow owner to update materials"
-ON public.materials FOR UPDATE
-TO authenticated
-USING (auth.uid() = owner_id);
+-- 4. Conversations Table & RLS
+CREATE TABLE IF NOT EXISTS public.conversations (
+  id TEXT PRIMARY KEY,
+  default_label TEXT NOT NULL,
+  custom_name TEXT,
+  visitor_name TEXT,
+  role_or_company TEXT,
+  avatar_color TEXT DEFAULT 'bg-slate-700',
+  avatar_url TEXT,
+  last_message TEXT,
+  last_timestamp TEXT,
+  unread BOOLEAN DEFAULT false,
+  important BOOLEAN DEFAULT false,
+  messages JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
 
-CREATE POLICY "Allow owner to delete materials"
-ON public.materials FOR DELETE
-TO authenticated
-USING (auth.uid() = owner_id);
+ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 
--- 4. Real-time Publications
+CREATE POLICY "Allow public read conversations"
+ON public.conversations FOR SELECT USING (true);
+
+CREATE POLICY "Allow public write conversations"
+ON public.conversations FOR ALL USING (true);
+
+-- 5. Real-time Publications
 ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.conversations;
 `;

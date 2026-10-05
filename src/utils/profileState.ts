@@ -26,12 +26,9 @@ import {
   supabaseSignOutOwner,
   getSupabaseCurrentUser,
   hasActiveOwnerSession,
+  broadcastSupabaseMemoryEvent,
 } from './supabase';
 
-export const STORAGE_KEY_AVATAR = 'fesline_custom_profile_avatar';
-export const STORAGE_KEY_BIO = 'fesline_custom_profile_bio';
-export const STORAGE_KEY_DOCS = 'fesline_custom_documents';
-export const STORAGE_KEY_AUTH = 'fesline_owner_auth';
 export const EVENT_PROFILE_UPDATED = 'fesline_profile_updated';
 
 export const OWNER_EMAIL = 'festusjohnson028@gmail.com';
@@ -162,16 +159,17 @@ export function compressImage(file: File, maxDimension = 640, quality = 0.88): P
   });
 }
 
-// In-memory persistent cache to guarantee instant, reliable hydration across all components
+// In-memory persistent cache to guarantee instant hydration across all components (Zero LocalStorage)
 let memoryAvatar: string = '';
 let memoryBio: ProfileBioData | null = null;
 let memoryDocuments: DocumentItem[] | null = null;
+let memoryOwnerAuth: boolean = false;
 let isSyncingWithServer = false;
 let isRealtimeListenerAttached = false;
 let isProfileHydrated = false;
 
 /**
- * Helper to push profile updates to server endpoint as redundant backup
+ * Helper to push profile updates to server endpoint as backup
  */
 export async function pushProfileToServer(payload: { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] }) {
   try {
@@ -192,27 +190,39 @@ export async function pushProfileToServer(payload: { avatar?: string; bio?: Prof
 }
 
 /**
- * Fetch global persistent profile from Firestore database & server so all visitors on any device receive permanent changes
+ * Fetch global persistent profile from Supabase Database & Firestore so all visitors receive permanent updates
  */
 export async function syncGlobalProfileWithServer(): Promise<void> {
   if (isSyncingWithServer) return;
   isSyncingWithServer = true;
 
   try {
-    let remoteLoaded = false;
+    // 1. Primary Source: Supabase Profiles Table
+    try {
+      const supaProfile = await fetchProfileFromSupabaseTable();
+      if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length || supaProfile.full_name)) {
+        applyPersistentProfile({
+          avatar: supaProfile.avatar_url || dbProfileAvatar(),
+          bio: supaProfile.bio || (supaProfile.full_name ? { ...DEFAULT_BIO_DATA, fullName: supaProfile.full_name, header: supaProfile.header || DEFAULT_BIO_DATA.header } : dbProfileBio()),
+          documents: supaProfile.documents || [],
+          updatedAt: supaProfile.updated_at || new Date().toISOString(),
+        });
+      }
+    } catch (supaFetchErr) {
+      console.warn('Supabase profile fetch note:', supaFetchErr);
+    }
 
-    // 1. Primary Persistent Source: Firestore Database
+    // 2. Secondary Sync: Firestore Database
     try {
       const dbProfile = await fetchProfileFromFirestore();
       if (dbProfile && (dbProfile.avatar || dbProfile.bio || (dbProfile.documents && dbProfile.documents.length > 0))) {
         applyPersistentProfile(dbProfile);
-        remoteLoaded = true;
       }
     } catch (e) {
       console.warn('Firestore direct fetch attempt:', e);
     }
 
-    // 2. Secondary Sync / Cloud SQL Server Endpoint
+    // 3. Server Endpoint Fallback
     try {
       const res = await fetch('/api/profile');
       if (res.ok) {
@@ -226,16 +236,6 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
               documents: documents || [],
               updatedAt: json.profile.updatedAt || new Date().toISOString(),
             });
-            remoteLoaded = true;
-          }
-
-          // If Firestore was empty but server had data, seed Firestore
-          if (!remoteLoaded && (avatar || bio)) {
-            saveProfileToFirestore({
-              avatar: avatar || undefined,
-              bio: bio || DEFAULT_BIO_DATA,
-              documents: documents || [],
-            }).catch(() => {});
           }
         }
       }
@@ -243,24 +243,9 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
       console.warn('Server profile fetch note:', serverErr);
     }
 
-    // 2b. Supabase Profiles Table Sync (Public read for unauthenticated visitors)
-    try {
-      const supaProfile = await fetchProfileFromSupabaseTable();
-      if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length)) {
-        applyPersistentProfile({
-          avatar: supaProfile.avatar_url || dbProfileAvatar(),
-          bio: supaProfile.bio || dbProfileBio(),
-          documents: supaProfile.documents || [],
-          updatedAt: supaProfile.updated_at || new Date().toISOString(),
-        });
-      }
-    } catch (supaFetchErr) {
-      console.warn('Supabase profile fetch note:', supaFetchErr);
-    }
-
     isProfileHydrated = true;
 
-    // 3. Attach real-time listener if not already active
+    // Attach real-time listener if not already active
     if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
       isRealtimeListenerAttached = true;
       subscribeToProfile(
@@ -288,7 +273,7 @@ function dbProfileBio(): ProfileBioData {
 }
 
 /**
- * Apply fetched persistent record to local browser storage and notify subscribers
+ * Apply fetched persistent record to in-memory state and notify subscribers (Zero LocalStorage)
  */
 function applyPersistentProfile(
   record: PersistentProfileRecord | { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] },
@@ -301,13 +286,6 @@ function applyPersistentProfile(
     const cleanAvatar = avatar.trim();
     if (cleanAvatar !== memoryAvatar) {
       memoryAvatar = cleanAvatar;
-      try {
-        if (cleanAvatar) {
-          localStorage.setItem(STORAGE_KEY_AVATAR, cleanAvatar);
-        } else {
-          localStorage.removeItem(STORAGE_KEY_AVATAR);
-        }
-      } catch {}
       updatedLocally = true;
     }
   }
@@ -321,11 +299,6 @@ function applyPersistentProfile(
     if (JSON.stringify(memoryBio) !== JSON.stringify(mergedBio)) {
       memoryBio = mergedBio;
       updatedLocally = true;
-    }
-    try {
-      localStorage.setItem(STORAGE_KEY_BIO, JSON.stringify(mergedBio));
-    } catch (e) {
-      // Ignore quota exceeded error
     }
   }
 
@@ -361,9 +334,6 @@ function applyPersistentProfile(
 
     const finalDocs = sortDocumentsDescending(Array.from(mergedMap.values()));
     memoryDocuments = finalDocs;
-    try {
-      localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(finalDocs));
-    } catch (e) {}
     saveDocumentsPersistently(finalDocs).catch(() => {});
     updatedLocally = true;
   }
@@ -374,22 +344,15 @@ function applyPersistentProfile(
 }
 
 /**
- * Get profile avatar from in-memory cache, storage, or default
+ * Get profile avatar from in-memory cache
  */
 export function getStoredAvatar(): string {
   if (memoryAvatar && memoryAvatar.trim()) return memoryAvatar;
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_AVATAR);
-    if (saved && saved.trim()) {
-      memoryAvatar = saved;
-      return saved;
-    }
-  } catch {}
   return DEFAULT_AVATAR;
 }
 
 /**
- * Persist profile avatar to server database and sync across website
+ * Persist profile avatar to Supabase Database & Buckets and sync across website
  */
 export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): Promise<string> {
   let rawBase64 = '';
@@ -412,7 +375,19 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   let finalUrl = `/api/profile/picture?v=${Date.now()}`;
 
-  // 1. Persist directly to dedicated Cloud SQL table (Separate persistent cloud database)
+  // 1. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
+  try {
+    const ownerUid = getAuthenticatedOwnerUid();
+    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
+    if (supaRes && supaRes.publicUrl) {
+      finalUrl = supaRes.publicUrl;
+      await saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid);
+    }
+  } catch (supaErr) {
+    console.warn('Supabase avatars bucket upload note:', supaErr);
+  }
+
+  // 2. Persist to server endpoint
   try {
     const res = await fetch('/api/profile/picture', {
       method: 'POST',
@@ -421,7 +396,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     });
     if (res.ok) {
       const data = await res.json();
-      if (data && data.url) {
+      if (data && data.url && !finalUrl.startsWith('http')) {
         finalUrl = data.url;
       }
     }
@@ -429,13 +404,10 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Dedicated profile picture API note:', serverErr);
   }
 
-  // 2. Update in-memory and local browser caches
+  // 3. Update in-memory cache
   memoryAvatar = finalUrl;
-  try {
-    localStorage.setItem(STORAGE_KEY_AVATAR, finalUrl);
-  } catch (err) {}
 
-  // 3. Save to IndexedDB
+  // 4. Save to IndexedDB
   try {
     await saveAvatarToIndexedDB({
       id: 'current_profile_avatar',
@@ -447,23 +419,12 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   notifyProfileUpdated();
 
-  // 4. Save lightweight URL reference to Firestore & Cloud SQL profile record
+  // 5. Save reference to Firestore & Cloud SQL profile record
   try {
     await saveProfileToFirestore({ avatar: finalUrl });
     pushProfileToServer({ avatar: finalUrl }).catch(() => {});
   } catch (dbErr) {
     console.warn('Firestore profile avatar update note:', dbErr);
-  }
-
-  // 5. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
-  try {
-    const ownerUid = getAuthenticatedOwnerUid();
-    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
-    if (supaRes && supaRes.publicUrl) {
-      saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid).catch(() => {});
-    }
-  } catch (supaErr) {
-    console.warn('Supabase avatars bucket upload note:', supaErr);
   }
 
   broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });
@@ -476,8 +437,6 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 export async function resetStoredAvatar(): Promise<string> {
   memoryAvatar = '';
   try {
-    localStorage.removeItem(STORAGE_KEY_AVATAR);
-    localStorage.removeItem('fesline_custom_profile_avatar_meta');
     await clearAvatarFromIndexedDB();
     await fetch('/api/profile/picture', { method: 'DELETE' });
     await saveProfileToFirestore({ avatar: '' });
@@ -500,23 +459,11 @@ export function getStoredBio(): ProfileBioData {
       ...memoryBio,
     };
   }
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_BIO);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      const merged = {
-        ...DEFAULT_BIO_DATA,
-        ...parsed,
-      };
-      memoryBio = merged;
-      return merged;
-    }
-  } catch {}
   return DEFAULT_BIO_DATA;
 }
 
 /**
- * Save profile bio data permanently to Firestore database and sync across website
+ * Save profile bio data permanently to Supabase database and sync across website
  */
 export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promise<void> {
   const mergedBio: ProfileBioData = {
@@ -525,32 +472,31 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
   };
   memoryBio = mergedBio;
 
-  // Only update avatar if explicitly supplied as non-empty or empty string (never if undefined)
   if (avatar !== undefined && avatar !== null) {
     if (avatar && avatar.trim()) {
       memoryAvatar = avatar;
-      try {
-        localStorage.setItem(STORAGE_KEY_AVATAR, avatar);
-      } catch (e) {}
     } else if (avatar === '') {
       memoryAvatar = '';
-      try {
-        localStorage.removeItem(STORAGE_KEY_AVATAR);
-        localStorage.removeItem('fesline_custom_profile_avatar_meta');
-      } catch (e) {}
     }
   }
 
-  // 1. Optimistic instant local update
-  try {
-    localStorage.setItem(STORAGE_KEY_BIO, JSON.stringify(mergedBio));
-  } catch (err) {
-    console.warn('LocalStorage save failed for bio:', err);
-  }
   notifyProfileUpdated();
   broadcastMemoryEvent('profile', 'bio_updated', { bio: mergedBio, avatar });
 
-  // 2. Atomic, persistent Firestore database write & Cloud SQL write
+  // 1. Supabase Database Write
+  try {
+    const ownerUid = getAuthenticatedOwnerUid();
+    await saveProfileToSupabaseTable({
+      fullName: mergedBio.fullName,
+      header: mergedBio.header,
+      bioData: mergedBio,
+      avatarUrl: avatar || memoryAvatar,
+    }, ownerUid);
+  } catch (supaErr) {
+    console.warn('Supabase bio save note:', supaErr);
+  }
+
+  // 2. Firestore & Cloud SQL Write
   try {
     const payload: { bio: ProfileBioData; avatar?: string } = { bio: mergedBio };
     if (avatar !== undefined && avatar !== null) {
@@ -561,14 +507,6 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
       saveProfileToFirestore(payload),
       pushProfileToServer(payload),
     ]);
-
-    const ownerUid = getAuthenticatedOwnerUid();
-    saveProfileToSupabaseTable({
-      fullName: mergedBio.fullName,
-      header: mergedBio.header,
-      bioData: mergedBio,
-      avatarUrl: avatar,
-    }, ownerUid).catch(() => {});
   } catch (err) {
     console.warn('Note on saving bio to persistent database:', err);
   }
@@ -581,72 +519,50 @@ export function getStoredDocuments(): DocumentItem[] {
   if (memoryDocuments && Array.isArray(memoryDocuments)) {
     return memoryDocuments;
   }
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_DOCS);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) {
-        memoryDocuments = parsed;
-        return parsed;
-      }
-    }
-  } catch {}
   return [];
 }
 
 /**
- * Save documents list permanently to Firestore database and sync across website
+ * Save documents list permanently to Supabase database and sync across website
  */
 export async function saveStoredDocuments(docs: DocumentItem[]): Promise<void> {
   memoryDocuments = docs;
-
-  // 1. Optimistic instant local update
-  try {
-    localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(docs));
-  } catch (err) {
-    console.warn('LocalStorage save quota note for docs:', err);
-  }
   
-  // Persist to IndexedDB asynchronously for large attachments
   saveDocumentsPersistently(docs).catch((e) => console.warn('Persistent storage failed:', e));
   notifyProfileUpdated();
   broadcastMemoryEvent('documents', 'profile_docs_updated', { count: docs.length });
 
-  // 2. Atomic, persistent Firestore database write & Cloud SQL write
+  // 1. Supabase Database Write
+  try {
+    const ownerUid = getAuthenticatedOwnerUid();
+    await saveProfileToSupabaseTable({ documents: docs }, ownerUid);
+  } catch (supaErr) {
+    console.warn('Supabase documents save note:', supaErr);
+  }
+
+  // 2. Firestore & Server sync
   try {
     await Promise.allSettled([
       saveProfileToFirestore({ documents: docs }),
       pushProfileToServer({ documents: docs }),
     ]);
-
-    const ownerUid = getAuthenticatedOwnerUid();
-    saveProfileToSupabaseTable({ documents: docs }, ownerUid).catch(() => {});
   } catch (err) {
     console.warn('Note on saving documents to persistent database:', err);
   }
 }
 
 /**
- * Check if owner mode is authenticated
+ * Check if owner mode is authenticated (In-Memory State, Zero LocalStorage)
  */
 export function isOwnerAuthenticated(): boolean {
-  try {
-    return localStorage.getItem(STORAGE_KEY_AUTH) === 'true';
-  } catch {}
-  return false;
+  return memoryOwnerAuth;
 }
 
 /**
  * Set owner authentication mode
  */
 export function setOwnerAuthenticated(auth: boolean): void {
-  try {
-    if (auth) {
-      localStorage.setItem(STORAGE_KEY_AUTH, 'true');
-    } else {
-      localStorage.removeItem(STORAGE_KEY_AUTH);
-    }
-  } catch {}
+  memoryOwnerAuth = auth;
   notifyProfileUpdated();
 }
 
@@ -666,7 +582,6 @@ export function verifyOwnerEmail(email: string): boolean {
 
 /**
  * Calculate the dynamic right part for "Lead Mechanical Design Engineer"
- * based on user certification inputs or uploaded certificate documents
  */
 export function getRightBadgeCertifications(bio?: ProfileBioData, docs?: DocumentItem[]): string {
   const currentBio = bio || getStoredBio();
@@ -692,7 +607,7 @@ export function getRightBadgeCertifications(bio?: ProfileBioData, docs?: Documen
 }
 
 /**
- * React hook for components to subscribe to profile updates across all pages
+ * React hook for components to subscribe to profile updates across all pages (Zero LocalStorage)
  */
 export function useProfileSync() {
   const [avatar, setAvatar] = useState<string>(getStoredAvatar);
@@ -717,7 +632,6 @@ export function useProfileSync() {
       }
     });
     window.addEventListener(EVENT_PROFILE_UPDATED, sync);
-    window.addEventListener('storage', sync);
     window.addEventListener('focus', sync);
 
     const handleVisibility = () => {
@@ -730,7 +644,6 @@ export function useProfileSync() {
     return () => {
       unsubMemory();
       window.removeEventListener(EVENT_PROFILE_UPDATED, sync);
-      window.removeEventListener('storage', sync);
       window.removeEventListener('focus', sync);
       document.removeEventListener('visibilitychange', handleVisibility);
     };

@@ -68,6 +68,7 @@ import {
   fetchMaterialsFromSupabaseTable,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
+  incrementMaterialDownloadInSupabase,
   getAuthenticatedOwnerUid,
 } from '../utils/supabase';
 import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
@@ -443,7 +444,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     });
 
     window.addEventListener('fesline_hub_docs_updated', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
     window.addEventListener('focus', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibility);
 
@@ -452,7 +452,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       unsubscribeFirestore();
       clearInterval(pollTimer);
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
-      window.removeEventListener('storage', handleUpdate);
       window.removeEventListener('focus', handleUpdate);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
@@ -710,7 +709,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
    * 1-Click Fast Direct Download
    */
   const handleDownloadDocument = (doc: PublicEngineeringDocument) => {
-    // 1. Increment download count in Firestore & storage
+    // 1. Increment download count in Supabase, Firestore & storage
+    incrementMaterialDownloadInSupabase(doc.id).catch(() => {});
     incrementHubDocumentDownload(doc.id).catch(() => {});
     const updated = documents.map((d) => {
       if (d.id === doc.id) {

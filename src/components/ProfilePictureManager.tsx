@@ -454,7 +454,7 @@ export const ProfilePictureManager: React.FC<ProfilePictureManagerProps> = ({
           <div className="p-3 rounded-xl bg-cyan-50/80 border border-cyan-200 text-xs text-cyan-950 flex items-start gap-2">
             <Sparkles className="w-4 h-4 text-cyan-700 shrink-0 mt-0.5" />
             <p className="leading-snug">
-              <strong>100% Refresh Resistant:</strong> Your uploaded profile picture is saved synchronously to browser IndexedDB, LocalStorage, PostgreSQL Cloud SQL, and Firebase Firestore. Refreshing the browser will load the uploaded photo instantly without resetting to default.
+              <strong>100% Supabase Managed:</strong> Your uploaded profile picture is saved synchronously to Supabase Storage & Database, IndexedDB, and Cloud SQL. Refreshing the browser will load the uploaded photo instantly from Supabase.
             </p>
           </div>
         </div>
