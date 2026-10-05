@@ -22,10 +22,11 @@ import {
   clearAvatarFromIndexedDB,
   type StoredAvatarRecord 
 } from '../utils/avatarStorage';
+import { getCacheBustedAvatarUrl } from '../utils/supabase';
 
 interface ProfilePictureManagerProps {
   currentAvatar: string;
-  onAvatarUpdated: (newAvatarUrl: string) => void;
+  onAvatarUpdated: (newAvatarUrl: string) => Promise<string | void> | string | void;
   isOwnerAuthenticated?: boolean;
   onRequireAuth?: () => void;
 }
@@ -154,28 +155,29 @@ export const ProfilePictureManager: React.FC<ProfilePictureManagerProps> = ({
         ? `${(approxBytes / (1024 * 1024)).toFixed(2)} MB`
         : `${(approxBytes / 1024).toFixed(1)} KB`;
 
+      // 1. Perform FULL asynchronous upload to Supabase avatars storage bucket FIRST
+      const uploadedPublicUrl = await onAvatarUpdated(finalDataUrl);
+      const finalUrl = (typeof uploadedPublicUrl === 'string' && (uploadedPublicUrl as string).trim()) ? uploadedPublicUrl : finalDataUrl;
+
       const newRecord: StoredAvatarRecord = {
         id: 'current_profile_avatar',
-        dataUrl: finalDataUrl,
+        dataUrl: finalUrl,
         updatedAt: new Date().toISOString(),
         fileSize: fileSizeStr,
         fileType: 'image/jpeg',
         dimensions: '640 x 640 px',
       };
 
-      // 1. Save directly to IndexedDB & LocalStorage
+      // 2. Save validated public URL to IndexedDB only AFTER Supabase upload succeeds
       await saveAvatarToIndexedDB(newRecord);
       setAvatarMeta(newRecord);
 
-      // 2. Propagate to parent state & server database
-      await onAvatarUpdated(finalDataUrl);
-
       setIsAdjustModalOpen(false);
       setCropSourceImage(null);
-      showNotice('Profile picture uploaded, stored in IndexedDB, and saved to database!');
-    } catch (err) {
+      showNotice('Profile picture uploaded to Supabase avatars bucket and saved to database!');
+    } catch (err: any) {
       console.error('Error saving avatar:', err);
-      showNotice('Failed to process image. Please try another file.', 'error');
+      showNotice(err?.message || 'Failed to upload photo to Supabase storage. State mutation halted.', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -327,7 +329,7 @@ export const ProfilePictureManager: React.FC<ProfilePictureManagerProps> = ({
             <div className="w-32 h-32 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border-4 border-cyan-500/50 shadow-2xl bg-slate-950 flex items-center justify-center">
               {activeImage ? (
                 <img
-                  src={activeImage}
+                  src={getCacheBustedAvatarUrl(activeImage)}
                   alt="Profile Avatar"
                   className="w-full h-full object-cover"
                 />

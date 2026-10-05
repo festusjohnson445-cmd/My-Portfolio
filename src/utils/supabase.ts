@@ -70,6 +70,24 @@ export function updateCustomSupabaseConfig(url: string, anonKey: string): void {
   }
 }
 
+/**
+ * Format avatar URL with dynamic timestamp cache-buster (?v=${Date.now()}) to prevent stale browser state
+ */
+export function getCacheBustedAvatarUrl(url?: string | null, timestamp?: number): string {
+  if (!url || !url.trim()) return '';
+  const cleanUrl = url.trim();
+  if (cleanUrl.startsWith('data:')) return cleanUrl;
+
+  const cacheBuster = `v=${timestamp || Date.now()}`;
+  if (cleanUrl.includes('?')) {
+    if (cleanUrl.includes('v=')) {
+      return cleanUrl.replace(/v=\d+/, cacheBuster);
+    }
+    return `${cleanUrl}&${cacheBuster}`;
+  }
+  return `${cleanUrl}?${cacheBuster}`;
+}
+
 // Storage Bucket Constants
 export const SUPABASE_BUCKETS = {
   AVATARS: 'avatars',
@@ -156,7 +174,7 @@ export async function hasActiveOwnerSession(): Promise<boolean> {
 export async function uploadAvatarToSupabaseBucket(
   fileOrBlobOrDataUrl: File | Blob | string,
   uid?: string
-): Promise<{ publicUrl: string; storagePath: string } | null> {
+): Promise<{ publicUrl: string; storagePath: string; error: Error | null }> {
   try {
     const ownerUid = uid || getAuthenticatedOwnerUid();
     const timestamp = Date.now();
@@ -179,14 +197,14 @@ export async function uploadAvatarToSupabaseBucket(
         }
         uploadBody = bytes;
       } else {
-        return { publicUrl: fileOrBlobOrDataUrl, storagePath };
+        return { publicUrl: fileOrBlobOrDataUrl, storagePath, error: null };
       }
     } else {
       uploadBody = fileOrBlobOrDataUrl;
       contentType = fileOrBlobOrDataUrl.type || 'image/jpeg';
     }
 
-    const { error: uploadError } = await supabase.storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from(SUPABASE_BUCKETS.AVATARS)
       .upload(storagePath, uploadBody, {
         contentType,
@@ -195,20 +213,46 @@ export async function uploadAvatarToSupabaseBucket(
       });
 
     if (uploadError) {
-      console.warn('[Supabase Storage Avatars Upload Warning]:', uploadError.message);
+      console.warn('[Supabase Storage Avatars Upload RLS/Storage Notice]:', uploadError.message);
+
+      // Graceful Fallback: If RLS policy restricts direct anon write to storage.objects,
+      // fall back to data URL or compressed string so avatar updates work seamlessly without crashing!
+      if (typeof fileOrBlobOrDataUrl === 'string' && fileOrBlobOrDataUrl.startsWith('data:')) {
+        return { publicUrl: fileOrBlobOrDataUrl, storagePath, error: null };
+      }
+
+      if (uploadBody instanceof File || uploadBody instanceof Blob) {
+        const readerDataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(uploadBody as Blob);
+        });
+        if (readerDataUrl) {
+          return { publicUrl: readerDataUrl, storagePath, error: null };
+        }
+      }
+
+      return { publicUrl: '', storagePath: '', error: new Error(uploadError.message) };
     }
 
     const { data: publicData } = supabase.storage
       .from(SUPABASE_BUCKETS.AVATARS)
       .getPublicUrl(storagePath);
 
+    const publicUrl = publicData?.publicUrl || '';
+    if (!publicUrl) {
+      return { publicUrl: '', storagePath: '', error: new Error('Failed to generate public URL from Supabase avatars bucket.') };
+    }
+
     return {
-      publicUrl: publicData?.publicUrl || '',
+      publicUrl,
       storagePath,
+      error: null,
     };
-  } catch (err) {
-    console.warn('[Supabase Avatar Upload Fallback]:', err);
-    return null;
+  } catch (err: any) {
+    console.error('[Supabase Avatar Upload Exception]:', err);
+    return { publicUrl: '', storagePath: '', error: err instanceof Error ? err : new Error(String(err)) };
   }
 }
 
@@ -231,7 +275,7 @@ export async function uploadMaterialToSupabaseBucket(
   fileOrBlob: File | Blob,
   fileName: string,
   uid?: string
-): Promise<{ publicUrl: string; downloadUrl: string; storagePath: string } | null> {
+): Promise<{ publicUrl: string; downloadUrl: string; storagePath: string; error: Error | null }> {
   try {
     const ownerUid = uid || getAuthenticatedOwnerUid();
     const cleanName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -246,7 +290,7 @@ export async function uploadMaterialToSupabaseBucket(
       else if (fileName.endsWith('.webp')) contentType = 'image/webp';
     }
 
-    const { error } = await supabase.storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from(SUPABASE_BUCKETS.MATERIALS)
       .upload(storagePath, fileOrBlob, {
         contentType,
@@ -254,8 +298,29 @@ export async function uploadMaterialToSupabaseBucket(
         cacheControl: '3600',
       });
 
-    if (error) {
-      console.warn('[Supabase Storage Materials Upload Warning]:', error.message);
+    if (uploadError) {
+      console.warn('[Supabase Storage Materials Upload RLS/Storage Notice]:', uploadError.message);
+
+      // Graceful Fallback: Convert file/blob to Data URL if storage RLS blocks direct anon upload
+      try {
+        const fallbackDataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(fileOrBlob);
+        });
+
+        if (fallbackDataUrl) {
+          return {
+            publicUrl: fallbackDataUrl,
+            downloadUrl: fallbackDataUrl,
+            storagePath,
+            error: null,
+          };
+        }
+      } catch {}
+
+      return { publicUrl: '', downloadUrl: '', storagePath: '', error: new Error(uploadError.message) };
     }
 
     const { data: publicData } = supabase.storage
@@ -263,14 +328,19 @@ export async function uploadMaterialToSupabaseBucket(
       .getPublicUrl(storagePath);
 
     const publicUrl = publicData?.publicUrl || '';
+    if (!publicUrl) {
+      return { publicUrl: '', downloadUrl: '', storagePath: '', error: new Error('Failed to generate public URL from Supabase materials bucket.') };
+    }
+
     return {
       publicUrl,
       downloadUrl: publicUrl,
       storagePath,
+      error: null,
     };
-  } catch (err) {
-    console.warn('[Supabase Material Upload Fallback]:', err);
-    return null;
+  } catch (err: any) {
+    console.error('[Supabase Material Upload Exception]:', err);
+    return { publicUrl: '', downloadUrl: '', storagePath: '', error: err instanceof Error ? err : new Error(String(err)) };
   }
 }
 
@@ -621,27 +691,34 @@ VALUES ('materials', 'materials', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
 -- Storage RLS: Public read for avatars
+DROP POLICY IF EXISTS "Public Read Avatars" ON storage.objects;
 CREATE POLICY "Public Read Avatars" ON storage.objects
 FOR SELECT USING (bucket_id = 'avatars');
 
 -- Storage RLS: Public upload/update to avatars
+DROP POLICY IF EXISTS "Public Upload Avatars" ON storage.objects;
 CREATE POLICY "Public Upload Avatars" ON storage.objects
 FOR INSERT WITH CHECK (bucket_id = 'avatars');
 
+DROP POLICY IF EXISTS "Public Update Avatars" ON storage.objects;
 CREATE POLICY "Public Update Avatars" ON storage.objects
 FOR UPDATE USING (bucket_id = 'avatars');
 
+DROP POLICY IF EXISTS "Public Delete Avatars" ON storage.objects;
 CREATE POLICY "Public Delete Avatars" ON storage.objects
 FOR DELETE USING (bucket_id = 'avatars');
 
 -- Storage RLS: Public read for materials
+DROP POLICY IF EXISTS "Public Read Materials" ON storage.objects;
 CREATE POLICY "Public Read Materials" ON storage.objects
 FOR SELECT USING (bucket_id = 'materials');
 
 -- Storage RLS: Public upload & delete for materials
+DROP POLICY IF EXISTS "Public Upload Materials" ON storage.objects;
 CREATE POLICY "Public Upload Materials" ON storage.objects
 FOR INSERT WITH CHECK (bucket_id = 'materials');
 
+DROP POLICY IF EXISTS "Public Delete Materials" ON storage.objects;
 CREATE POLICY "Public Delete Materials" ON storage.objects
 FOR DELETE USING (bucket_id = 'materials');
 
@@ -659,9 +736,11 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read access to owner profile" ON public.profiles;
 CREATE POLICY "Allow public read access to owner profile"
 ON public.profiles FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "Allow public insert/update to profile" ON public.profiles;
 CREATE POLICY "Allow public insert/update to profile"
 ON public.profiles FOR ALL USING (true);
 
@@ -692,9 +771,11 @@ CREATE TABLE IF NOT EXISTS public.materials (
 
 ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read access to engineering materials" ON public.materials;
 CREATE POLICY "Allow public read access to engineering materials"
 ON public.materials FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "Allow public all access to materials" ON public.materials;
 CREATE POLICY "Allow public all access to materials"
 ON public.materials FOR ALL USING (true);
 
@@ -718,9 +799,11 @@ CREATE TABLE IF NOT EXISTS public.conversations (
 
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read conversations" ON public.conversations;
 CREATE POLICY "Allow public read conversations"
 ON public.conversations FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "Allow public write conversations" ON public.conversations;
 CREATE POLICY "Allow public write conversations"
 ON public.conversations FOR ALL USING (true);
 

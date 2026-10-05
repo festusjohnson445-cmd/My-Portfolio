@@ -46,6 +46,7 @@ import {
   fetchConversationsFromSupabase,
   saveConversationToSupabase,
   deleteConversationFromSupabase,
+  getCacheBustedAvatarUrl,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -1253,7 +1254,7 @@ export const MessagingSection: React.FC = () => {
                             className={`w-8 h-8 rounded-full overflow-hidden ${conv.avatarColor || 'bg-slate-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
                           >
                             {conv.avatarUrl ? (
-                              <img src={conv.avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                              <img src={getCacheBustedAvatarUrl(conv.avatarUrl)} alt={displayName} className="w-full h-full object-cover" />
                             ) : (
                               displayName.charAt(0)
                             )}

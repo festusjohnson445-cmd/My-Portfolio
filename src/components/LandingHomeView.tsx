@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
+import { getCacheBustedAvatarUrl } from '../utils/supabase';
 
 interface LandingHomeViewProps {
   onNavigatePart: (part: PortfolioPart) => void;
@@ -137,7 +138,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center overflow-hidden shrink-0 group-hover:scale-105 transition-transform shadow-2xs">
                       {avatar ? (
-                        <img src={avatar} alt="Profile" className="w-full h-full object-cover" />
+                        <img src={getCacheBustedAvatarUrl(avatar)} alt="Profile" className="w-full h-full object-cover" />
                       ) : (
                         <User className="w-5 h-5 text-cyan-800" />
                       )}

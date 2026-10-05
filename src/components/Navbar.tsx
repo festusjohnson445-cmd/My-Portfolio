@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { FeslineLogo } from './FeslineLogo';
 import { useProfileSync } from '../utils/profileState';
+import { getCacheBustedAvatarUrl } from '../utils/supabase';
 
 export type PortfolioPart = 'home' | 'profile' | 'overview' | 'easestudy' | 'messaging';
 
@@ -188,7 +189,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full overflow-hidden border-2 border-white shadow-sm bg-slate-200 shrink-0 flex items-center justify-center">
                 {profileAvatar ? (
                   <img
-                    src={profileAvatar}
+                    src={getCacheBustedAvatarUrl(profileAvatar)}
                     alt={userName}
                     className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-200"
                   />

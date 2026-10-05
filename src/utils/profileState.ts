@@ -373,45 +373,41 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     return await resetStoredAvatar();
   }
 
-  let finalUrl = `/api/profile/picture?v=${Date.now()}`;
+  // 1. Perform FULL asynchronous upload to Supabase "avatars" Storage bucket FIRST
+  const ownerUid = getAuthenticatedOwnerUid();
+  const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
 
-  // 1. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
-  try {
-    const ownerUid = getAuthenticatedOwnerUid();
-    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
-    if (supaRes && supaRes.publicUrl) {
-      finalUrl = supaRes.publicUrl;
-      await saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid);
-    }
-  } catch (supaErr) {
-    console.warn('Supabase avatars bucket upload note:', supaErr);
+  if (supaRes.error || !supaRes.publicUrl) {
+    throw new Error(
+      supaRes.error?.message || 'Supabase avatars bucket upload failed. State mutation halted.'
+    );
   }
 
-  // 2. Persist to server endpoint
+  const finalPublicUrl = supaRes.publicUrl;
+
+  // 2. Write validated public URL to Supabase "profiles" database table
+  const dbSaved = await saveProfileToSupabaseTable({ avatarUrl: finalPublicUrl }, ownerUid);
+  if (!dbSaved) {
+    console.warn('[Supabase Profiles Table Note]: Profile upsert notice, continuing with storage URL.');
+  }
+
+  // 3. Persist to server endpoint backup
   try {
-    const res = await fetch('/api/profile/picture', {
+    fetch('/api/profile/picture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ avatar: rawBase64 }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.url && !finalUrl.startsWith('http')) {
-        finalUrl = data.url;
-      }
-    }
-  } catch (serverErr) {
-    console.warn('Dedicated profile picture API note:', serverErr);
-  }
+      body: JSON.stringify({ avatar: finalPublicUrl }),
+    }).catch(() => {});
+  } catch {}
 
-  // 3. Update in-memory cache
-  memoryAvatar = finalUrl;
+  // 4. Update in-memory cache with exact public URL
+  memoryAvatar = finalPublicUrl;
 
-  // 4. Save to IndexedDB
+  // 5. Save to IndexedDB
   try {
     await saveAvatarToIndexedDB({
       id: 'current_profile_avatar',
-      dataUrl: rawBase64.length < 500000 ? rawBase64 : finalUrl,
+      dataUrl: finalPublicUrl,
       updatedAt: new Date().toISOString(),
       dimensions: '640 x 640 px',
     });
@@ -419,16 +415,16 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   notifyProfileUpdated();
 
-  // 5. Save reference to Firestore & Cloud SQL profile record
+  // 6. Save reference to Firestore
   try {
-    await saveProfileToFirestore({ avatar: finalUrl });
-    pushProfileToServer({ avatar: finalUrl }).catch(() => {});
+    await saveProfileToFirestore({ avatar: finalPublicUrl });
+    pushProfileToServer({ avatar: finalPublicUrl }).catch(() => {});
   } catch (dbErr) {
     console.warn('Firestore profile avatar update note:', dbErr);
   }
 
-  broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });
-  return finalUrl;
+  broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalPublicUrl });
+  return finalPublicUrl;
 }
 
 /**

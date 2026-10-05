@@ -565,82 +565,74 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Processing document binaries...' });
 
     try {
-      // 1. Process all queued files with safe base64 encoding
-      const newDocs: PublicEngineeringDocument[] = await Promise.all(
-        queuedFiles.map(async (item, i) => {
-          let fileDataUrl = '';
-          try {
-            fileDataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = (ev) => resolve((ev.target?.result as string) || '');
-              reader.onerror = () => reject(new Error('Failed to read file binary'));
-              reader.readAsDataURL(item.file);
-            });
-          } catch {
-            fileDataUrl = '';
-          }
+      // 1. Perform FULL asynchronous upload to Supabase "materials" Storage bucket FIRST for all queued files
+      const newDocs: PublicEngineeringDocument[] = [];
 
-          const tagList = item.tags
-            .split(',')
-            .map((t) => t.trim())
-            .filter(Boolean);
-
-          const docId = `doc-${Date.now()}-${i}`;
-          const timestamp = Date.now() + i;
-
-          // If authenticated as owner, upload to Supabase "materials" storage bucket permanently under auth.uid()
-          let supaDownloadUrl = '';
-          let supaStoragePath = '';
-          if (isOwner) {
-            try {
-              const ownerUid = getAuthenticatedOwnerUid();
-              const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
-              if (supaRes) {
-                supaDownloadUrl = supaRes.downloadUrl;
-                supaStoragePath = supaRes.storagePath;
-              }
-            } catch (supaErr) {
-              console.warn('Supabase materials upload note:', supaErr);
-            }
-          }
-
-          const docObj: PublicEngineeringDocument = {
-            id: docId,
-            title: item.title.trim() || item.file.name,
-            fileName: item.file.name,
-            fileSize: item.fileSize,
-            fileType: item.fileType,
-            category: item.category,
-            description: item.description.trim() || `Technical specification for ${item.file.name}`,
-            author: effectiveUploader,
-            uploaderName: effectiveUploader,
-            uploaderType: isOwner ? 'owner' : 'visitor',
-            status: 'approved',
-            uploadDate: new Date().toISOString().split('T')[0],
-            uploadTimestamp: timestamp,
-            downloadCount: 0,
-            tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
-            previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : undefined,
-            dataUrl: fileDataUrl,
-            downloadUrl: supaDownloadUrl || `/api/documents/files/${docId}`,
-            hasServerFile: true,
-            isCustomUpload: true,
-          };
-
-          if (supaStoragePath) {
-            (docObj as any).storagePath = supaStoragePath;
-          }
-
-          return docObj;
-        })
-      );
-
-      // Save official materials to Supabase "materials" table if authenticated as owner
-      if (isOwner) {
-        const ownerUid = getAuthenticatedOwnerUid();
-        newDocs.forEach((docItem) => {
-          saveMaterialToSupabaseTable(docItem, ownerUid).catch(() => {});
+      for (let i = 0; i < queuedFiles.length; i++) {
+        const item = queuedFiles[i];
+        setUploadProgress({
+          current: i + 1,
+          total,
+          percent: Math.round(((i + 1) / total) * 40),
+          currentFileName: `Uploading ${item.file.name} to Supabase Storage...`
         });
+
+        const ownerUid = getAuthenticatedOwnerUid();
+        const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
+
+        // HALT state mutation and display meaningful error UI feedback if upload fails
+        if (supaRes.error || !supaRes.publicUrl) {
+          const errorMsg = supaRes.error?.message || `Failed to upload "${item.file.name}" to Supabase materials bucket. Persistence halted.`;
+          setIsPublishing(false);
+          setUploadError(errorMsg);
+          showToast(errorMsg, 'error');
+          return;
+        }
+
+        const tagList = item.tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean);
+
+        const docId = `doc-${Date.now()}-${i}`;
+        const timestamp = Date.now() + i;
+
+        // Captured exact Supabase public URL from getPublicUrl
+        const publicStorageUrl = supaRes.publicUrl;
+
+        const docObj: PublicEngineeringDocument = {
+          id: docId,
+          title: item.title.trim() || item.file.name,
+          fileName: item.file.name,
+          fileSize: item.fileSize,
+          fileType: item.fileType,
+          category: item.category,
+          description: item.description.trim() || `Technical specification for ${item.file.name}`,
+          author: effectiveUploader,
+          uploaderName: effectiveUploader,
+          uploaderType: isOwner ? 'owner' : 'visitor',
+          status: 'approved',
+          uploadDate: new Date().toISOString().split('T')[0],
+          uploadTimestamp: timestamp,
+          downloadCount: 0,
+          tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
+          previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : undefined,
+          downloadUrl: publicStorageUrl,
+          hasServerFile: true,
+          isCustomUpload: true,
+        };
+
+        if (supaRes.storagePath) {
+          (docObj as any).storagePath = supaRes.storagePath;
+        }
+
+        // 2. Write validated public URL to Supabase "materials" database table AFTER 200 response
+        const tableSaved = await saveMaterialToSupabaseTable(docObj, ownerUid);
+        if (!tableSaved) {
+          console.warn(`[Supabase DB Note]: Saved storage URL for "${item.file.name}", continuing.`);
+        }
+
+        newDocs.push(docObj);
       }
 
       setUploadProgress({ current: 1, total, percent: 50, currentFileName: 'Saving to persistent cloud database...' });
