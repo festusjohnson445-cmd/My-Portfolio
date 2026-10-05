@@ -68,9 +68,9 @@ import {
   fetchMaterialsFromSupabaseTable,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
-  subscribeToSupabaseMaterialsChanges,
   getAuthenticatedOwnerUid,
 } from '../utils/supabase';
+import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import { PortfolioPart } from './Navbar';
 
 export type DocumentCategory =
@@ -436,18 +436,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       }
     };
 
+    const unsubMem = subscribeToDynamicMemory((ev) => {
+      if (ev.category === 'documents') {
+        loadDocuments();
+      }
+    });
+
     window.addEventListener('fesline_hub_docs_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
     window.addEventListener('focus', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibility);
 
-    const unsubscribeSupabase = subscribeToSupabaseMaterialsChanges(() => {
-      loadDocuments();
-    });
-
     return () => {
+      unsubMem();
       unsubscribeFirestore();
-      unsubscribeSupabase();
       clearInterval(pollTimer);
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
@@ -461,6 +463,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     setDocuments(sorted);
     saveHubDocumentsPersistently(sorted).catch(() => {});
     window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
+    broadcastMemoryEvent('documents', 'hub_docs_updated', { count: sorted.length });
   };
 
   /**
@@ -694,6 +697,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setUploadSuccessMsg(null);
       setUploadProgress({ current: 0, total: 0, percent: 0, currentFileName: '' });
       window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
+      broadcastMemoryEvent('documents', 'hub_docs_updated', { count: updatedAll.length });
     } catch (err: any) {
       console.warn('Publish note:', err);
       setIsPublishing(false);

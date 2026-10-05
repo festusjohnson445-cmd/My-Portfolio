@@ -15,12 +15,12 @@ import {
   subscribeToProfile, 
   type PersistentProfileRecord
 } from './firebase';
+import { broadcastMemoryEvent, subscribeToDynamicMemory } from './dynamicMemory';
 import {
   uploadAvatarToSupabaseBucket,
   deleteAvatarFromSupabaseBucket,
   saveProfileToSupabaseTable,
   fetchProfileFromSupabaseTable,
-  subscribeToSupabaseProfileChanges,
   getAuthenticatedOwnerUid,
   supabaseSignInOwner,
   supabaseSignOutOwner,
@@ -115,31 +115,18 @@ export function notifyProfileUpdated() {
 }
 
 /**
- * Compress or process an image data URL or file to fit safely and render quickly (accepts all image formats)
+ * Compress an image data URL or file to fit safely and render quickly
  */
-export function compressImage(file: File, maxDimension = 800, quality = 0.92): Promise<string> {
+export function compressImage(file: File, maxDimension = 640, quality = 0.88): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onerror = reject;
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       if (!dataUrl) {
         reject(new Error('Failed to read image file'));
         return;
       }
-      // For SVG, animated GIF, or small images, return pristine data URL immediately
-      if (
-        file.type === 'image/svg+xml' ||
-        file.type === 'image/gif' ||
-        file.type.includes('svg') ||
-        file.name.toLowerCase().endsWith('.svg') ||
-        file.name.toLowerCase().endsWith('.gif') ||
-        file.size < 250000
-      ) {
-        resolve(dataUrl);
-        return;
-      }
-
       const img = new Image();
       img.onerror = () => resolve(dataUrl);
       img.onload = () => {
@@ -163,8 +150,7 @@ export function compressImage(file: File, maxDimension = 800, quality = 0.92): P
             return;
           }
           ctx.drawImage(img, 0, 0, width, height);
-          const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-          const compressed = canvas.toDataURL(mime, quality);
+          const compressed = canvas.toDataURL('image/jpeg', quality);
           resolve(compressed);
         } catch {
           resolve(dataUrl);
@@ -274,7 +260,7 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
 
     isProfileHydrated = true;
 
-    // 3. Attach real-time listeners if not already active
+    // 3. Attach real-time listener if not already active
     if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
       isRealtimeListenerAttached = true;
       subscribeToProfile(
@@ -285,17 +271,6 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
         },
         (err) => console.warn('Realtime subscription notice:', err)
       );
-
-      subscribeToSupabaseProfileChanges((supaPayload) => {
-        if (supaPayload) {
-          applyPersistentProfile({
-            avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
-            bio: typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio,
-            documents: typeof supaPayload.documents === 'string' ? JSON.parse(supaPayload.documents) : supaPayload.documents,
-            updatedAt: supaPayload.updated_at || new Date().toISOString(),
-          });
-        }
-      });
     }
   } catch (err) {
     console.warn('Could not sync global profile from persistent storage:', err);
@@ -420,7 +395,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
   let rawBase64 = '';
 
   if (typeof avatarUrlOrFile === 'string') {
-    rawBase64 = avatarUrlOrFile.trim();
+    rawBase64 = avatarUrlOrFile;
   } else if (avatarUrlOrFile instanceof File || avatarUrlOrFile instanceof Blob) {
     rawBase64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -435,38 +410,18 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     return await resetStoredAvatar();
   }
 
-  let finalUrl = '';
-  const ownerUid = getAuthenticatedOwnerUid();
+  let finalUrl = `/api/profile/picture?v=${Date.now()}`;
 
-  // 1. Direct HTTPS Link System or Upload to Supabase "avatars" Bucket
-  if (rawBase64.startsWith('http://') || rawBase64.startsWith('https://')) {
-    finalUrl = rawBase64;
-  } else {
-    try {
-      const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
-      if (supaRes && supaRes.publicUrl && supaRes.publicUrl.startsWith('http')) {
-        finalUrl = supaRes.publicUrl;
-      }
-    } catch (supaErr) {
-      console.warn('Supabase avatars bucket upload note:', supaErr);
-    }
-  }
-
-  // If Supabase upload didn't return an HTTPS URL, fallback to resilient server endpoint
-  if (!finalUrl) {
-    finalUrl = `/api/profile/picture?v=${Date.now()}`;
-  }
-
-  // 2. Persist directly to dedicated Cloud SQL table (Separate persistent cloud database)
+  // 1. Persist directly to dedicated Cloud SQL table (Separate persistent cloud database)
   try {
     const res = await fetch('/api/profile/picture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ avatar: finalUrl.startsWith('http') ? finalUrl : rawBase64 }),
+      body: JSON.stringify({ avatar: rawBase64 }),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data && data.url && !finalUrl.startsWith('http')) {
+      if (data && data.url) {
         finalUrl = data.url;
       }
     }
@@ -474,13 +429,13 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Dedicated profile picture API note:', serverErr);
   }
 
-  // 3. Update in-memory and local browser caches
+  // 2. Update in-memory and local browser caches
   memoryAvatar = finalUrl;
   try {
     localStorage.setItem(STORAGE_KEY_AVATAR, finalUrl);
   } catch (err) {}
 
-  // 4. Save to IndexedDB
+  // 3. Save to IndexedDB
   try {
     await saveAvatarToIndexedDB({
       id: 'current_profile_avatar',
@@ -492,7 +447,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   notifyProfileUpdated();
 
-  // 5. Save lightweight URL reference to Firestore & Cloud SQL profile record
+  // 4. Save lightweight URL reference to Firestore & Cloud SQL profile record
   try {
     await saveProfileToFirestore({ avatar: finalUrl });
     pushProfileToServer({ avatar: finalUrl }).catch(() => {});
@@ -500,13 +455,18 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Firestore profile avatar update note:', dbErr);
   }
 
-  // 6. Save HTTPS URL to Supabase "profiles" table
+  // 5. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
   try {
-    saveProfileToSupabaseTable({ avatarUrl: finalUrl }, ownerUid).catch(() => {});
+    const ownerUid = getAuthenticatedOwnerUid();
+    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
+    if (supaRes && supaRes.publicUrl) {
+      saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid).catch(() => {});
+    }
   } catch (supaErr) {
-    console.warn('Supabase profiles table avatar note:', supaErr);
+    console.warn('Supabase avatars bucket upload note:', supaErr);
   }
 
+  broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });
   return finalUrl;
 }
 
@@ -525,6 +485,7 @@ export async function resetStoredAvatar(): Promise<string> {
     const ownerUid = getAuthenticatedOwnerUid();
     saveProfileToSupabaseTable({ avatarUrl: '' }, ownerUid).catch(() => {});
   } catch {}
+  broadcastMemoryEvent('profile', 'avatar_deleted', { avatar: '' });
   notifyProfileUpdated();
   return '';
 }
@@ -587,6 +548,7 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
     console.warn('LocalStorage save failed for bio:', err);
   }
   notifyProfileUpdated();
+  broadcastMemoryEvent('profile', 'bio_updated', { bio: mergedBio, avatar });
 
   // 2. Atomic, persistent Firestore database write & Cloud SQL write
   try {
@@ -648,6 +610,7 @@ export async function saveStoredDocuments(docs: DocumentItem[]): Promise<void> {
   // Persist to IndexedDB asynchronously for large attachments
   saveDocumentsPersistently(docs).catch((e) => console.warn('Persistent storage failed:', e));
   notifyProfileUpdated();
+  broadcastMemoryEvent('documents', 'profile_docs_updated', { count: docs.length });
 
   // 2. Atomic, persistent Firestore database write & Cloud SQL write
   try {
@@ -748,6 +711,11 @@ export function useProfileSync() {
 
   useEffect(() => {
     syncGlobalProfileWithServer().then(() => sync());
+    const unsubMemory = subscribeToDynamicMemory((ev) => {
+      if (ev.category === 'profile' || ev.category === 'documents') {
+        sync();
+      }
+    });
     window.addEventListener(EVENT_PROFILE_UPDATED, sync);
     window.addEventListener('storage', sync);
     window.addEventListener('focus', sync);
@@ -760,6 +728,7 @@ export function useProfileSync() {
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
+      unsubMemory();
       window.removeEventListener(EVENT_PROFILE_UPDATED, sync);
       window.removeEventListener('storage', sync);
       window.removeEventListener('focus', sync);

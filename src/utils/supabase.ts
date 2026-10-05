@@ -8,7 +8,7 @@ const ENV_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 const ENV_SUPABASE_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
 // Support dynamic browser storage override if owner inputs custom credentials in Admin UI
-export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
+function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
   try {
     const customUrl = localStorage.getItem('fesline_custom_supabase_url');
     const customKey = localStorage.getItem('fesline_custom_supabase_anon_key');
@@ -182,23 +182,17 @@ export async function uploadAvatarToSupabaseBucket(
   try {
     const ownerUid = uid || getAuthenticatedOwnerUid();
     const timestamp = Date.now();
+    const fileName = `avatar_${timestamp}.jpg`;
+    const storagePath = `${ownerUid}/${fileName}`;
+
     let uploadBody: Blob | Uint8Array | File;
     let contentType = 'image/jpeg';
-    let ext = 'jpg';
 
     if (typeof fileOrBlobOrDataUrl === 'string') {
       if (fileOrBlobOrDataUrl.startsWith('data:')) {
         const parts = fileOrBlobOrDataUrl.split(',');
         const mimeMatch = parts[0].match(/:(.*?);/);
-        if (mimeMatch) {
-          contentType = mimeMatch[1];
-          if (contentType.includes('png')) ext = 'png';
-          else if (contentType.includes('webp')) ext = 'webp';
-          else if (contentType.includes('gif')) ext = 'gif';
-          else if (contentType.includes('svg')) ext = 'svg';
-          else if (contentType.includes('avif')) ext = 'avif';
-          else if (contentType.includes('bmp')) ext = 'bmp';
-        }
+        if (mimeMatch) contentType = mimeMatch[1];
         const binaryStr = atob(parts[1]);
         const len = binaryStr.length;
         const bytes = new Uint8Array(len);
@@ -208,21 +202,12 @@ export async function uploadAvatarToSupabaseBucket(
         uploadBody = bytes;
       } else {
         // If it's already an HTTP URL, return as is
-        return { publicUrl: fileOrBlobOrDataUrl, storagePath: '' };
+        return { publicUrl: fileOrBlobOrDataUrl, storagePath };
       }
     } else {
       uploadBody = fileOrBlobOrDataUrl;
       contentType = fileOrBlobOrDataUrl.type || 'image/jpeg';
-      if (contentType.includes('png')) ext = 'png';
-      else if (contentType.includes('webp')) ext = 'webp';
-      else if (contentType.includes('gif')) ext = 'gif';
-      else if (contentType.includes('svg')) ext = 'svg';
-      else if (contentType.includes('avif')) ext = 'avif';
-      else if (contentType.includes('bmp')) ext = 'bmp';
     }
-
-    const fileName = `avatar_${timestamp}.${ext}`;
-    const storagePath = `${ownerUid}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
       .from(SUPABASE_BUCKETS.AVATARS)
@@ -390,81 +375,9 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
     if (error || !data) {
       return null;
     }
-
-    let parsedBio = data.bio;
-    if (typeof parsedBio === 'string') {
-      try {
-        parsedBio = JSON.parse(parsedBio);
-      } catch {}
-    }
-
-    let parsedDocs = data.documents;
-    if (typeof parsedDocs === 'string') {
-      try {
-        parsedDocs = JSON.parse(parsedDocs);
-      } catch {}
-    }
-
-    return {
-      fullName: data.full_name || data.fullName,
-      header: data.header,
-      bio: parsedBio || {},
-      avatar_url: data.avatar_url || data.avatarUrl || '',
-      documents: Array.isArray(parsedDocs) ? parsedDocs : [],
-      updated_at: data.updated_at,
-    };
+    return data;
   } catch {
     return null;
-  }
-}
-
-/**
- * Subscribe to Supabase Realtime Postgres Changes on the profiles table
- */
-export function subscribeToSupabaseProfileChanges(callback: (profile: any) => void) {
-  try {
-    const channel = supabase
-      .channel('public:profiles_realtime_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'profiles' },
-        (payload) => {
-          if (payload?.new) {
-            callback(payload.new);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  } catch {
-    return () => {};
-  }
-}
-
-/**
- * Subscribe to Supabase Realtime Postgres Changes on the materials table
- */
-export function subscribeToSupabaseMaterialsChanges(callback: () => void) {
-  try {
-    const channel = supabase
-      .channel('public:materials_realtime_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'materials' },
-        () => {
-          callback();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  } catch {
-    return () => {};
   }
 }
 
@@ -611,121 +524,6 @@ export async function broadcastSupabaseChatMessage(messagePayload: any): Promise
     });
   } catch (err) {
     console.warn('[Supabase Realtime Broadcast Note]:', err);
-  }
-}
-
-/**
- * Test connectivity and latency to Supabase Database, Auth, and Storage Buckets
- */
-export async function testSupabaseConnection(): Promise<{
-  connected: boolean;
-  latencyMs: number;
-  authOk: boolean;
-  profilesTableOk: boolean;
-  materialsTableOk: boolean;
-  avatarsBucketOk: boolean;
-  materialsBucketOk: boolean;
-  details: string;
-}> {
-  const startTime = performance.now();
-  let authOk = false;
-  let profilesTableOk = false;
-  let materialsTableOk = false;
-  let avatarsBucketOk = false;
-  let materialsBucketOk = false;
-  const messages: string[] = [];
-
-  try {
-    // 1. Test Auth session ping
-    try {
-      const { data } = await supabase.auth.getSession();
-      authOk = true;
-      if (data?.session?.user) {
-        messages.push(`Authenticated as: ${data.session.user.email}`);
-      } else {
-        messages.push('Auth endpoint responsive (ready for sign in)');
-      }
-    } catch (e: any) {
-      messages.push(`Auth check: ${e?.message || 'Warning'}`);
-    }
-
-    // 2. Test Profiles Table Read
-    try {
-      const { error } = await supabase.from('profiles').select('id').limit(1);
-      if (!error) {
-        profilesTableOk = true;
-        messages.push('Table "profiles" connected');
-      } else {
-        messages.push(`Table "profiles": ${error.message}`);
-      }
-    } catch (e: any) {
-      messages.push(`Table "profiles": ${e?.message || 'Error'}`);
-    }
-
-    // 3. Test Materials Table Read
-    try {
-      const { error } = await supabase.from('materials').select('id').limit(1);
-      if (!error) {
-        materialsTableOk = true;
-        messages.push('Table "materials" connected');
-      } else {
-        messages.push(`Table "materials": ${error.message}`);
-      }
-    } catch (e: any) {
-      messages.push(`Table "materials": ${e?.message || 'Error'}`);
-    }
-
-    // 4. Test Avatars Storage Bucket
-    try {
-      const { error } = await supabase.storage.from(SUPABASE_BUCKETS.AVATARS).list('', { limit: 1 });
-      if (!error) {
-        avatarsBucketOk = true;
-        messages.push('Bucket "avatars" accessible');
-      } else {
-        messages.push(`Bucket "avatars": ${error.message}`);
-      }
-    } catch (e: any) {
-      messages.push(`Bucket "avatars": ${e?.message || 'Error'}`);
-    }
-
-    // 5. Test Materials Storage Bucket
-    try {
-      const { error } = await supabase.storage.from(SUPABASE_BUCKETS.MATERIALS).list('', { limit: 1 });
-      if (!error) {
-        materialsBucketOk = true;
-        messages.push('Bucket "materials" accessible');
-      } else {
-        messages.push(`Bucket "materials": ${error.message}`);
-      }
-    } catch (e: any) {
-      messages.push(`Bucket "materials": ${e?.message || 'Error'}`);
-    }
-
-    const latencyMs = Math.round(performance.now() - startTime);
-    const connected = authOk || profilesTableOk || materialsTableOk || avatarsBucketOk || materialsBucketOk;
-
-    return {
-      connected,
-      latencyMs,
-      authOk,
-      profilesTableOk,
-      materialsTableOk,
-      avatarsBucketOk,
-      materialsBucketOk,
-      details: messages.join(' · '),
-    };
-  } catch (err: any) {
-    const latencyMs = Math.round(performance.now() - startTime);
-    return {
-      connected: false,
-      latencyMs,
-      authOk: false,
-      profilesTableOk: false,
-      materialsTableOk: false,
-      avatarsBucketOk: false,
-      materialsBucketOk: false,
-      details: err?.message || 'Connection test failed',
-    };
   }
 }
 

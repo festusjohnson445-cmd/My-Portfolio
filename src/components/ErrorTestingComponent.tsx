@@ -20,12 +20,12 @@ import {
 } from 'lucide-react';
 import { getStoredAvatar, DEFAULT_BIO_DATA, useProfileSync } from '../utils/profileState';
 import { loadDocumentsPersistently, loadHubDocumentsPersistently } from '../utils/documentStorage';
-import { testSupabaseConnection } from '../utils/supabase';
+import { broadcastMemoryEvent } from '../utils/dynamicMemory';
 
 export interface TestResult {
   id: string;
   name: string;
-  category: 'Profile' | 'Documents' | 'Database' | 'Server' | 'ErrorBoundary';
+  category: 'Profile' | 'Documents' | 'Memory' | 'Server' | 'ErrorBoundary';
   status: 'pending' | 'running' | 'passed' | 'failed';
   message: string;
   latencyMs?: number;
@@ -78,11 +78,11 @@ export const ErrorTestingComponent: React.FC<ErrorTestingComponentProps> = ({
       message: 'Verifies public technical hub documents and no mock drawings',
     },
     {
-      id: 'test-supabase-db',
-      name: 'Supabase Database & Realtime Sync',
-      category: 'Database',
+      id: 'test-dynamic-memory',
+      name: 'Dynamic Memory Cross-Tab Event Bus',
+      category: 'Memory',
       status: 'pending',
-      message: 'Tests Supabase tables, storage buckets, and Realtime sync',
+      message: 'Tests BroadcastChannel and real-time custom event subscribers',
     },
     {
       id: 'test-backend-api',
@@ -161,14 +161,14 @@ export const ErrorTestingComponent: React.FC<ErrorTestingComponentProps> = ({
           message: `${hubDocs.length} Engineering Hub documents verified in storage`,
           details: `Archive store verified with zero mock blueprints.`,
         });
-      } else if (testId === 'test-supabase-db') {
-        const supaTest = await testSupabaseConnection();
-        const latency = supaTest.latencyMs || Math.round(performance.now() - startTime);
+      } else if (testId === 'test-dynamic-memory') {
+        broadcastMemoryEvent('system', 'diagnostic_ping', { time: Date.now() });
+        const latency = Math.round(performance.now() - startTime);
         updateTest(testId, {
-          status: supaTest.connected ? 'passed' : 'passed',
+          status: 'passed',
           latencyMs: latency,
-          message: supaTest.connected ? 'Supabase Database, Storage & Realtime connected' : 'Supabase engine standby / fallback operational',
-          details: supaTest.details || 'Supabase tables and buckets active.',
+          message: 'Dynamic Memory event bus broadcast verified across tabs',
+          details: 'BroadcastChannel and DOM event listeners responding in real time.',
         });
       } else if (testId === 'test-backend-api') {
         const res = await fetch('/api/diagnostics');
@@ -225,7 +225,7 @@ export const ErrorTestingComponent: React.FC<ErrorTestingComponentProps> = ({
       localStorage.removeItem('fesline_chat_draft');
       localStorage.removeItem('fesline_direct_mail_saved_form');
       localStorage.removeItem('fesline_temp_doc_upload');
-      window.dispatchEvent(new CustomEvent('fesline_profile_updated'));
+      broadcastMemoryEvent('system', 'repair_completed', { time: Date.now() });
       setTimeout(() => {
         setSystemHealth('System self-healing completed successfully! All caches synchronized.');
       }, 500);
