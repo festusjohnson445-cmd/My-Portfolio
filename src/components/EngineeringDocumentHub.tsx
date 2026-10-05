@@ -39,7 +39,6 @@ import {
   ListPlus,
   ArrowUpDown
 } from 'lucide-react';
-import { jsPDF } from 'jspdf';
 import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 import {
   saveHubDocumentsPersistently,
@@ -724,7 +723,18 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
     } catch {}
 
-    // 2. Trigger browser download directly from server stream or cloud URL
+    // 2. Trigger browser download directly from uploaded file dataUrl or server stream
+    if (doc.dataUrl) {
+      const link = document.createElement('a');
+      link.href = doc.dataUrl;
+      link.download = doc.fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast(`Downloading "${doc.fileName}"...`, 'info');
+      return;
+    }
+
     if (doc.downloadUrl || doc.hasServerFile) {
       const serverUrl = doc.downloadUrl || `/api/documents/files/${doc.id}`;
       const link = document.createElement('a');
@@ -738,52 +748,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       return;
     }
 
-    if (doc.dataUrl) {
-      const link = document.createElement('a');
-      link.href = doc.dataUrl;
-      link.download = doc.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast(`Downloading "${doc.fileName}"...`, 'info');
-      return;
-    }
-
-    // Procedural Fallback
-    if (doc.fileName.endsWith('.pdf')) {
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-      pdf.setFillColor(15, 29, 54);
-      pdf.rect(0, 0, 297, 210, 'F');
-      pdf.setDrawColor(56, 189, 248);
-      pdf.setLineWidth(1.2);
-      pdf.rect(10, 10, 277, 190);
-
-      pdf.setTextColor(56, 189, 248);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(16);
-      pdf.text(doc.title.slice(0, 55), 15, 22);
-
-      pdf.setFontSize(10);
-      pdf.setFont('courier', 'normal');
-      pdf.setTextColor(148, 163, 184);
-      pdf.text(`FILE: ${doc.fileName} | CATEGORY: ${doc.category} | REVISION: REV B.2`, 15, 28);
-      pdf.text(`STANDARDS COMPLIANCE: ASME Y14.5-2018 | AUTHOR: ${doc.author}`, 15, 34);
-
-      pdf.save(doc.fileName);
-      showToast(`Downloading "${doc.fileName}"...`, 'info');
-    } else {
-      const textContent = `ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('FESLINE PRECISION ENGINEERING CAD STEP EXPORT'),'2;1');\nFILE_NAME('${doc.fileName}','${new Date().toISOString()}',('${doc.author}'),('FESLINE AEROSPACE & ROBOTICS'),'AI Studio B-Rep Kernel 2026','SolidWorks 2026 / ASME Y14.5','');\nFILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n#1=APPLICATION_CONTEXT('configuration controlled 3d designs of mechanical parts and assemblies');\n#2=APPLICATION_PROTOCOL_DEFINITION('international standard','config_control_design',1994,#1);\n#3=MECHANICAL_CONTEXT('3D Mechanical Part',#1,'mechanical');\n#4=PRODUCT('${doc.fileName}','${doc.title}','Part Assembly',(#3));\n#5=PRODUCT_DEFINITION_FORMATION('Rev B.2','Release',#4);\nENDSEC;\nEND-ISO-10303-21;`;
-      const blob = new Blob([textContent], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = doc.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showToast(`Downloading "${doc.fileName}"...`, 'info');
-    }
+    showToast(`File content for "${doc.fileName}" is not available.`, 'error');
   };
 
   const handleDeleteDocument = async (id: string, e?: React.MouseEvent) => {

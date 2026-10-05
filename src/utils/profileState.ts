@@ -37,7 +37,7 @@ export const EVENT_PROFILE_UPDATED = 'fesline_profile_updated';
 export const OWNER_EMAIL = 'festusjohnson028@gmail.com';
 export const OWNER_PASSWORD = 'Festus1999.';
 
-export const DEFAULT_AVATAR = '/api/profile/picture';
+export const DEFAULT_AVATAR = '';
 
 export interface ProfileBioData {
   fullName: string;

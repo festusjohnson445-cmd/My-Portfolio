@@ -425,15 +425,8 @@ app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
       return res.redirect(avatar);
     }
 
-    // 3. Fallback to default avatar svg or empty
-    const defaultLogo = path.resolve(process.cwd(), 'public/assets/fesline_logo.svg');
-    if (fs.existsSync(defaultLogo)) {
-      res.setHeader('Content-Type', 'image/svg+xml');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      return res.sendFile(defaultLogo);
-    }
-
-    res.status(204).end();
+    // 3. If no picture uploaded, return 404
+    res.status(404).end();
   } catch (err) {
     res.status(204).end();
   }
@@ -442,7 +435,7 @@ app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
 // Dedicated profile picture upload & update endpoint
 app.post(['/api/profile/picture', '/api/profile/avatar'], async (req, res) => {
   try {
-    const avatarData = req.body.avatar || req.body.picture || req.body.image || req.body.fileBinary;
+    const avatarData = req.body.avatar || req.body.picture || req.body.image || req.body.fileBinary || req.body.dataUrl;
     if (avatarData === undefined) {
       return res.status(400).json({ success: false, message: 'Missing avatar image data' });
     }
