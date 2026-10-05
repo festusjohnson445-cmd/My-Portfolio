@@ -1024,6 +1024,33 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       )}
 
       {/* ======================================================== */}
+      {/* VISITOR PUBLIC NOTICE & OWNER ADMIN LOGIN BUTTON         */}
+      {/* ======================================================== */}
+      {!isOwnerAuthenticated && (
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="py-2.5 px-4 rounded-2xl bg-white/70 border border-[#b8c6d4] shadow-2xs flex flex-wrap items-center justify-between gap-3 text-slate-700 text-xs font-sans">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-slate-800 font-semibold font-serif">Public Portfolio View:</span>
+              <span className="text-slate-600 hidden sm:inline">Unauthenticated visitors can view owner profile, study technical projects, and download verified engineering credentials.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthEmail(OWNER_EMAIL);
+                setIsAuthModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-950 text-cyan-300 hover:text-cyan-200 text-xs font-semibold shadow-xs border border-slate-700 transition-colors cursor-pointer shrink-0"
+              title="Authenticate as Festus Johnson using Supabase email/password login"
+            >
+              <KeyRound className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Owner Admin Login</span>
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* ======================================================== */}
       {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
       {/* ======================================================== */}
       {isOwnerAuthenticated && (
@@ -2920,8 +2947,16 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <KeyRound className="w-5 h-5 text-cyan-300" />
                 </div>
                 <div>
-                  <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
-                    Fesline Panel
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest block leading-none">
+                      Supabase Authentication
+                    </span>
+                    <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      RLS Protected
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight mt-0.5">
+                    Owner Admin Login
                   </h3>
                 </div>
               </div>
@@ -2941,6 +2976,17 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             {/* Form */}
             <form onSubmit={handleOwnerLogin} className="p-5 sm:p-6 space-y-4">
+              {/* Context Explanation */}
+              <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-slate-700 text-xs leading-relaxed">
+                <p className="font-semibold text-cyan-950 mb-1 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-cyan-700 shrink-0" />
+                  <span>Authenticated Owner Mode (Festus Johnson)</span>
+                </p>
+                <span className="text-slate-600 text-[11px] block">
+                  Once signed in with <span className="font-mono text-cyan-900 font-semibold">supabase.auth.signInWithPassword()</span>, your profile edits, public <span className="font-mono font-semibold">"avatars"</span> bucket uploads, and <span className="font-mono font-semibold">"materials"</span> bucket uploads are permanently locked under your <span className="font-mono font-semibold">auth.uid()</span>.
+                </span>
+              </div>
+
               {authError && (
                 <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
                   <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -3048,7 +3094,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     ) : (
                       <>
                         <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Sign in</span>
+                        <span>Sign In (Supabase Auth)</span>
                       </>
                     )}
                   </button>
