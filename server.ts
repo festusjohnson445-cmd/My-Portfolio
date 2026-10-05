@@ -425,10 +425,14 @@ app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
       return res.redirect(avatar);
     }
 
-    // 3. If no picture uploaded, return 404
-    res.status(404).end();
+    // 3. Clean fallback avatar SVG (returns valid 200 image so endpoint never errors)
+    const defaultAvatarSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="11" fill="#f1f5f9" stroke="#cbd5e1"/><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    return res.send(defaultAvatarSvg);
   } catch (err) {
-    res.status(204).end();
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.status(200).send('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#64748b"><circle cx="12" cy="12" r="10"/></svg>');
   }
 });
 

@@ -202,15 +202,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     saveSyncDocuments(current);
   };
 
-  // Profile picture placement & crop modal states
-  const [isCropModalOpen, setIsCropModalOpen] = useState(false);
-  const [cropSourceImage, setCropSourceImage] = useState<string | null>(null);
-  const [cropZoom, setCropZoom] = useState<number>(1);
-  const [cropPan, setCropPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [cropRotate, setCropRotate] = useState<number>(0);
-  const [isDraggingCrop, setIsDraggingCrop] = useState<boolean>(false);
-  const cropDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-
   // Lightbox preview for full image/document view
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState<DocumentItem | null>(null);
 
@@ -360,7 +351,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return null;
   });
 
-  // Handle Profile Picture Upload (Owner Gated) - Instantly saves new image on selection & opens position modal
+  // Handle Profile Picture Upload (Owner Gated) - Instantly saves new image on selection without hindrance
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
@@ -376,78 +367,20 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
 
     try {
-      // 1. Immediately compress and process newly chosen image
-      const compressedUrl = await compressImage(file, 640, 0.88);
+      showNotification('Uploading profile picture...');
+      // 1. Compress image to clean standard resolution
+      const compressedUrl = await compressImage(file, 640, 0.90);
       
       // 2. Instantly accept and save selected profile picture permanently
       setEditAvatar(compressedUrl);
       await syncSaveAvatar(compressedUrl);
-      showNotification('New profile picture accepted & saved permanently!');
-
-      // 3. Open cropper modal for fine-tuning zoom/pan
-      setCropSourceImage(compressedUrl);
-      setCropZoom(1);
-      setCropPan({ x: 0, y: 0 });
-      setCropRotate(0);
-      setIsCropModalOpen(true);
-    } catch (err) {
-      console.warn('Avatar image compression:', err);
+      showNotification('Profile picture updated and saved successfully!');
+    } catch (err: any) {
+      console.warn('Avatar image upload error:', err);
+      showNotification('Failed to upload image: ' + (err?.message || 'Unknown error'));
     } finally {
       e.target.value = '';
     }
-  };
-
-  // Render & save positioned profile picture to canvas and push across site
-  const handleSaveCroppedAvatar = () => {
-    if (!cropSourceImage) return;
-
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = async () => {
-      const canvas = document.createElement('canvas');
-      const size = 640;
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      // Solid background
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, size, size);
-
-      ctx.save();
-      // Center
-      ctx.translate(size / 2, size / 2);
-      // Rotate
-      ctx.rotate((cropRotate * Math.PI) / 180);
-      // Pan (scaled to canvas size relative to 280px preview container)
-      const scaleFactor = size / 280;
-      ctx.translate(cropPan.x * scaleFactor, cropPan.y * scaleFactor);
-      // Zoom
-      ctx.scale(cropZoom, cropZoom);
-
-      // Draw image centered keeping aspect ratio
-      const imgAspect = img.width / img.height;
-      let drawW = size;
-      let drawH = size;
-      if (imgAspect > 1) {
-        drawW = size * imgAspect;
-        drawH = size;
-      } else {
-        drawW = size;
-        drawH = size / imgAspect;
-      }
-      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
-      ctx.restore();
-
-      const finalDataUrl = canvas.toDataURL('image/jpeg', 0.88);
-      setIsCropModalOpen(false);
-      setCropSourceImage(null);
-      setEditAvatar(finalDataUrl);
-      await syncSaveAvatar(finalDataUrl);
-      showNotification('Profile picture updated successfully!');
-    };
-    img.src = cropSourceImage;
   };
 
   // Handle Bio Edit Save (Owner Gated)
@@ -1152,80 +1085,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <p className="text-xs text-slate-600">
                   Update your profile information and about me details. Changes persist to your verified profile.
                 </p>
-              </div>
-            </div>
-
-            {/* PROFILE PICTURE & AVATAR EDIT SECTION */}
-            <div className="p-4 sm:p-5 rounded-xl bg-[#f1f5f9] border border-[#cbd5e1] space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Camera className="w-4 h-4 text-cyan-800" />
-                  <span>Profile Picture &amp; Photo Upload</span>
-                </label>
-                <span className="text-[11px] text-slate-500 font-mono">JPG, PNG, WebP (Max 10MB)</span>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-center gap-4">
-                {/* Avatar Circle Preview */}
-                <div className="relative group shrink-0">
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden border-2 border-cyan-800/40 shadow-md bg-slate-100 flex items-center justify-center">
-                    {(editAvatar || profileAvatar) ? (
-                      <img
-                        src={editAvatar || profileAvatar}
-                        alt={editBioForm.fullName || 'Engineer Profile Avatar'}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <User className="w-10 h-10 text-slate-400" />
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => fileInputAvatarRef.current?.click()}
-                    className="absolute -bottom-1 -right-1 p-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white shadow-md transition-all cursor-pointer border border-white"
-                    title="Upload / Change Photo"
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {/* Controls */}
-                <div className="flex-1 w-full space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => fileInputAvatarRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Choose Photo to Upload</span>
-                    </button>
-                    {editAvatar && (
-                      <button
-                        type="button"
-                        onClick={() => setEditAvatar('')}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold text-xs transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
-                        <span>Delete / Remove Photo</span>
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Direct Image URL fallback input */}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
-                      Or paste direct Image / CDN URL:
-                    </label>
-                    <input
-                      type="url"
-                      value={editAvatar.startsWith('data:') ? '' : editAvatar}
-                      onChange={(e) => setEditAvatar(e.target.value)}
-                      className="w-full px-3 py-1.5 rounded-md border border-[#b8c6d4] bg-white text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-700 font-mono"
-                      placeholder="https://images.unsplash.com/... or CDN URL"
-                    />
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -2510,30 +2369,32 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             </a>
           </div>
 
-          {/* System Diagnostics & Error Testing Bar */}
-          <div className="mt-6 p-4 rounded-2xl bg-white border border-[#b8c6d4] flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-700 shadow-2xs">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center text-cyan-800 shrink-0">
-                <Activity className="w-4 h-4" />
+          {/* System Diagnostics & Error Testing Bar (Only visible to owner when signed in) */}
+          {isOwnerAuthenticated && (
+            <div className="mt-6 p-4 rounded-2xl bg-white border border-[#b8c6d4] flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-700 shadow-2xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center text-cyan-800 shrink-0">
+                  <Activity className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-slate-900 block font-serif">
+                    System Diagnostics &amp; Error Testing
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Live automated test suite for database synchronization, dynamic memory, and profile integrity.
+                  </span>
+                </div>
               </div>
-              <div>
-                <span className="text-xs font-bold text-slate-900 block font-serif">
-                  System Diagnostics &amp; Error Testing
-                </span>
-                <span className="text-[11px] text-slate-500">
-                  Live automated test suite for database synchronization, dynamic memory, and profile integrity.
-                </span>
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsErrorTestingOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-xs shrink-0"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>Launch Diagnostics</span>
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsErrorTestingOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-xs shrink-0"
-            >
-              <Activity className="w-3.5 h-3.5" />
-              <span>Launch Diagnostics</span>
-            </button>
-          </div>
+          )}
         </div>
       </section>
 
@@ -3104,241 +2965,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               >
                 <Copy className="w-3.5 h-3.5" />
                 <span>Copy SQL</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-
-
-      {/* ======================================================== */}
-      {/* 9. POSITION & PLACE PROFILE PICTURE MODAL (OWNER GATED)  */}
-      {/* Allows placing, panning, zooming, and rotating before     */}
-      {/* final upload and saving across the website               */}
-      {/* ======================================================== */}
-      {isCropModalOpen && cropSourceImage && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-lg w-full border border-slate-300 shadow-2xl p-5 sm:p-7 font-sans space-y-5 animate-fade-in text-slate-800 my-8">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-800">
-                  <Camera className="w-5 h-5 text-cyan-700" />
-                </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900 font-serif">
-                    Place Profile Picture
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Adjust position, zoom, and orientation before saving.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsCropModalOpen(false);
-                  setCropSourceImage(null);
-                }}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
-                title="Cancel placement"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Viewport Frame with Live Circular Crop Mask */}
-            <div className="space-y-2">
-              <div
-                className="relative w-full h-72 sm:h-80 bg-slate-900 rounded-2xl overflow-hidden flex items-center justify-center select-none cursor-grab active:cursor-grabbing border-2 border-slate-700"
-                onMouseDown={(e) => {
-                  setIsDraggingCrop(true);
-                  cropDragStartRef.current = { x: e.clientX - cropPan.x, y: e.clientY - cropPan.y };
-                }}
-                onMouseMove={(e) => {
-                  if (!isDraggingCrop) return;
-                  setCropPan({
-                    x: e.clientX - cropDragStartRef.current.x,
-                    y: e.clientY - cropDragStartRef.current.y,
-                  });
-                }}
-                onMouseUp={() => setIsDraggingCrop(false)}
-                onMouseLeave={() => setIsDraggingCrop(false)}
-                onTouchStart={(e) => {
-                  if (e.touches[0]) {
-                    setIsDraggingCrop(true);
-                    cropDragStartRef.current = {
-                      x: e.touches[0].clientX - cropPan.x,
-                      y: e.touches[0].clientY - cropPan.y,
-                    };
-                  }
-                }}
-                onTouchMove={(e) => {
-                  if (!isDraggingCrop || !e.touches[0]) return;
-                  setCropPan({
-                    x: e.touches[0].clientX - cropDragStartRef.current.x,
-                    y: e.touches[0].clientY - cropDragStartRef.current.y,
-                  });
-                }}
-                onTouchEnd={() => setIsDraggingCrop(false)}
-              >
-                {/* Background image transformed */}
-                <div
-                  className="absolute pointer-events-none transition-transform duration-75 ease-out"
-                  style={{
-                    transform: `translate(${cropPan.x}px, ${cropPan.y}px) rotate(${cropRotate}deg) scale(${cropZoom})`,
-                  }}
-                >
-                  <img
-                    src={cropSourceImage}
-                    alt="Placement preview"
-                    className="max-w-none max-h-none pointer-events-none select-none"
-                    style={{ width: '280px', height: 'auto' }}
-                  />
-                </div>
-
-                {/* Circular Target Overlay Mask */}
-                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                  <div className="w-56 h-56 rounded-full border-4 border-cyan-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.65)] relative">
-                    <div className="absolute inset-0 rounded-full border border-dashed border-white/60" />
-                    {/* Crosshair guide lines */}
-                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-cyan-300/40 -translate-x-1/2" />
-                    <div className="absolute top-1/2 left-0 right-0 h-px bg-cyan-300/40 -translate-y-1/2" />
-                  </div>
-                </div>
-
-                {/* Instruction Pill */}
-                <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/70 backdrop-blur-xs text-white text-[11px] font-medium tracking-wide flex items-center gap-1.5 pointer-events-none shadow-sm">
-                  <span>✋ Click &amp; drag anywhere to position</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Position & Zoom Controls */}
-            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-              {/* Zoom Slider */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-slate-700 font-semibold">
-                  <span className="flex items-center gap-1">
-                    <ZoomIn className="w-3.5 h-3.5 text-cyan-800" />
-                    <span>Zoom Scale</span>
-                  </span>
-                  <span className="font-mono text-cyan-900 font-bold">{Math.round(cropZoom * 100)}%</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setCropZoom((z) => Math.max(0.6, Number((z - 0.1).toFixed(2))))}
-                    className="w-8 h-8 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 flex items-center justify-center font-bold text-base cursor-pointer shadow-2xs"
-                    title="Zoom out"
-                  >
-                    -
-                  </button>
-                  <input
-                    type="range"
-                    min="0.6"
-                    max="3.0"
-                    step="0.05"
-                    value={cropZoom}
-                    onChange={(e) => setCropZoom(parseFloat(e.target.value))}
-                    className="flex-1 accent-cyan-700 cursor-pointer h-2 bg-slate-200 rounded-lg"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setCropZoom((z) => Math.min(3.0, Number((z + 0.1).toFixed(2))))}
-                    className="w-8 h-8 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 flex items-center justify-center font-bold text-base cursor-pointer shadow-2xs"
-                    title="Zoom in"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
-              {/* Pan Directional Buttons & Rotation */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200">
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-[11px] font-semibold text-slate-500 mr-1">Fine Pan:</span>
-                  <button
-                    type="button"
-                    onClick={() => setCropPan((p) => ({ ...p, x: p.x + 15 }))}
-                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
-                    title="Move right"
-                  >
-                    ←
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCropPan((p) => ({ ...p, x: p.x - 15 }))}
-                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
-                    title="Move left"
-                  >
-                    →
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCropPan((p) => ({ ...p, y: p.y + 15 }))}
-                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
-                    title="Move down"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCropPan((p) => ({ ...p, y: p.y - 15 }))}
-                    className="px-2 py-1 rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 font-bold cursor-pointer"
-                    title="Move up"
-                  >
-                    ↓
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setCropRotate((r) => (r + 90) % 360)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold cursor-pointer shadow-2xs"
-                    title="Rotate 90 degrees"
-                  >
-                    <RotateCw className="w-3.5 h-3.5 text-slate-600" />
-                    <span>Rotate</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCropPan({ x: 0, y: 0 });
-                      setCropZoom(1);
-                      setCropRotate(0);
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold cursor-pointer shadow-2xs"
-                    title="Center image"
-                  >
-                    <Compass className="w-3.5 h-3.5 text-slate-600" />
-                    <span>Center</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Actions */}
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsCropModalOpen(false);
-                  setCropSourceImage(null);
-                }}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSaveCroppedAvatar}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs sm:text-sm font-bold shadow-md transition-all cursor-pointer"
-              >
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span>Save &amp; Apply Profile Picture</span>
               </button>
             </div>
           </div>
