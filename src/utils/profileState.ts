@@ -16,6 +16,17 @@ import {
   type PersistentProfileRecord
 } from './firebase';
 import { broadcastMemoryEvent, subscribeToDynamicMemory } from './dynamicMemory';
+import {
+  uploadAvatarToSupabaseBucket,
+  deleteAvatarFromSupabaseBucket,
+  saveProfileToSupabaseTable,
+  fetchProfileFromSupabaseTable,
+  getAuthenticatedOwnerUid,
+  supabaseSignInOwner,
+  supabaseSignOutOwner,
+  getSupabaseCurrentUser,
+  hasActiveOwnerSession,
+} from './supabase';
 
 export const STORAGE_KEY_AVATAR = 'fesline_custom_profile_avatar';
 export const STORAGE_KEY_BIO = 'fesline_custom_profile_bio';
@@ -232,6 +243,21 @@ export async function syncGlobalProfileWithServer(): Promise<void> {
       console.warn('Server profile fetch note:', serverErr);
     }
 
+    // 2b. Supabase Profiles Table Sync (Public read for unauthenticated visitors)
+    try {
+      const supaProfile = await fetchProfileFromSupabaseTable();
+      if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length)) {
+        applyPersistentProfile({
+          avatar: supaProfile.avatar_url || dbProfileAvatar(),
+          bio: supaProfile.bio || dbProfileBio(),
+          documents: supaProfile.documents || [],
+          updatedAt: supaProfile.updated_at || new Date().toISOString(),
+        });
+      }
+    } catch (supaFetchErr) {
+      console.warn('Supabase profile fetch note:', supaFetchErr);
+    }
+
     isProfileHydrated = true;
 
     // 3. Attach real-time listener if not already active
@@ -429,6 +455,17 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     console.warn('Firestore profile avatar update note:', dbErr);
   }
 
+  // 5. Upload to public "avatars" Supabase Storage bucket permanently under owner auth.uid()
+  try {
+    const ownerUid = getAuthenticatedOwnerUid();
+    const supaRes = await uploadAvatarToSupabaseBucket(rawBase64, ownerUid);
+    if (supaRes && supaRes.publicUrl) {
+      saveProfileToSupabaseTable({ avatarUrl: supaRes.publicUrl }, ownerUid).catch(() => {});
+    }
+  } catch (supaErr) {
+    console.warn('Supabase avatars bucket upload note:', supaErr);
+  }
+
   broadcastMemoryEvent('profile', 'avatar_updated', { avatar: finalUrl });
   return finalUrl;
 }
@@ -445,6 +482,8 @@ export async function resetStoredAvatar(): Promise<string> {
     await fetch('/api/profile/picture', { method: 'DELETE' });
     await saveProfileToFirestore({ avatar: '' });
     pushProfileToServer({ avatar: '' }).catch(() => {});
+    const ownerUid = getAuthenticatedOwnerUid();
+    saveProfileToSupabaseTable({ avatarUrl: '' }, ownerUid).catch(() => {});
   } catch {}
   broadcastMemoryEvent('profile', 'avatar_deleted', { avatar: '' });
   notifyProfileUpdated();
@@ -522,6 +561,14 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
       saveProfileToFirestore(payload),
       pushProfileToServer(payload),
     ]);
+
+    const ownerUid = getAuthenticatedOwnerUid();
+    saveProfileToSupabaseTable({
+      fullName: mergedBio.fullName,
+      header: mergedBio.header,
+      bioData: mergedBio,
+      avatarUrl: avatar,
+    }, ownerUid).catch(() => {});
   } catch (err) {
     console.warn('Note on saving bio to persistent database:', err);
   }
@@ -571,6 +618,9 @@ export async function saveStoredDocuments(docs: DocumentItem[]): Promise<void> {
       saveProfileToFirestore({ documents: docs }),
       pushProfileToServer({ documents: docs }),
     ]);
+
+    const ownerUid = getAuthenticatedOwnerUid();
+    saveProfileToSupabaseTable({ documents: docs }, ownerUid).catch(() => {});
   } catch (err) {
     console.warn('Note on saving documents to persistent database:', err);
   }
@@ -649,12 +699,14 @@ export function useProfileSync() {
   const [bio, setBio] = useState<ProfileBioData>(getStoredBio);
   const [documents, setDocuments] = useState<DocumentItem[]>(getStoredDocuments);
   const [isOwner, setIsOwner] = useState<boolean>(isOwnerAuthenticated);
+  const [ownerUid, setOwnerUid] = useState<string>(getAuthenticatedOwnerUid);
 
   const sync = useCallback(() => {
     setAvatar(getStoredAvatar());
     setBio(getStoredBio());
     setDocuments(getStoredDocuments());
     setIsOwner(isOwnerAuthenticated());
+    setOwnerUid(getAuthenticatedOwnerUid());
   }, []);
 
   useEffect(() => {
@@ -689,6 +741,7 @@ export function useProfileSync() {
     bio,
     documents,
     isOwner,
+    ownerUid,
     sync,
     saveAvatar: saveStoredAvatar,
     resetAvatar: resetStoredAvatar,

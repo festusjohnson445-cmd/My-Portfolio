@@ -40,6 +40,10 @@ import {
   deleteConversationFromFirestore,
   deleteDirectInquiryFromFirestore,
 } from '../utils/firebase';
+import {
+  subscribeToSupabaseRealtimeChat,
+  broadcastSupabaseChatMessage,
+} from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
 import { generateDemoVoiceNote, formatDuration } from '../utils/audioUtils';
@@ -292,6 +296,11 @@ export const MessagingSection: React.FC = () => {
       }
     });
 
+    // Supabase Realtime Channel Subscription for live multi-user messaging
+    const unsubSupabaseRealtime = subscribeToSupabaseRealtimeChat((_payload) => {
+      fetchChatsFromServer();
+    });
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', fetchChatsFromServer);
     window.addEventListener('visibilitychange', handleVisibility);
@@ -299,6 +308,7 @@ export const MessagingSection: React.FC = () => {
     return () => {
       isMounted = false;
       unsubMem();
+      unsubSupabaseRealtime();
       clearInterval(pollInterval);
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', fetchChatsFromServer);
@@ -754,6 +764,8 @@ export const MessagingSection: React.FC = () => {
           },
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
       const visitorMsg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -820,6 +832,8 @@ export const MessagingSection: React.FC = () => {
           },
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
     }
   };
 
@@ -977,6 +991,8 @@ export const MessagingSection: React.FC = () => {
           }
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
       // 2. VISITOR SENDS MESSAGE (NO AUTO-REPLY, NO BOT SIMULATION, NO TIMEOUT)
       const visitorMsg: ChatMessage = {
@@ -1046,6 +1062,8 @@ export const MessagingSection: React.FC = () => {
           }
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
     }
 
     updateInputMessage('');

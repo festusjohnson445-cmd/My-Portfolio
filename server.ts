@@ -599,13 +599,13 @@ app.get('/api/documents/files/:id', async (req, res) => {
     }
 
     const ext = (doc.fileName || '').split('.').pop() || 'bin';
-    const mimeType = doc.mimeType || getMimeTypeByExt(ext);
+    const mimeType = (doc as any).mimeType || getMimeTypeByExt(ext);
 
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName || 'document')}"`);
     res.setHeader('Content-Type', mimeType);
 
     // 1. Serve binary data from database (fileBinary or dataUrl)
-    const rawData = doc.fileBinary || doc.dataUrl;
+    const rawData = (doc as any).fileBinary || doc.dataUrl;
     if (rawData && typeof rawData === 'string') {
       if (rawData.startsWith('data:')) {
         const parts = rawData.split(',');

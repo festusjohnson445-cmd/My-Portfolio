@@ -44,11 +44,13 @@ import {
   Code,
   Wrench,
   Users,
+  Activity,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
 import { SkillSelector } from './SkillSelector';
 import { categorizeSkills, SkillCategoryName } from '../data/skillsData';
+import { ErrorTestingComponent } from './ErrorTestingComponent';
 import {
   saveStoredAvatar,
   resetStoredAvatar,
@@ -68,6 +70,15 @@ import {
 import { DocumentTopMedia } from './DocumentTopMedia';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
+import {
+  supabaseSignInOwner,
+  supabaseSignOutOwner,
+  getAuthenticatedOwnerUid,
+  uploadMaterialToSupabaseBucket,
+  SUPABASE_RLS_SCHEMA_SQL,
+  isSupabaseConfigured,
+  getSupabaseProjectUrl,
+} from '../utils/supabase';
 
 interface ProfileViewProps {
   onResumeClick?: () => void;
@@ -148,6 +159,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     saveBio: syncSaveBio,
     saveDocuments: saveSyncDocuments,
     isOwner: syncIsOwner,
+    ownerUid: syncOwnerUid,
     setOwner: syncSetOwner
   } = useProfileSync();
 
@@ -235,18 +247,39 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   // Delete document confirmation modal state (Owner only)
   const [docToDelete, setDocToDelete] = useState<{ id: string; title: string } | null>(null);
+  const [isDeletingDoc, setIsDeletingDoc] = useState(false);
+
+  // System Diagnostics & Error Testing Modal State
+  const [isErrorTestingOpen, setIsErrorTestingOpen] = useState(false);
 
   // 4. OWNER ACCESS CONTROL (Restricting changes to Festus Johnson only)
   const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState<boolean>(syncIsOwner);
-  useEffect(() => {
-    setIsOwnerAuthenticated(syncIsOwner);
-  }, [syncIsOwner]);
-
+  const [authenticatedUid, setAuthenticatedUid] = useState<string>(() => syncOwnerUid || getAuthenticatedOwnerUid());
+  const [copiedUid, setCopiedUid] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  // Email starts empty so nothing is displayed until the user types it
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showRlsModal, setShowRlsModal] = useState(false);
+  // Email starts empty so nothing is displayed until the user types or clicks autofill
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsOwnerAuthenticated(syncIsOwner);
+    if (syncOwnerUid) setAuthenticatedUid(syncOwnerUid);
+  }, [syncIsOwner, syncOwnerUid]);
+
+  // Support direct URL access e.g. #admin or ?admin=true
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const hash = window.location.hash;
+      if (urlParams.get('admin') === 'true' || hash === '#admin' || hash === '#owner-login') {
+        setIsAuthModalOpen(true);
+      }
+    }
+  }, []);
 
   // Resume Download count tracker
   const [localDownloadCount, setLocalDownloadCount] = useState<number>(() => {
@@ -254,37 +287,61 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return saved ? parseInt(saved, 10) : initialResumeDownloadCount || 0;
   });
 
-  const handleOwnerLogin = (e: React.FormEvent) => {
+  const handleOwnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
+    setIsAuthenticating(true);
+
     const cleanEmail = authEmail.trim().toLowerCase();
     const cleanPin = authPin.trim();
 
-    if (cleanEmail !== OWNER_EMAIL.toLowerCase()) {
-      setAuthError(`Access denied: Only ${OWNER_EMAIL} is authorized to edit this portfolio.`);
-      return;
-    }
+    try {
+      // 1. Supabase Authentication with supabase.auth.signInWithPassword()
+      const { user, error } = await supabaseSignInOwner(cleanEmail, cleanPin);
 
-    // Only Festus1999. can unlock owner mode
-    if (cleanPin !== OWNER_PASSWORD) {
-      setAuthError('Incorrect security password. Please verify your secret password.');
-      return;
-    }
+      if (user) {
+        setAuthenticatedUid(user.id);
+        syncSetOwner(true);
+        setIsOwnerAuthenticated(true);
+        setIsAuthModalOpen(false);
+        setAuthPin('');
+        setAuthError(null);
+        showNotification(`Welcome back Festus! Owner mode unlocked via Supabase Auth (UID: ${user.id.slice(0, 8)}...).`);
+        return;
+      }
 
-    // Success
-    syncSetOwner(true);
-    setIsOwnerAuthenticated(true);
-    setIsAuthModalOpen(false);
-    setAuthPin('');
-    setAuthError(null);
-    showNotification('Welcome back Festus! Owner mode unlocked.');
+      // 2. Direct verification fallback if offline or Supabase project URL is not configured yet
+      if (cleanEmail === OWNER_EMAIL.toLowerCase() && cleanPin === OWNER_PASSWORD) {
+        const uid = getAuthenticatedOwnerUid();
+        setAuthenticatedUid(uid);
+        syncSetOwner(true);
+        setIsOwnerAuthenticated(true);
+        setIsAuthModalOpen(false);
+        setAuthPin('');
+        setAuthError(null);
+        showNotification('Welcome back Festus! Owner mode unlocked.');
+        return;
+      }
+
+      if (cleanEmail !== OWNER_EMAIL.toLowerCase()) {
+        setAuthError(`Access denied: Only ${OWNER_EMAIL} is authorized to edit this portfolio.`);
+      } else {
+        setAuthError(error?.message || 'Incorrect security password. Please verify your secret password.');
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to authenticate owner. Please check credentials.');
+    } finally {
+      setIsAuthenticating(false);
+    }
   };
 
-  const handleOwnerLogout = () => {
+  const handleOwnerLogout = async () => {
+    await supabaseSignOutOwner();
     syncSetOwner(false);
     setIsOwnerAuthenticated(false);
     setIsEditingBio(false);
     setIsDocumentModalOpen(false);
-    showNotification('Owner mode locked. Profile is in public visitor view.');
+    showNotification('Logged out from Supabase Owner mode. Profile is in public visitor view.');
   };
 
   // Direct Mail Status
@@ -770,6 +827,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       const updated = [newDoc, ...documents];
       setDocuments(updated);
       saveStoredDocuments(updated);
+
+      // Upload material attachment to Supabase "materials" storage bucket under auth.uid()
+      if (docAttachmentDataUrl && docAttachmentName) {
+        try {
+          const ownerUid = getAuthenticatedOwnerUid();
+          fetch(docAttachmentDataUrl)
+            .then((r) => r.blob())
+            .then((blob) => {
+              uploadMaterialToSupabaseBucket(blob, docAttachmentName, ownerUid).catch((err) => {
+                console.warn('Supabase materials bucket upload note for profile document:', err);
+              });
+            })
+            .catch(() => {});
+        } catch {}
+      }
+
       showNotification(`Document "${newDoc.title}" uploaded successfully!`);
 
       if (uploadAnother) {
@@ -952,45 +1025,88 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
       {/* ======================================================== */}
       {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
-      {/* Visitors do NOT see any top owner board at all           */}
       {/* ======================================================== */}
       {isOwnerAuthenticated && (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="p-3 sm:p-3.5 rounded-2xl bg-white border-2 border-cyan-800 shadow-md flex flex-col md:flex-row items-center justify-between gap-3 font-sans animate-fade-in">
-            {/* Left: Icon + Title + Email Tag */}
-            <div className="flex items-center gap-2.5 w-full md:w-auto">
-              <div className="w-8 h-8 rounded-xl bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0 shadow-xs">
-                <Unlock className="w-4 h-4 text-emerald-800" />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif">
-                  Owner Mode
-                </h2>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-900 border border-cyan-300 text-[11px] font-mono font-semibold">
-                  festusjohnson028@gmail.com
-                </span>
-                <span className="text-xs text-slate-600 font-sans hidden sm:inline">
-                  · Welcome to Festus's Portfolio · Lead Mechanical Design Engineer · Precision Mechanisms
-                </span>
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-white border-2 border-cyan-800 shadow-md flex flex-col md:flex-row items-center justify-between gap-3 font-sans animate-fade-in">
+            {/* Left: Icon + Title + Email Tag + UID */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2.5 w-full md:w-auto">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0 shadow-xs">
+                  <Unlock className="w-4 h-4 text-emerald-800" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif">
+                      Owner Admin Mode
+                    </h2>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10.5px] font-semibold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                      Supabase Auth
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <span className="text-[11px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                      auth.uid(): {authenticatedUid || 'owner'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(authenticatedUid || 'owner');
+                        setCopiedUid(true);
+                        setTimeout(() => setCopiedUid(false), 2000);
+                      }}
+                      className="text-slate-400 hover:text-slate-700 p-0.5"
+                      title="Copy owner UID"
+                    >
+                      {copiedUid ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                    <span className="text-[11px] text-cyan-800 font-medium hidden sm:inline">
+                      · Buckets: <span className="font-mono font-bold">avatars</span> (public) &amp; <span className="font-mono font-bold">materials</span>
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Right: Actions Group */}
             <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
+              {/* RLS Schema Viewer */}
+              <button
+                type="button"
+                onClick={() => setShowRlsModal(true)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-300 transition-colors cursor-pointer"
+                title="View Supabase Row Level Security (RLS) SQL policies"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-cyan-700" />
+                <span>RLS Policies</span>
+              </button>
+
+              {/* Upload to avatars bucket button */}
+              <button
+                type="button"
+                onClick={() => fileInputAvatarRef.current?.click()}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-900 text-xs font-semibold border border-cyan-200 transition-colors cursor-pointer"
+                title="Upload new profile picture to avatars bucket"
+              >
+                <Camera className="w-3.5 h-3.5 text-cyan-700" />
+                <span>Change Photo</span>
+              </button>
+
               {/* Add Document Button */}
               <button
                 onClick={handleOpenAddDocument}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-xs"
-                title="Add a new engineering document or credential"
+                title="Upload a new engineering document to materials bucket"
               >
                 <Plus className="w-3.5 h-3.5 text-emerald-700" />
-                <span>+ Upload Document</span>
+                <span>+ Upload Material</span>
               </button>
 
               {/* Edit Profile Button */}
               <button
                 onClick={() => (isEditingBio ? setIsEditingBio(false) : handleOpenEditBio())}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer ${
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer ${
                   isEditingBio
                     ? 'bg-slate-800 text-white hover:bg-slate-900'
                     : 'bg-cyan-800 text-white hover:bg-cyan-900'
@@ -1004,19 +1120,19 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 ) : (
                   <>
                     <Edit3 className="w-3.5 h-3.5" />
-                    <span>Edit Profile</span>
+                    <span>Edit Bio</span>
                   </>
                 )}
               </button>
 
-              {/* Lock Profile Button */}
+              {/* Lock / Sign Out Button */}
               <button
                 onClick={handleOwnerLogout}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold border border-rose-200 transition-colors cursor-pointer shadow-xs"
-                title="Lock profile and return to clean visitor mode"
+                title="Sign out of Supabase owner session"
               >
                 <Lock className="w-3 h-3 text-rose-700" />
-                <span>Lock</span>
+                <span>Sign Out</span>
               </button>
             </div>
           </div>
@@ -1488,102 +1604,104 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
           <div className="flex flex-col lg:flex-row items-center lg:items-start gap-6 lg:gap-8">
             
-            {/* Profile Picture Frame */}
-            <div className="relative shrink-0 group">
-              <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-xl overflow-hidden border-2 border-white shadow-md bg-slate-200 relative flex items-center justify-center">
-                {profileAvatar ? (
-                  <img
-                    src={profileAvatar}
-                    alt={`${bioData.fullName} - Lead Mechanical Design Engineer`}
-                    className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
-                    loading="eager"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div 
-                    onClick={() => {
-                      if (isOwnerAuthenticated) {
-                        fileInputAvatarRef.current?.click();
-                      } else {
-                        setIsAuthModalOpen(true);
-                      }
-                    }}
-                    className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 p-4 text-center cursor-pointer hover:bg-slate-200/80 transition-colors"
-                  >
-                    <User className="w-16 h-16 sm:w-20 sm:h-20 text-slate-300 stroke-[1.2]" />
-                    <span className="text-xs font-sans font-medium text-slate-500 mt-2">
-                      {isOwnerAuthenticated ? 'Click to Upload Photo' : 'No photo uploaded'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Hover overlay to change/delete picture (Owner Gated) */}
-                {isOwnerAuthenticated && (
-                  <div className={`absolute inset-0 bg-slate-950/75 ${profileAvatar ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity flex flex-col items-center justify-center text-white p-2.5 text-center gap-2`}>
-                    <button
-                      type="button"
-                      onClick={() => fileInputAvatarRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+            {/* Profile Picture Frame & Controls */}
+            <div className="flex flex-col items-center shrink-0 gap-3">
+              <div className="relative group">
+                <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-xl overflow-hidden border-2 border-white shadow-md bg-slate-200 relative flex items-center justify-center">
+                  {profileAvatar ? (
+                    <img
+                      src={profileAvatar}
+                      alt={`${bioData.fullName} - Lead Mechanical Design Engineer`}
+                      className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
+                      loading="eager"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div 
+                      onClick={() => {
+                        if (isOwnerAuthenticated) {
+                          fileInputAvatarRef.current?.click();
+                        } else {
+                          setIsAuthModalOpen(true);
+                        }
+                      }}
+                      className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 p-4 text-center cursor-pointer hover:bg-slate-200/80 transition-colors"
                     >
-                      <Camera className="w-3.5 h-3.5 text-cyan-200" />
-                      <span>{profileAvatar ? 'Change Photo' : 'Upload Photo'}</span>
-                    </button>
-                    {profileAvatar && (
+                      <User className="w-16 h-16 sm:w-20 sm:h-20 text-slate-300 stroke-[1.2]" />
+                      <span className="text-xs font-sans font-medium text-slate-500 mt-2">
+                        {isOwnerAuthenticated ? 'Click to Upload Photo' : 'No photo uploaded'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Hover overlay to change/delete picture (Owner Gated) */}
+                  {isOwnerAuthenticated && (
+                    <div className={`absolute inset-0 bg-slate-950/75 ${profileAvatar ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity flex flex-col items-center justify-center text-white p-2.5 text-center gap-2`}>
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setIsDeleteAvatarModalOpen(true);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                        onClick={() => fileInputAvatarRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
                       >
-                        <Trash2 className="w-3.5 h-3.5 text-red-100" />
-                        <span>Delete Photo</span>
+                        <Camera className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>{profileAvatar ? 'Change Photo' : 'Upload Photo'}</span>
                       </button>
-                    )}
-                  </div>
-                )}
+                      {profileAvatar && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsDeleteAvatarModalOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-red-100" />
+                          <span>Delete Photo</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Verified Badge Overlay (Clicking opens owner login if locked) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isOwnerAuthenticated) {
+                      setIsAuthModalOpen(true);
+                    }
+                  }}
+                  className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-900 text-white text-[11px] font-sans font-bold px-3 py-0.5 rounded-full border border-slate-700 shadow-sm flex items-center gap-1.5 cursor-pointer hover:border-cyan-400 transition-colors"
+                  title={isOwnerAuthenticated ? 'Verified Owner' : 'Verified Engineer (Click for Owner Login)'}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Verified Engineer</span>
+                </button>
               </div>
 
-              {/* Verified Badge Overlay (Clicking opens owner login if locked) */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (!isOwnerAuthenticated) {
-                    setIsAuthModalOpen(true);
-                  }
-                }}
-                className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-900 text-white text-[11px] font-sans font-bold px-3 py-0.5 rounded-full border border-slate-700 shadow-sm flex items-center gap-1.5 cursor-pointer hover:border-cyan-400 transition-colors"
-                title={isOwnerAuthenticated ? 'Verified Owner' : 'Verified Engineer (Click for Owner Login)'}
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Verified Engineer</span>
-              </button>
+              {/* Quick Owner Photo Actions */}
+              {isOwnerAuthenticated && profileAvatar && (
+                <div className="flex items-center justify-center gap-2 pt-1 w-full">
+                  <button
+                    type="button"
+                    onClick={() => fileInputAvatarRef.current?.click()}
+                    className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-[#b8c6d4] text-slate-700 hover:bg-slate-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
+                    title="Upload / Change Profile Picture"
+                  >
+                    <Camera className="w-3 h-3 text-cyan-800" />
+                    <span>Change</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteAvatarModalOpen(true)}
+                    className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
+                    title="Permanently Delete Profile Picture"
+                  >
+                    <Trash2 className="w-3 h-3 text-red-600" />
+                    <span>Delete</span>
+                  </button>
+                </div>
+              )}
             </div>
-
-            {/* Quick Owner Photo Actions (Visible on Mobile/Desktop below photo for ease of access) */}
-            {isOwnerAuthenticated && profileAvatar && (
-              <div className="flex items-center justify-center gap-2 pt-2.5">
-                <button
-                  type="button"
-                  onClick={() => fileInputAvatarRef.current?.click()}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-[#b8c6d4] text-slate-700 hover:bg-slate-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
-                  title="Upload / Change Profile Picture"
-                >
-                  <Camera className="w-3 h-3 text-cyan-800" />
-                  <span>Change</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsDeleteAvatarModalOpen(true)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
-                  title="Permanently Delete Profile Picture"
-                >
-                  <Trash2 className="w-3 h-3 text-red-600" />
-                  <span>Delete</span>
-                </button>
-              </div>
-            )}
 
             {/* Profile Identity & Direct Action */}
             <div className="flex-1 text-center lg:text-left space-y-3">
@@ -2192,7 +2310,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleDeleteDocument(doc.id, doc.title)}
+                            onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
                             title="Delete this document permanently"
                           >
@@ -2390,6 +2508,31 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <line x1="17.5" x2="17.51" y1="6.5" y2="6.5" />
               </svg>
             </a>
+          </div>
+
+          {/* System Diagnostics & Error Testing Bar */}
+          <div className="mt-6 p-4 rounded-2xl bg-white border border-[#b8c6d4] flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-700 shadow-2xs">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center text-cyan-800 shrink-0">
+                <Activity className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-900 block font-serif">
+                  System Diagnostics &amp; Error Testing
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Live automated test suite for database synchronization, dynamic memory, and profile integrity.
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsErrorTestingOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-xs shrink-0"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>Launch Diagnostics</span>
+            </button>
           </div>
         </div>
       </section>
@@ -2765,98 +2908,206 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       )}
 
       {/* ======================================================== */}
-      {/* 5. OWNER ACCESS VERIFICATION MODAL                        */}
+      {/* 5. SUPABASE OWNER ADMIN LOGIN MODAL                       */}
       {/* ======================================================== */}
       {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
-          <div className="bg-white rounded-2xl max-w-xs sm:max-w-sm w-full border-2 border-cyan-800 shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
+          <div className="bg-white rounded-2xl max-w-sm sm:max-w-md w-full border-2 border-cyan-800 shadow-2xl overflow-hidden my-6">
             {/* Header */}
-            <div className="px-4 py-3 bg-[#0f172a] text-white flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
-                  <Lock className="w-4 h-4 text-cyan-300" />
+            <div className="px-5 py-4 bg-[#0f172a] text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
+                  <KeyRound className="w-5 h-5 text-cyan-300" />
                 </div>
                 <div>
-                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest block leading-none mb-0.5">
-                    Security Verification
-                  </span>
-                  <h3 className="text-sm sm:text-base font-bold font-serif text-white leading-tight">
-                    Owner Access Only
+                  <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
+                    Fesline Panel
                   </h3>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setIsAuthModalOpen(false);
                   setAuthError(null);
                   setAuthPin('');
                 }}
                 className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Close modal"
               >
-                <X className="w-4 h-4" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Form */}
-            <form onSubmit={handleOwnerLogin} className="p-4 sm:p-5 space-y-3">
+            <form onSubmit={handleOwnerLogin} className="p-5 sm:p-6 space-y-4">
               {authError && (
-                <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-semibold flex items-center gap-2">
-                  <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
+                  <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                   <span>{authError}</span>
                 </div>
               )}
 
+              {/* Email Address */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Owner Email Address
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  placeholder="Enter owner email address"
-                  className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                    Owner Email Address
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setAuthEmail(OWNER_EMAIL)}
+                    className="text-[10px] text-cyan-800 hover:text-cyan-950 font-semibold underline cursor-pointer"
+                  >
+                    Use Owner Email
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="e.g. festusjohnson028@gmail.com"
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
+                  />
+                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                </div>
               </div>
 
+              {/* Password */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Security Password
-                </label>
-                <input
-                  type="password"
-                  required
-                  autoFocus
-                  value={authPin}
-                  onChange={(e) => setAuthPin(e.target.value)}
-                  placeholder="Enter security password"
-                  className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-mono tracking-widest"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                    Password / Master Secret
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="text-[10px] text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
+                  >
+                    {showPassword ? 'Hide Password' : 'Show Password'}
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    autoFocus
+                    value={authPin}
+                    onChange={(e) => setAuthPin(e.target.value)}
+                    placeholder="Enter owner password"
+                    className="w-full pl-9 pr-10 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-mono tracking-wider"
+                  />
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <Eye className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-200 flex items-center justify-end gap-2">
+              {/* Buttons */}
+              <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2.5">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsAuthModalOpen(false);
-                    setAuthError(null);
-                    setAuthPin('');
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+                  onClick={() => setShowRlsModal(true)}
+                  className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-cyan-800 font-medium cursor-pointer"
                 >
-                  Cancel
+                  <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
+                  <span>View RLS Policy SQL</span>
                 </button>
 
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
-                >
-                  <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                  <span>Verify &amp; Unlock</span>
-                </button>
+                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAuthModalOpen(false);
+                      setAuthError(null);
+                      setAuthPin('');
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating}
+                    className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Authenticating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Unlock className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>Sign in</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 6. SUPABASE RLS & SCHEMA SQL POLICIES MODAL               */}
+      {/* ======================================================== */}
+      {showRlsModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
+          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full border border-slate-700 shadow-2xl overflow-hidden my-6 text-white flex flex-col max-h-[85vh]">
+            <div className="px-5 py-3.5 bg-slate-950 flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-white font-serif">
+                    Supabase Row Level Security (RLS) &amp; Storage Policies
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Production SQL schema for avatars bucket, materials bucket, and owner profiles.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRlsModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 bg-slate-950/60 font-mono text-xs text-slate-300">
+              <pre className="whitespace-pre-wrap leading-relaxed select-all">
+                {SUPABASE_RLS_SCHEMA_SQL}
+              </pre>
+            </div>
+
+            <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-xs text-slate-400">
+                Execute in your Supabase SQL Editor if provisioning a fresh Supabase project.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(SUPABASE_RLS_SCHEMA_SQL);
+                  showNotification('Supabase RLS Schema copied to clipboard!');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer shadow-xs"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy SQL</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3158,6 +3409,85 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       )}
+      {/* ======================================================== */}
+      {/* DELETE DOCUMENT CONFIRMATION MODAL (OWNER ONLY)          */}
+      {/* ======================================================== */}
+      {docToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-fade-in font-sans">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-300 max-w-sm w-full p-5 relative">
+            <button
+              onClick={() => setDocToDelete(null)}
+              className="absolute right-4 top-4 p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-9 h-9 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-950">
+                  Delete Document?
+                </h3>
+                <p className="text-[11px] text-slate-500 font-medium truncate max-w-[220px]">
+                  {docToDelete.title}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+              Are you sure you want to permanently delete this verified document? It will be removed from your profile dossier and persistent storage.
+            </p>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isDeletingDoc}
+                onClick={() => setDocToDelete(null)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer font-medium text-xs disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingDoc}
+                onClick={async () => {
+                  if (!docToDelete) return;
+                  try {
+                    setIsDeletingDoc(true);
+                    handleDeleteDocument(docToDelete.id, docToDelete.title);
+                    setDocToDelete(null);
+                  } finally {
+                    setIsDeletingDoc(false);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 disabled:opacity-50 transition-colors shadow-xs"
+              >
+                {isDeletingDoc ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Document</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* SYSTEM DIAGNOSTICS & ERROR TESTING SUITE MODAL           */}
+      {/* ======================================================== */}
+      <ErrorTestingComponent
+        isOpen={isErrorTestingOpen}
+        onClose={() => setIsErrorTestingOpen(false)}
+      />
     </div>
   );
 };

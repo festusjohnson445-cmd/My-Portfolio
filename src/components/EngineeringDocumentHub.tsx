@@ -63,6 +63,14 @@ import {
   OWNER_EMAIL,
   OWNER_PASSWORD
 } from '../utils/profileState';
+import {
+  uploadMaterialToSupabaseBucket,
+  saveMaterialToSupabaseTable,
+  fetchMaterialsFromSupabaseTable,
+  deleteMaterialFromSupabaseBucket,
+  deleteMaterialFromSupabaseTable,
+  getAuthenticatedOwnerUid,
+} from '../utils/supabase';
 import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import { PortfolioPart } from './Navbar';
 
@@ -332,6 +340,42 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         console.warn('Server documents sync note:', sErr);
       }
 
+      // 4. Sync with Supabase "materials" table (public read for unauthenticated visitors)
+      try {
+        const supaMaterials = await fetchMaterialsFromSupabaseTable();
+        if (Array.isArray(supaMaterials) && supaMaterials.length > 0) {
+          const currentDeleted = getDeletedDocIds();
+          supaMaterials.forEach((m: any) => {
+            if (m && m.id && !currentDeleted.has(m.id)) {
+              const existing = docsMap.get(m.id);
+              docsMap.set(m.id, {
+                id: m.id,
+                title: m.title || existing?.title || 'Engineering Document',
+                fileName: m.file_name || existing?.fileName || 'document.pdf',
+                fileSize: m.file_size || existing?.fileSize || 'Standard',
+                fileType: m.file_type || existing?.fileType || 'PDF',
+                category: m.category || existing?.category || 'Technical Drawing',
+                description: m.description || existing?.description || '',
+                author: m.author || existing?.author || 'Festus, Olorunsogo Johnson (Owner)',
+                uploaderName: m.author || existing?.uploaderName || 'Festus, Olorunsogo Johnson (Owner)',
+                uploaderType: 'owner',
+                status: 'approved',
+                uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
+                downloadCount: m.download_count || 0,
+                tags: m.tags || ['Engineering'],
+                previewUrl: m.preview_url || existing?.previewUrl,
+                downloadUrl: m.download_url || `/api/documents/files/${m.id}`,
+                dataUrl: existing?.dataUrl,
+                hasServerFile: true,
+                isCustomUpload: true,
+              });
+            }
+          });
+        }
+      } catch (supaErr) {
+        console.warn('Supabase materials sync note:', supaErr);
+      }
+
       const activeDeleted = getDeletedDocIds();
       const combined = Array.from(docsMap.values()).filter((d) => d && d.id && !activeDeleted.has(d.id));
       const sorted = sortDocumentsDescending(combined);
@@ -546,6 +590,22 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           const docId = `doc-${Date.now()}-${i}`;
           const timestamp = Date.now() + i;
 
+          // If authenticated as owner, upload to Supabase "materials" storage bucket permanently under auth.uid()
+          let supaDownloadUrl = '';
+          let supaStoragePath = '';
+          if (isOwner) {
+            try {
+              const ownerUid = getAuthenticatedOwnerUid();
+              const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
+              if (supaRes) {
+                supaDownloadUrl = supaRes.downloadUrl;
+                supaStoragePath = supaRes.storagePath;
+              }
+            } catch (supaErr) {
+              console.warn('Supabase materials upload note:', supaErr);
+            }
+          }
+
           const docObj: PublicEngineeringDocument = {
             id: docId,
             title: item.title.trim() || item.file.name,
@@ -564,14 +624,26 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
             previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : undefined,
             dataUrl: fileDataUrl,
-            downloadUrl: `/api/documents/files/${docId}`,
+            downloadUrl: supaDownloadUrl || `/api/documents/files/${docId}`,
             hasServerFile: true,
             isCustomUpload: true,
           };
 
+          if (supaStoragePath) {
+            (docObj as any).storagePath = supaStoragePath;
+          }
+
           return docObj;
         })
       );
+
+      // Save official materials to Supabase "materials" table if authenticated as owner
+      if (isOwner) {
+        const ownerUid = getAuthenticatedOwnerUid();
+        newDocs.forEach((docItem) => {
+          saveMaterialToSupabaseTable(docItem, ownerUid).catch(() => {});
+        });
+      }
 
       setUploadProgress({ current: 1, total, percent: 50, currentFileName: 'Saving to persistent cloud database...' });
 
@@ -731,6 +803,12 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     deleteHubDocumentFromFirestore(id, (targetDoc as any)?.storagePath).catch((err) => {
       console.warn('Firestore delete error:', err);
     });
+
+    // 2b. Delete from Supabase materials table and storage bucket
+    deleteMaterialFromSupabaseTable(id).catch(() => {});
+    if ((targetDoc as any)?.storagePath) {
+      deleteMaterialFromSupabaseBucket((targetDoc as any).storagePath).catch(() => {});
+    }
 
     // 3. Immediately delete from persistent cache
     deleteHubDocumentPersistently(id).catch(() => {});

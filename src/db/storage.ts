@@ -9,6 +9,7 @@ import {
   learningSessions,
 } from './schema.ts';
 import { eq, desc, inArray } from 'drizzle-orm';
+import { DEFAULT_HUB_DOCUMENTS } from '../data/defaultHubDocuments.ts';
 
 // ----------------------------------------------------
 // DEDICATED PROFILE PICTURE CLOUD DATABASE STORAGE
@@ -284,7 +285,48 @@ export async function getDocumentsFromDb(includePending = false) {
   return await withDbRetry(async () => {
     try {
       const deletedIds = await getDeletedDocumentIdsFromDb();
-      const rows = await db.select().from(documents).orderBy(desc(documents.uploadTimestamp), desc(documents.createdAt));
+      let rows = await db.select().from(documents).orderBy(desc(documents.uploadTimestamp), desc(documents.createdAt));
+
+      // Auto-seed default engineering documents if database is missing them
+      const existingIds = new Set(rows.map((r) => r.id));
+      const seedToInsert = DEFAULT_HUB_DOCUMENTS.filter((seed) => !existingIds.has(seed.id) && !deletedIds.has(seed.id));
+
+      if (seedToInsert.length > 0) {
+        for (const seed of seedToInsert) {
+          try {
+            await db
+              .insert(documents)
+              .values({
+                id: seed.id,
+                title: seed.title,
+                fileName: seed.fileName,
+                fileSize: seed.fileSize,
+                fileType: seed.fileType,
+                category: seed.category,
+                description: seed.description,
+                author: seed.author,
+                uploaderName: seed.uploaderName,
+                uploaderType: seed.uploaderType,
+                status: seed.status,
+                uploadDate: seed.uploadDate,
+                uploadTimestamp: seed.uploadTimestamp || Date.now(),
+                downloadCount: seed.downloadCount,
+                tags: seed.tags,
+                previewUrl: seed.previewUrl || '',
+                downloadUrl: `/api/documents/files/${seed.id}`,
+                dataUrl: seed.dataUrl,
+                fileBinary: seed.dataUrl || '',
+                mimeType: 'application/pdf',
+                hasServerFile: true,
+                updatedAt: new Date(),
+              })
+              .onConflictDoNothing();
+          } catch (insertErr) {
+            console.warn('Seed document auto-insert note:', insertErr);
+          }
+        }
+        rows = await db.select().from(documents).orderBy(desc(documents.uploadTimestamp), desc(documents.createdAt));
+      }
 
       const activeDocs = rows.filter((d) => !deletedIds.has(d.id));
       const filtered = includePending
@@ -309,12 +351,24 @@ export async function getDocumentByIdFromDb(id: string) {
   return await withDbRetry(async () => {
     try {
       const rows = await db.select().from(documents).where(eq(documents.id, id)).limit(1);
-      if (rows.length === 0) return null;
-      const doc = rows[0];
-      return {
-        ...doc,
-        uploadTimestamp: doc.uploadTimestamp ? Number(doc.uploadTimestamp) : undefined,
-      };
+      if (rows.length > 0) {
+        const doc = rows[0];
+        return {
+          ...doc,
+          uploadTimestamp: doc.uploadTimestamp ? Number(doc.uploadTimestamp) : undefined,
+        };
+      }
+
+      // Check default documents fallback
+      const seedFallback = DEFAULT_HUB_DOCUMENTS.find((s) => s.id === id);
+      if (seedFallback) {
+        return {
+          ...seedFallback,
+          uploadTimestamp: seedFallback.uploadTimestamp ? Number(seedFallback.uploadTimestamp) : undefined,
+        };
+      }
+
+      return null;
     } catch (error) {
       console.error('Database query failed getting document by id:', error);
       throw error;
