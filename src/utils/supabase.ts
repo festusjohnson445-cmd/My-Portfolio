@@ -8,7 +8,7 @@ const ENV_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
 const ENV_SUPABASE_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
 // Support dynamic browser storage override if owner inputs custom credentials in Admin UI
-function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
+export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
   try {
     const customUrl = localStorage.getItem('fesline_custom_supabase_url');
     const customKey = localStorage.getItem('fesline_custom_supabase_anon_key');
@@ -524,6 +524,121 @@ export async function broadcastSupabaseChatMessage(messagePayload: any): Promise
     });
   } catch (err) {
     console.warn('[Supabase Realtime Broadcast Note]:', err);
+  }
+}
+
+/**
+ * Test connectivity and latency to Supabase Database, Auth, and Storage Buckets
+ */
+export async function testSupabaseConnection(): Promise<{
+  connected: boolean;
+  latencyMs: number;
+  authOk: boolean;
+  profilesTableOk: boolean;
+  materialsTableOk: boolean;
+  avatarsBucketOk: boolean;
+  materialsBucketOk: boolean;
+  details: string;
+}> {
+  const startTime = performance.now();
+  let authOk = false;
+  let profilesTableOk = false;
+  let materialsTableOk = false;
+  let avatarsBucketOk = false;
+  let materialsBucketOk = false;
+  const messages: string[] = [];
+
+  try {
+    // 1. Test Auth session ping
+    try {
+      const { data } = await supabase.auth.getSession();
+      authOk = true;
+      if (data?.session?.user) {
+        messages.push(`Authenticated as: ${data.session.user.email}`);
+      } else {
+        messages.push('Auth endpoint responsive (ready for sign in)');
+      }
+    } catch (e: any) {
+      messages.push(`Auth check: ${e?.message || 'Warning'}`);
+    }
+
+    // 2. Test Profiles Table Read
+    try {
+      const { error } = await supabase.from('profiles').select('id').limit(1);
+      if (!error) {
+        profilesTableOk = true;
+        messages.push('Table "profiles" connected');
+      } else {
+        messages.push(`Table "profiles": ${error.message}`);
+      }
+    } catch (e: any) {
+      messages.push(`Table "profiles": ${e?.message || 'Error'}`);
+    }
+
+    // 3. Test Materials Table Read
+    try {
+      const { error } = await supabase.from('materials').select('id').limit(1);
+      if (!error) {
+        materialsTableOk = true;
+        messages.push('Table "materials" connected');
+      } else {
+        messages.push(`Table "materials": ${error.message}`);
+      }
+    } catch (e: any) {
+      messages.push(`Table "materials": ${e?.message || 'Error'}`);
+    }
+
+    // 4. Test Avatars Storage Bucket
+    try {
+      const { error } = await supabase.storage.from(SUPABASE_BUCKETS.AVATARS).list('', { limit: 1 });
+      if (!error) {
+        avatarsBucketOk = true;
+        messages.push('Bucket "avatars" accessible');
+      } else {
+        messages.push(`Bucket "avatars": ${error.message}`);
+      }
+    } catch (e: any) {
+      messages.push(`Bucket "avatars": ${e?.message || 'Error'}`);
+    }
+
+    // 5. Test Materials Storage Bucket
+    try {
+      const { error } = await supabase.storage.from(SUPABASE_BUCKETS.MATERIALS).list('', { limit: 1 });
+      if (!error) {
+        materialsBucketOk = true;
+        messages.push('Bucket "materials" accessible');
+      } else {
+        messages.push(`Bucket "materials": ${error.message}`);
+      }
+    } catch (e: any) {
+      messages.push(`Bucket "materials": ${e?.message || 'Error'}`);
+    }
+
+    const latencyMs = Math.round(performance.now() - startTime);
+    const connected = authOk || profilesTableOk || materialsTableOk || avatarsBucketOk || materialsBucketOk;
+
+    return {
+      connected,
+      latencyMs,
+      authOk,
+      profilesTableOk,
+      materialsTableOk,
+      avatarsBucketOk,
+      materialsBucketOk,
+      details: messages.join(' · '),
+    };
+  } catch (err: any) {
+    const latencyMs = Math.round(performance.now() - startTime);
+    return {
+      connected: false,
+      latencyMs,
+      authOk: false,
+      profilesTableOk: false,
+      materialsTableOk: false,
+      avatarsBucketOk: false,
+      materialsBucketOk: false,
+      details: err?.message || 'Connection test failed',
+    };
   }
 }
 

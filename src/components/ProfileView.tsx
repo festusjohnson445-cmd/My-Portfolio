@@ -45,6 +45,7 @@ import {
   Wrench,
   Users,
   Activity,
+  Database,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
@@ -64,12 +65,14 @@ import {
   useProfileSync,
   DEFAULT_AVATAR,
   DEFAULT_BIO_DATA,
+  syncGlobalProfileWithServer,
   type ProfileBioData,
   type DocumentItem,
 } from '../utils/profileState';
 import { DocumentTopMedia } from './DocumentTopMedia';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
+import { SupabaseSettingsModal } from './SupabaseSettingsModal';
 import {
   supabaseSignInOwner,
   supabaseSignOutOwner,
@@ -251,6 +254,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showRlsModal, setShowRlsModal] = useState(false);
+  const [showSupabaseSettingsModal, setShowSupabaseSettingsModal] = useState(false);
   // Email starts empty so nothing is displayed until the user types or clicks autofill
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
@@ -1000,6 +1004,17 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             {/* Right: Actions Group */}
             <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
+              {/* Supabase Database Settings */}
+              <button
+                type="button"
+                onClick={() => setShowSupabaseSettingsModal(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
+                title="Configure Supabase Database, Buckets, and Storage Settings"
+              >
+                <Database className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Supabase Settings</span>
+              </button>
+
               {/* RLS Schema Viewer */}
               <button
                 type="button"
@@ -2120,7 +2135,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     {/* Footer Actions */}
                     <div className="pt-3 border-t border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-xs font-sans">
                       <div className="flex flex-wrap items-center gap-2">
-                        {isOwnerAuthenticated && doc.attachmentDataUrl && (
+                        {doc.attachmentDataUrl && (
                           <button
                             type="button"
                             onClick={() => handleDownloadAttachment(doc)}
@@ -2970,6 +2985,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       )}
+
+      {/* ======================================================== */}
+      {/* 6b. SUPABASE DATABASE & STORAGE SETTINGS MODAL           */}
+      {/* ======================================================== */}
+      <SupabaseSettingsModal
+        isOpen={showSupabaseSettingsModal}
+        onClose={() => setShowSupabaseSettingsModal(false)}
+        onSuccessNotice={showNotification}
+        onSyncProfile={() => {
+          syncGlobalProfileWithServer();
+        }}
+      />
 
       {/* ======================================================== */}
       {/* DELETE PROFILE PICTURE CONFIRMATION MODAL (OWNER ONLY)   */}
