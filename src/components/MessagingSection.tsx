@@ -1834,12 +1834,12 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                   {/* Search Button */}
                   <button
                     onClick={() => setIsSearchOpen(!isSearchOpen)}
-                    className={`p-1 rounded-full transition-colors cursor-pointer ${
+                    className={`p-1.5 rounded-full transition-colors cursor-pointer ${
                       isSearchOpen ? 'bg-white/30 text-white' : 'hover:bg-white/15 text-white'
                     }`}
                     title="Search messages and shared files"
                   >
-                    <Search className="w-3 h-3" />
+                    <Search className="w-4 h-4" />
                   </button>
 
                   {/* Visitor Controls: InChat, Copy Access Key & Clear Chat */}
@@ -1848,10 +1848,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                       <button
                         type="button"
                         onClick={() => setIsVisitorProfileModalOpen(true)}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white text-[9px] font-bold transition-all cursor-pointer border border-cyan-400/50 shadow-md mr-1 shrink-0 animate-pulse-slow active:scale-95"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold transition-all cursor-pointer border border-cyan-400/50 shadow-md mr-1 shrink-0 animate-pulse-slow active:scale-95"
                         title="Configure visitor profile or restore session (InChat)"
                       >
-                        <User className="w-3 h-3 text-cyan-100" />
+                        <User className="w-3.5 h-3.5 text-cyan-100" />
                         <span>InChat</span>
                       </button>
 
@@ -1863,10 +1863,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                             setCopiedVisitorId(true);
                             setTimeout(() => setCopiedVisitorId(false), 2000);
                           }}
-                          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-[9px] font-semibold transition-colors cursor-pointer border border-cyan-500 shadow-xs"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-cyan-500 shadow-xs"
                           title="Copy your persistent Access Key to restore this chat on another device"
                         >
-                          <Copy className="w-3 h-3 text-cyan-200" />
+                          <Copy className="w-3.5 h-3.5 text-cyan-200" />
                           <span>{copiedVisitorId ? 'Copied!' : `Key: ${visitorId}`}</span>
                         </button>
                       )}
