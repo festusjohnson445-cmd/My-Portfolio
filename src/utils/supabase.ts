@@ -902,6 +902,7 @@ export async function uploadVisitorAvatarToSupabaseBucket(
 
   const fileName = `visitor_${Date.now()}.${ext}`;
   const storagePath = `visitors/${visitorId}/${fileName}`;
+  let uploadSuccess = false;
 
   try {
     const { error: uploadError } = await supabase.storage
@@ -913,6 +914,8 @@ export async function uploadVisitorAvatarToSupabaseBucket(
 
     if (uploadError) {
       console.warn('[Supabase Visitor Avatar Upload Note]:', uploadError.message);
+    } else {
+      uploadSuccess = true;
     }
   } catch (e) {
     console.warn('[Supabase Visitor Avatar Storage Note]:', e);
@@ -922,7 +925,11 @@ export async function uploadVisitorAvatarToSupabaseBucket(
     .from(SUPABASE_BUCKETS.AVATARS)
     .getPublicUrl(storagePath);
 
-  const publicUrl = publicData?.publicUrl || (typeof fileOrBlobOrDataUrl === 'string' ? fileOrBlobOrDataUrl : '');
+  // Use publicUrl if upload succeeded, otherwise use fallback dataUrl/string
+  const publicUrl = (uploadSuccess && publicData?.publicUrl) 
+    ? publicData.publicUrl 
+    : (typeof fileOrBlobOrDataUrl === 'string' ? fileOrBlobOrDataUrl : (publicData?.publicUrl || ''));
+
   return { publicUrl, storagePath };
 }
 
@@ -1061,12 +1068,20 @@ export async function saveMessageAndConversationToSupabase(params: {
  */
 export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
   try {
-    const { data: convs, error: convError } = await supabase
-      .from('conversations')
-      .select('*')
-      .order('updated_at', { ascending: false });
+    let convsMap: Record<string, any> = {};
 
-    if (convError || !convs) return [];
+    try {
+      const { data: convs } = await supabase
+        .from('conversations')
+        .select('*')
+        .order('updated_at', { ascending: false });
+
+      if (convs && Array.isArray(convs)) {
+        for (const c of convs) {
+          if (c && c.id) convsMap[c.id] = c;
+        }
+      }
+    } catch {}
 
     let profilesMap: Record<string, any> = {};
     try {
@@ -1092,6 +1107,7 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       if (msgs && Array.isArray(msgs)) {
         for (const m of msgs) {
           const cId = m.conversation_id;
+          if (!cId) continue;
           if (!messagesMap[cId]) messagesMap[cId] = [];
           messagesMap[cId].push({
             id: m.id,
@@ -1106,16 +1122,28 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       }
     } catch {}
 
-    return convs.map((c: any) => {
-      const vProfile = profilesMap[c.visitor_id || c.id] || {};
-      const convMsgs = messagesMap[c.id] || (Array.isArray(c.messages) ? c.messages : []);
+    // Collect all unique conversation IDs across conversations, visitor_profiles, and messages
+    const allIds = new Set<string>([
+      ...Object.keys(convsMap),
+      ...Object.keys(profilesMap),
+      ...Object.keys(messagesMap),
+    ]);
+
+    if (allIds.size === 0) return [];
+
+    const result: any[] = [];
+    for (const id of allIds) {
+      const c = convsMap[id] || {};
+      const vProfile = profilesMap[id] || {};
+      const convMsgs = messagesMap[id] || (Array.isArray(c.messages) ? c.messages : []);
+
       const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
       const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
       const avatarUrl = vProfile.avatar_url || vProfile.avatarUrl || c.avatar_url || '';
       const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
 
-      return {
-        id: c.id,
+      result.push({
+        id,
         defaultLabel: displayName,
         customName: displayName,
         visitorName: displayName,
@@ -1127,8 +1155,10 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
         lastMessage: c.last_message || c.lastMessage || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].text : 'New message'),
         lastTimestamp: c.last_message_at || c.last_timestamp || c.lastTimestamp || '',
         messages: convMsgs,
-      };
-    });
+      });
+    }
+
+    return result;
   } catch {
     return [];
   }

@@ -46,6 +46,7 @@ import {
   saveMessageAndConversationToSupabase,
   fetchConversationsJoinedFromSupabase,
   fetchVisitorProfileFromSupabase,
+  saveVisitorProfileToSupabase,
   subscribeToSupabaseMessagingRealtime,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
@@ -123,8 +124,9 @@ const TOPIC_SUGGESTIONS = [
 
 const DEFAULT_CONVERSATIONS: Conversation[] = [];
 
-// Helper to fetch chats from server
+// Helper to fetch chats from server (joins Express backend and Supabase database)
 async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Conversation[] | null> {
+  let apiConvs: Conversation[] = [];
   try {
     const res = await fetch('/api/chats');
     if (res.ok) {
@@ -136,13 +138,67 @@ async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Con
             localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedSet)));
           } catch {}
         }
-        return json.conversations;
+        apiConvs = json.conversations;
       }
     }
   } catch (err) {
     console.warn('Failed to fetch chats from server:', err);
   }
-  return null;
+
+  let supabaseConvs: Conversation[] = [];
+  try {
+    supabaseConvs = await fetchConversationsJoinedFromSupabase();
+  } catch (err) {
+    console.warn('Failed to fetch joined chats from Supabase:', err);
+  }
+
+  if (apiConvs.length === 0 && supabaseConvs.length === 0) {
+    return null;
+  }
+
+  const map = new Map<string, Conversation>();
+
+  for (const c of apiConvs) {
+    if (c && c.id && (!deletedSet || !deletedSet.has(c.id))) {
+      map.set(c.id, c);
+    }
+  }
+
+  for (const sc of supabaseConvs) {
+    if (sc && sc.id && (!deletedSet || !deletedSet.has(sc.id))) {
+      const existing = map.get(sc.id);
+      if (!existing) {
+        map.set(sc.id, sc);
+      } else {
+        const existingMsgs = existing.messages || [];
+        const scMsgs = sc.messages || [];
+        const msgMap = new Map<string, ChatMessage>();
+        for (const m of existingMsgs) {
+          if (m && m.id) msgMap.set(m.id, m);
+        }
+        for (const m of scMsgs) {
+          if (m && m.id) msgMap.set(m.id, m);
+        }
+        const mergedMsgs = Array.from(msgMap.values());
+
+        map.set(sc.id, {
+          ...existing,
+          ...sc,
+          visitorName: sc.visitorName || existing.visitorName || existing.customName || 'Visitor',
+          customName: sc.customName || existing.customName || sc.visitorName || 'Visitor',
+          avatarUrl: sc.avatarUrl || existing.avatarUrl || '',
+          avatarColor: sc.avatarColor || existing.avatarColor || 'bg-slate-700',
+          roleOrCompany: sc.roleOrCompany || existing.roleOrCompany || 'Visitor Direct Chat',
+          unread: sc.unread || existing.unread,
+          lastMessage: sc.lastMessage || existing.lastMessage,
+          lastTimestamp: sc.lastTimestamp || existing.lastTimestamp,
+          messages: mergedMsgs,
+        });
+      }
+    }
+  }
+
+  return Array.from(map.values());
 }
 
 // Helper to push chats to server
@@ -317,6 +373,11 @@ export const MessagingSection: React.FC = () => {
       }
     });
 
+    // Supabase Database Table Changes Subscription (messages, conversations, visitor_profiles)
+    const unsubSupabaseDbStream = subscribeToSupabaseMessagingRealtime(() => {
+      fetchChatsFromServer();
+    });
+
     // SSE Stream Subscription for instant server push
     let sseSource: EventSource | null = null;
     try {
@@ -346,6 +407,7 @@ export const MessagingSection: React.FC = () => {
 
     return () => {
       unsubSupabaseRealtime();
+      unsubSupabaseDbStream();
       if (sseSource) sseSource.close();
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', fetchChatsFromServer);
@@ -713,22 +775,48 @@ export const MessagingSection: React.FC = () => {
       localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updated));
     } catch {}
 
-    // Update in local conversations state
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id === visitorId) {
-          return {
-            ...c,
-            customName: updated.name,
-            visitorName: updated.name,
-            roleOrCompany: updated.roleOrCompany,
-            avatarUrl: updated.avatarUrl,
-            avatarColor: updated.avatarColor || c.avatarColor,
-          };
-        }
-        return c;
-      })
-    );
+    // Save to Supabase visitor_profiles table directly
+    await saveVisitorProfileToSupabase({
+      visitor_id: visitorId,
+      display_name: updated.name,
+      role_subject: updated.roleOrCompany,
+      avatar_url: updated.avatarUrl || '',
+      avatar_color: updated.avatarColor || 'bg-slate-700',
+    });
+
+    const updatedConvMetadata = {
+      defaultLabel: updated.name || 'Direct Message',
+      customName: updated.name || '',
+      visitorName: updated.name || '',
+      avatarUrl: updated.avatarUrl || '',
+      roleOrCompany: updated.roleOrCompany || 'Visitor Direct Chat',
+      avatarColor: updated.avatarColor || 'bg-slate-700',
+    };
+
+    // Update or insert conversation record in local state and Supabase
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === visitorId);
+      if (idx >= 0) {
+        const u = {
+          ...prev[idx],
+          ...updatedConvMetadata,
+        };
+        saveConversationToSupabaseTable(u);
+        return prev.map((c, i) => (i === idx ? u : c));
+      } else {
+        const newC: Conversation = {
+          id: visitorId,
+          ...updatedConvMetadata,
+          unread: false,
+          important: false,
+          messages: [],
+          lastMessage: '',
+          lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        saveConversationToSupabaseTable(newC);
+        return [newC, ...prev];
+      }
+    });
 
     // Sync to backend
     try {
@@ -746,6 +834,7 @@ export const MessagingSection: React.FC = () => {
       console.warn('Failed to sync visitor profile:', err);
     }
 
+    broadcastSupabaseChatMessage({ event: 'visitor_profile_updated', visitorId, profile: updated });
     setShowMailNotice('Your messaging profile has been updated! Festus will now see your photo and name.');
   };
 
@@ -801,6 +890,18 @@ export const MessagingSection: React.FC = () => {
           },
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      saveMessageAndConversationToSupabase({
+        conversationId: activeOwnerConvId,
+        message: festusMsg,
+        conversationMetadata: {
+          defaultLabel: activeConversation.defaultLabel,
+          customName: activeConversation.customName,
+          visitorName: activeConversation.visitorName,
+          avatarUrl: activeConversation.avatarUrl,
+          roleOrCompany: activeConversation.roleOrCompany,
+        },
+      });
 
       broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
@@ -869,6 +970,20 @@ export const MessagingSection: React.FC = () => {
           },
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      saveMessageAndConversationToSupabase({
+        conversationId: visitorId,
+        visitorId,
+        message: visitorMsg,
+        conversationMetadata: {
+          defaultLabel: visitorProfile.name || 'Direct Message',
+          customName: visitorProfile.name || '',
+          visitorName: visitorProfile.name || '',
+          avatarUrl: visitorProfile.avatarUrl || '',
+          roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Inquiry',
+          avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+        },
+      });
 
       broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
     }
@@ -1119,9 +1234,19 @@ export const MessagingSection: React.FC = () => {
         }),
       }).catch((err) => console.warn('Send error:', err));
 
-      if (targetConv) {
-        saveConversationToSupabaseTable(targetConv);
-      }
+      saveMessageAndConversationToSupabase({
+        conversationId: visitorId,
+        visitorId,
+        message: visitorMsg,
+        conversationMetadata: {
+          defaultLabel: visitorProfile.name || 'Direct Message',
+          customName: visitorProfile.name || '',
+          visitorName: visitorProfile.name || '',
+          avatarUrl: visitorProfile.avatarUrl || '',
+          roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Inquiry',
+          avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+        },
+      });
 
       broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
     }
@@ -1384,12 +1509,18 @@ export const MessagingSection: React.FC = () => {
                         >
                           {/* Avatar */}
                           <div
-                            className={`w-8 h-8 rounded-full overflow-hidden ${conv.avatarColor || 'bg-slate-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
+                            className={`relative w-8 h-8 rounded-full overflow-hidden ${conv.avatarColor || 'bg-slate-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
                           >
-                            {conv.avatarUrl ? (
-                              <img src={conv.avatarUrl} alt={displayName} loading="lazy" decoding="async" className="w-full h-full object-cover" />
-                            ) : (
-                              displayName.charAt(0)
+                            <span>{displayName.charAt(0)}</span>
+                            {conv.avatarUrl && (
+                              <img
+                                src={conv.avatarUrl}
+                                alt={displayName}
+                                loading="lazy"
+                                decoding="async"
+                                className="absolute inset-0 w-full h-full object-cover"
+                                onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                              />
                             )}
                           </div>
 
@@ -1716,13 +1847,19 @@ export const MessagingSection: React.FC = () => {
               {!isOwner && (
                 <div className="bg-[#e4ebf3] border-b border-[#b8c6d4] px-3 sm:px-4 py-1.5 flex items-center justify-between text-xs text-slate-700 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-6 h-6 rounded-full overflow-hidden bg-slate-300 border border-slate-400 shrink-0 flex items-center justify-center font-bold text-[10px] text-white shadow-2xs">
-                      {visitorProfile.avatarUrl ? (
-                        <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} loading="lazy" decoding="async" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className={`w-full h-full ${visitorProfile.avatarColor || 'bg-slate-700'} flex items-center justify-center`}>
-                          {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
-                        </div>
+                    <div className="relative w-6 h-6 rounded-full overflow-hidden bg-slate-300 border border-slate-400 shrink-0 flex items-center justify-center font-bold text-[10px] text-white shadow-2xs">
+                      <div className={`w-full h-full ${visitorProfile.avatarColor || 'bg-slate-700'} flex items-center justify-center`}>
+                        {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
+                      </div>
+                      {visitorProfile.avatarUrl && (
+                        <img
+                          src={visitorProfile.avatarUrl}
+                          alt={visitorProfile.name}
+                          loading="lazy"
+                          decoding="async"
+                          className="absolute inset-0 w-full h-full object-cover"
+                          onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                        />
                       )}
                     </div>
                     <div className="truncate text-[11px]">
@@ -1898,24 +2035,25 @@ export const MessagingSection: React.FC = () => {
                     >
                       {/* Left Avatar */}
                       {isLeft && (
-                        <div className="w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
+                        <div className="relative w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
+                          <span className={`${activeConversation.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
+                            {(activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel || 'V').charAt(0).toUpperCase()}
+                          </span>
                           {!isOwner ? (
                             <img
                               src={profileAvatar}
                               alt={profileName}
-                              className="w-full h-full object-cover"
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                             />
                           ) : activeConversation.avatarUrl ? (
                             <img
                               src={activeConversation.avatarUrl}
                               alt={activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel}
-                              className="w-full h-full object-cover"
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                             />
-                          ) : (
-                            <span className={`${activeConversation.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
-                              {(activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel).charAt(0).toUpperCase()}
-                            </span>
-                          )}
+                          ) : null}
                         </div>
                       )}
 
@@ -2046,13 +2184,17 @@ export const MessagingSection: React.FC = () => {
 
                       {/* Right Avatar for Visitor */}
                       {!isLeft && !isOwner && (
-                        <div className="w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
-                          {visitorProfile.avatarUrl ? (
-                            <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <span className={`${visitorProfile.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
-                              {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
-                            </span>
+                        <div className="relative w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
+                          <span className={`${visitorProfile.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
+                            {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
+                          </span>
+                          {visitorProfile.avatarUrl && (
+                            <img
+                              src={visitorProfile.avatarUrl}
+                              alt={visitorProfile.name}
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                            />
                           )}
                         </div>
                       )}

@@ -154,12 +154,12 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                     loading="lazy"
                     decoding="async"
                     className="w-full h-full object-cover"
+                    onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                   />
-                ) : (
-                  <div className={`w-full h-full ${avatarColor} text-white font-bold text-2xl flex items-center justify-center`}>
-                    {initialLetter}
-                  </div>
-                )}
+                ) : null}
+                <div className={`w-full h-full ${avatarColor} text-white font-bold text-2xl flex items-center justify-center`}>
+                  {initialLetter}
+                </div>
               </div>
 
               {/* Upload trigger badge */}
