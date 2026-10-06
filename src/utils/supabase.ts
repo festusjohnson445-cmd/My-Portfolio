@@ -838,6 +838,37 @@ export async function broadcastSupabaseChatMessage(messagePayload: any): Promise
 }
 
 /**
+ * Save / sync conversation to Supabase "conversations" or "chats" table
+ */
+export async function saveConversationToSupabaseTable(conv: any): Promise<boolean> {
+  if (!conv || !conv.id) return false;
+  try {
+    const payload = {
+      id: conv.id,
+      default_label: conv.defaultLabel || 'Direct Message',
+      custom_name: conv.customName || '',
+      visitor_name: conv.visitorName || '',
+      avatar_url: conv.avatarUrl || '',
+      role_or_company: conv.roleOrCompany || 'Visitor Inquiry',
+      unread: Boolean(conv.unread),
+      important: Boolean(conv.important),
+      last_message: conv.lastMessage || '',
+      last_timestamp: conv.lastTimestamp || '',
+      messages: Array.isArray(conv.messages) ? conv.messages : [],
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await resilientSupabaseUpsert('conversations', payload);
+    if (error) {
+      await resilientSupabaseUpsert('chats', payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Supabase DB Chat Save Note]:', err);
+    return false;
+  }
+}
+
+/**
  * Test connectivity and latency to Supabase Database, Auth, and Storage Buckets
  */
 export async function testSupabaseConnection(): Promise<{

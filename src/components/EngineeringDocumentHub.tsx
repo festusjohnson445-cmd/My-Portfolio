@@ -18,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   HardDrive,
+  Loader2,
   Share2,
   Clock,
   ShieldCheck,
@@ -117,6 +118,88 @@ export interface QueuedUploadItem {
   fileSize: string;
   fileType: string;
 }
+
+export const EngineeringHubPdfCardThumbnail: React.FC<{
+  doc: PublicEngineeringDocument;
+}> = ({ doc }) => {
+  const initialImg =
+    doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf')
+      ? doc.previewUrl
+      : null;
+
+  const [renderedImg, setRenderedImg] = useState<string | null>(initialImg);
+  const [isRendering, setIsRendering] = useState(!initialImg);
+
+  const pdfSource =
+    doc.dataUrl ||
+    doc.downloadUrl ||
+    (doc as any).fileUrl ||
+    (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf') && !doc.previewUrl.startsWith('data:application/pdf')) {
+      setRenderedImg(doc.previewUrl);
+      setIsRendering(false);
+      return;
+    }
+
+    if (pdfSource) {
+      setIsRendering(true);
+      renderPdfFirstPageToImage(pdfSource, 900)
+        .then((img) => {
+          if (isMounted) {
+            if (img) {
+              setRenderedImg(img);
+            }
+            setIsRendering(false);
+          }
+        })
+        .catch(() => {
+          if (isMounted) setIsRendering(false);
+        });
+    } else {
+      setIsRendering(false);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [doc.id, doc.previewUrl, pdfSource]);
+
+  if (renderedImg) {
+    return (
+      <img
+        src={renderedImg}
+        alt={doc.title}
+        loading="lazy"
+        decoding="async"
+        className="w-full h-full object-contain p-1.5 group-hover:scale-105 transition-transform duration-300"
+      />
+    );
+  }
+
+  if (isRendering) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-300 gap-2 p-3">
+        <Loader2 className="w-7 h-7 text-cyan-400 animate-spin" />
+        <span className="text-[11px] font-mono text-slate-300 font-medium">Rendering PDF Page 1...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 bg-[#f8fafc]">
+      {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' ? (
+        <BookOpen className="w-12 h-12 text-cyan-600/80" />
+      ) : (
+        <FileText className="w-12 h-12 text-cyan-600/70" />
+      )}
+      <span className="text-xs font-mono mt-1 text-slate-500">{doc.fileType}</span>
+    </div>
+  );
+};
 
 export interface EngineeringDocumentHubProps {
   onNavigatePart?: (part: PortfolioPart) => void;
@@ -1065,24 +1148,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               >
                 {/* Card Top: Preview Thumbnail & Format Badge */}
                 <div className="relative w-full h-44 bg-slate-50 overflow-hidden border-b border-slate-200">
-                  {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) ? (
-                    <img
-                      src={doc.previewUrl}
-                      alt={doc.title}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-300"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
-                      {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' ? (
-                        <BookOpen className="w-12 h-12 text-cyan-600/80" />
-                      ) : (
-                        <FileText className="w-12 h-12 text-cyan-600/70" />
-                      )}
-                      <span className="text-xs font-mono mt-1 text-slate-500">{doc.fileType}</span>
-                    </div>
-                  )}
+                  <EngineeringHubPdfCardThumbnail doc={doc} />
 
                   {/* Format & Size Badge */}
                   <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">

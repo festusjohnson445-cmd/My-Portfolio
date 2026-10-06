@@ -42,6 +42,7 @@ import {
 import {
   subscribeToSupabaseRealtimeChat,
   broadcastSupabaseChatMessage,
+  saveConversationToSupabaseTable,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -281,9 +282,59 @@ export const MessagingSection: React.FC = () => {
     };
 
     // Supabase Realtime Channel Subscription for live multi-user messaging
-    const unsubSupabaseRealtime = subscribeToSupabaseRealtimeChat((_payload) => {
+    const unsubSupabaseRealtime = subscribeToSupabaseRealtimeChat((payload) => {
       fetchChatsFromServer();
+      if (payload && payload.conversationId && payload.message) {
+        const { conversationId, message } = payload;
+        setConversations((prev) => {
+          if (deletedConvIdsRef.current.has(conversationId)) return prev;
+          const idx = prev.findIndex((c) => c.id === conversationId);
+          if (idx >= 0) {
+            const existing = prev[idx];
+            if (existing.messages.some((m) => m.id === message.id)) return prev;
+            const updated = prev.map((c, i) =>
+              i === idx
+                ? {
+                    ...c,
+                    unread: message.sender === 'visitor',
+                    messages: [...c.messages, message],
+                    lastMessage: message.text || (message.voiceNote ? '🎤 Voice note' : 'Attachment'),
+                    lastTimestamp: message.timestamp,
+                  }
+                : c
+            );
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          }
+          return prev;
+        });
+      }
     });
+
+    // SSE Stream Subscription for instant server push
+    let sseSource: EventSource | null = null;
+    try {
+      sseSource = new EventSource('/api/chats/stream');
+      sseSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data && data.conversations && Array.isArray(data.conversations)) {
+            const cleaned = data.conversations.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
+            setConversations((prev) => {
+              if (JSON.stringify(prev) !== JSON.stringify(cleaned)) {
+                try {
+                  localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(cleaned));
+                } catch {}
+                return cleaned;
+              }
+              return prev;
+            });
+          }
+        } catch {}
+      };
+    } catch {}
 
     window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', fetchChatsFromServer);
@@ -291,6 +342,7 @@ export const MessagingSection: React.FC = () => {
 
     return () => {
       unsubSupabaseRealtime();
+      if (sseSource) sseSource.close();
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', fetchChatsFromServer);
       window.removeEventListener('visibilitychange', handleVisibility);
@@ -973,6 +1025,20 @@ export const MessagingSection: React.FC = () => {
         }),
       }).catch((err) => console.warn('Send error:', err));
 
+      saveConversationToSupabaseTable({
+        id: activeOwnerConvId,
+        defaultLabel: activeConversation.defaultLabel,
+        customName: activeConversation.customName,
+        visitorName: activeConversation.visitorName,
+        avatarUrl: activeConversation.avatarUrl,
+        roleOrCompany: activeConversation.roleOrCompany,
+        unread: false,
+        important: activeConversation.important,
+        lastMessage: currentText || 'File sent',
+        lastTimestamp: timeStr,
+        messages: [...activeConversation.messages, festusMsg],
+      });
+
       broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
       // 2. VISITOR SENDS MESSAGE (NO AUTO-REPLY, NO BOT SIMULATION, NO TIMEOUT)
@@ -985,6 +1051,8 @@ export const MessagingSection: React.FC = () => {
         attachments: currentAttachments.length > 0 ? currentAttachments : undefined
       };
 
+      let targetConv: Conversation | null = null;
+
       // Record this message into master conversations database
       setConversations((prev) => {
         const existingIdx = prev.findIndex((c) => c.id === visitorId);
@@ -992,13 +1060,15 @@ export const MessagingSection: React.FC = () => {
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
-              return {
+              const uConv = {
                 ...c,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
                 lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
                 lastTimestamp: timeStr
               };
+              targetConv = uConv;
+              return uConv;
             }
             return c;
           });
@@ -1018,6 +1088,7 @@ export const MessagingSection: React.FC = () => {
             lastMessage: currentText || 'New visitor message',
             lastTimestamp: timeStr
           };
+          targetConv = newVisitorRecord;
           updated = [newVisitorRecord, ...prev];
         }
         try {
@@ -1043,6 +1114,10 @@ export const MessagingSection: React.FC = () => {
           }
         }),
       }).catch((err) => console.warn('Send error:', err));
+
+      if (targetConv) {
+        saveConversationToSupabaseTable(targetConv);
+      }
 
       broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
     }
