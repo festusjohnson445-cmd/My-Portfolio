@@ -50,6 +50,7 @@ import {
   subscribeToSupabaseMessagingRealtime,
   generateDeterministicConversationId,
   getOrFetchOwnerId,
+  supabase,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -234,12 +235,16 @@ const getOrCreateVisitorId = (): string => {
   }
 };
 
-export const MessagingSection: React.FC = () => {
+interface MessagingSectionProps {
+  onBack?: () => void;
+}
+
+export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) => {
   const { avatar: profileAvatar, bio, isOwner, setOwner, ownerUid } = useProfileSync();
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
 
-  const [visitorId, setVisitorId] = useState<string>(getOrCreateVisitorId);
+  const [visitorId, setVisitorId] = useState<string>(() => localStorage.getItem('fesline_visitor_access_key') || '');
   const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1');
   const myDeterministicConvId = useMemo(() => generateDeterministicConversationId(visitorId, resolvedOwnerId), [visitorId, resolvedOwnerId]);
 
@@ -248,6 +253,35 @@ export const MessagingSection: React.FC = () => {
       if (uid) setResolvedOwnerId(uid);
     });
   }, [ownerUid]);
+
+  // Handle Visitor Access Key System on mount
+  useEffect(() => {
+    if (isOwner) return;
+
+    const setupVisitorSession = async () => {
+      // Check for persistent Visitor Access Key (Never automatically open popup)
+      const savedKey = localStorage.getItem('fesline_visitor_access_key');
+      if (savedKey) {
+        setVisitorId(savedKey);
+        // Fetch existing profile to populate state
+        const p = await fetchVisitorProfileFromSupabase(savedKey);
+        if (p) {
+          const updatedProf = {
+            name: p.name,
+            roleOrCompany: p.roleOrCompany,
+            avatarUrl: p.avatarUrl,
+            avatarColor: p.avatarColor,
+          };
+          setVisitorProfile(updatedProf);
+          try {
+            localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updatedProf));
+          } catch {}
+        }
+      }
+    };
+
+    setupVisitorSession().catch(err => console.warn('Visitor session setup error:', err));
+  }, [isOwner]);
 
   // Visitor Resume / Continue Chat modal states
   const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
@@ -819,20 +853,14 @@ export const MessagingSection: React.FC = () => {
   };
 
   // Visitor updates their messaging profile (photo and name)
-  const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile) => {
+  const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile, accessKey: string) => {
+    const isFirstTime = !visitorId;
     setVisitorProfile(updated);
+    setVisitorId(accessKey);
     try {
       localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updated));
+      localStorage.setItem('fesline_visitor_access_key', accessKey);
     } catch {}
-
-    // Save to Supabase visitor_profiles table directly
-    await saveVisitorProfileToSupabase({
-      visitor_id: visitorId,
-      display_name: updated.name,
-      role_subject: updated.roleOrCompany,
-      avatar_url: updated.avatarUrl || '',
-      avatar_color: updated.avatarColor || 'bg-slate-700',
-    });
 
     const updatedConvMetadata = {
       defaultLabel: updated.name || 'Direct Message',
@@ -843,27 +871,69 @@ export const MessagingSection: React.FC = () => {
       avatarColor: updated.avatarColor || 'bg-slate-700',
     };
 
+    const targetConvId = myDeterministicConvId || generateDeterministicConversationId(accessKey, resolvedOwnerId);
+
     // Update or insert conversation record in local state and Supabase
     setConversations((prev) => {
-      const idx = prev.findIndex((c) => c.id === visitorId);
+      const idx = prev.findIndex((c) => c.id === accessKey || c.id === targetConvId);
+      
+      const accessKeyMsg: ChatMessage = {
+        id: `key-msg-${Date.now()}`,
+        sender: 'festus', // Render as secure automated notice from Festus/System
+        text: `🔑 SECURE VISITOR ACCESS KEY: ${accessKey}\n\nThis is your private key to restore your complete profile and message history across different phones or browsers. Please copy and save it!`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: 'seen',
+      };
+
       if (idx >= 0) {
+        let updatedMessages = [...prev[idx].messages];
+        let lastMsg = prev[idx].lastMessage;
+        
+        if (isFirstTime && !updatedMessages.some(m => m.text.includes('SECURE VISITOR ACCESS KEY'))) {
+          updatedMessages.push(accessKeyMsg);
+          lastMsg = `🔑 Secure Access Key: ${accessKey}`;
+          
+          saveMessageAndConversationToSupabase({
+            conversationId: targetConvId,
+            visitorId: accessKey,
+            message: accessKeyMsg,
+            conversationMetadata: updatedConvMetadata,
+          });
+          broadcastSupabaseChatMessage({ conversationId: targetConvId, message: accessKeyMsg });
+        }
+
         const u = {
           ...prev[idx],
+          id: targetConvId,
           ...updatedConvMetadata,
+          messages: updatedMessages,
+          lastMessage: lastMsg || 'New message',
         };
         saveConversationToSupabaseTable(u);
         return prev.map((c, i) => (i === idx ? u : c));
       } else {
+        const initialMsgs = isFirstTime ? [accessKeyMsg] : [];
         const newC: Conversation = {
-          id: visitorId,
+          id: targetConvId,
           ...updatedConvMetadata,
           unread: false,
           important: false,
-          messages: [],
-          lastMessage: '',
+          messages: initialMsgs,
+          lastMessage: isFirstTime ? `🔑 Secure Access Key: ${accessKey}` : '',
           lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         };
         saveConversationToSupabaseTable(newC);
+
+        if (isFirstTime) {
+          saveMessageAndConversationToSupabase({
+            conversationId: targetConvId,
+            visitorId: accessKey,
+            message: accessKeyMsg,
+            conversationMetadata: updatedConvMetadata,
+          });
+          broadcastSupabaseChatMessage({ conversationId: targetConvId, message: accessKeyMsg });
+        }
+
         return [newC, ...prev];
       }
     });
@@ -874,7 +944,7 @@ export const MessagingSection: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          visitorId,
+          visitorId: accessKey,
           name: updated.name,
           avatarUrl: updated.avatarUrl,
           roleOrCompany: updated.roleOrCompany,
@@ -884,8 +954,8 @@ export const MessagingSection: React.FC = () => {
       console.warn('Failed to sync visitor profile:', err);
     }
 
-    broadcastSupabaseChatMessage({ event: 'visitor_profile_updated', visitorId, profile: updated });
-    setShowMailNotice('Your messaging profile has been updated! Festus will now see your photo and name.');
+    broadcastSupabaseChatMessage({ event: 'visitor_profile_updated', visitorId: accessKey, profile: updated });
+    setShowMailNotice(`Profile initialized! Saved secure Access Key: ${accessKey}. Copy it from the top right to restore anywhere!`);
   };
 
   // Send voice note between owner and visitor
@@ -955,6 +1025,12 @@ export const MessagingSection: React.FC = () => {
 
       broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
+      // Block sending if visitor is yet to login
+      if (!visitorId || visitorId.trim() === '') {
+        setShowMailNotice("Login first, click InChat");
+        setIsVisitorProfileModalOpen(true);
+        return;
+      }
       const visitorMsg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         sender: 'visitor',
@@ -1211,6 +1287,12 @@ export const MessagingSection: React.FC = () => {
 
       broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
     } else {
+      // Block sending if visitor is yet to login
+      if (!visitorId || visitorId.trim() === '') {
+        setShowMailNotice("Login first, click InChat");
+        setIsVisitorProfileModalOpen(true);
+        return;
+      }
       // 2. VISITOR SENDS MESSAGE (NO AUTO-REPLY, NO BOT SIMULATION, NO TIMEOUT)
       const visitorMsg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -1752,40 +1834,42 @@ export const MessagingSection: React.FC = () => {
                   {/* Search Button */}
                   <button
                     onClick={() => setIsSearchOpen(!isSearchOpen)}
-                    className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+                    className={`p-1 rounded-full transition-colors cursor-pointer ${
                       isSearchOpen ? 'bg-white/30 text-white' : 'hover:bg-white/15 text-white'
                     }`}
                     title="Search messages and shared files"
                   >
-                    <Search className="w-4 h-4" />
+                    <Search className="w-3 h-3" />
                   </button>
 
-                  {/* Visitor Controls: Continue Chat, Edit Profile & Clear Chat */}
+                  {/* Visitor Controls: InChat, Copy Access Key & Clear Chat */}
                   {!isOwner && (
                     <>
                       <button
                         type="button"
-                        onClick={() => {
-                          setResumeError(null);
-                          setResumeInput('');
-                          setIsResumeModalOpen(true);
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-emerald-400/50 shadow-xs"
-                        title="Resume your conversation from where you left off"
+                        onClick={() => setIsVisitorProfileModalOpen(true)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white text-[9px] font-bold transition-all cursor-pointer border border-cyan-400/50 shadow-md mr-1 shrink-0 animate-pulse-slow active:scale-95"
+                        title="Configure visitor profile or restore session (InChat)"
                       >
-                        <History className="w-3.5 h-3.5 text-emerald-200" />
-                        <span className="hidden sm:inline">Continue Chat</span>
+                        <User className="w-3 h-3 text-cyan-100" />
+                        <span>InChat</span>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setIsVisitorProfileModalOpen(true)}
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-[11px] font-semibold transition-colors cursor-pointer border border-white/20 shadow-xs"
-                        title="Edit your messaging profile (picture & name)"
-                      >
-                        <User className="w-3.5 h-3.5 text-cyan-200" />
-                        <span className="hidden sm:inline">Edit Profile</span>
-                      </button>
+                      {visitorId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(visitorId);
+                            setCopiedVisitorId(true);
+                            setTimeout(() => setCopiedVisitorId(false), 2000);
+                          }}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-[9px] font-semibold transition-colors cursor-pointer border border-cyan-500 shadow-xs"
+                          title="Copy your persistent Access Key to restore this chat on another device"
+                        >
+                          <Copy className="w-3 h-3 text-cyan-200" />
+                          <span>{copiedVisitorId ? 'Copied!' : `Key: ${visitorId}`}</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -2558,6 +2642,8 @@ export const MessagingSection: React.FC = () => {
           onClose={() => setIsVisitorProfileModalOpen(false)}
           currentProfile={visitorProfile}
           onSave={handleSaveVisitorProfile}
+          visitorId={visitorId}
+          isMandatory={!isOwner && !visitorId}
         />
 
         {/* ======================================================== */}

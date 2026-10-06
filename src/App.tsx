@@ -246,7 +246,7 @@ export default function App() {
         {/* ======================================================== */}
         {activePart === 'messaging' && (
           <section id="messaging" className="h-[calc(100vh-4rem)] sm:h-[calc(100vh-4.5rem)] w-full bg-[#dce1e8] flex flex-col overflow-hidden">
-            <MessagingSection />
+            <MessagingSection onBack={() => handleSelectPart('home')} />
           </section>
         )}
       </main>

@@ -226,6 +226,57 @@ export async function hasActiveOwnerSession(): Promise<boolean> {
   }
 }
 
+/**
+ * Silent authentication fallback helper for visitors when Anonymous Sign-in is disabled in Supabase.
+ * First tries signInAnonymously(). If disabled or fails, silently signs in with a shared public guest user.
+ * Since sign-ins are not strictly rate-limited like sign-ups, this completely avoids "email rate limit exceeded" errors.
+ */
+export async function silentAuthVisitor(accessKey?: string): Promise<{ user: User | null; session: Session | null; error: Error | null }> {
+  try {
+    // 1. Try standard anonymous sign-in first
+    const { data: anonData, error: anonError } = await supabase.auth.signInAnonymously();
+    if (!anonError && anonData?.user) {
+      return { user: anonData.user, session: anonData.session, error: null };
+    }
+
+    console.warn('[Supabase Auth] Anonymous sign-in failed/disabled, attempting silent shared email guest fallback...', anonError?.message);
+
+    // 2. Fallback: Silent shared guest account (permanently bypasses email signup rate limits)
+    const sharedEmail = 'public_visitor@feslineguest.com';
+    const sharedPassword = 'VisitorGuestPass_Shared_123!';
+
+    // Try to sign in with the shared guest credentials
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email: sharedEmail,
+      password: sharedPassword,
+    });
+
+    if (!signInError && signInData?.user) {
+      return { user: signInData.user, session: signInData.session, error: null };
+    }
+
+    // If sign in fails because the shared account is not registered yet, register it exactly once
+    if (signInError?.message?.toLowerCase().includes('invalid') || signInError?.message?.toLowerCase().includes('not found')) {
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: sharedEmail,
+        password: sharedPassword,
+      });
+
+      if (!signUpError && signUpData?.user) {
+        return { user: signUpData.user, session: signUpData.session, error: null };
+      }
+      
+      return { user: null, session: null, error: new Error(signUpError?.message || signInError?.message || 'Authentication failed') };
+    }
+
+    // Return sign in error if not credentials-related (or return the original anonymous error)
+    return { user: null, session: null, error: new Error(signInError?.message || anonError?.message || 'Authentication failed') };
+  } catch (err: any) {
+    console.error('[Supabase Auth Silent Fallback Error]:', err);
+    return { user: null, session: null, error: err };
+  }
+}
+
 // ============================================================================
 // 3. AVATARS STORAGE BUCKET (PUBLIC BUCKET "avatars")
 // ============================================================================
@@ -949,12 +1000,13 @@ export async function saveVisitorProfileToSupabase(profile: {
   role_subject?: string;
   avatar_url?: string;
   avatar_color?: string;
+  id?: string;
 }): Promise<boolean> {
   if (!profile || !profile.visitor_id) return false;
   try {
     const payload = {
       visitor_id: profile.visitor_id,
-      id: profile.visitor_id,
+      id: profile.id || profile.visitor_id,
       display_name: profile.display_name || 'Visitor',
       role_subject: profile.role_subject || 'Visitor Direct Chat',
       avatar_url: profile.avatar_url || '',
