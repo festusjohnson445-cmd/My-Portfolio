@@ -619,7 +619,14 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
       } catch {}
     }
 
+    if (data && data.id) {
+      try {
+        localStorage.setItem('fesline_owner_supabase_uid', data.id);
+      } catch {}
+    }
+
     return {
+      id: data.id,
       fullName: data.full_name || data.fullName,
       header: data.header,
       bio: parsedBio || {},
@@ -993,6 +1000,55 @@ export async function fetchVisitorProfileFromSupabase(visitorId: string): Promis
 }
 
 /**
+ * Generates a consistent deterministic conversation_id combining visitorId and target owner profile ID.
+ */
+export function generateDeterministicConversationId(visitorId: string, ownerId: string): string {
+  const combined = `${visitorId}:${ownerId}`;
+  let hash = 0;
+  for (let i = 0; i < combined.length; i++) {
+    hash = (hash << 5) - hash + combined.charCodeAt(i);
+    hash |= 0;
+  }
+  const unsignedHash = hash >>> 0;
+  const hHex = unsignedHash.toString(16).padStart(8, '0');
+  const vClean = visitorId.replace(/[^a-fA-F0-9]/g, '').padEnd(12, '0').slice(0, 12);
+  const oClean = ownerId.replace(/[^a-fA-F0-9]/g, '').padEnd(12, '0').slice(0, 12);
+  return `${hHex}-${vClean.slice(0,4)}-${vClean.slice(4,8)}-${oClean.slice(0,4)}-${oClean.slice(4,16)}`;
+}
+
+/**
+ * Retrieve or dynamically fetch owner user ID from Supabase profiles or active session
+ */
+export async function getOrFetchOwnerId(): Promise<string> {
+  try {
+    const { data: sessData } = await supabase.auth.getSession();
+    if (sessData?.session?.user) {
+      const uid = sessData.session.user.id;
+      localStorage.setItem('fesline_owner_supabase_uid', uid);
+      return uid;
+    }
+
+    const saved = localStorage.getItem('fesline_owner_supabase_uid');
+    if (saved && saved.trim()) return saved.trim();
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('id')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data?.id) {
+      localStorage.setItem('fesline_owner_supabase_uid', data.id);
+      return data.id;
+    }
+  } catch (err) {
+    console.warn('Error fetching owner id from profiles:', err);
+  }
+  return 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1';
+}
+
+/**
  * Append message record to "messages" table and update "conversations" table (last_message, last_message_at)
  */
 export async function saveMessageAndConversationToSupabase(params: {
@@ -1019,6 +1075,10 @@ export async function saveMessageAndConversationToSupabase(params: {
   const { conversationId, visitorId, message, conversationMetadata } = params;
   if (!conversationId || !message) return false;
 
+  const vId = visitorId || conversationId;
+  const ownerId = await getOrFetchOwnerId();
+  const deterministicConvId = generateDeterministicConversationId(vId, ownerId);
+
   const nowIso = new Date().toISOString();
   const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
 
@@ -1026,13 +1086,15 @@ export async function saveMessageAndConversationToSupabase(params: {
     // 1. Append message to "messages" table
     const messagePayload = {
       id: message.id,
-      conversation_id: conversationId,
+      conversation_id: deterministicConvId,
       sender: message.sender,
       text: message.text || '',
       timestamp: message.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       status: message.status || 'unseen',
       attachments: message.attachments || null,
       voice_note: message.voiceNote || null,
+      sender_id: message.sender === 'visitor' ? vId : ownerId,
+      recipient_id: message.sender === 'visitor' ? ownerId : vId,
       created_at: nowIso,
     };
 
@@ -1040,8 +1102,9 @@ export async function saveMessageAndConversationToSupabase(params: {
 
     // 2. Update conversations table (last_message and last_message_at)
     const convPayload = {
-      id: conversationId,
-      visitor_id: visitorId || conversationId,
+      id: deterministicConvId,
+      visitor_id: vId,
+      owner_id: ownerId,
       default_label: conversationMetadata?.defaultLabel || 'Direct Message',
       custom_name: conversationMetadata?.customName || '',
       visitor_name: conversationMetadata?.visitorName || '',
@@ -1071,13 +1134,37 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
     let convsMap: Record<string, any> = {};
 
     try {
-      const { data: convs } = await supabase
-        .from('conversations')
-        .select('*')
-        .order('updated_at', { ascending: false });
+      let ownerUid = '';
+      const { data: sessData } = await supabase.auth.getSession();
+      if (sessData?.session?.user) {
+        ownerUid = sessData.session.user.id;
+      } else {
+        ownerUid = getAuthenticatedOwnerUid();
+      }
 
-      if (convs && Array.isArray(convs)) {
-        for (const c of convs) {
+      let data: any[] | null = null;
+      if (ownerUid) {
+        const { data: filtered, error } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('owner_id', ownerUid)
+          .order('updated_at', { ascending: false });
+        
+        if (!error && filtered) {
+          data = filtered;
+        }
+      }
+
+      if (!data) {
+        const { data: all } = await supabase
+          .from('conversations')
+          .select('*')
+          .order('updated_at', { ascending: false });
+        data = all;
+      }
+
+      if (data && Array.isArray(data)) {
+        for (const c of data) {
           if (c && c.id) convsMap[c.id] = c;
         }
       }
@@ -1125,17 +1212,33 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
     // Collect all unique conversation IDs across conversations, visitor_profiles, and messages
     const allIds = new Set<string>([
       ...Object.keys(convsMap),
-      ...Object.keys(profilesMap),
       ...Object.keys(messagesMap),
     ]);
+
+    // Add profile IDs but check if we can link them
+    for (const pId of Object.keys(profilesMap)) {
+      // Find if there's any conversation for this profile ID
+      const correspondingConv = Object.values(convsMap).find((c: any) => c.visitor_id === pId);
+      if (correspondingConv) {
+        allIds.add(correspondingConv.id);
+      } else {
+        allIds.add(pId);
+      }
+    }
 
     if (allIds.size === 0) return [];
 
     const result: any[] = [];
     for (const id of allIds) {
-      const c = convsMap[id] || {};
-      const vProfile = profilesMap[id] || {};
-      const convMsgs = messagesMap[id] || (Array.isArray(c.messages) ? c.messages : []);
+      let c = convsMap[id];
+      if (!c) {
+        c = Object.values(convsMap).find((conv: any) => conv.visitor_id === id);
+      }
+      c = c || {};
+
+      const vProfile = profilesMap[c.visitor_id] || profilesMap[id] || {};
+      const actualConvId = c.id || id;
+      const convMsgs = messagesMap[actualConvId] || (Array.isArray(c.messages) ? c.messages : []);
 
       const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
       const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
@@ -1143,7 +1246,7 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
 
       result.push({
-        id,
+        id: actualConvId,
         defaultLabel: displayName,
         customName: displayName,
         visitorName: displayName,

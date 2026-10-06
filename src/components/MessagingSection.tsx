@@ -48,6 +48,8 @@ import {
   fetchVisitorProfileFromSupabase,
   saveVisitorProfileToSupabase,
   subscribeToSupabaseMessagingRealtime,
+  generateDeterministicConversationId,
+  getOrFetchOwnerId,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -233,11 +235,19 @@ const getOrCreateVisitorId = (): string => {
 };
 
 export const MessagingSection: React.FC = () => {
-  const { avatar: profileAvatar, bio, isOwner, setOwner } = useProfileSync();
+  const { avatar: profileAvatar, bio, isOwner, setOwner, ownerUid } = useProfileSync();
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
 
   const [visitorId, setVisitorId] = useState<string>(getOrCreateVisitorId);
+  const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1');
+  const myDeterministicConvId = useMemo(() => generateDeterministicConversationId(visitorId, resolvedOwnerId), [visitorId, resolvedOwnerId]);
+
+  useEffect(() => {
+    getOrFetchOwnerId().then((uid) => {
+      if (uid) setResolvedOwnerId(uid);
+    });
+  }, [ownerUid]);
 
   // Visitor Resume / Continue Chat modal states
   const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
@@ -300,52 +310,60 @@ export const MessagingSection: React.FC = () => {
     return new Set<string>();
   })());
 
+  const isFetchingRef = useRef(false);
+
   // Fetch chats from server
   const fetchChatsFromServer = async () => {
-    const fetched = await fetchChatsFromServerHelper(deletedConvIdsRef.current);
-    if (fetched && Array.isArray(fetched)) {
-      const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
-      setConversations(prev => {
-        const mergedMap = new Map<string, Conversation>();
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    try {
+      const fetched = await fetchChatsFromServerHelper(deletedConvIdsRef.current);
+      if (fetched && Array.isArray(fetched)) {
+        const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
+        setConversations(prev => {
+          const mergedMap = new Map<string, Conversation>();
 
-        // 1. Add cleaned server conversations
-        for (const c of cleaned) {
-          if (c && c.id) mergedMap.set(c.id, c);
-        }
+          // 1. Add cleaned server conversations
+          for (const c of cleaned) {
+            if (c && c.id) mergedMap.set(c.id, c);
+          }
 
-        // 2. Preserve any active local conversation messages in prev that haven't synced yet
-        for (const localC of prev) {
-          if (localC && localC.id && localC.messages && localC.messages.length > 0 && !deletedConvIdsRef.current.has(localC.id)) {
-            const serverC = mergedMap.get(localC.id);
-            if (!serverC) {
-              mergedMap.set(localC.id, localC);
-            } else {
-              const msgMap = new Map<string, ChatMessage>();
-              for (const m of serverC.messages || []) if (m && m.id) msgMap.set(m.id, m);
-              for (const m of localC.messages || []) if (m && m.id) msgMap.set(m.id, m);
-              const mergedMsgs = Array.from(msgMap.values());
+          // 2. Preserve any active local conversation messages in prev that haven't synced yet
+          for (const localC of prev) {
+            if (localC && localC.id && localC.messages && localC.messages.length > 0 && !deletedConvIdsRef.current.has(localC.id)) {
+              const serverC = mergedMap.get(localC.id);
+              if (!serverC) {
+                mergedMap.set(localC.id, localC);
+              } else {
+                const msgMap = new Map<string, ChatMessage>();
+                for (const m of serverC.messages || []) if (m && m.id) msgMap.set(m.id, m);
+                for (const m of localC.messages || []) if (m && m.id) msgMap.set(m.id, m);
+                const mergedMsgs = Array.from(msgMap.values());
 
-              mergedMap.set(localC.id, {
-                ...serverC,
-                messages: mergedMsgs,
-                lastMessage: mergedMsgs[mergedMsgs.length - 1]?.text || serverC.lastMessage || localC.lastMessage || 'New message',
-                lastTimestamp: mergedMsgs[mergedMsgs.length - 1]?.timestamp || serverC.lastTimestamp || localC.lastTimestamp || '',
-              });
+                mergedMap.set(localC.id, {
+                  ...serverC,
+                  messages: mergedMsgs,
+                  lastMessage: mergedMsgs[mergedMsgs.length - 1]?.text || serverC.lastMessage || localC.lastMessage || 'New message',
+                  lastTimestamp: mergedMsgs[mergedMsgs.length - 1]?.timestamp || serverC.lastTimestamp || localC.lastTimestamp || '',
+                });
+              }
             }
           }
-        }
 
-        const finalConvs = Array.from(mergedMap.values());
-        const currentStr = JSON.stringify(prev);
-        const finalStr = JSON.stringify(finalConvs);
-        if (currentStr !== finalStr) {
-          try {
-            localStorage.setItem(STORAGE_KEY_CHATS, finalStr);
-          } catch {}
-          return finalConvs;
-        }
-        return prev;
-      });
+          const finalConvs = Array.from(mergedMap.values());
+          const currentStr = JSON.stringify(prev);
+          const finalStr = JSON.stringify(finalConvs);
+          if (currentStr !== finalStr) {
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, finalStr);
+            } catch {}
+            return finalConvs;
+          }
+          return prev;
+        });
+      }
+    } finally {
+      isFetchingRef.current = false;
     }
   };
 
@@ -449,10 +467,11 @@ export const MessagingSection: React.FC = () => {
   const activeConversation: Conversation = useMemo(() => {
     if (!isOwner) {
       // Find visitor's conversation in master list, or return empty clean initial chat
-      const found = conversations.find((c) => c.id === visitorId);
+      const found = conversations.find((c) => c.id === visitorId || c.id === myDeterministicConvId);
       if (found) {
         return {
           ...found,
+          id: myDeterministicConvId, // Expose the deterministic ID!
           visitorName: visitorProfile.name || found.visitorName || found.customName,
           customName: visitorProfile.name || found.customName,
           avatarUrl: visitorProfile.avatarUrl !== undefined ? visitorProfile.avatarUrl : found.avatarUrl,
@@ -460,7 +479,7 @@ export const MessagingSection: React.FC = () => {
         };
       }
       return {
-        id: visitorId,
+        id: myDeterministicConvId, // Use deterministic ID!
         defaultLabel: visitorProfile.name || 'Direct Message',
         customName: visitorProfile.name || '',
         visitorName: visitorProfile.name || '',
@@ -484,7 +503,7 @@ export const MessagingSection: React.FC = () => {
       important: false,
       messages: []
     };
-  }, [isOwner, visitorId, conversations, activeOwnerConvId, visitorProfile]);
+  }, [isOwner, visitorId, myDeterministicConvId, conversations, activeOwnerConvId, visitorProfile]);
 
   // Header Avatar Size Adjustment ('sm' | 'md' | 'lg')
   const [headerAvatarSize, setHeaderAvatarSize] = useState<'sm' | 'md' | 'lg'>('md');
@@ -946,13 +965,14 @@ export const MessagingSection: React.FC = () => {
       };
 
       setConversations((prev) => {
-        const existingIdx = prev.findIndex((c) => c.id === visitorId);
+        const existingIdx = prev.findIndex((c) => c.id === visitorId || c.id === myDeterministicConvId);
         let updated: Conversation[];
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
               return {
                 ...c,
+                id: myDeterministicConvId,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
                 lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
@@ -964,7 +984,7 @@ export const MessagingSection: React.FC = () => {
         } else {
           const nextIndex = prev.length + 1;
           const newVisitorRecord: Conversation = {
-            id: visitorId,
+            id: myDeterministicConvId,
             defaultLabel: visitorProfile.name || `Messenger ${nextIndex}`,
             customName: visitorProfile.name || '',
             visitorName: visitorProfile.name || '',
@@ -989,7 +1009,7 @@ export const MessagingSection: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          conversationId: visitorId,
+          conversationId: myDeterministicConvId,
           message: visitorMsg,
           conversationMetadata: {
             defaultLabel: visitorProfile.name || 'Direct Message',
@@ -1003,7 +1023,7 @@ export const MessagingSection: React.FC = () => {
       }).catch((err) => console.warn('Send error:', err));
 
       saveMessageAndConversationToSupabase({
-        conversationId: visitorId,
+        conversationId: myDeterministicConvId,
         visitorId,
         message: visitorMsg,
         conversationMetadata: {
@@ -1016,7 +1036,7 @@ export const MessagingSection: React.FC = () => {
         },
       });
 
-      broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
+      broadcastSupabaseChatMessage({ conversationId: myDeterministicConvId, message: visitorMsg });
     }
   };
 
@@ -1205,13 +1225,14 @@ export const MessagingSection: React.FC = () => {
 
       // Record this message into master conversations database
       setConversations((prev) => {
-        const existingIdx = prev.findIndex((c) => c.id === visitorId);
+        const existingIdx = prev.findIndex((c) => c.id === visitorId || c.id === myDeterministicConvId);
         let updated: Conversation[];
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
               const uConv = {
                 ...c,
+                id: myDeterministicConvId,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
                 lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
@@ -1225,7 +1246,7 @@ export const MessagingSection: React.FC = () => {
         } else {
           const nextIndex = prev.length + 1;
           const newVisitorRecord: Conversation = {
-            id: visitorId,
+            id: myDeterministicConvId,
             defaultLabel: visitorProfile.name || `Messenger ${nextIndex}`,
             customName: visitorProfile.name || '',
             visitorName: visitorProfile.name || '',
@@ -1252,7 +1273,7 @@ export const MessagingSection: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          conversationId: visitorId,
+          conversationId: myDeterministicConvId,
           message: visitorMsg,
           conversationMetadata: {
             defaultLabel: visitorProfile.name || 'Direct Message',
@@ -1266,7 +1287,7 @@ export const MessagingSection: React.FC = () => {
       }).catch((err) => console.warn('Send error:', err));
 
       saveMessageAndConversationToSupabase({
-        conversationId: visitorId,
+        conversationId: myDeterministicConvId,
         visitorId,
         message: visitorMsg,
         conversationMetadata: {
@@ -1279,7 +1300,7 @@ export const MessagingSection: React.FC = () => {
         },
       });
 
-      broadcastSupabaseChatMessage({ conversationId: visitorId, message: visitorMsg });
+      broadcastSupabaseChatMessage({ conversationId: myDeterministicConvId, message: visitorMsg });
     }
 
     updateInputMessage('');
