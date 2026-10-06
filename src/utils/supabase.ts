@@ -845,6 +845,7 @@ export async function saveConversationToSupabaseTable(conv: any): Promise<boolea
   try {
     const payload = {
       id: conv.id,
+      visitor_id: conv.id,
       default_label: conv.defaultLabel || 'Direct Message',
       custom_name: conv.customName || '',
       visitor_name: conv.visitorName || '',
@@ -853,6 +854,7 @@ export async function saveConversationToSupabaseTable(conv: any): Promise<boolea
       unread: Boolean(conv.unread),
       important: Boolean(conv.important),
       last_message: conv.lastMessage || '',
+      last_message_at: new Date().toISOString(),
       last_timestamp: conv.lastTimestamp || '',
       messages: Array.isArray(conv.messages) ? conv.messages : [],
       updated_at: new Date().toISOString(),
@@ -865,6 +867,307 @@ export async function saveConversationToSupabaseTable(conv: any): Promise<boolea
   } catch (err) {
     console.warn('[Supabase DB Chat Save Note]:', err);
     return false;
+  }
+}
+
+/**
+ * Upload visitor custom profile photo directly to "avatars" bucket and retrieve absolute publicUrl
+ */
+export async function uploadVisitorAvatarToSupabaseBucket(
+  fileOrBlobOrDataUrl: File | Blob | string,
+  visitorId: string
+): Promise<{ publicUrl: string; storagePath: string }> {
+  let uploadBody: Blob;
+  let contentType = 'image/webp';
+  let ext = 'webp';
+
+  if (typeof fileOrBlobOrDataUrl === 'string') {
+    if (fileOrBlobOrDataUrl.startsWith('data:')) {
+      const parts = fileOrBlobOrDataUrl.split(',');
+      const mimeMatch = parts[0].match(/:(.*?);/);
+      if (mimeMatch) contentType = mimeMatch[1];
+      const binaryStr = atob(parts[1] || '');
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      uploadBody = new Blob([bytes], { type: contentType });
+    } else if (fileOrBlobOrDataUrl.startsWith('http')) {
+      return { publicUrl: fileOrBlobOrDataUrl, storagePath: '' };
+    } else {
+      uploadBody = new Blob([]);
+    }
+  } else {
+    uploadBody = fileOrBlobOrDataUrl;
+    contentType = fileOrBlobOrDataUrl.type || 'image/webp';
+  }
+
+  const fileName = `visitor_${Date.now()}.${ext}`;
+  const storagePath = `visitors/${visitorId}/${fileName}`;
+
+  try {
+    const { error: uploadError } = await supabase.storage
+      .from(SUPABASE_BUCKETS.AVATARS)
+      .upload(storagePath, uploadBody, {
+        contentType,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.warn('[Supabase Visitor Avatar Upload Note]:', uploadError.message);
+    }
+  } catch (e) {
+    console.warn('[Supabase Visitor Avatar Storage Note]:', e);
+  }
+
+  const { data: publicData } = supabase.storage
+    .from(SUPABASE_BUCKETS.AVATARS)
+    .getPublicUrl(storagePath);
+
+  const publicUrl = publicData?.publicUrl || (typeof fileOrBlobOrDataUrl === 'string' ? fileOrBlobOrDataUrl : '');
+  return { publicUrl, storagePath };
+}
+
+/**
+ * Save or update visitor profile in "visitor_profiles" table in Supabase
+ */
+export async function saveVisitorProfileToSupabase(profile: {
+  visitor_id: string;
+  display_name: string;
+  role_subject?: string;
+  avatar_url?: string;
+  avatar_color?: string;
+}): Promise<boolean> {
+  if (!profile || !profile.visitor_id) return false;
+  try {
+    const payload = {
+      visitor_id: profile.visitor_id,
+      id: profile.visitor_id,
+      display_name: profile.display_name || 'Visitor',
+      role_subject: profile.role_subject || 'Visitor Direct Chat',
+      avatar_url: profile.avatar_url || '',
+      avatar_color: profile.avatar_color || 'bg-slate-700',
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await resilientSupabaseUpsert('visitor_profiles', payload, 'visitor_id');
+    if (error) {
+      await resilientSupabaseUpsert('visitor_profile', payload, 'id');
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Supabase Visitor Profile Save Note]:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch visitor profile from "visitor_profiles" table by visitor_id
+ */
+export async function fetchVisitorProfileFromSupabase(visitorId: string): Promise<any | null> {
+  if (!visitorId) return null;
+  try {
+    const { data, error } = await supabase
+      .from('visitor_profiles')
+      .select('*')
+      .or(`visitor_id.eq.${visitorId},id.eq.${visitorId}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    return {
+      name: data.display_name || data.name || 'Visitor',
+      roleOrCompany: data.role_subject || data.roleOrCompany || 'Visitor Direct Chat',
+      avatarUrl: data.avatar_url || data.avatarUrl || '',
+      avatarColor: data.avatar_color || data.avatarColor || 'bg-slate-700',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append message record to "messages" table and update "conversations" table (last_message, last_message_at)
+ */
+export async function saveMessageAndConversationToSupabase(params: {
+  conversationId: string;
+  visitorId?: string;
+  message: {
+    id: string;
+    sender: 'visitor' | 'festus';
+    text: string;
+    timestamp: string;
+    status: 'seen' | 'unseen';
+    attachments?: any[];
+    voiceNote?: any;
+  };
+  conversationMetadata?: {
+    defaultLabel?: string;
+    customName?: string;
+    visitorName?: string;
+    avatarUrl?: string;
+    roleOrCompany?: string;
+    avatarColor?: string;
+  };
+}): Promise<boolean> {
+  const { conversationId, visitorId, message, conversationMetadata } = params;
+  if (!conversationId || !message) return false;
+
+  const nowIso = new Date().toISOString();
+  const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
+
+  try {
+    // 1. Append message to "messages" table
+    const messagePayload = {
+      id: message.id,
+      conversation_id: conversationId,
+      sender: message.sender,
+      text: message.text || '',
+      timestamp: message.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      status: message.status || 'unseen',
+      attachments: message.attachments || null,
+      voice_note: message.voiceNote || null,
+      created_at: nowIso,
+    };
+
+    await resilientSupabaseUpsert('messages', messagePayload, 'id');
+
+    // 2. Update conversations table (last_message and last_message_at)
+    const convPayload = {
+      id: conversationId,
+      visitor_id: visitorId || conversationId,
+      default_label: conversationMetadata?.defaultLabel || 'Direct Message',
+      custom_name: conversationMetadata?.customName || '',
+      visitor_name: conversationMetadata?.visitorName || '',
+      avatar_url: conversationMetadata?.avatarUrl || '',
+      role_or_company: conversationMetadata?.roleOrCompany || 'Visitor Inquiry',
+      avatar_color: conversationMetadata?.avatarColor || 'bg-slate-700',
+      unread: message.sender === 'visitor',
+      last_message: lastSnippet,
+      last_message_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    await saveConversationToSupabaseTable(convPayload);
+    return true;
+  } catch (err) {
+    console.warn('[Supabase Message & Conversation Save Note]:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch all conversations joined with visitor_profiles so guest's display_name,
+ * role_subject, custom photo/color avatar, and live message preview display correctly
+ */
+export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
+  try {
+    const { data: convs, error: convError } = await supabase
+      .from('conversations')
+      .select('*')
+      .order('updated_at', { ascending: false });
+
+    if (convError || !convs) return [];
+
+    let profilesMap: Record<string, any> = {};
+    try {
+      const { data: profiles } = await supabase
+        .from('visitor_profiles')
+        .select('*');
+
+      if (profiles && Array.isArray(profiles)) {
+        for (const p of profiles) {
+          const key = p.visitor_id || p.id;
+          if (key) profilesMap[key] = p;
+        }
+      }
+    } catch {}
+
+    let messagesMap: Record<string, any[]> = {};
+    try {
+      const { data: msgs } = await supabase
+        .from('messages')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (msgs && Array.isArray(msgs)) {
+        for (const m of msgs) {
+          const cId = m.conversation_id;
+          if (!messagesMap[cId]) messagesMap[cId] = [];
+          messagesMap[cId].push({
+            id: m.id,
+            sender: m.sender,
+            text: m.text,
+            timestamp: m.timestamp,
+            status: m.status,
+            attachments: m.attachments,
+            voiceNote: m.voice_note || m.voiceNote,
+          });
+        }
+      }
+    } catch {}
+
+    return convs.map((c: any) => {
+      const vProfile = profilesMap[c.visitor_id || c.id] || {};
+      const convMsgs = messagesMap[c.id] || (Array.isArray(c.messages) ? c.messages : []);
+      const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
+      const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
+      const avatarUrl = vProfile.avatar_url || vProfile.avatarUrl || c.avatar_url || '';
+      const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
+
+      return {
+        id: c.id,
+        defaultLabel: displayName,
+        customName: displayName,
+        visitorName: displayName,
+        avatarUrl,
+        avatarColor,
+        roleOrCompany: roleSubject,
+        unread: Boolean(c.unread),
+        important: Boolean(c.important),
+        lastMessage: c.last_message || c.lastMessage || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].text : 'New message'),
+        lastTimestamp: c.last_message_at || c.last_timestamp || c.lastTimestamp || '',
+        messages: convMsgs,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Listen for Supabase Realtime updates on messages, conversations, and visitor_profiles
+ */
+export function subscribeToSupabaseMessagingRealtime(callback: (eventData: any) => void) {
+  try {
+    const channel = supabase
+      .channel('public:messaging_realtime_stream')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        (payload) => callback({ type: 'message', data: payload.new || payload.old })
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversations' },
+        (payload) => callback({ type: 'conversation', data: payload.new || payload.old })
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'visitor_profiles' },
+        (payload) => callback({ type: 'profile', data: payload.new || payload.old })
+      )
+      .on(
+        'broadcast',
+        { event: 'new_chat_message' },
+        (payload) => callback({ type: 'broadcast', data: payload.payload })
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
   }
 }
 

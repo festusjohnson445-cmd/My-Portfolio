@@ -1,6 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Camera, User, Trash2, CheckCircle2 } from 'lucide-react';
 import { compressAvatarToWebP } from '../utils/profileState';
+import {
+  uploadVisitorAvatarToSupabaseBucket,
+  saveVisitorProfileToSupabase,
+} from '../utils/supabase';
 
 export interface VisitorMessagingProfile {
   name: string;
@@ -14,6 +18,7 @@ interface VisitorProfileModalProps {
   onClose: () => void;
   currentProfile: VisitorMessagingProfile;
   onSave: (updated: VisitorMessagingProfile) => void;
+  visitorId?: string;
 }
 
 const PRESET_COLORS = [
@@ -31,6 +36,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   onClose,
   currentProfile,
   onSave,
+  visitorId,
 }) => {
   const [name, setName] = useState(currentProfile.name || '');
   const [role, setRole] = useState(currentProfile.roleOrCompany || '');
@@ -38,6 +44,8 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   const [avatarColor, setAvatarColor] = useState(currentProfile.avatarColor || 'bg-slate-700');
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const activeVisitorId = visitorId || localStorage.getItem('fesline_current_visitor_id') || `visitor-${Date.now()}`;
 
   useEffect(() => {
     if (isOpen) {
@@ -55,11 +63,18 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     if (!file) return;
     setIsUploading(true);
     try {
-      // Compress to 400x400 WebP format at 80% quality
+      // 1. Compress to 400x400 WebP format at 80% quality
       const compressed = await compressAvatarToWebP(file, 400, 0.80);
-      setAvatarUrl(compressed.dataUrl);
+
+      // 2. Upload custom profile photo directly to Supabase Storage avatars bucket
+      const uploadRes = await uploadVisitorAvatarToSupabaseBucket(compressed.dataUrl, activeVisitorId);
+      if (uploadRes && uploadRes.publicUrl) {
+        setAvatarUrl(uploadRes.publicUrl);
+      } else {
+        setAvatarUrl(compressed.dataUrl);
+      }
     } catch (err) {
-      console.warn('Avatar compression failed:', err);
+      console.warn('Avatar upload failed:', err);
     } finally {
       setIsUploading(false);
     }
@@ -70,14 +85,28 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({
-      name: name.trim() || 'Visitor',
-      roleOrCompany: role.trim() || 'Visitor Direct Chat',
+    const displayName = name.trim() || 'Visitor';
+    const roleSubject = role.trim() || 'Visitor Direct Chat';
+
+    const updatedProfile: VisitorMessagingProfile = {
+      name: displayName,
+      roleOrCompany: roleSubject,
       avatarUrl: avatarUrl || undefined,
       avatarColor,
+    };
+
+    // Save or update display_name, role_subject, avatar_url, and avatar_color inside visitor_profiles table
+    await saveVisitorProfileToSupabase({
+      visitor_id: activeVisitorId,
+      display_name: displayName,
+      role_subject: roleSubject,
+      avatar_url: avatarUrl || '',
+      avatar_color: avatarColor,
     });
+
+    onSave(updatedProfile);
     onClose();
   };
 

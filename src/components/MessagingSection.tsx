@@ -43,6 +43,10 @@ import {
   subscribeToSupabaseRealtimeChat,
   broadcastSupabaseChatMessage,
   saveConversationToSupabaseTable,
+  saveMessageAndConversationToSupabase,
+  fetchConversationsJoinedFromSupabase,
+  fetchVisitorProfileFromSupabase,
+  subscribeToSupabaseMessagingRealtime,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
