@@ -306,13 +306,43 @@ export const MessagingSection: React.FC = () => {
     if (fetched && Array.isArray(fetched)) {
       const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
       setConversations(prev => {
+        const mergedMap = new Map<string, Conversation>();
+
+        // 1. Add cleaned server conversations
+        for (const c of cleaned) {
+          if (c && c.id) mergedMap.set(c.id, c);
+        }
+
+        // 2. Preserve any active local conversation messages in prev that haven't synced yet
+        for (const localC of prev) {
+          if (localC && localC.id && localC.messages && localC.messages.length > 0 && !deletedConvIdsRef.current.has(localC.id)) {
+            const serverC = mergedMap.get(localC.id);
+            if (!serverC) {
+              mergedMap.set(localC.id, localC);
+            } else {
+              const msgMap = new Map<string, ChatMessage>();
+              for (const m of serverC.messages || []) if (m && m.id) msgMap.set(m.id, m);
+              for (const m of localC.messages || []) if (m && m.id) msgMap.set(m.id, m);
+              const mergedMsgs = Array.from(msgMap.values());
+
+              mergedMap.set(localC.id, {
+                ...serverC,
+                messages: mergedMsgs,
+                lastMessage: mergedMsgs[mergedMsgs.length - 1]?.text || serverC.lastMessage || localC.lastMessage || 'New message',
+                lastTimestamp: mergedMsgs[mergedMsgs.length - 1]?.timestamp || serverC.lastTimestamp || localC.lastTimestamp || '',
+              });
+            }
+          }
+        }
+
+        const finalConvs = Array.from(mergedMap.values());
         const currentStr = JSON.stringify(prev);
-        const cleanedStr = JSON.stringify(cleaned);
-        if (currentStr !== cleanedStr) {
+        const finalStr = JSON.stringify(finalConvs);
+        if (currentStr !== finalStr) {
           try {
-            localStorage.setItem(STORAGE_KEY_CHATS, cleanedStr);
+            localStorage.setItem(STORAGE_KEY_CHATS, finalStr);
           } catch {}
-          return cleaned;
+          return finalConvs;
         }
         return prev;
       });
@@ -443,9 +473,10 @@ export const MessagingSection: React.FC = () => {
       };
     }
 
-    const found = conversations.find((c) => c.id === activeOwnerConvId);
+    const validOwnerConvs = conversations.filter((c) => c && c.messages && c.messages.length > 0);
+    const found = validOwnerConvs.find((c) => c.id === activeOwnerConvId);
     if (found) return found;
-    return conversations[0] || {
+    return validOwnerConvs[0] || {
       id: 'inbox-empty',
       defaultLabel: 'Inbox',
       roleOrCompany: 'Visitor Inquiries',
@@ -1316,9 +1347,10 @@ export const MessagingSection: React.FC = () => {
     setInputMessage(chip);
   };
 
-  // Filtered Conversations for Owner
+  // Filtered Conversations for Owner (only conversations with at least 1 message)
   const filteredConversations = useMemo(() => {
     return conversations.filter((c) => {
+      if (!c || !c.messages || c.messages.length === 0) return false;
       if (sidebarFilter === 'important') return c.important;
       if (sidebarFilter === 'unread') return c.unread;
       return true;
@@ -1463,7 +1495,7 @@ export const MessagingSection: React.FC = () => {
                         : 'hover:bg-slate-200 text-slate-600'
                     }`}
                   >
-                    Unread ({conversations.filter((c) => c.unread).length})
+                    Unread ({conversations.filter((c) => c.unread && c.messages && c.messages.length > 0).length})
                   </button>
                 </div>
 
