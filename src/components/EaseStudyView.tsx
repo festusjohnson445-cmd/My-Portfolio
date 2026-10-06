@@ -26,6 +26,12 @@ import {
 import { jsPDF } from 'jspdf';
 import { PortfolioPart } from './Navbar';
 import { saveLearningSessionToFirestore } from '../utils/firebase';
+import {
+  supabase,
+  uploadMaterialToSupabaseBucket,
+  saveMaterialToSupabaseTable,
+  fetchMaterialsFromSupabaseTable,
+} from '../utils/supabase';
 
 export interface EaseStudyResponse {
   topic: string;
@@ -78,6 +84,10 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const [activeInputTab, setActiveInputTab] = useState<'upload' | 'text'>('upload');
   const [inputText, setInputText] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedPublicUrl, setUploadedPublicUrl] = useState<string | null>(null);
+  const [isUploadingToSupabase, setIsUploadingToSupabase] = useState(false);
+  const [supabaseUploadError, setSupabaseUploadError] = useState<string | null>(null);
+  const [cloudMaterials, setCloudMaterials] = useState<any[]>([]);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [fileBase64, setFileBase64] = useState<string | null>(null);
   const [fileMimeType, setFileMimeType] = useState<string | null>(null);
@@ -101,7 +111,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const [isFlashcardFlipped, setIsFlashcardFlipped] = useState(false);
   const [copiedNotification, setCopiedNotification] = useState(false);
 
-  // Restore previous study session from local cache on mount
+  // Restore previous study session from local cache and fetch public materials from Supabase on mount
   useEffect(() => {
     try {
       const cached = localStorage.getItem('fesline_easestudy_last_result');
@@ -112,14 +122,28 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
         }
       }
     } catch {}
+
+    // Public read-only access for all visitors: load materials from Supabase
+    fetchMaterialsFromSupabaseTable()
+      .then((mats) => {
+        if (Array.isArray(mats)) {
+          setCloudMaterials(mats);
+        }
+      })
+      .catch((err) => console.warn('[Supabase Public Read Materials]:', err));
   }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (file: File) => {
-    setUploadedFile(file);
+  /**
+   * Handle file upload: strictly interfaces with Supabase Storage bucket 'materials'
+   * Ensures write operations execute only with active session from supabase.auth.getSession()
+   */
+  const handleFileChange = async (file: File) => {
     setAnalysisError(null);
+    setSupabaseUploadError(null);
 
+    setUploadedFile(file);
     const mime = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     setFileMimeType(mime);
 
@@ -131,11 +155,47 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
       } else {
         setFilePreviewUrl(null);
       }
-      // Extract base64 without data URI prefix
       const base64Clean = dataUrl.split(',')[1] || dataUrl;
       setFileBase64(base64Clean);
     };
     reader.readAsDataURL(file);
+
+    // If active owner session is present, persist to Supabase Storage bucket 'materials'
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const activeSession = sessionData?.session;
+
+      if (activeSession?.user) {
+        setIsUploadingToSupabase(true);
+        const ownerUid = activeSession.user.id;
+        const uploadRes = await uploadMaterialToSupabaseBucket(file, file.name, ownerUid);
+        if (uploadRes?.publicUrl) {
+          setUploadedPublicUrl(uploadRes.publicUrl);
+          await saveMaterialToSupabaseTable(
+            {
+              id: `easestudy-${Date.now()}`,
+              title: file.name.replace(/\.[^/.]+$/, ''),
+              fileName: file.name,
+              fileSize: `${(file.size / 1024).toFixed(0)} KB`,
+              fileType: file.type || 'document',
+              category: 'Whitepaper & Report',
+              description: `Technical study material uploaded for EaseStudy analysis: ${file.name}`,
+              downloadUrl: uploadRes.publicUrl,
+              fileUrl: uploadRes.publicUrl,
+              previewUrl: file.type.startsWith('image/') ? uploadRes.publicUrl : undefined,
+              storagePath: uploadRes.storagePath,
+              tags: ['EaseStudy', 'Technical Study'],
+            },
+            ownerUid
+          );
+          fetchMaterialsFromSupabaseTable().then(setCloudMaterials).catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      console.warn('[EaseStudy Cloud Sync Note]:', err?.message || err);
+    } finally {
+      setIsUploadingToSupabase(false);
+    }
   };
 
   const handleRunAnalysis = async () => {
@@ -534,12 +594,32 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
               className="hidden"
             />
 
+            {/* Explicit UI Error Logging for Supabase Upload or DB Operation */}
+            {supabaseUploadError && (
+              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-800 text-xs sm:text-sm flex items-start gap-2.5 animate-fadeIn">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <strong className="block font-bold">Storage / Database Operation Failed:</strong>
+                  <span>{supabaseUploadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSupabaseUploadError(null)}
+                  className="text-rose-600 hover:text-rose-900 font-bold text-xs"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
             <div
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (!isUploadingToSupabase) fileInputRef.current?.click();
+              }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                if (!isUploadingToSupabase && e.dataTransfer.files && e.dataTransfer.files[0]) {
                   handleFileChange(e.dataTransfer.files[0]);
                 }
               }}
@@ -547,17 +627,44 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                 uploadedFile ? 'border-cyan-600 bg-cyan-50/40' : 'border-slate-300 hover:border-cyan-600 bg-slate-50'
               } rounded-2xl p-5 sm:p-7 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2.5 group`}
             >
-              {filePreviewUrl ? (
+              {isUploadingToSupabase ? (
+                <div className="flex flex-col items-center space-y-2 py-4">
+                  <div className="animate-spin rounded-full h-8 w-8 border-3 border-cyan-700 border-t-transparent" />
+                  <span className="text-xs sm:text-sm font-bold text-slate-800">
+                    Uploading to Supabase "materials" bucket &amp; syncing table...
+                  </span>
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-mono">
+                    Enforcing session authentication and public URL resolution
+                  </span>
+                </div>
+              ) : filePreviewUrl ? (
                 <div className="flex flex-col items-center space-y-1.5">
                   <img
                     src={filePreviewUrl}
                     alt="Uploaded Preview"
+                    loading="lazy"
+                    decoding="async"
                     className="max-h-36 rounded-xl border border-slate-300 object-contain shadow-sm bg-white"
                   />
                   <span className="text-[12.5px] sm:text-[13.5px] font-bold text-slate-900">{uploadedFile?.name}</span>
                   <span className="text-[10.5px] sm:text-[11px] text-slate-500">
                     {((uploadedFile?.size || 0) / 1024).toFixed(0)} KB · Click to change file
                   </span>
+                  {uploadedPublicUrl && (
+                    <div className="pt-1.5">
+                      <a
+                        href={uploadedPublicUrl}
+                        download={uploadedFile?.name || 'material.png'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs shadow-xs transition-all cursor-pointer no-underline"
+                      >
+                        <Download className="w-3.5 h-3.5 text-white" />
+                        <span>Download from Supabase Storage</span>
+                      </a>
+                    </div>
+                  )}
                 </div>
               ) : uploadedFile ? (
                 <div className="flex flex-col items-center space-y-1.5">
@@ -568,6 +675,21 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                   <span className="text-[10.5px] sm:text-[11px] text-emerald-700 font-mono font-semibold">
                     {((uploadedFile.size || 0) / 1024).toFixed(0)} KB · Ready to generate study summary &amp; exam
                   </span>
+                  {uploadedPublicUrl && (
+                    <div className="pt-1.5">
+                      <a
+                        href={uploadedPublicUrl}
+                        download={uploadedFile.name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs shadow-xs transition-all cursor-pointer no-underline"
+                      >
+                        <Download className="w-3.5 h-3.5 text-white" />
+                        <span>Download from Supabase Storage</span>
+                      </a>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col items-center space-y-2">
@@ -585,6 +707,44 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                 </div>
               )}
             </div>
+
+            {/* Public Read-Only Vault: Available Materials from Supabase */}
+            {cloudMaterials.length > 0 && (
+              <div className="pt-2">
+                <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block mb-2 font-mono">
+                  Public Supabase Materials Vault ({cloudMaterials.length} available):
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {cloudMaterials.slice(0, 4).map((mat) => {
+                    const downloadHref = mat.file_url || mat.download_url || mat.preview_url;
+                    return (
+                      <div
+                        key={mat.id}
+                        className="p-2.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-cyan-50/40 transition-colors flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-slate-800 truncate">{mat.title || mat.file_name}</p>
+                          <p className="text-[10px] font-mono text-slate-500 truncate">{mat.file_name} · {mat.file_size || 'Document'}</p>
+                        </div>
+                        {downloadHref && (
+                          <a
+                            href={downloadHref}
+                            download={mat.file_name || 'document'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] font-semibold shrink-0 cursor-pointer no-underline shadow-2xs"
+                            title="Direct download from Supabase Storage"
+                          >
+                            <Download className="w-3 h-3 text-white" />
+                            <span>Download</span>
+                          </a>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

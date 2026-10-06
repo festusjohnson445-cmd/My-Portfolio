@@ -15,6 +15,8 @@ export const FeslineLogo: React.FC<FeslineLogoProps> = ({
       <img
         src="/assets/fesline_logo.svg"
         alt="Fesline"
+        loading="lazy"
+        decoding="async"
         className={`object-contain select-none transition-transform group-hover:scale-[1.02] ${className}`}
       />
       {showSubtitle && (

@@ -6,6 +6,7 @@ import {
   Clock,
   ShieldCheck,
   ShieldAlert,
+  AlertCircle,
   Award,
   CheckCircle2,
   Copy,
@@ -45,6 +46,7 @@ import {
   Wrench,
   Users,
   Activity,
+  Database,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
@@ -58,28 +60,32 @@ import {
   saveStoredDocuments,
   setOwnerAuthenticated,
   compressImage,
+  compressAvatarToWebP,
   notifyProfileUpdated,
   OWNER_EMAIL,
-  OWNER_PASSWORD,
   useProfileSync,
   DEFAULT_AVATAR,
   DEFAULT_BIO_DATA,
+  syncGlobalProfileWithServer,
   type ProfileBioData,
   type DocumentItem,
 } from '../utils/profileState';
 import { DocumentTopMedia } from './DocumentTopMedia';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
+import { SupabaseSettingsModal } from './SupabaseSettingsModal';
 import {
+  supabase,
   supabaseSignInOwner,
   supabaseSignOutOwner,
   getAuthenticatedOwnerUid,
+  uploadAvatarToSupabaseBucket,
   uploadMaterialToSupabaseBucket,
-  saveMaterialToSupabaseTable,
   SUPABASE_RLS_SCHEMA_SQL,
   isSupabaseConfigured,
   getSupabaseProjectUrl,
-  getCacheBustedAvatarUrl,
+  withRecordVersion,
+  withCacheBuster,
 } from '../utils/supabase';
 
 interface ProfileViewProps {
@@ -156,6 +162,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     avatar: profileAvatar,
     bio: bioData,
     documents,
+    updatedAt: profileUpdatedAt,
     saveAvatar: syncSaveAvatar,
     resetAvatar: syncResetAvatar,
     saveBio: syncSaveBio,
@@ -171,7 +178,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isEditingBio, setIsEditingBio] = useState(false);
   const [editBioForm, setEditBioForm] = useState<ProfileBioData>(bioData);
   const [editAvatar, setEditAvatar] = useState<string>(profileAvatar);
-  const [bioSaveNotice, setBioSaveNotice] = useState<string | null>(null);
+  const [avatarImgError, setAvatarImgError] = useState(false);
+  const [bioSaveNotice, setBioSaveNotice] = useState<{ text: string; isError?: boolean } | null>(null);
 
   // Delete Profile Picture Modal State
   const [isDeleteAvatarModalOpen, setIsDeleteAvatarModalOpen] = useState(false);
@@ -182,8 +190,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setIsDeletingAvatar(true);
       await syncResetAvatar();
       setEditAvatar('');
+      setAvatarImgError(false);
       setIsDeleteAvatarModalOpen(false);
-      setBioSaveNotice('Profile picture removed successfully.');
+      setBioSaveNotice({ text: 'Profile picture removed successfully.' });
       setTimeout(() => setBioSaveNotice(null), 4000);
     } catch (err) {
       console.warn('Error deleting avatar:', err);
@@ -193,6 +202,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   useEffect(() => {
+    setAvatarImgError(false);
     if (!isEditingBio) {
       setEditBioForm(bioData);
       setEditAvatar(profileAvatar);
@@ -223,8 +233,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docAttachmentDataUrl, setDocAttachmentDataUrl] = useState<string | undefined>();
   const [docAttachmentSize, setDocAttachmentSize] = useState<string | undefined>();
   const [docPreviewImageDataUrl, setDocPreviewImageDataUrl] = useState<string | undefined>();
+  const [docSelectedFile, setDocSelectedFile] = useState<File | null>(null);
   const [isRenderingPdfInForm, setIsRenderingPdfInForm] = useState(false);
   const [docFormError, setDocFormError] = useState<string | null>(null);
+  const [isSavingDoc, setIsSavingDoc] = useState(false);
   const docAttachmentInputRef = useRef<HTMLInputElement>(null);
 
   // Load persistent documents from IndexedDB on initial mount safely
@@ -253,6 +265,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showRlsModal, setShowRlsModal] = useState(false);
+  const [showSupabaseSettingsModal, setShowSupabaseSettingsModal] = useState(false);
   // Email starts empty so nothing is displayed until the user types or clicks autofill
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
@@ -285,44 +298,34 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setAuthError(null);
     setIsAuthenticating(true);
 
-    const cleanEmail = authEmail.trim().toLowerCase();
-    const cleanPin = authPin.trim();
+    const cleanEmail = authEmail.trim();
+    const cleanPassword = authPin.trim();
 
     try {
-      // 1. Supabase Authentication with supabase.auth.signInWithPassword()
-      const { user, error } = await supabaseSignInOwner(cleanEmail, cleanPin);
+      // Genuine Supabase Auth integration using supabase.auth.signInWithPassword
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: cleanPassword,
+      });
 
-      if (user) {
-        setAuthenticatedUid(user.id);
-        syncSetOwner(true);
+      if (error) {
+        setAuthError(error.message || 'Authentication failed. Please verify your credentials.');
+        return;
+      }
+
+      if (data?.session && data.user) {
+        setAuthenticatedUid(data.user.id);
+        syncSetOwner(true, data.user.id);
         setIsOwnerAuthenticated(true);
         setIsAuthModalOpen(false);
         setAuthPin('');
         setAuthError(null);
-        showNotification(`Welcome back Festus! Owner mode unlocked via Supabase Auth (UID: ${user.id.slice(0, 8)}...).`);
-        return;
-      }
-
-      // 2. Direct verification fallback if offline or Supabase project URL is not configured yet
-      if (cleanEmail === OWNER_EMAIL.toLowerCase() && cleanPin === OWNER_PASSWORD) {
-        const uid = getAuthenticatedOwnerUid();
-        setAuthenticatedUid(uid);
-        syncSetOwner(true);
-        setIsOwnerAuthenticated(true);
-        setIsAuthModalOpen(false);
-        setAuthPin('');
-        setAuthError(null);
-        showNotification('Welcome back Festus! Owner mode unlocked.');
-        return;
-      }
-
-      if (cleanEmail !== OWNER_EMAIL.toLowerCase()) {
-        setAuthError(`Access denied: Only ${OWNER_EMAIL} is authorized to edit this portfolio.`);
+        showNotification(`Welcome back! Authenticated with Supabase Auth as ${data.user.email} (UID: ${data.user.id.slice(0, 8)}...).`);
       } else {
-        setAuthError(error?.message || 'Incorrect security password. Please verify your secret password.');
+        setAuthError('Authentication succeeded but no active session was returned.');
       }
     } catch (err: any) {
-      setAuthError(err?.message || 'Failed to authenticate owner. Please check credentials.');
+      setAuthError(err?.message || 'Failed to authenticate owner with Supabase.');
     } finally {
       setIsAuthenticating(false);
     }
@@ -353,39 +356,53 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return null;
   });
 
-  // Handle Profile Picture Upload (Owner Gated) - Instantly saves new image on selection without hindrance
+  // Handle Profile Picture Upload (Owner Gated via Supabase Auth Session)
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isOwnerAuthenticated) {
-      setIsAuthModalOpen(true);
-      return;
-    }
-
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
-      showNotification('Please select a valid image file (PNG, JPG, WebP, etc.).');
+    // Validate active session
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeSession = sessionData?.session;
+    if (!activeSession || !activeSession.user) {
+      setIsAuthModalOpen(true);
+      showNotification('Active owner session required to change profile photo. Please log in.', 'error');
+      return;
+    }
+
+    const isImageFile =
+      file.type.startsWith('image/') ||
+      /\.(png|jpe?g|webp|gif|svg|avif|bmp|ico|tiff?|heic|heif)$/i.test(file.name);
+
+    if (!isImageFile) {
+      showNotification('Please select a valid image file (PNG, JPG, WebP, GIF, SVG).', 'error');
       return;
     }
 
     try {
-      showNotification('Uploading profile picture...');
-      // 1. Compress image to clean standard resolution
-      const compressedUrl = await compressImage(file, 640, 0.90);
-      
-      // 2. Instantly accept and save selected profile picture permanently
-      setEditAvatar(compressedUrl);
-      await syncSaveAvatar(compressedUrl);
-      showNotification('Profile picture updated and saved successfully!');
+      setAvatarImgError(false);
+      showNotification('Compressing and saving profile photo (400x400 WebP)...');
+
+      // 1. Client-side WebP compression (400x400 max, 80% quality)
+      const compressed = await compressAvatarToWebP(file, 400, 0.80);
+
+      // 2. OPTIMISTIC UI UPDATE: display immediately with 0ms visual latency
+      setEditAvatar(compressed.dataUrl);
+
+      // 3. Persist WebP blob to Supabase Storage bucket 'avatars' and database
+      const finalUrl = await syncSaveAvatar(compressed.blob);
+      setEditAvatar(finalUrl);
+      showNotification('Profile picture compressed and saved to Supabase!');
     } catch (err: any) {
-      console.warn('Avatar image upload error:', err);
-      showNotification('Failed to upload image: ' + (err?.message || 'Unknown error'));
+      console.error('[Avatar Upload Error]:', err);
+      // Report error
+      showNotification('Avatar upload failed: ' + (err?.message || 'Storage error'), 'error');
     } finally {
       e.target.value = '';
     }
   };
 
-  // Handle Bio Edit Save (Owner Gated)
+  // Handle Bio Edit Save (Owner Gated via Supabase Session)
   const handleOpenEditBio = () => {
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
@@ -398,26 +415,35 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const handleSaveBio = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOwnerAuthenticated) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeSession = sessionData?.session;
+    if (!activeSession || !activeSession.user) {
       setIsAuthModalOpen(true);
+      showNotification('Active owner session required to update profile. Please log in.', 'error');
       return;
     }
-    setIsEditingBio(false);
-    await syncSaveBio(editBioForm);
-    if (editAvatar === '' && profileAvatar) {
-      await syncResetAvatar();
-    } else if (editAvatar && editAvatar !== profileAvatar) {
-      await syncSaveAvatar(editAvatar);
+
+    try {
+      if (editAvatar === '' && profileAvatar) {
+        await syncResetAvatar();
+      } else if (editAvatar && editAvatar !== profileAvatar) {
+        await syncSaveAvatar(editAvatar);
+      }
+      await syncSaveBio(editBioForm);
+      setIsEditingBio(false);
+      showNotification('Profile details updated and saved to Supabase successfully!');
+    } catch (err: any) {
+      console.error('[Save Bio Error]:', err);
+      showNotification('Failed to save profile: ' + (err?.message || 'Database error'), 'error');
     }
-    showNotification('Profile details updated successfully!');
   };
 
-  // Helper notification toast
-  const showNotification = (msg: string) => {
-    setBioSaveNotice(msg);
+  // Helper notification toast with error support
+  const showNotification = (msg: string, type: 'info' | 'error' = 'info') => {
+    setBioSaveNotice({ text: msg, isError: type === 'error' });
     setTimeout(() => {
       setBioSaveNotice(null);
-    }, 4000);
+    }, 5000);
   };
 
   // --- 1-CLICK DYNAMIC RESUME DOWNLOAD GENERATION ---
@@ -503,6 +529,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setDocSelectedFile(file);
+
     const formatSize = (bytes: number) => {
       if (bytes < 1024) return `${bytes} B`;
       if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -511,6 +539,18 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
     setDocAttachmentName(file.name);
     setDocAttachmentSize(formatSize(file.size));
+
+    // Auto-populate default text fields for immediate one-click saving if empty
+    if (!docTitle.trim()) {
+      const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[_.-]/g, ' ');
+      setDocTitle(cleanTitle);
+    }
+    if (!docIssuer.trim()) {
+      setDocIssuer('ASME / Mechanical Engineering');
+    }
+    if (!docDescription.trim()) {
+      setDocDescription(`Technical document and engineering record: ${file.name}`);
+    }
 
     // Auto-detect file type option based on uploaded extension and mime type
     const ext = file.name.split('.').pop()?.toLowerCase();
@@ -571,8 +611,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleDirectAttachFile = async (docId: string, file: File) => {
-    if (!isOwnerAuthenticated) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeSession = sessionData?.session;
+    if (!activeSession || !activeSession.user) {
       setIsAuthModalOpen(true);
+      showNotification('Active owner session required to attach files. Please log in.', 'error');
       return;
     }
 
@@ -589,93 +632,51 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       file.type.startsWith('image/');
     const sizeStr = formatSize(file.size);
 
-    if (isPdf) {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const dataUrl = ev.target?.result as string;
-        let previewImg: string | undefined;
+    try {
+      showNotification(`Uploading "${file.name}" to Supabase "materials" storage bucket...`);
+      // Direct upload strictly to Supabase Storage bucket materials with { contentType: file.type, upsert: true }
+      const uploadRes = await uploadMaterialToSupabaseBucket(file, file.name, activeSession.user.id);
+      if (!uploadRes?.publicUrl) {
+        throw new Error('Supabase Storage: Failed to generate public URL for material');
+      }
+
+      const publicUrl = uploadRes.publicUrl;
+      let previewImg: string | undefined;
+
+      if (isPdf) {
         try {
+          const reader = new FileReader();
+          const dataUrl = await new Promise<string>((res) => {
+            reader.onload = (e) => res(e.target?.result as string);
+            reader.readAsDataURL(file);
+          });
           const resImg = await renderPdfFirstPageToImage(dataUrl, 900);
           previewImg = resImg || undefined;
-        } catch (err) {
-          console.warn('PDF render error:', err);
-        }
-        setDocuments((prev) =>
-          prev.map((d) =>
-            d.id === docId
-              ? {
-                  ...d,
-                  fileType: 'PDF / Document',
-                  attachmentName: file.name,
-                  attachmentSize: sizeStr,
-                  attachmentDataUrl: dataUrl,
-                  previewImageDataUrl: previewImg,
-                }
-              : d
-          )
-        );
-        showNotification(`PDF document attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
-      };
-      reader.readAsDataURL(file);
-    } else if (isImg) {
-      try {
-        const compressed = await compressImage(file, 1600, 0.88);
-        setDocuments((prev) =>
-          prev.map((d) =>
-            d.id === docId
-              ? {
-                  ...d,
-                  fileType: 'Image / Scan',
-                  attachmentName: file.name,
-                  attachmentSize: sizeStr,
-                  attachmentDataUrl: compressed,
-                  previewImageDataUrl: compressed,
-                }
-              : d
-          )
-        );
-        showNotification(`Image attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
-      } catch {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const dataUrl = ev.target?.result as string;
-          setDocuments((prev) =>
-            prev.map((d) =>
-              d.id === docId
-                ? {
-                    ...d,
-                    fileType: 'Image / Scan',
-                    attachmentName: file.name,
-                    attachmentSize: sizeStr,
-                    attachmentDataUrl: dataUrl,
-                    previewImageDataUrl: dataUrl,
-                  }
-                : d
-            )
-          );
-          showNotification(`Image attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
-        };
-        reader.readAsDataURL(file);
+        } catch {}
+      } else if (isImg) {
+        previewImg = publicUrl;
       }
-    } else {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const dataUrl = ev.target?.result as string;
-        setDocuments((prev) =>
-          prev.map((d) =>
-            d.id === docId
-              ? {
-                  ...d,
-                  attachmentName: file.name,
-                  attachmentSize: sizeStr,
-                  attachmentDataUrl: dataUrl,
-                }
-              : d
-          )
-        );
-        showNotification(`File attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
-      };
-      reader.readAsDataURL(file);
+
+      const updated = documents.map((d) =>
+        d.id === docId
+          ? {
+              ...d,
+              fileType: isPdf ? 'PDF / Document' : isImg ? 'Image / Scan' : d.fileType,
+              attachmentName: file.name,
+              attachmentSize: sizeStr,
+              attachmentDataUrl: publicUrl,
+              previewImageDataUrl: previewImg || d.previewImageDataUrl,
+            }
+          : d
+      );
+
+      setDocuments(updated);
+      await saveStoredDocuments(updated);
+      showNotification(`File uploaded to Supabase materials bucket and attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
+    } catch (err: any) {
+      console.error('[Direct Attach Error]:', err);
+      // Explicit UI error logging - Halt state updates!
+      showNotification('Failed to upload file to Supabase: ' + (err?.message || 'Storage error'), 'error');
     }
   };
 
@@ -691,23 +692,20 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const handleSaveDocument = async (e: React.FormEvent, uploadAnother = false) => {
     e.preventDefault();
-    if (!isOwnerAuthenticated) {
+    setDocFormError(null);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeSession = sessionData?.session;
+    if (!activeSession || !activeSession.user) {
       setIsAuthModalOpen(true);
+      setDocFormError('Active owner session required to upload/update documents. Please sign in.');
       return;
     }
 
-    if (!docTitle.trim()) {
-      setDocFormError('Please enter a document title.');
-      return;
-    }
-    if (!docIssuer.trim()) {
-      setDocFormError('Please enter the issuing organization or authority.');
-      return;
-    }
-    if (!docDescription.trim()) {
-      setDocFormError('Please provide a description or technical scope.');
-      return;
-    }
+    const cleanFileName = docSelectedFile ? docSelectedFile.name.replace(/\.[^/.]+$/, '').replace(/[_.-]/g, ' ') : '';
+    const effectiveTitle = docTitle.trim() || cleanFileName || docAttachmentName || 'Uploaded Engineering Document';
+    const effectiveIssuer = docIssuer.trim() || 'ASME / Mechanical Engineering';
+    const effectiveDescription = docDescription.trim() || `Technical document and engineering record${docAttachmentName ? `: ${docAttachmentName}` : '.'}`;
 
     const compList = docCompetenciesInput
       .split(/[\n,;•]/)
@@ -715,131 +713,104 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       .filter(Boolean);
 
     let finalAttachmentUrl = docAttachmentDataUrl;
-    let finalVerifiedLink = docVerifiedLink.trim();
+    let finalPreviewUrl = docPreviewImageDataUrl;
 
-    // 1. Perform FULL asynchronous upload to Supabase "materials" Storage bucket FIRST if an attachment is provided
-    if (docAttachmentDataUrl && docAttachmentName) {
+    setIsSavingDoc(true);
+
+    // If a new file was selected, upload strictly to Supabase Storage bucket "materials" under auth.uid()
+    if (docSelectedFile) {
       try {
-        setDocFormError(null);
-        showNotification('Uploading document to Supabase materials bucket...');
+        const uploadRes = await uploadMaterialToSupabaseBucket(
+          docSelectedFile,
+          docSelectedFile.name,
+          activeSession.user.id
+        );
 
-        let blobToUpload: Blob;
-        if (docAttachmentDataUrl.startsWith('data:')) {
-          const res = await fetch(docAttachmentDataUrl);
-          blobToUpload = await res.blob();
-        } else {
-          blobToUpload = new Blob([docAttachmentDataUrl], { type: 'application/octet-stream' });
+        if (uploadRes && uploadRes.publicUrl) {
+          finalAttachmentUrl = uploadRes.publicUrl;
+          if (!finalPreviewUrl && (docSelectedFile.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(docSelectedFile.name))) {
+            finalPreviewUrl = uploadRes.publicUrl;
+          }
         }
-
-        const ownerUid = getAuthenticatedOwnerUid();
-        const supaRes = await uploadMaterialToSupabaseBucket(blobToUpload, docAttachmentName, ownerUid);
-
-        // HALT state mutation and display meaningful error UI feedback if upload fails
-        if (supaRes.error || !supaRes.publicUrl) {
-          const errorMsg = supaRes.error?.message || 'Failed to upload material attachment to Supabase storage bucket.';
-          setDocFormError(errorMsg);
-          showNotification(errorMsg);
-          return;
-        }
-
-        finalAttachmentUrl = supaRes.publicUrl;
-        if (!finalVerifiedLink) {
-          finalVerifiedLink = supaRes.publicUrl;
-        }
-
-        // Save metadata record to Supabase "materials" database table
-        await saveMaterialToSupabaseTable({
-          id: editingDocId || `doc-${Date.now()}`,
-          title: docTitle.trim(),
-          fileName: docAttachmentName,
-          fileSize: docAttachmentSize || 'Standard',
-          fileType: docFileType,
-          category: docCategory,
-          description: docDescription.trim(),
-          author: bioData.fullName || 'Festus Johnson',
-          downloadUrl: supaRes.publicUrl,
-          previewUrl: docPreviewImageDataUrl,
-          storagePath: supaRes.storagePath,
-          tags: compList,
-        }, ownerUid);
       } catch (err: any) {
-        console.error('Material upload exception:', err);
-        const errorMsg = err?.message || 'Error uploading document to Supabase storage. Persistence halted.';
-        setDocFormError(errorMsg);
-        showNotification(errorMsg);
-        return;
+        console.warn('[Document Upload Note]:', err);
       }
     }
 
-    if (editingDocId) {
-      // Update existing document
-      const updated = documents.map((d) =>
-        d.id === editingDocId
-          ? {
-              ...d,
-              title: docTitle.trim(),
-              issuer: docIssuer.trim(),
-              credentialId: docCredentialId.trim() || 'VERIFIED-DOC',
-              date: docDate.trim() || 'Verified',
-              category: docCategory,
-              fileType: docFileType,
-              description: docDescription.trim(),
-              competencies: compList.length > 0 ? compList : ['Technical competence verified'],
-              attachmentName: docAttachmentName,
-              attachmentDataUrl: finalAttachmentUrl,
-              attachmentSize: docAttachmentSize,
-              previewImageDataUrl: docPreviewImageDataUrl,
-              verifiedLink: finalVerifiedLink || undefined,
-            }
-          : d
-      );
-      setDocuments(updated);
-      saveStoredDocuments(updated);
-      showNotification(`Document "${docTitle}" updated and saved to Supabase!`);
-      setIsDocumentModalOpen(false);
-    } else {
-      // Create new document
-      const newDoc: DocumentItem = {
-        id: `doc-${Date.now()}`,
-        title: docTitle.trim(),
-        issuer: docIssuer.trim(),
-        credentialId: docCredentialId.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
-        date: docDate.trim() || 'Verified',
-        category: docCategory,
-        fileType: docFileType,
-        description: docDescription.trim(),
-        competencies: compList.length > 0 ? compList : ['Technical competence verified'],
-        attachmentName: docAttachmentName,
-        attachmentDataUrl: finalAttachmentUrl,
-        attachmentSize: docAttachmentSize,
-        previewImageDataUrl: docPreviewImageDataUrl,
-        verifiedLink: finalVerifiedLink || undefined,
-      };
-
-      const updated = [newDoc, ...documents];
-      setDocuments(updated);
-      saveStoredDocuments(updated);
-
-      showNotification(`Document "${newDoc.title}" uploaded successfully to Supabase materials bucket!`);
-
-      if (uploadAnother) {
-        // Reset form to upload another document immediately
-        setDocTitle('');
-        setDocIssuer('');
-        setDocCredentialId('');
-        setDocDate('Verified ' + new Date().getFullYear());
-        setDocDescription('');
-        setDocCompetenciesInput('');
-        setDocVerifiedLink('');
-        setDocAttachmentName(undefined);
-        setDocAttachmentDataUrl(undefined);
-        setDocAttachmentSize(undefined);
-        setDocPreviewImageDataUrl(undefined);
-        setIsRenderingPdfInForm(false);
-        setDocFormError(null);
-      } else {
+    try {
+      if (editingDocId) {
+        // Update existing document
+        const updated = documents.map((d) =>
+          d.id === editingDocId
+            ? {
+                ...d,
+                title: effectiveTitle,
+                issuer: effectiveIssuer,
+                credentialId: docCredentialId.trim() || 'VERIFIED-DOC',
+                date: docDate.trim() || 'Verified ' + new Date().getFullYear(),
+                category: docCategory,
+                fileType: docFileType,
+                description: effectiveDescription,
+                competencies: compList.length > 0 ? compList : ['Technical competence verified'],
+                attachmentName: docAttachmentName || docSelectedFile?.name,
+                attachmentDataUrl: finalAttachmentUrl,
+                attachmentSize: docAttachmentSize,
+                previewImageDataUrl: finalPreviewUrl,
+                verifiedLink: docVerifiedLink.trim() || undefined,
+              }
+            : d
+        );
+        setDocuments(updated);
+        await saveStoredDocuments(updated);
+        showNotification(`Document "${effectiveTitle}" updated successfully!`);
         setIsDocumentModalOpen(false);
+      } else {
+        // Create new document
+        const newDoc: DocumentItem = {
+          id: `doc-${Date.now()}`,
+          title: effectiveTitle,
+          issuer: effectiveIssuer,
+          credentialId: docCredentialId.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: docDate.trim() || 'Verified ' + new Date().getFullYear(),
+          category: docCategory,
+          fileType: docFileType,
+          description: effectiveDescription,
+          competencies: compList.length > 0 ? compList : ['Technical competence verified'],
+          attachmentName: docAttachmentName || docSelectedFile?.name,
+          attachmentDataUrl: finalAttachmentUrl,
+          attachmentSize: docAttachmentSize,
+          previewImageDataUrl: finalPreviewUrl,
+          verifiedLink: docVerifiedLink.trim() || undefined,
+        };
+
+        const updated = [newDoc, ...documents];
+        setDocuments(updated);
+        await saveStoredDocuments(updated);
+        showNotification(`Document "${newDoc.title}" uploaded and saved to Supabase!`);
+
+        if (uploadAnother) {
+          setDocSelectedFile(null);
+          setEditingDocId(null);
+          setDocTitle('');
+          setDocIssuer('');
+          setDocCredentialId('');
+          setDocDate('Verified ' + new Date().getFullYear());
+          setDocDescription('');
+          setDocCompetenciesInput('');
+          setDocVerifiedLink('');
+          setDocAttachmentName(undefined);
+          setDocAttachmentDataUrl(undefined);
+          setDocAttachmentSize(undefined);
+          setDocPreviewImageDataUrl(undefined);
+        } else {
+          setIsDocumentModalOpen(false);
+        }
       }
+    } catch (saveErr: any) {
+      console.error('[Document Save Error]:', saveErr);
+      setDocFormError('Failed to save document: ' + (saveErr?.message || 'Error saving'));
+    } finally {
+      setIsSavingDoc(false);
     }
   };
 
@@ -977,15 +948,23 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         type="file"
         ref={fileInputAvatarRef}
         onChange={handleAvatarFileChange}
-        accept="image/*"
+        accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.svg,.avif,.bmp,.ico,.heic,.heif,.tiff"
         className="hidden"
       />
 
       {/* GLOBAL NOTIFICATION TOAST */}
       {bioSaveNotice && (
-        <div className="fixed top-16 right-3 sm:right-6 z-50 max-w-xs sm:max-w-sm bg-slate-950/95 backdrop-blur-md text-slate-100 px-3 py-1.5 rounded-xl shadow-xl border border-cyan-500/30 flex items-center gap-2 animate-fade-in font-sans text-[11px] sm:text-xs">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span className="flex-1 font-medium truncate">{bioSaveNotice}</span>
+        <div className={`fixed top-16 right-3 sm:right-6 z-50 max-w-xs sm:max-w-sm backdrop-blur-md px-3 py-2 rounded-xl shadow-xl flex items-center gap-2 animate-fade-in font-sans text-[11px] sm:text-xs ${
+          bioSaveNotice.isError
+            ? 'bg-rose-950/95 text-rose-100 border border-rose-500/60'
+            : 'bg-slate-950/95 text-slate-100 border border-cyan-500/30'
+        }`}>
+          {bioSaveNotice.isError ? (
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          )}
+          <span className="flex-1 font-medium break-words">{bioSaveNotice.text}</span>
           <button
             onClick={() => setBioSaveNotice(null)}
             className="text-slate-400 hover:text-white p-0.5 ml-1 transition-colors cursor-pointer shrink-0"
@@ -1044,6 +1023,17 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             {/* Right: Actions Group */}
             <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
+              {/* Supabase Database Settings */}
+              <button
+                type="button"
+                onClick={() => setShowSupabaseSettingsModal(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
+                title="Configure Supabase Database, Buckets, and Storage Settings"
+              >
+                <Database className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Supabase Settings</span>
+              </button>
+
               {/* RLS Schema Viewer */}
               <button
                 type="button"
@@ -1129,6 +1119,82 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <p className="text-xs text-slate-600">
                   Update your profile information and about me details. Changes persist to your verified profile.
                 </p>
+              </div>
+            </div>
+
+            {/* SECTION 0: Profile Picture Management */}
+            <div className="p-4 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                <div className="flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-cyan-800" />
+                  <h4 className="text-sm sm:text-base font-bold text-slate-900 font-sans">
+                    Profile Picture &amp; Avatar
+                  </h4>
+                </div>
+                <span className="text-[11px] font-mono text-cyan-800 bg-cyan-100 px-2 py-0.5 rounded font-semibold">
+                  Supabase Storage · avatars bucket
+                </span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                {/* Live Preview Avatar */}
+                <div className="w-24 h-24 rounded-2xl overflow-hidden border-2 border-cyan-800/40 bg-slate-900 shrink-0 relative flex items-center justify-center shadow-md">
+                  {editAvatar ? (
+                    <img
+                      src={withRecordVersion(editAvatar, profileUpdatedAt)}
+                      alt="Avatar preview"
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full h-full object-cover object-center"
+                      onError={() => setEditAvatar('')}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
+                      <User className="w-8 h-8 text-cyan-400" />
+                      <span className="text-[9px] font-sans text-cyan-300 font-medium mt-1">No Picture</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Picture Controls */}
+                <div className="flex-1 w-full space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputAvatarRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-700 text-white font-sans font-bold text-xs shadow-xs cursor-pointer transition-colors"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{editAvatar ? 'Upload New Image' : 'Select Image File'}</span>
+                    </button>
+
+                    {editAvatar && (
+                      <button
+                        type="button"
+                        onClick={() => setEditAvatar('')}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 font-sans font-semibold text-xs cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        <span>Remove Photo</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={editAvatar}
+                        onChange={(e) => setEditAvatar(e.target.value.trim())}
+                        placeholder="Or paste direct image URL (https://...)"
+                        className="w-full pl-3 pr-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-cyan-700"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-sans">
+                    Accepts all image formats (PNG, JPG, WebP, GIF, SVG, AVIF, BMP, ICO). Uploads are permanently stored in your Supabase <strong>avatars</strong> bucket.
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -1510,14 +1576,15 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             {/* Profile Picture Frame & Controls */}
             <div className="flex flex-col items-center shrink-0 gap-3">
               <div className="relative group">
-                <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-xl overflow-hidden border-2 border-white shadow-md bg-slate-200 relative flex items-center justify-center">
-                  {profileAvatar ? (
+                <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-2xl overflow-hidden border-2 border-white/90 shadow-lg bg-slate-900 relative flex items-center justify-center">
+                  {profileAvatar && !avatarImgError ? (
                     <img
-                      src={getCacheBustedAvatarUrl(profileAvatar)}
-                      alt={`${bioData.fullName} - Lead Mechanical Design Engineer`}
-                      className="w-full h-full object-cover object-center transition-transform group-hover:scale-102"
-                      loading="eager"
-                      referrerPolicy="no-referrer"
+                      src={withRecordVersion(profileAvatar, profileUpdatedAt)}
+                      alt="Festus, Olorunsogo Johnson - Profile Photo"
+                      className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
+                      loading="lazy"
+                      decoding="async"
+                      onError={() => setAvatarImgError(true)}
                     />
                   ) : (
                     <div 
@@ -1528,25 +1595,30 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           setIsAuthModalOpen(true);
                         }
                       }}
-                      className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400 p-4 text-center cursor-pointer hover:bg-slate-200/80 transition-colors"
+                      className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-850 to-cyan-950 text-slate-300 p-4 text-center cursor-pointer hover:brightness-110 transition-all group"
                     >
-                      <User className="w-16 h-16 sm:w-20 sm:h-20 text-slate-300 stroke-[1.2]" />
-                      <span className="text-xs font-sans font-medium text-slate-500 mt-2">
-                        {isOwnerAuthenticated ? 'Click to Upload Photo' : 'No photo uploaded'}
+                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-slate-800 border-2 border-cyan-500/40 flex items-center justify-center mb-2 shadow-inner group-hover:scale-105 transition-transform">
+                        <User className="w-9 h-9 sm:w-11 sm:h-11 text-cyan-400 stroke-[1.5]" />
+                      </div>
+                      <span className="text-xs sm:text-sm font-sans font-bold text-white leading-tight">
+                        Festus, Olorunsogo Johnson
+                      </span>
+                      <span className="text-[10.5px] font-sans font-medium text-cyan-300 mt-1">
+                        {isOwnerAuthenticated ? 'Click to Upload Photo' : 'Lead Mechanical Engineer'}
                       </span>
                     </div>
                   )}
 
                   {/* Hover overlay to change/delete picture (Owner Gated) */}
                   {isOwnerAuthenticated && (
-                    <div className={`absolute inset-0 bg-slate-950/75 ${profileAvatar ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity flex flex-col items-center justify-center text-white p-2.5 text-center gap-2`}>
+                    <div className={`absolute inset-0 bg-slate-950/80 ${profileAvatar && !avatarImgError ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 hover:opacity-100'} transition-opacity flex flex-col items-center justify-center text-white p-3 text-center gap-2 z-10`}>
                       <button
                         type="button"
                         onClick={() => fileInputAvatarRef.current?.click()}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
                       >
                         <Camera className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>{profileAvatar ? 'Change Photo' : 'Upload Photo'}</span>
+                        <span>{profileAvatar && !avatarImgError ? 'Change Photo' : 'Upload Photo'}</span>
                       </button>
                       {profileAvatar && (
                         <button
@@ -1555,7 +1627,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                             e.stopPropagation();
                             setIsDeleteAvatarModalOpen(true);
                           }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-red-600/90 hover:bg-red-600 text-white font-sans font-bold text-xs shadow-md transition-colors cursor-pointer w-full justify-center"
                         >
                           <Trash2 className="w-3.5 h-3.5 text-red-100" />
                           <span>Delete Photo</span>
@@ -1582,26 +1654,28 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </div>
 
               {/* Quick Owner Photo Actions */}
-              {isOwnerAuthenticated && profileAvatar && (
-                <div className="flex items-center justify-center gap-2 pt-1 w-full">
+              {isOwnerAuthenticated && (
+                <div className="flex items-center justify-center gap-2 pt-1.5 w-full">
                   <button
                     type="button"
                     onClick={() => fileInputAvatarRef.current?.click()}
-                    className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-[#b8c6d4] text-slate-700 hover:bg-slate-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#b8c6d4] text-slate-800 hover:bg-slate-50 text-xs font-sans font-bold shadow-2xs cursor-pointer transition-colors"
                     title="Upload / Change Profile Picture"
                   >
-                    <Camera className="w-3 h-3 text-cyan-800" />
-                    <span>Change</span>
+                    <Camera className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>{profileAvatar && !avatarImgError ? 'Change Photo' : 'Upload Photo'}</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsDeleteAvatarModalOpen(true)}
-                    className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-[11px] font-sans font-semibold shadow-2xs cursor-pointer"
-                    title="Permanently Delete Profile Picture"
-                  >
-                    <Trash2 className="w-3 h-3 text-red-600" />
-                    <span>Delete</span>
-                  </button>
+                  {profileAvatar && !avatarImgError && (
+                    <button
+                      type="button"
+                      onClick={() => setIsDeleteAvatarModalOpen(true)}
+                      className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-xl bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 text-xs font-sans font-semibold shadow-2xs cursor-pointer transition-colors"
+                      title="Permanently Delete Profile Picture"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                      <span>Delete</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -2043,6 +2117,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                 <img
                                   src={doc.attachmentDataUrl}
                                   alt={doc.title}
+                                  loading="lazy"
+                                  decoding="async"
                                   className="w-full h-full object-cover"
                                 />
                               ) : isPdfAttachment(doc) ? (
@@ -2069,17 +2145,19 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           </div>
 
                           {/* Action Button: Available for Owner Only */}
-                          {isOwnerAuthenticated && (
+                          {isOwnerAuthenticated && doc.attachmentDataUrl && (
                             <div className="shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadAttachment(doc)}
+                              <a
+                                href={doc.attachmentDataUrl}
+                                download={doc.attachmentName || doc.title}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
                                 title="Download uploaded certificate or document"
                               >
                                 <Download className="w-3.5 h-3.5" />
                                 <span className="hidden sm:inline">Download</span>
-                              </button>
+                              </a>
                             </div>
                           )}
                         </div>
@@ -2164,16 +2242,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     {/* Footer Actions */}
                     <div className="pt-3 border-t border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-xs font-sans">
                       <div className="flex flex-wrap items-center gap-2">
-                        {isOwnerAuthenticated && doc.attachmentDataUrl && (
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadAttachment(doc)}
+                        {doc.attachmentDataUrl && (
+                          <a
+                            href={doc.attachmentDataUrl}
+                            download={doc.attachmentName || doc.title}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
                             title="Download document attachment"
                           >
                             <Download className="w-3.5 h-3.5" />
                             <span>Download</span>
-                          </button>
+                          </a>
                         )}
 
                         <button
@@ -2476,6 +2556,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         <img
                           src={selectedPreviewDoc.previewImageDataUrl}
                           alt={selectedPreviewDoc.title}
+                          loading="lazy"
+                          decoding="async"
                           className="max-h-[64vh] max-w-full object-contain mx-auto"
                         />
                       </div>
@@ -2494,6 +2576,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <img
                     src={selectedPreviewDoc.previewImageDataUrl || selectedPreviewDoc.attachmentDataUrl}
                     alt={selectedPreviewDoc.title}
+                    loading="lazy"
+                    decoding="async"
                     className="max-h-[68vh] max-w-full object-contain rounded-lg shadow-md"
                   />
                 )
@@ -2504,13 +2588,27 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             <div className="w-full pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
               <span>{selectedPreviewDoc.issuer} · {selectedPreviewDoc.date}</span>
-              <button
-                onClick={() => handleDownloadAttachment(selectedPreviewDoc)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download</span>
-              </button>
+              {selectedPreviewDoc.attachmentDataUrl ? (
+                <a
+                  href={selectedPreviewDoc.attachmentDataUrl}
+                  download={selectedPreviewDoc.attachmentName || selectedPreviewDoc.title}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadAttachment(selectedPreviewDoc)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2573,6 +2671,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       <img
                         src={docAttachmentDataUrl}
                         alt="Document Preview"
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-contain"
                       />
                     </div>
@@ -2602,6 +2702,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         <img
                           src={docPreviewImageDataUrl}
                           alt="PDF First Page"
+                          loading="lazy"
+                          decoding="async"
                           className="w-full h-full object-contain"
                         />
                       </div>
@@ -2799,10 +2901,20 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 )}
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs sm:text-sm font-bold shadow-md transition-colors cursor-pointer"
+                  disabled={isSavingDoc}
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white text-xs sm:text-sm font-bold shadow-md transition-colors cursor-pointer disabled:opacity-60"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>{editingDocId ? 'Update Document' : 'Save Document'}</span>
+                  {isSavingDoc ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Saving Document...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>{editingDocId ? 'Update Document' : 'Save Document'}</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -2824,8 +2936,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
-                    Fesline Panel
+                    Supabase Owner Authentication
                   </h3>
+                  <p className="text-[11px] text-slate-400 font-sans">
+                    Sign in with your Supabase credentials (signInWithPassword)
+                  </p>
                 </div>
               </div>
               <button
@@ -3014,6 +3129,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       )}
+
+      {/* ======================================================== */}
+      {/* 6b. SUPABASE DATABASE & STORAGE SETTINGS MODAL           */}
+      {/* ======================================================== */}
+      <SupabaseSettingsModal
+        isOpen={showSupabaseSettingsModal}
+        onClose={() => setShowSupabaseSettingsModal(false)}
+        onSuccessNotice={showNotification}
+        onSyncProfile={() => {
+          syncGlobalProfileWithServer();
+        }}
+      />
 
       {/* ======================================================== */}
       {/* DELETE PROFILE PICTURE CONFIRMATION MODAL (OWNER ONLY)   */}

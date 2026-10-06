@@ -35,7 +35,6 @@ import {
   useProfileSync,
   compressImage
 } from '../utils/profileState';
-import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import {
   deleteConversationFromFirestore,
   deleteDirectInquiryFromFirestore,
@@ -43,10 +42,6 @@ import {
 import {
   subscribeToSupabaseRealtimeChat,
   broadcastSupabaseChatMessage,
-  fetchConversationsFromSupabase,
-  saveConversationToSupabase,
-  deleteConversationFromSupabase,
-  getCacheBustedAvatarUrl,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -86,15 +81,24 @@ export interface Conversation {
   messages: ChatMessage[];
 }
 
-const inMemoryVisitorProfile: VisitorMessagingProfile = {
-  name: 'Visitor',
-  roleOrCompany: 'Visitor Direct Chat',
-  avatarUrl: '',
-  avatarColor: 'bg-slate-700',
-};
+const STORAGE_KEY_CHATS = 'fesline_whatsapp_conversations';
+const STORAGE_KEY_VISITOR_ID = 'fesline_current_visitor_id';
+const STORAGE_KEY_VISITOR_PROFILE = 'fesline_visitor_messaging_profile';
 
 const getInitialVisitorProfile = (): VisitorMessagingProfile => {
-  return { ...inMemoryVisitorProfile };
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_VISITOR_PROFILE);
+    if (saved) {
+      const p = JSON.parse(saved);
+      if (p && typeof p.name === 'string') return p;
+    }
+  } catch {}
+  return {
+    name: 'Visitor',
+    roleOrCompany: 'Visitor Direct Chat',
+    avatarUrl: '',
+    avatarColor: 'bg-slate-700',
+  };
 };
 
 // Topic suggestions requested
@@ -114,43 +118,31 @@ const TOPIC_SUGGESTIONS = [
 
 const DEFAULT_CONVERSATIONS: Conversation[] = [];
 
-// Helper to fetch chats from Supabase & server
+// Helper to fetch chats from server
 async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Conversation[] | null> {
   try {
-    // 1. Fetch from Supabase Table directly
-    const supaChats = await fetchConversationsFromSupabase();
-    if (Array.isArray(supaChats) && supaChats.length > 0) {
-      if (deletedSet) {
-        return supaChats.filter((c) => !deletedSet.has(c.id));
-      }
-      return supaChats;
-    }
-
-    // 2. Fetch from backend endpoint fallback
     const res = await fetch('/api/chats');
     if (res.ok) {
       const json = await res.json();
       if (json && json.success && Array.isArray(json.conversations)) {
         if (Array.isArray(json.deletedIds) && deletedSet) {
           json.deletedIds.forEach((id: string) => deletedSet.add(id));
+          try {
+            localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedSet)));
+          } catch {}
         }
         return json.conversations;
       }
     }
   } catch (err) {
-    console.warn('Failed to fetch chats from database:', err);
+    console.warn('Failed to fetch chats from server:', err);
   }
   return null;
 }
 
-// Helper to push chats to server and Supabase
+// Helper to push chats to server
 async function pushChatsToServer(conversations: Conversation[], overwrite = false) {
   try {
-    // Push each conversation to Supabase table
-    conversations.forEach((c) => {
-      saveConversationToSupabase(c).catch(() => {});
-    });
-
     await fetch('/api/chats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -161,11 +153,22 @@ async function pushChatsToServer(conversations: Conversation[], overwrite = fals
   }
 }
 
-// In-memory visitor session ID
-let inMemoryVisitorId: string = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-
+// Helper to get or create a visitor conversation with NO auto messages
 const getOrCreateVisitorId = (): string => {
-  return inMemoryVisitorId;
+  try {
+    const existing = localStorage.getItem(STORAGE_KEY_VISITOR_ID) || sessionStorage.getItem(STORAGE_KEY_VISITOR_ID);
+    if (existing && existing.trim()) {
+      localStorage.setItem(STORAGE_KEY_VISITOR_ID, existing);
+      sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, existing);
+      return existing;
+    }
+    const newId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    localStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
+    sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
+    return newId;
+  } catch {
+    return `visitor-${Date.now()}`;
+  }
 };
 
 export const MessagingSection: React.FC = () => {
@@ -182,7 +185,20 @@ export const MessagingSection: React.FC = () => {
   const [copiedVisitorId, setCopiedVisitorId] = useState(false);
 
   // Master persistent multi-chat database (shared between visitor submissions & owner replies)
-  const [conversations, setConversations] = useState<Conversation[]>(DEFAULT_CONVERSATIONS);
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_CHATS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
+          const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
+          return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
+        }
+      }
+    } catch {}
+    return DEFAULT_CONVERSATIONS;
+  });
 
   // For visitor: messaging profile state (picture, name, role)
   const [visitorProfile, setVisitorProfile] = useState<VisitorMessagingProfile>(getInitialVisitorProfile);
@@ -213,29 +229,50 @@ export const MessagingSection: React.FC = () => {
   const [isDeletingChat, setIsDeletingChat] = useState(false);
 
   // Track deleted conversation IDs to permanently prevent any resurrection glimpse
-  const deletedConvIdsRef = useRef<Set<string>>(new Set<string>());
+  const deletedConvIdsRef = useRef<Set<string>>((() => {
+    try {
+      const savedLocal = localStorage.getItem('fesline_deleted_conv_ids');
+      if (savedLocal) return new Set<string>(JSON.parse(savedLocal));
+      const saved = sessionStorage.getItem('fesline_deleted_conv_ids');
+      if (saved) return new Set<string>(JSON.parse(saved));
+    } catch {}
+    return new Set<string>();
+  })());
 
-  // Fetch chats from server & Supabase
+  // Fetch chats from server
   const fetchChatsFromServer = async () => {
     const fetched = await fetchChatsFromServerHelper(deletedConvIdsRef.current);
     if (fetched && Array.isArray(fetched)) {
       const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
-      setConversations(cleaned);
+      setConversations(prev => {
+        const currentStr = JSON.stringify(prev);
+        const cleanedStr = JSON.stringify(cleaned);
+        if (currentStr !== cleanedStr) {
+          try {
+            localStorage.setItem(STORAGE_KEY_CHATS, cleanedStr);
+          } catch {}
+          return cleaned;
+        }
+        return prev;
+      });
     }
   };
 
   // Real-time synchronization between visitor and owner
   useEffect(() => {
-    let isMounted = true;
-
     fetchChatsFromServer();
 
-    // Periodic poll every 4 seconds while active
-    const pollInterval = setInterval(() => {
-      if (isMounted && document.visibilityState === 'visible') {
-        fetchChatsFromServer();
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_CHATS && e.newValue) {
+        try {
+          const updated = JSON.parse(e.newValue);
+          if (Array.isArray(updated)) {
+            const cleaned = updated.filter((c: any) => !deletedConvIdsRef.current.has(c.id));
+            setConversations(cleaned);
+          }
+        } catch {}
       }
-    }, 4000);
+    };
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
@@ -243,25 +280,18 @@ export const MessagingSection: React.FC = () => {
       }
     };
 
-    const unsubMem = subscribeToDynamicMemory((ev) => {
-      if (ev.category === 'chats') {
-        fetchChatsFromServer();
-      }
-    });
-
     // Supabase Realtime Channel Subscription for live multi-user messaging
     const unsubSupabaseRealtime = subscribeToSupabaseRealtimeChat((_payload) => {
       fetchChatsFromServer();
     });
 
+    window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', fetchChatsFromServer);
     window.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      isMounted = false;
-      unsubMem();
       unsubSupabaseRealtime();
-      clearInterval(pollInterval);
+      window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', fetchChatsFromServer);
       window.removeEventListener('visibilitychange', handleVisibility);
     };
@@ -316,11 +346,24 @@ export const MessagingSection: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFilterType, setSearchFilterType] = useState<'all' | 'messages' | 'files'>('all');
 
-  // Input message state (Zero LocalStorage)
-  const [inputMessage, setInputMessage] = useState<string>('');
+  // Input message state with auto-draft restore across page visits
+  const [inputMessage, setInputMessage] = useState<string>(() => {
+    try {
+      return localStorage.getItem('fesline_chat_draft') || '';
+    } catch {
+      return '';
+    }
+  });
 
   const updateInputMessage = (val: string) => {
     setInputMessage(val);
+    try {
+      if (val.trim()) {
+        localStorage.setItem('fesline_chat_draft', val);
+      } else {
+        localStorage.removeItem('fesline_chat_draft');
+      }
+    } catch {}
   };
 
   const handleResumeConversation = async (e: React.FormEvent) => {
@@ -342,7 +385,7 @@ export const MessagingSection: React.FC = () => {
         (c.defaultLabel && c.defaultLabel.toLowerCase() === cleanTarget)
     );
 
-    // 2. Query server & Supabase if not found in memory
+    // 2. Query server if not found in memory
     if (!match) {
       try {
         const fresh = await fetchChatsFromServerHelper();
@@ -363,7 +406,11 @@ export const MessagingSection: React.FC = () => {
 
     if (match) {
       setVisitorId(match.id);
-      inMemoryVisitorId = match.id;
+      try {
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
+        sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
+        document.cookie = `fesline_visitor_id=${encodeURIComponent(match.id)}; path=/; max-age=31536000; SameSite=Lax`;
+      } catch {}
       setIsResumeModalOpen(false);
       setResumeInput('');
       setShowMailNotice(`Welcome back ${match.visitorName || match.customName || 'Visitor'}! Continued conversation from where you left off.`);
@@ -403,13 +450,11 @@ export const MessagingSection: React.FC = () => {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === convId) {
-          const updated = {
+          return {
             ...c,
             unread: false,
-            messages: c.messages.map((m) => ({ ...m, status: 'seen' as const }))
+            messages: c.messages.map((m) => ({ ...m, status: 'seen' }))
           };
-          saveConversationToSupabase(updated).catch(() => {});
-          return updated;
         }
         return c;
       })
@@ -422,12 +467,10 @@ export const MessagingSection: React.FC = () => {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === convId) {
-          const updated = {
+          return {
             ...c,
             important: !c.important
           };
-          saveConversationToSupabase(updated).catch(() => {});
-          return updated;
         }
         return c;
       })
@@ -455,16 +498,23 @@ export const MessagingSection: React.FC = () => {
     const displayName = deletingConv.visitorName || deletingConv.customName || deletingConv.defaultLabel || 'Inquiry';
 
     try {
-      // 1. Permanently record tombstone in sets
+      // 1. Permanently record tombstone in sets & storage
       deletedConvIdsRef.current.add(targetId);
+      try {
+        localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedConvIdsRef.current)));
+        sessionStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedConvIdsRef.current)));
+      } catch {}
 
       // 2. Clear input drafts and attachments
       updateInputMessage('');
       setAttachedFiles([]);
 
-      // 3. Immediately remove from React state
+      // 3. Immediately remove from React state & local storage
       const remaining = conversations.filter((c) => c.id !== targetId);
       setConversations(remaining);
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(remaining));
+      } catch {}
 
       if (activeOwnerConvId === targetId) {
         setActiveOwnerConvId(remaining[0]?.id || '');
@@ -473,16 +523,19 @@ export const MessagingSection: React.FC = () => {
       // 4. If visitor deleted their active inquiry, reset session with a clean new visitorId
       if (visitorId === targetId) {
         const freshId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-        inMemoryVisitorId = freshId;
+        try {
+          localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+          sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+          document.cookie = `fesline_visitor_id=${encodeURIComponent(freshId)}; path=/; max-age=31536000; SameSite=Lax`;
+        } catch {}
         setVisitorId(freshId);
       }
 
-      // 5. Clean up from Supabase Database & Firestore
-      deleteConversationFromSupabase(targetId).catch(() => {});
+      // 5. Clean up from Firestore if active
       deleteConversationFromFirestore(targetId).catch(() => {});
       deleteDirectInquiryFromFirestore(targetId).catch(() => {});
 
-      // 6. Delete from backend database
+      // 6. Delete from backend database (Cloud SQL / PostgreSQL) with SSE broadcast
       const res = await fetch(`/api/chats/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
       if (!res.ok) {
         console.warn('Backend delete returned status:', res.status);
@@ -490,7 +543,7 @@ export const MessagingSection: React.FC = () => {
 
       setShowMailNotice(`Inquiry "${displayName}" deleted permanently.`);
       window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
-      broadcastMemoryEvent('chats', 'inquiry_deleted', { targetId });
+      broadcastSupabaseChatMessage({ event: 'inquiry_deleted', targetId });
     } catch (err) {
       console.warn('Delete error:', err);
       setShowMailNotice(`Inquiry "${displayName}" deleted.`);
@@ -506,16 +559,17 @@ export const MessagingSection: React.FC = () => {
       const updated = prev.map((c) => {
         if (c.id === convId) {
           const remainingMsgs = c.messages.filter((m) => m.id !== msgId);
-          const updatedConv = {
+          return {
             ...c,
             messages: remainingMsgs,
             lastMessage: remainingMsgs[remainingMsgs.length - 1]?.text || (remainingMsgs.length > 0 ? 'Message sent' : ''),
           };
-          saveConversationToSupabase(updatedConv).catch(() => {});
-          return updatedConv;
         }
         return c;
       });
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+      } catch {}
       return updated;
     });
     fetch(`/api/chats/${convId}/messages/${msgId}`, { method: 'DELETE' }).catch((err) => {
@@ -546,7 +600,6 @@ export const MessagingSection: React.FC = () => {
     };
 
     setConversations((prev) => [newConv, ...prev]);
-    saveConversationToSupabase(newConv).catch(() => {});
     setActiveOwnerConvId(newConv.id);
     setIsMobileListOpen(false);
   };
@@ -567,13 +620,11 @@ export const MessagingSection: React.FC = () => {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === editingConv.id) {
-          const updatedConv = {
+          return {
             ...c,
             customName: trimmed.length > 0 ? trimmed : undefined,
             roleOrCompany: editRoleInput.trim()
           };
-          saveConversationToSupabase(updatedConv).catch(() => {});
-          return updatedConv;
         }
         return c;
       })
@@ -584,7 +635,11 @@ export const MessagingSection: React.FC = () => {
   // Visitor clears their chat screen
   const handleVisitorClearChat = () => {
     const freshId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    inMemoryVisitorId = freshId;
+    try {
+      localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+      sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+      document.cookie = `fesline_visitor_id=${encodeURIComponent(freshId)}; path=/; max-age=31536000; SameSite=Lax`;
+    } catch {}
     setVisitorId(freshId);
     setIsVisitorClearModalOpen(false);
     setShowMailNotice('Chat cleared on your screen. Started a fresh conversation.');
@@ -598,16 +653,15 @@ export const MessagingSection: React.FC = () => {
   // Visitor updates their messaging profile (photo and name)
   const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile) => {
     setVisitorProfile(updated);
-    inMemoryVisitorProfile.name = updated.name;
-    inMemoryVisitorProfile.roleOrCompany = updated.roleOrCompany;
-    inMemoryVisitorProfile.avatarUrl = updated.avatarUrl;
-    inMemoryVisitorProfile.avatarColor = updated.avatarColor;
+    try {
+      localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updated));
+    } catch {}
 
-    // Update in local conversations state & Supabase
+    // Update in local conversations state
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === visitorId) {
-          const updatedConv = {
+          return {
             ...c,
             customName: updated.name,
             visitorName: updated.name,
@@ -615,8 +669,6 @@ export const MessagingSection: React.FC = () => {
             avatarUrl: updated.avatarUrl,
             avatarColor: updated.avatarColor || c.avatarColor,
           };
-          saveConversationToSupabase(updatedConv).catch(() => {});
-          return updatedConv;
         }
         return c;
       })
@@ -662,18 +714,19 @@ export const MessagingSection: React.FC = () => {
       setConversations((prev) => {
         const updated = prev.map((c) => {
           if (c.id === activeOwnerConvId) {
-            const updatedConv = {
+            return {
               ...c,
               unread: false,
               messages: [...c.messages, festusMsg],
               lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
               lastTimestamp: timeStr,
             };
-            saveConversationToSupabase(updatedConv).catch(() => {});
-            return updatedConv;
           }
           return c;
         });
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
         return updated;
       });
 
@@ -710,15 +763,13 @@ export const MessagingSection: React.FC = () => {
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
-              const updatedConv = {
+              return {
                 ...c,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
                 lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
                 lastTimestamp: timeStr,
               };
-              saveConversationToSupabase(updatedConv).catch(() => {});
-              return updatedConv;
             }
             return c;
           });
@@ -739,8 +790,10 @@ export const MessagingSection: React.FC = () => {
             lastTimestamp: timeStr,
           };
           updated = [newVisitorRecord, ...prev];
-          saveConversationToSupabase(newVisitorRecord).catch(() => {});
         }
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
         return updated;
       });
 
@@ -887,18 +940,19 @@ export const MessagingSection: React.FC = () => {
       setConversations((prev) => {
         const updated = prev.map((c) => {
           if (c.id === activeOwnerConvId) {
-            const updatedConv = {
+            return {
               ...c,
               unread: false,
               messages: [...c.messages, festusMsg],
               lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
               lastTimestamp: timeStr
             };
-            saveConversationToSupabase(updatedConv).catch(() => {});
-            return updatedConv;
           }
           return c;
         });
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
         return updated;
       });
 
@@ -938,15 +992,13 @@ export const MessagingSection: React.FC = () => {
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
-              const updatedConv = {
+              return {
                 ...c,
                 unread: true,
                 messages: [...c.messages, visitorMsg],
                 lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
                 lastTimestamp: timeStr
               };
-              saveConversationToSupabase(updatedConv).catch(() => {});
-              return updatedConv;
             }
             return c;
           });
@@ -967,8 +1019,10 @@ export const MessagingSection: React.FC = () => {
             lastTimestamp: timeStr
           };
           updated = [newVisitorRecord, ...prev];
-          saveConversationToSupabase(newVisitorRecord).catch(() => {});
         }
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+        } catch {}
         return updated;
       });
 
@@ -1254,7 +1308,7 @@ export const MessagingSection: React.FC = () => {
                             className={`w-8 h-8 rounded-full overflow-hidden ${conv.avatarColor || 'bg-slate-700'} text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs uppercase`}
                           >
                             {conv.avatarUrl ? (
-                              <img src={getCacheBustedAvatarUrl(conv.avatarUrl)} alt={displayName} className="w-full h-full object-cover" />
+                              <img src={conv.avatarUrl} alt={displayName} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                             ) : (
                               displayName.charAt(0)
                             )}
@@ -1393,6 +1447,8 @@ export const MessagingSection: React.FC = () => {
                       <img
                         src={profileAvatar}
                         alt={profileName}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover"
                       />
                     ) : (
@@ -1583,7 +1639,7 @@ export const MessagingSection: React.FC = () => {
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="w-6 h-6 rounded-full overflow-hidden bg-slate-300 border border-slate-400 shrink-0 flex items-center justify-center font-bold text-[10px] text-white shadow-2xs">
                       {visitorProfile.avatarUrl ? (
-                        <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} className="w-full h-full object-cover" />
+                        <img src={visitorProfile.avatarUrl} alt={visitorProfile.name} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                       ) : (
                         <div className={`w-full h-full ${visitorProfile.avatarColor || 'bg-slate-700'} flex items-center justify-center`}>
                           {(visitorProfile.name || 'V').charAt(0).toUpperCase()}

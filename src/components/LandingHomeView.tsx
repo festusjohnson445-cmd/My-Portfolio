@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
-import { getCacheBustedAvatarUrl } from '../utils/supabase';
+import { withRecordVersion } from '../utils/supabase';
 
 interface LandingHomeViewProps {
   onNavigatePart: (part: PortfolioPart) => void;
@@ -22,7 +22,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   onResumeClick,
   onRecruiterScanClick,
 }) => {
-  const { bio, documents, avatar } = useProfileSync();
+  const { bio, documents, avatar, updatedAt } = useProfileSync();
   const heroMessage = bio.header || "Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.";
   const dynamicCertifications = getRightBadgeCertifications(bio, documents);
 
@@ -98,7 +98,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             <div className="mt-4 flex items-center justify-center gap-1.5 text-xs font-sans text-slate-600">
               <span>3D Modeling</span>
               <button
-                onClick={onRecruiterScanClick}
+                onClick={() => alert('Coming Soon')}
                 className="inline-flex items-center gap-1 font-bold text-cyan-900 hover:text-cyan-950 underline cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-600" />
@@ -138,7 +138,13 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center overflow-hidden shrink-0 group-hover:scale-105 transition-transform shadow-2xs">
                       {avatar ? (
-                        <img src={getCacheBustedAvatarUrl(avatar)} alt="Profile" className="w-full h-full object-cover" />
+                        <img
+                          src={withRecordVersion(avatar, updatedAt)}
+                          alt="Profile"
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-full object-cover"
+                        />
                       ) : (
                         <User className="w-5 h-5 text-cyan-800" />
                       )}

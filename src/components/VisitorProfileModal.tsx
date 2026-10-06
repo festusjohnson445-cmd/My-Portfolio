@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Camera, User, Trash2, CheckCircle2, AlertCircle } from 'lucide-react';
-import { compressImage } from '../utils/profileState';
-import { uploadAvatarToSupabaseBucket, getCacheBustedAvatarUrl } from '../utils/supabase';
+import { X, Camera, User, Trash2, CheckCircle2 } from 'lucide-react';
+import { compressAvatarToWebP } from '../utils/profileState';
 
 export interface VisitorMessagingProfile {
   name: string;
@@ -51,29 +50,18 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
 
   if (!isOpen) return null;
 
-  const [uploadError, setUploadError] = useState<string | null>(null);
-
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsUploading(true);
-    setUploadError(null);
     try {
-      // 1. Perform FULL asynchronous upload to Supabase avatars bucket FIRST
-      const supaRes = await uploadAvatarToSupabaseBucket(file, `visitor_${Date.now()}`);
-      if (supaRes.error || !supaRes.publicUrl) {
-        throw new Error(
-          supaRes.error?.message || 'Failed to upload photo to Supabase avatars storage bucket. Persistence halted.'
-        );
-      }
-      // 2. Only store exact public URL on successful 200 response
-      setAvatarUrl(supaRes.publicUrl);
-    } catch (err: any) {
-      console.warn('Visitor avatar upload failed:', err);
-      setUploadError(err?.message || 'Failed to upload image to storage.');
+      // Compress to 400x400 WebP format at 80% quality
+      const compressed = await compressAvatarToWebP(file, 400, 0.80);
+      setAvatarUrl(compressed.dataUrl);
+    } catch (err) {
+      console.warn('Avatar compression failed:', err);
     } finally {
       setIsUploading(false);
-      e.target.value = '';
     }
   };
 
@@ -132,8 +120,10 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
               <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-white shadow-md bg-slate-200 flex items-center justify-center">
                 {avatarUrl ? (
                   <img
-                    src={getCacheBustedAvatarUrl(avatarUrl)}
+                    src={avatarUrl}
                     alt={displayName}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -200,13 +190,6 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                 ))}
               </div>
             )}
-
-            {uploadError && (
-              <div className="mt-2.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px] flex items-center gap-1.5 font-sans">
-                <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                <span>{uploadError}</span>
-              </div>
-            )}
           </div>
 
           {/* Full Name Input */}
@@ -249,7 +232,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
             <div className="flex items-center gap-2.5 p-2 rounded-lg bg-white border border-slate-200 shadow-2xs">
               <div className="w-8 h-8 rounded-full overflow-hidden shrink-0 shadow-2xs">
                 {avatarUrl ? (
-                  <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                  <img src={avatarUrl} alt={displayName} loading="lazy" decoding="async" className="w-full h-full object-cover" />
                 ) : (
                   <div className={`w-full h-full ${avatarColor} text-white font-bold text-xs flex items-center justify-center`}>
                     {initialLetter}

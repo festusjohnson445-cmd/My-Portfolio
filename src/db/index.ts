@@ -12,16 +12,16 @@ declare global {
 // Function to create or retrieve the connection pool (Object Method)
 export const createPool = () => {
   if (!global._postgresPool) {
-    const isSocket = Boolean(process.env.SQL_HOST && process.env.SQL_HOST.startsWith('/'));
     global._postgresPool = new Pool({
       host: process.env.SQL_HOST,
+      port: 5432,
       user: process.env.SQL_USER,
       password: process.env.SQL_PASSWORD,
       database: process.env.SQL_DB_NAME,
-      ...(isSocket ? {} : { port: 5432 }),
-      max: 10,
+      max: 5,
       idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 8000,
+      connectionTimeoutMillis: 1200,
+      allowExitOnIdle: false,
     });
 
     // Prevent unhandled pool-level errors from crashing the application
@@ -51,13 +51,16 @@ function extractErrorString(err: any): string {
 }
 
 /**
- * Execute a database operation with automatic retry on transient connection drops
+ * Execute a database operation with fast timeout and fallback
  */
-export async function withDbRetry<T>(operation: () => Promise<T>, maxRetries = 4): Promise<T> {
+export async function withDbRetry<T>(operation: () => Promise<T>, maxRetries = 1): Promise<T> {
   let lastError: any;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await operation();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('DB operation timeout exceeded')), 2000)
+      );
+      return await Promise.race([operation(), timeoutPromise]);
     } catch (err: any) {
       lastError = err;
       const fullErrStr = extractErrorString(err);
@@ -75,16 +78,7 @@ export async function withDbRetry<T>(operation: () => Promise<T>, maxRetries = 4
         fullErrStr.includes('client has already been dismissed');
 
       if (isConnectionIssue && attempt < maxRetries) {
-        console.warn(`[DB Retry] Attempt ${attempt}/${maxRetries} connection drop detected (${err?.cause?.message || err?.message}). Re-establishing connection in ${attempt * 250}ms...`);
-        
-        // Ping pool to force cleanup of dead sockets
-        try {
-          await pool.query('SELECT 1');
-        } catch (_) {
-          // Ignore ping errors as pool drops dead sockets on failed query
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+        await new Promise((resolve) => setTimeout(resolve, 100));
         continue;
       }
       throw err;

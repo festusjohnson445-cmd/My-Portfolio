@@ -119,6 +119,8 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
               <img
                 src={renderedPdfImage}
                 alt={doc.title}
+                loading="lazy"
+                decoding="async"
                 className="max-h-50 sm:max-h-56 w-auto object-contain block"
               />
             </div>
@@ -176,6 +178,8 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             <img
               src={imgSrc}
               alt={doc.title}
+              loading="lazy"
+              decoding="async"
               className="max-h-52 sm:max-h-60 max-w-full object-contain rounded shadow-lg transition-transform duration-300 group-hover/img:scale-[1.02]"
             />
           </div>
@@ -232,7 +236,18 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
 
         <div className="flex items-center justify-between pt-3 border-t border-white/10 font-sans">
           <span className="text-[11px] text-slate-300 font-mono">Document Record</span>
-          {isOwnerAuthenticated ? (
+          {doc.attachmentDataUrl ? (
+            <a
+              href={doc.attachmentDataUrl}
+              download={doc.attachmentName || doc.title}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download File</span>
+            </a>
+          ) : isOwnerAuthenticated ? (
             <button
               type="button"
               onClick={() => onDownloadAttachment(doc)}

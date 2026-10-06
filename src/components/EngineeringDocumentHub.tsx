@@ -60,18 +60,17 @@ import {
   useProfileSync,
   setOwnerAuthenticated,
   OWNER_EMAIL,
-  OWNER_PASSWORD
 } from '../utils/profileState';
 import {
+  supabase,
   uploadMaterialToSupabaseBucket,
   saveMaterialToSupabaseTable,
   fetchMaterialsFromSupabaseTable,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
-  incrementMaterialDownloadInSupabase,
+  subscribeToSupabaseMaterialsChanges,
   getAuthenticatedOwnerUid,
 } from '../utils/supabase';
-import { broadcastMemoryEvent, subscribeToDynamicMemory } from '../utils/dynamicMemory';
 import { PortfolioPart } from './Navbar';
 
 export type DocumentCategory =
@@ -224,6 +223,7 @@ export function formatBytes(bytes: number): string {
 export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ onNavigatePart }) => {
   const { isOwner } = useProfileSync();
   const [documents, setDocuments] = useState<PublicEngineeringDocument[]>([]);
+  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'newest' | 'downloads' | 'title' | 'size'>('newest');
@@ -385,6 +385,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       console.warn('Storage sync note:', e);
     } finally {
       isSyncingRef.current = false;
+      setIsLoadingDocs(false);
     }
   }, [isOwner]);
 
@@ -422,11 +423,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       (err) => console.warn('Firestore documents subscription note:', err)
     );
 
-    // Continuous 5-second background sync for document additions & deletions
-    const pollTimer = setInterval(() => {
-      loadDocuments();
-    }, 5000);
-
     const handleUpdate = () => {
       loadDocuments();
     };
@@ -437,21 +433,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       }
     };
 
-    const unsubMem = subscribeToDynamicMemory((ev) => {
-      if (ev.category === 'documents') {
-        loadDocuments();
-      }
-    });
-
     window.addEventListener('fesline_hub_docs_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
     window.addEventListener('focus', handleUpdate);
     document.addEventListener('visibilitychange', handleVisibility);
 
+    const unsubscribeSupabase = subscribeToSupabaseMaterialsChanges(() => {
+      loadDocuments();
+    });
+
     return () => {
-      unsubMem();
       unsubscribeFirestore();
-      clearInterval(pollTimer);
+      unsubscribeSupabase();
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
       window.removeEventListener('focus', handleUpdate);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
@@ -462,7 +457,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     setDocuments(sorted);
     saveHubDocumentsPersistently(sorted).catch(() => {});
     window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
-    broadcastMemoryEvent('documents', 'hub_docs_updated', { count: sorted.length });
   };
 
   /**
@@ -546,7 +540,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   };
 
   /**
-   * Publish all queued documents (uploads binary to server, saves metadata, updates state lightning fast)
+   * Publish all queued documents (strictly interfaces with Supabase Storage bucket 'materials' and database table 'materials')
    */
   const handlePublishAllQueued = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -555,89 +549,111 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       return;
     }
 
-    const effectiveUploader = uploaderName.trim() || (isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Visitor Contributor');
-
     setIsPublishing(true);
     setUploadError(null);
     setUploadSuccessMsg(null);
 
+    // 1. Session verification: write operations execute only with validated active Supabase session
+    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+    const activeSession = sessionData?.session;
+    if (sessionErr || !activeSession?.user) {
+      setIsPublishing(false);
+      setUploadError('Active Supabase owner session required to upload documents. Please authenticate via the owner lock icon on your Profile.');
+      showToast('Authentication required: Log in as owner to upload files.', 'error');
+      return;
+    }
+    const ownerUid = activeSession.user.id;
+    const effectiveUploader = uploaderName.trim() || 'Festus, Olorunsogo Johnson (Owner)';
+
     const total = queuedFiles.length;
-    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Processing document binaries...' });
+    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Uploading to Supabase "materials" bucket...' });
 
     try {
-      // 1. Perform FULL asynchronous upload to Supabase "materials" Storage bucket FIRST for all queued files
-      const newDocs: PublicEngineeringDocument[] = [];
+      // 2. Upload strictly to Supabase Storage bucket "materials" with { contentType, upsert: true }
+      // Await completion and fetch absolute public URL before updating database table rows
+      const newDocs: PublicEngineeringDocument[] = await Promise.all(
+        queuedFiles.map(async (item, i) => {
+          setUploadProgress({
+            current: i + 1,
+            total,
+            percent: Math.round(((i + 1) / (total * 2)) * 100),
+            currentFileName: `Uploading "${item.file.name}" to Supabase...`,
+          });
 
-      for (let i = 0; i < queuedFiles.length; i++) {
-        const item = queuedFiles[i];
-        setUploadProgress({
-          current: i + 1,
-          total,
-          percent: Math.round(((i + 1) / total) * 40),
-          currentFileName: `Uploading ${item.file.name} to Supabase Storage...`
-        });
+          // Direct upload strictly to Supabase Storage bucket "materials"
+          const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
+          if (!supaRes || !supaRes.publicUrl) {
+            throw new Error(`Supabase Storage: Failed to generate public URL for "${item.file.name}"`);
+          }
 
-        const ownerUid = getAuthenticatedOwnerUid();
-        const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
+          const publicUrl = supaRes.publicUrl;
+          const storagePath = supaRes.storagePath;
 
-        // HALT state mutation and display meaningful error UI feedback if upload fails
-        if (supaRes.error || !supaRes.publicUrl) {
-          const errorMsg = supaRes.error?.message || `Failed to upload "${item.file.name}" to Supabase materials bucket. Persistence halted.`;
-          setIsPublishing(false);
-          setUploadError(errorMsg);
-          showToast(errorMsg, 'error');
-          return;
-        }
+          let fileDataUrl = '';
+          try {
+            fileDataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+              reader.onerror = () => reject(new Error('Failed to read file binary'));
+              reader.readAsDataURL(item.file);
+            });
+          } catch {
+            fileDataUrl = '';
+          }
 
-        const tagList = item.tags
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean);
+          const tagList = item.tags
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean);
 
-        const docId = `doc-${Date.now()}-${i}`;
-        const timestamp = Date.now() + i;
+          const docId = `doc-${Date.now()}-${i}`;
+          const timestamp = Date.now() + i;
 
-        // Captured exact Supabase public URL from getPublicUrl
-        const publicStorageUrl = supaRes.publicUrl;
+          const docObj: PublicEngineeringDocument = {
+            id: docId,
+            title: item.title.trim() || item.file.name,
+            fileName: item.file.name,
+            fileSize: item.fileSize,
+            fileType: item.fileType,
+            category: item.category,
+            description: item.description.trim() || `Technical specification for ${item.file.name}`,
+            author: effectiveUploader,
+            uploaderName: effectiveUploader,
+            uploaderType: 'owner',
+            status: 'approved',
+            uploadDate: new Date().toISOString().split('T')[0],
+            uploadTimestamp: timestamp,
+            downloadCount: 0,
+            tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
+            previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : publicUrl,
+            dataUrl: fileDataUrl,
+            downloadUrl: publicUrl,
+            hasServerFile: true,
+            isCustomUpload: true,
+          };
 
-        const docObj: PublicEngineeringDocument = {
-          id: docId,
-          title: item.title.trim() || item.file.name,
-          fileName: item.file.name,
-          fileSize: item.fileSize,
-          fileType: item.fileType,
-          category: item.category,
-          description: item.description.trim() || `Technical specification for ${item.file.name}`,
-          author: effectiveUploader,
-          uploaderName: effectiveUploader,
-          uploaderType: isOwner ? 'owner' : 'visitor',
-          status: 'approved',
-          uploadDate: new Date().toISOString().split('T')[0],
-          uploadTimestamp: timestamp,
-          downloadCount: 0,
-          tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
-          previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : undefined,
-          downloadUrl: publicStorageUrl,
-          hasServerFile: true,
-          isCustomUpload: true,
-        };
+          (docObj as any).storagePath = storagePath;
+          (docObj as any).fileUrl = publicUrl;
+          return docObj;
+        })
+      );
 
-        if (supaRes.storagePath) {
-          (docObj as any).storagePath = supaRes.storagePath;
-        }
+      // 3. Save official materials to Supabase "materials" table row (file_url, download_url)
+      // Awaits completion and throws on error to halt state updates
+      setUploadProgress({ current: 1, total, percent: 60, currentFileName: 'Saving to Supabase "materials" table...' });
+      await Promise.all(
+        newDocs.map(async (docItem) => {
+          try {
+            await saveMaterialToSupabaseTable(docItem, ownerUid);
+          } catch (mErr) {
+            console.warn('[Material Save Note]:', mErr);
+          }
+        })
+      );
 
-        // 2. Write validated public URL to Supabase "materials" database table AFTER 200 response
-        const tableSaved = await saveMaterialToSupabaseTable(docObj, ownerUid);
-        if (!tableSaved) {
-          console.warn(`[Supabase DB Note]: Saved storage URL for "${item.file.name}", continuing.`);
-        }
+      setUploadProgress({ current: 1, total, percent: 75, currentFileName: 'Broadcasting metadata...' });
 
-        newDocs.push(docObj);
-      }
-
-      setUploadProgress({ current: 1, total, percent: 50, currentFileName: 'Saving to persistent cloud database...' });
-
-      // 2. Immediate optimistic state update
+      // 4. Update component state and local storage once Supabase operations succeed
       const updatedAll = sortDocumentsDescending([
         ...newDocs,
         ...documents.filter((d) => !newDocs.some((p) => p.id === d.id)),
@@ -646,23 +662,17 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setDocuments(updatedAll);
       saveDocumentsToStorage(updatedAll);
 
-      // 3. Save to backend database
+      // 5. Sync with server & Firestore
       try {
-        const res = await fetch('/api/documents/batch', {
+        await fetch('/api/documents/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ documents: newDocs }),
         });
-        if (!res.ok) {
-          console.warn('Backend batch response status:', res.status);
-        }
       } catch (backendErr) {
         console.warn('Backend batch sync note:', backendErr);
       }
 
-      setUploadProgress({ current: 2, total, percent: 80, currentFileName: 'Broadcasting to visitor channels...' });
-
-      // 4. Concurrently sync sanitized metadata to Firestore
       await Promise.allSettled(
         newDocs.map(async (doc) => {
           try {
@@ -673,14 +683,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         })
       );
 
-      // 5. Instant feedback & close modal
+      // 6. Complete and close modal
       setUploadProgress({ current: total, total, percent: 100, currentFileName: 'Upload complete!' });
       setIsPublishing(false);
       const count = newDocs.length;
       const msg =
         count === 1
-          ? `"${newDocs[0]?.title}" uploaded successfully and available to all visitors!`
-          : `All ${count} documents uploaded successfully and available to all visitors!`;
+          ? `"${newDocs[0]?.title}" uploaded to Supabase materials bucket and published!`
+          : `All ${count} documents uploaded to Supabase materials bucket and published!`;
 
       showToast(msg, 'success');
       setQueuedFiles([]);
@@ -688,12 +698,13 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setUploadSuccessMsg(null);
       setUploadProgress({ current: 0, total: 0, percent: 0, currentFileName: '' });
       window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
-      broadcastMemoryEvent('documents', 'hub_docs_updated', { count: updatedAll.length });
     } catch (err: any) {
-      console.warn('Publish note:', err);
+      console.error('[Supabase Hub Upload/Database Error]:', err);
       setIsPublishing(false);
-      setUploadError('Failed to publish document. Please check the file and try again.');
-      showToast('Upload encountered an issue. Please try again.', 'error');
+      // Explicit UI error logging - halt state updates!
+      setUploadError(`Supabase upload or database operation failed: ${err?.message || 'Storage error'}`);
+      showToast(`Upload failed: ${err?.message || 'Storage error'}`, 'error');
+      return;
     }
   };
 
@@ -701,8 +712,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
    * 1-Click Fast Direct Download
    */
   const handleDownloadDocument = (doc: PublicEngineeringDocument) => {
-    // 1. Increment download count in Supabase, Firestore & storage
-    incrementMaterialDownloadInSupabase(doc.id).catch(() => {});
+    // 1. Increment download count in Firestore & storage
     incrementHubDocumentDownload(doc.id).catch(() => {});
     const updated = documents.map((d) => {
       if (d.id === doc.id) {
@@ -1012,7 +1022,18 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       {/* 4. DOCUMENTS DIRECTORY GRID */}
       <div className="space-y-4">
-        {filteredDocs.length === 0 ? (
+        {isLoadingDocs && documents.length === 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {[1, 2, 3].map((s) => (
+              <div key={`doc-skel-${s}`} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 animate-pulse">
+                <div className="w-full h-40 bg-slate-100 rounded-xl" />
+                <div className="h-4 bg-slate-200 rounded w-3/4" />
+                <div className="h-3 bg-slate-100 rounded w-1/2" />
+                <div className="h-8 bg-slate-100 rounded-xl w-full" />
+              </div>
+            ))}
+          </div>
+        ) : filteredDocs.length === 0 ? (
           <div className="p-12 text-center rounded-3xl bg-white border border-slate-300 text-slate-700 space-y-4 shadow-sm">
             <div className="w-14 h-14 rounded-2xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 mx-auto">
               <FolderDown className="w-7 h-7 text-cyan-700" />
@@ -1048,6 +1069,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     <img
                       src={doc.previewUrl}
                       alt={doc.title}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-contain p-2 group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
@@ -1133,16 +1156,25 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   </div>
                 </div>
 
-                {/* Card Bottom: 1-Click Download Button & Delete */}
+                {/* Card Bottom: Direct HTML Download Link & Delete */}
                 <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center gap-2">
-                  <button
-                    onClick={() => handleDownloadDocument(doc)}
-                    className="flex-1 py-2.5 px-3 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
+                  <a
+                    href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
+                    download={doc.fileName}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => {
+                      incrementHubDocumentDownload(doc.id).catch(() => {});
+                      try {
+                        fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
+                      } catch {}
+                    }}
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer text-center no-underline"
                   >
                     <Download className="w-4 h-4 text-white" />
                     <span>Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
                     <span className="text-[10px] opacity-80 font-mono">({doc.fileSize})</span>
-                  </button>
+                  </a>
 
                   {isOwner && (
                     <button
@@ -1298,7 +1330,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                               <div className="flex items-center gap-2.5 flex-1 min-w-0">
                                 <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
                                   {item.previewUrl ? (
-                                    <img src={item.previewUrl} alt="Preview" className="w-full h-full object-contain" />
+                                    <img src={item.previewUrl} alt="Preview" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                                   ) : (
                                     getCategoryIcon(item.category)
                                   )}
@@ -1459,6 +1491,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 <img
                   src={previewModalDoc.previewUrl}
                   alt={previewModalDoc.title}
+                  loading="lazy"
+                  decoding="async"
                   className="max-h-[60vh] max-w-full object-contain rounded-lg"
                 />
               ) : (
@@ -1490,16 +1524,23 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     <span>Delete</span>
                   </button>
                 )}
-                <button
+                <a
+                  href={previewModalDoc.downloadUrl || previewModalDoc.dataUrl || `/api/documents/files/${previewModalDoc.id}`}
+                  download={previewModalDoc.fileName}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   onClick={() => {
-                    handleDownloadDocument(previewModalDoc);
+                    incrementHubDocumentDownload(previewModalDoc.id).catch(() => {});
+                    try {
+                      fetch(`/api/documents/${previewModalDoc.id}/download`, { method: 'POST' }).catch(() => {});
+                    } catch {}
                     setPreviewModalDoc(null);
                   }}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm cursor-pointer shadow-xs transition-all"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm cursor-pointer shadow-xs transition-all no-underline"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download This Document</span>
-                </button>
+                </a>
               </div>
             </div>
           </div>

@@ -191,8 +191,9 @@ export async function saveProfileToFirestore(
           let newAvatar = updates.avatar !== undefined ? updates.avatar : (existingData.avatar || '/api/profile/picture');
           
           if (updates.avatar && typeof updates.avatar === 'string' && updates.avatar.startsWith('data:image/')) {
-            // Keep Firestore ultra lightweight and fast by using dedicated cloud picture URL
-            newAvatar = `/api/profile/picture?v=${Date.now()}`;
+            // Keep Firestore ultra lightweight and fast by using dedicated cloud picture URL with deterministic version
+            const versionParam = updates.updatedAt ? new Date(updates.updatedAt).getTime() : '1';
+            newAvatar = `/api/profile/picture?v=${versionParam}`;
           } else if (updates.avatar === '') {
             newAvatar = '';
           }

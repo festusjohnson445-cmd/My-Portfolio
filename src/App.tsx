@@ -13,7 +13,8 @@ import { WhitepaperModal } from './components/WhitepaperModal';
 import { MessagingSection } from './components/MessagingSection';
 import { EaseStudyView } from './components/EaseStudyView';
 import { generateAndDownloadResume } from './utils/generateResumePdf';
-import { getStoredBio, getStoredDocuments, syncGlobalProfileWithServer } from './utils/profileState';
+import { getStoredBio, getStoredDocuments, syncGlobalProfileWithServer, setOwnerAuthenticated } from './utils/profileState';
+import { supabase, onSupabaseAuthStateChange } from './utils/supabase';
 
 export default function App() {
   const [activePart, setActivePart] = useState<PortfolioPart>('home');
@@ -24,6 +25,34 @@ export default function App() {
   const [isRecruiterScanOpen, setIsRecruiterScanOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
+
+  // Top-level onAuthStateChange session listener to sync owner state with Supabase across refreshes
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (error) {
+        console.warn('[Supabase Initial Session Check]:', error.message);
+      }
+      if (session?.user) {
+        setOwnerAuthenticated(true, session.user.id);
+      } else {
+        setOwnerAuthenticated(false);
+      }
+    }).catch(() => {
+      setOwnerAuthenticated(false);
+    });
+
+    const { data: { subscription } } = onSupabaseAuthStateChange((event, session) => {
+      if (session?.user) {
+        setOwnerAuthenticated(true, session.user.id);
+      } else {
+        setOwnerAuthenticated(false);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -109,7 +138,7 @@ export default function App() {
         activePart={activePart}
         onSelectPart={handleSelectPart}
         onResumeClick={handleOneClickResumeDownload}
-        onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
+        onRecruiterScanClick={() => alert('Coming Soon')}
         resumeDownloadCount={resumeDownloadCount}
       />
 
@@ -122,7 +151,7 @@ export default function App() {
             <LandingHomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={handleOneClickResumeDownload}
-              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
+              onRecruiterScanClick={() => alert('Coming Soon')}
             />
           </section>
         )}
@@ -164,7 +193,7 @@ export default function App() {
             <HomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={() => setIsResumeOpen(true)}
-              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
+              onRecruiterScanClick={() => alert('Coming Soon')}
             />
 
             {/* Bottom Sequential Navigator */}
@@ -251,19 +280,6 @@ export default function App() {
         isOpen={isResumeOpen}
         onClose={() => setIsResumeOpen(false)}
         onDownloaded={handleResumeDownload}
-      />
-
-      <RecruiterScanMode
-        isOpen={isRecruiterScanOpen}
-        onClose={() => setIsRecruiterScanOpen(false)}
-        onSelectProject={(id) => {
-          handleSelectPart('overview');
-          handleSelectProjectById(id);
-        }}
-        onResumeClick={() => {
-          setIsRecruiterScanOpen(false);
-          handleOneClickResumeDownload();
-        }}
       />
 
       {/* Floating Scroll to Top Quick Action */}
