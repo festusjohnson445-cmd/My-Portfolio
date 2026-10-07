@@ -854,6 +854,72 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages, activeOwnerConvId, isOwner]);
 
+  // Unified Thread Message Loading: When owner selects a visitor thread or visitor opens chat,
+  // load all chronological messages directly from Supabase to guarantee complete thread rendering
+  useEffect(() => {
+    const targetCId = isOwner ? activeOwnerConvId : (conversationId || `conv_${visitorId}`);
+    if (!targetCId || targetCId === 'inbox-empty') return;
+
+    const loadThreadMessages = async () => {
+      try {
+        const vId = targetCId.startsWith('conv_') ? targetCId.replace(/^conv_/, '') : targetCId;
+        const ownerId = await getOrFetchOwnerId();
+        const safeCId = ensureValidUuid(targetCId);
+
+        const { data: dbMessages, error } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`conversation_id.eq.${targetCId},conversation_id.eq.conv_${vId},conversation_id.eq.${vId},conversation_id.eq.${safeCId},and(sender_id.eq.${vId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${vId})`)
+          .order('created_at', { ascending: true });
+
+        if (!error && dbMessages && Array.isArray(dbMessages) && dbMessages.length > 0) {
+          const mapped: ChatMessage[] = dbMessages.map((m: any) => {
+            const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+            return {
+              id: m.id || generateMessageId(),
+              sender: isOwnerMsg ? 'festus' : 'visitor',
+              text: m.content || m.text || '',
+              timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
+              status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+              attachments: m.attachments || undefined,
+              voiceNote: m.voice_note || m.voiceNote || undefined,
+            };
+          });
+
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c.id === targetCId || c.id === `conv_${vId}` || c.id === vId);
+            if (idx >= 0) {
+              const existing = prev[idx];
+              const msgMap = new Map<string, ChatMessage>();
+              for (const em of existing.messages || []) if (em && em.id) msgMap.set(em.id, em);
+              for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
+              const merged = Array.from(msgMap.values());
+              const last = merged[merged.length - 1];
+
+              const updatedConv: Conversation = {
+                ...existing,
+                messages: merged,
+                lastMessage: last?.text || (last?.voiceNote ? '🎤 Voice note' : (last?.attachments?.length ? `📎 ${last.attachments[0].name}` : existing.lastMessage)),
+                lastTimestamp: last?.timestamp || existing.lastTimestamp,
+              };
+
+              const nextList = prev.map((c, i) => (i === idx ? updatedConv : c));
+              try {
+                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(nextList));
+              } catch {}
+              return nextList;
+            }
+            return prev;
+          });
+        }
+      } catch (err) {
+        console.warn('[Load Thread Messages Error]:', err);
+      }
+    };
+
+    loadThreadMessages();
+  }, [activeOwnerConvId, isOwner, conversationId, visitorId]);
+
   // Owner selects a conversation from the sidebar
   const handleSelectConversation = (convId: string) => {
     setActiveOwnerConvId(convId);

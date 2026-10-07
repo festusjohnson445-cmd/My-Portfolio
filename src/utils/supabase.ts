@@ -1235,21 +1235,38 @@ export async function saveMessageAndConversationToSupabase(params: {
       }
     }
 
-    // Step B: Upsert the parent record in conversations (updating id, visitor_id, owner_id, last_message, and last_message_at in place)
+    // Step B: For Owner replies: strictly update existing conversation in place without creating new conversations.
+    // For Visitor messages: upsert the parent record in conversations.
     try {
-      const convPayload = {
-        id: targetConvId,
-        visitor_id: vId,
-        owner_id: ownerId,
-        last_message: lastSnippet,
-        last_message_at: nowIso,
-      };
-      const { error: convError } = await supabase
-        .from('conversations')
-        .upsert(convPayload, { onConflict: 'id' });
+      if (isOwnerSender) {
+        // Owner sends reply -> never create or upsert new conversation, update existing in place
+        const { error: convUpdateErr } = await supabase
+          .from('conversations')
+          .update({
+            last_message: lastSnippet,
+            last_message_at: nowIso,
+          })
+          .eq('id', targetConvId);
 
-      if (convError) {
-        console.warn('[Step B Notice: conversations upsert]:', convError.message || convError);
+        if (convUpdateErr) {
+          console.warn('[Step B Notice: conversations update on owner reply]:', convUpdateErr.message || convUpdateErr);
+        }
+      } else {
+        // Visitor sends message -> upsert parent record in conversations
+        const convPayload = {
+          id: targetConvId,
+          visitor_id: vId,
+          owner_id: ownerId,
+          last_message: lastSnippet,
+          last_message_at: nowIso,
+        };
+        const { error: convError } = await supabase
+          .from('conversations')
+          .upsert(convPayload, { onConflict: 'id' });
+
+        if (convError) {
+          console.warn('[Step B Notice: conversations upsert]:', convError.message || convError);
+        }
       }
     } catch (errB) {
       console.warn('[Step B Exception: conversations]:', errB);
@@ -1443,6 +1460,13 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
         messages: convMsgs,
       });
     }
+
+    // Sort conversations chronologically by most recent message/activity on top
+    result.sort((a, b) => {
+      const timeA = a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : 0;
+      const timeB = b.lastTimestamp ? new Date(b.lastTimestamp).getTime() : 0;
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+    });
 
     return result;
   } catch {
