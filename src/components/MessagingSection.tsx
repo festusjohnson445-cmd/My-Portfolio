@@ -235,35 +235,24 @@ async function pushChatsToServer(conversations: Conversation[], overwrite = fals
   }
 }
 
-// Helper to get or create a unique dynamic visitor_id in localStorage (Never use a hardcoded default ID)
-const getOrCreateVisitorId = (): string => {
+// Helper to get stored visitor_id from localStorage (lazy creation - never generates on page load)
+const getStoredVisitorId = (): string => {
   try {
-    const existing = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID);
-    if (existing && existing.trim()) {
-      localStorage.setItem('visitor_id', existing.trim());
-      localStorage.setItem(STORAGE_KEY_VISITOR_ID, existing.trim());
-      return existing.trim();
-    }
-    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const newId = `visitor_${uuid}`;
-    localStorage.setItem('visitor_id', newId);
-    localStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
-    return newId;
+    return localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || '';
   } catch {
-    const fallbackUuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
-    return `visitor_${fallbackUuid}`;
+    return '';
   }
 };
 
-// Helper to get or create a conversation_id in localStorage ('conv_' + visitor_id)
-const getOrCreateConversationId = (vId?: string): string => {
-  const visitorKey = vId || getOrCreateVisitorId();
-  const convKey = `conv_${visitorKey}`;
+// Helper to get stored single-thread conversation_id ('conv_' + visitor_id)
+const getStoredConversationId = (vId?: string): string => {
   try {
-    localStorage.setItem('conversation_id', convKey);
-    localStorage.setItem('fesline_current_conversation_id', convKey);
-  } catch {}
-  return convKey;
+    const v = vId || getStoredVisitorId();
+    if (v) return `conv_${v}`;
+    return localStorage.getItem('conversation_id') || '';
+  } catch {
+    return '';
+  }
 };
 
 // Helper to generate RFC4122 v4 compliant UUID for message IDs to satisfy Supabase uuid type constraint
@@ -283,10 +272,52 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
 
-  const [visitorId, setVisitorId] = useState<string>(() => getOrCreateVisitorId());
-  const [conversationId, setConversationId] = useState<string>(() => getOrCreateConversationId());
+  // Master persistent multi-chat database (shared between visitor submissions & owner replies)
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_CHATS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
+          const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
+          return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
+        }
+      }
+    } catch {}
+    return DEFAULT_CONVERSATIONS;
+  });
+
+  // For visitor: messaging profile state (picture, name, role)
+  const [visitorProfile, setVisitorProfile] = useState<VisitorMessagingProfile>(getInitialVisitorProfile);
+  const [isVisitorProfileModalOpen, setIsVisitorProfileModalOpen] = useState(false);
+
+  // Lazy Visitor ID & Conversation State (Only populated after visitor logs in via InChat)
+  const [visitorId, setVisitorId] = useState<string>(() => getStoredVisitorId());
+  const [conversationId, setConversationId] = useState<string>(() => getStoredConversationId());
   const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1');
-  const myDeterministicConvId = useMemo(() => conversationId || generateDeterministicConversationId(visitorId, resolvedOwnerId), [conversationId, visitorId, resolvedOwnerId]);
+  const myDeterministicConvId = useMemo(() => conversationId || (visitorId ? `conv_${visitorId}` : generateDeterministicConversationId(visitorId || 'guest', resolvedOwnerId)), [conversationId, visitorId, resolvedOwnerId]);
+
+  // Login tooltip on send button when unauthenticated visitor tries to send
+  const [loginTooltipVisible, setLoginTooltipVisible] = useState(false);
+  const tooltipTimeoutRef = useRef<any>(null);
+
+  // Trigger visual tooltip alert directly from the Send button
+  const triggerLoginPrompt = () => {
+    setLoginTooltipVisible(true);
+    if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
+    tooltipTimeoutRef.current = setTimeout(() => {
+      setLoginTooltipVisible(false);
+    }, 4500);
+  };
+
+  // Check whether current visitor has logged in / set up profile via InChat
+  const isVisitorLoggedIn = Boolean(
+    visitorId && (
+      (visitorProfile.name && visitorProfile.name.trim() !== '' && visitorProfile.name !== 'Visitor') ||
+      (typeof localStorage !== 'undefined' && (localStorage.getItem('display_name') || localStorage.getItem('role_subject')))
+    )
+  );
 
   useEffect(() => {
     getOrFetchOwnerId().then((uid) => {
@@ -294,19 +325,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     }).catch(err => console.error('[Supabase Owner Fetch Error]:', err));
   }, [ownerUid]);
 
-  // Initial useEffect hook on component mount: reads saved visitor_id and conversation_id from localStorage
-  // to fetch and render all existing messages directly from Supabase, ensuring sent messages persist permanently
-  // across refreshes and never disappear from the screen.
+  // Initial useEffect hook on component mount:
+  // Strictly reads existing stored visitor_id only if visitor previously logged in.
+  // Never creates visitor_id or Supabase records for anonymous page landings.
   useEffect(() => {
     if (isOwner) return;
 
+    const savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || '';
+    if (!savedVId) return; // Lazy: do nothing for unauthenticated visitors
+
     const initAndFetchVisitorSession = async () => {
       try {
-        const savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || visitorId;
-        const savedCId = localStorage.getItem('conversation_id') || localStorage.getItem('fesline_current_conversation_id') || conversationId;
+        const savedCId = `conv_${savedVId}`;
 
-        if (savedVId && savedVId !== visitorId) setVisitorId(savedVId);
-        if (savedCId && savedCId !== conversationId) setConversationId(savedCId);
+        if (savedVId !== visitorId) setVisitorId(savedVId);
+        if (savedCId !== conversationId) setConversationId(savedCId);
 
         const savedDisplayName = localStorage.getItem('display_name');
         if (savedDisplayName) {
@@ -412,26 +445,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const [resumeInput, setResumeInput] = useState('');
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [copiedVisitorId, setCopiedVisitorId] = useState(false);
-
-  // Master persistent multi-chat database (shared between visitor submissions & owner replies)
-  const [conversations, setConversations] = useState<Conversation[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_CHATS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
-          const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
-          return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
-        }
-      }
-    } catch {}
-    return DEFAULT_CONVERSATIONS;
-  });
-
-  // For visitor: messaging profile state (picture, name, role)
-  const [visitorProfile, setVisitorProfile] = useState<VisitorMessagingProfile>(getInitialVisitorProfile);
-  const [isVisitorProfileModalOpen, setIsVisitorProfileModalOpen] = useState(false);
 
   // For visitor: clear chat confirmation modal state
   const [isVisitorClearModalOpen, setIsVisitorClearModalOpen] = useState(false);
@@ -1058,12 +1071,16 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile, accessKey: string) => {
     setVisitorProfile(updated);
     setVisitorId(accessKey);
-    const targetConvId = conversationId || getOrCreateConversationId();
+    const targetConvId = `conv_${accessKey}`;
+    setConversationId(targetConvId);
+    setLoginTooltipVisible(false);
 
     try {
       localStorage.setItem('visitor_id', accessKey);
       localStorage.setItem('conversation_id', targetConvId);
       localStorage.setItem('display_name', updated.name);
+      localStorage.setItem('avatar_url', updated.avatarUrl || '');
+      localStorage.setItem('role_subject', updated.roleOrCompany || 'Visitor Direct Chat');
       localStorage.setItem('visitor_profile', JSON.stringify(updated));
       localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updated));
       localStorage.setItem('fesline_visitor_access_key', accessKey);
@@ -1215,8 +1232,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         console.error('Supabase broadcast error:', err);
       }
     } else {
-      const currentVisitorId = visitorId || getOrCreateVisitorId();
-      const currentConvId = conversationId || getOrCreateConversationId();
+      // 2. VISITOR SENDS VOICE NOTE
+      if (!isVisitorLoggedIn) {
+        triggerLoginPrompt();
+        return;
+      }
+
+      const currentVisitorId = visitorId || getStoredVisitorId();
+      const currentConvId = conversationId || getStoredConversationId(currentVisitorId);
 
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
@@ -1310,6 +1333,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   // Start physical microphone recording
   const startVoiceRecording = async () => {
+    if (!isOwner && !isVisitorLoggedIn) {
+      triggerLoginPrompt();
+      return;
+    }
     if (isRecording) return;
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -1397,6 +1424,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   };
 
   const handleSendDemoAudio = async () => {
+    if (!isOwner && !isVisitorLoggedIn) {
+      triggerLoginPrompt();
+      return;
+    }
     try {
       setShowMailNotice('Generating engineering voice memo...');
       const demo = await generateDemoVoiceNote(5, 'Voice Note');
@@ -1412,12 +1443,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     e.preventDefault();
     if (!inputMessage.trim() && attachedFiles.length === 0) return;
 
+    // Explicit Visitor Login Check on message send
+    if (!isOwner && !isVisitorLoggedIn) {
+      triggerLoginPrompt();
+      return;
+    }
+
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const currentText = inputMessage.trim();
     const currentAttachments = [...attachedFiles];
 
     if (isOwner) {
-      // 1. OWNER SENDS REAL REPLY
+      // 1. OWNER SENDS REAL REPLY (Reuses existing conversation_id, never creates duplicate conversations)
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
@@ -1482,9 +1519,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         console.error('Supabase broadcast error:', err);
       }
     } else {
-      // 2. VISITOR SENDS MESSAGE (NO AUTH REQUIRED - MANAGED ENTIRELY VIA LOCALSTORAGE)
-      const currentVisitorId = visitorId || getOrCreateVisitorId();
-      const currentConvId = conversationId || getOrCreateConversationId();
+      // 2. VISITOR SENDS MESSAGE (Single Conversation Threading per visitor: conv_ + visitor_id)
+      const currentVisitorId = visitorId || getStoredVisitorId();
+      const currentConvId = conversationId || getStoredConversationId(currentVisitorId);
 
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
@@ -2683,20 +2720,50 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                       </button>
                     </div>
 
-                    {/* Compact Message Send Button */}
-                    <button
-                      type="submit"
-                      disabled={!inputMessage.trim() && attachedFiles.length === 0}
-                      className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs ${
-                        inputMessage.trim() || attachedFiles.length > 0
-                          ? 'bg-[#243346] hover:bg-[#1a2533] text-white'
-                          : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                      }`}
-                      title="Send message"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline text-xs">Send</span>
-                    </button>
+                    {/* Compact Message Send Button with Visual InChat Login Prompt Tooltip */}
+                    <div className="relative flex items-center">
+                      {loginTooltipVisible && !isOwner && !isVisitorLoggedIn && (
+                        <div
+                          role="alert"
+                          className="absolute bottom-full right-0 mb-3 z-50 flex items-center gap-2 bg-[#243346] text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-2xl border border-white/20 whitespace-nowrap animate-bounce"
+                        >
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                          <span>Click the InChat to Login First</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLoginTooltipVisible(false);
+                              setIsVisitorProfileModalOpen(true);
+                            }}
+                            className="ml-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
+                          >
+                            InChat
+                          </button>
+                          {/* Tooltip arrow pointing down to Send button */}
+                          <div className="absolute top-full right-4 -mt-1 w-0 h-0 border-x-4 border-x-transparent border-t-6 border-t-[#243346]" />
+                        </div>
+                      )}
+
+                      <button
+                        type="submit"
+                        onClick={(e) => {
+                          if (!isOwner && !isVisitorLoggedIn && (inputMessage.trim() || attachedFiles.length > 0)) {
+                            e.preventDefault();
+                            triggerLoginPrompt();
+                          }
+                        }}
+                        disabled={!inputMessage.trim() && attachedFiles.length === 0}
+                        className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs ${
+                          inputMessage.trim() || attachedFiles.length > 0
+                            ? 'bg-[#243346] hover:bg-[#1a2533] text-white'
+                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                        }`}
+                        title="Send message"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline text-xs">Send</span>
+                      </button>
+                    </div>
                   </form>
                 </div>
               )}

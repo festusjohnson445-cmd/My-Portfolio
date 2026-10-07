@@ -1155,10 +1155,12 @@ export async function getOrFetchOwnerId(): Promise<string> {
 
 /**
  * Sequential Database Upsert Pipeline:
- * Before inserting any row into messages, execute these steps in order using try/catch:
+ * Upon valid message send after profile creation, executes a sequential try/catch pipeline:
  * Step A: upsert a record into visitor_profiles containing visitor_id, display_name, role_subject, avatar_url.
  * Step B: upsert a record into conversations using id ('conv_' + visitor_id), visitor_id, owner_id, last_message, and last_message_at.
  * Step C: insert the new row into messages linking conversation_id ('conv_' + visitor_id).
+ *
+ * When the owner replies, reuses the existing conversation_id and updates last_message/last_message_at in place.
  */
 export async function saveMessageAndConversationToSupabase(params: {
   conversationId?: string;
@@ -1184,55 +1186,56 @@ export async function saveMessageAndConversationToSupabase(params: {
   const { conversationId, visitorId, message, conversationMetadata } = params;
   if (!message) return false;
 
-  // 1. Dynamic Visitor ID (Never use a hardcoded default ID)
-  let vId = visitorId || (typeof localStorage !== 'undefined' ? localStorage.getItem('visitor_id') : '');
-  if (!vId && conversationId) {
-    vId = conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId;
-  }
-  if (!vId) {
-    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
-    vId = `visitor_${uuid}`;
-  }
-
-  if (typeof localStorage !== 'undefined' && !localStorage.getItem('visitor_id')) {
-    localStorage.setItem('visitor_id', vId);
-  }
-
-  // Conversation ID is strictly 'conv_' + visitor_id
-  const targetConvId = `conv_${vId}`;
+  const isOwnerSender = message.sender === 'festus';
   const ownerId = await getOrFetchOwnerId();
   const safeMessageId = ensureValidUuid(message.id);
   const nowIso = new Date().toISOString();
   const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
 
-  const displayName = conversationMetadata?.visitorName || conversationMetadata?.customName || conversationMetadata?.defaultLabel || (typeof localStorage !== 'undefined' ? localStorage.getItem('display_name') : '') || 'Visitor';
-  const roleSubject = conversationMetadata?.roleOrCompany || (typeof localStorage !== 'undefined' ? localStorage.getItem('role_subject') : '') || 'Visitor Direct Chat';
-  const avatarUrl = conversationMetadata?.avatarUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('avatar_url') : '') || '';
-  const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? localStorage.getItem('avatar_color') : '') || 'bg-slate-700';
+  // Determine visitor ID and conversation ID
+  let vId = visitorId || (conversationId ? (conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId) : '');
+  if (!vId && !isOwnerSender) {
+    vId = typeof localStorage !== 'undefined' ? (localStorage.getItem('visitor_id') || '') : '';
+  }
+  if (!vId) {
+    vId = 'visitor_guest';
+  }
+
+  // Conversation ID is strictly 'conv_' + visitor_id (Single Conversation Threading)
+  const targetConvId = conversationId && conversationId.startsWith('conv_')
+    ? conversationId
+    : (conversationId || `conv_${vId}`);
+
+  const displayName = conversationMetadata?.visitorName || conversationMetadata?.customName || conversationMetadata?.defaultLabel || (typeof localStorage !== 'undefined' ? (localStorage.getItem('display_name') || '') : '') || 'Visitor';
+  const roleSubject = conversationMetadata?.roleOrCompany || (typeof localStorage !== 'undefined' ? (localStorage.getItem('role_subject') || '') : '') || 'Visitor Direct Chat';
+  const avatarUrl = conversationMetadata?.avatarUrl || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_url') || '') : '') || '';
+  const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_color') || '') : '') || 'bg-slate-700';
 
   try {
-    // Step A: upsert a record into visitor_profiles containing visitor_id, display_name, role_subject, avatar_url
-    try {
-      const profilePayload = {
-        visitor_id: vId,
-        display_name: displayName,
-        role_subject: roleSubject,
-        avatar_url: avatarUrl,
-        avatar_color: avatarColor,
-        updated_at: nowIso,
-      };
-      const { error: vpError } = await supabase
-        .from('visitor_profiles')
-        .upsert(profilePayload, { onConflict: 'visitor_id' });
+    // Step A: Only upsert visitor_profiles when visitor is sending or when profile metadata is present
+    if (!isOwnerSender || (conversationMetadata?.visitorName || conversationMetadata?.customName)) {
+      try {
+        const profilePayload = {
+          visitor_id: vId,
+          display_name: displayName,
+          role_subject: roleSubject,
+          avatar_url: avatarUrl,
+          avatar_color: avatarColor,
+          updated_at: nowIso,
+        };
+        const { error: vpError } = await supabase
+          .from('visitor_profiles')
+          .upsert(profilePayload, { onConflict: 'visitor_id' });
 
-      if (vpError) {
-        console.error('[Step A Error: visitor_profiles upsert]:', vpError);
+        if (vpError) {
+          console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
+        }
+      } catch (errA) {
+        console.warn('[Step A Exception: visitor_profiles]:', errA);
       }
-    } catch (errA) {
-      console.error('[Step A Exception: visitor_profiles]:', errA);
     }
 
-    // Step B: upsert a record into conversations using id ('conv_' + visitor_id), visitor_id, owner_id, last_message, and last_message_at
+    // Step B: Upsert the parent record in conversations (updating id, visitor_id, owner_id, last_message, and last_message_at in place)
     try {
       const convPayload = {
         id: targetConvId,
@@ -1246,19 +1249,19 @@ export async function saveMessageAndConversationToSupabase(params: {
         .upsert(convPayload, { onConflict: 'id' });
 
       if (convError) {
-        console.error('[Step B Error: conversations upsert]:', convError);
+        console.warn('[Step B Notice: conversations upsert]:', convError.message || convError);
       }
     } catch (errB) {
-      console.error('[Step B Exception: conversations]:', errB);
+      console.warn('[Step B Exception: conversations]:', errB);
     }
 
-    // Step C: insert the new row into messages linking conversation_id ('conv_' + visitor_id)
+    // Step C: Insert the new row into messages linking conversation_id ('conv_' + visitor_id)
     try {
       const messagePayload: Record<string, any> = {
         id: safeMessageId,
         conversation_id: targetConvId,
-        sender_id: message.sender === 'visitor' ? vId : ownerId,
-        receiver_id: message.sender === 'visitor' ? ownerId : vId,
+        sender_id: isOwnerSender ? ownerId : vId,
+        receiver_id: isOwnerSender ? vId : ownerId,
         content: message.text || lastSnippet,
         created_at: nowIso,
       };
@@ -1268,7 +1271,6 @@ export async function saveMessageAndConversationToSupabase(params: {
         .insert(messagePayload);
 
       if (msgError) {
-        // Log notice if a remote DB trigger/function requires schema adjustment
         console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
       }
     } catch (errC: any) {
@@ -1299,8 +1301,8 @@ export async function saveMessageAndConversationToSupabase(params: {
 export const sendAndPersistMessageToSupabase = saveMessageAndConversationToSupabase;
 
 /**
- * Fetch all conversations joined with visitor_profiles so guest's display_name,
- * role_subject, custom photo/color avatar, and live message preview display correctly
+ * Fetch all conversations joined with visitor_profiles strictly aggregated by visitor conversation thread (WhatsApp-style)
+ * Deduplicates in place so each visitor occupies a single row in the owner's inbox panel.
  */
 export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
   try {
@@ -1308,15 +1310,16 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
     let convsMap: Record<string, any> = {};
 
     try {
-      // 1. Fetch all conversations from Supabase without restrictive owner_id filtering
-      // to ensure all visitor inquiries are always visible to the owner on live hosting (e.g. Vercel)
       const { data: all, error } = await supabase
         .from('conversations')
         .select('*');
 
       if (!error && all && Array.isArray(all)) {
         for (const c of all) {
-          if (c && c.id) convsMap[c.id] = c;
+          if (c && c.id) {
+            const canonicalId = c.id.startsWith('conv_') ? c.id : `conv_${c.visitor_id || c.id}`;
+            convsMap[canonicalId] = { ...c, id: canonicalId };
+          }
         }
       }
     } catch {}
@@ -1355,78 +1358,63 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
             voiceNote: m.voice_note || m.voiceNote,
           };
 
-          // Index by conversation_id
-          if (m.conversation_id) {
-            if (!messagesMap[m.conversation_id]) messagesMap[m.conversation_id] = [];
-            messagesMap[m.conversation_id].push(msgObj);
+          const cId = m.conversation_id ? (m.conversation_id.startsWith('conv_') ? m.conversation_id : `conv_${m.conversation_id}`) : '';
+          if (cId) {
+            if (!messagesMap[cId]) messagesMap[cId] = [];
+            messagesMap[cId].push(msgObj);
           }
-          // Also index by sender_id if it's a visitor ID
-          if (m.sender_id && m.sender_id !== ownerId) {
-            if (!messagesMap[m.sender_id]) messagesMap[m.sender_id] = [];
-            if (m.sender_id !== m.conversation_id) {
-              messagesMap[m.sender_id].push(msgObj);
-            }
-          }
-          // Also index by receiver_id if it's a visitor ID
-          if (m.receiver_id && m.receiver_id !== ownerId) {
-            if (!messagesMap[m.receiver_id]) messagesMap[m.receiver_id] = [];
-            if (m.receiver_id !== m.conversation_id && m.receiver_id !== m.sender_id) {
-              messagesMap[m.receiver_id].push(msgObj);
+          const visitorKey = m.sender_id && m.sender_id !== ownerId && m.sender_id !== 'festus' ? m.sender_id : (m.receiver_id && m.receiver_id !== ownerId ? m.receiver_id : '');
+          if (visitorKey) {
+            const canonKey = `conv_${visitorKey}`;
+            if (canonKey !== cId) {
+              if (!messagesMap[canonKey]) messagesMap[canonKey] = [];
+              messagesMap[canonKey].push(msgObj);
             }
           }
         }
       }
     } catch {}
 
-    // Collect all unique conversation IDs across conversations, visitor_profiles, and messages
-    const allIds = new Set<string>([
-      ...Object.keys(convsMap),
-      ...Object.keys(messagesMap),
-    ]);
-
-    // Add profile IDs but check if we can link them
-    for (const pId of Object.keys(profilesMap)) {
-      // Find if there's any conversation for this profile ID
-      const correspondingConv = Object.values(convsMap).find((c: any) => c.visitor_id === pId);
-      if (correspondingConv) {
-        allIds.add(correspondingConv.id);
-      } else {
-        allIds.add(pId);
+    // Deduplicate visitors strictly so each visitor occupies exactly 1 row in the owner's inbox panel
+    const visitorKeyMap = new Map<string, string>(); // visitor_id -> canonical convId
+    for (const vId of Object.keys(profilesMap)) {
+      visitorKeyMap.set(vId, `conv_${vId}`);
+    }
+    for (const cId of Object.keys(convsMap)) {
+      const c = convsMap[cId];
+      const vId = c.visitor_id || cId.replace(/^conv_/, '');
+      visitorKeyMap.set(vId, cId);
+    }
+    for (const cId of Object.keys(messagesMap)) {
+      const vId = cId.replace(/^conv_/, '');
+      if (!visitorKeyMap.has(vId)) {
+        visitorKeyMap.set(vId, cId);
       }
     }
 
-    if (allIds.size === 0) return [];
+    if (visitorKeyMap.size === 0) return [];
 
     const result: any[] = [];
-    for (const id of allIds) {
-      let c = convsMap[id];
-      if (!c) {
-        c = Object.values(convsMap).find((conv: any) => conv.visitor_id === id);
-      }
-      c = c || {};
+    for (const [vId, convId] of visitorKeyMap.entries()) {
+      const c = convsMap[convId] || convsMap[vId] || {};
+      const vProfile = profilesMap[vId] || profilesMap[c.visitor_id] || {};
 
-      const vProfile = profilesMap[c.visitor_id] || profilesMap[id] || {};
-      const actualConvId = c.id || id;
-      
-      // Merge all messages belonging to this conversation or visitor ID
       const rawMsgs = [
-        ...(messagesMap[actualConvId] || []),
-        ...(c.visitor_id && c.visitor_id !== actualConvId ? (messagesMap[c.visitor_id] || []) : []),
-        ...(c.id && c.id !== actualConvId ? (messagesMap[c.id] || []) : []),
+        ...(messagesMap[convId] || []),
+        ...(messagesMap[`conv_${vId}`] || []),
+        ...(messagesMap[vId] || []),
         ...(Array.isArray(c.messages) ? c.messages : []),
       ];
 
-      // Deduplicate by message id
       const uniqueMsgMap = new Map<string, any>();
       for (const m of rawMsgs) {
         if (m && m.id) uniqueMsgMap.set(m.id, m);
       }
       const convMsgs = Array.from(uniqueMsgMap.values());
 
-      // If conversation has last_message but no messages array, synthesize the message
       if (convMsgs.length === 0 && (c.last_message || c.lastMessage)) {
         convMsgs.push({
-          id: `msg-${actualConvId}`,
+          id: `msg-${convId}`,
           sender: 'visitor',
           text: c.last_message || c.lastMessage,
           timestamp: c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
@@ -1440,7 +1428,8 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
 
       result.push({
-        id: actualConvId,
+        id: convId,
+        visitorId: vId,
         defaultLabel: displayName,
         customName: displayName,
         visitorName: displayName,

@@ -126,16 +126,10 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
         accessKey = `visitor_${uuid}`;
       }
 
-      // 2. Ensure conversation_id is persisted directly in localStorage
-      let convId = localStorage.getItem('conversation_id') || localStorage.getItem('fesline_current_conversation_id');
-      if (!convId || !convId.trim()) {
-        const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
-          ? crypto.randomUUID() 
-          : `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        convId = `conv_${uuid}`;
-        localStorage.setItem('conversation_id', convId);
-        localStorage.setItem('fesline_current_conversation_id', convId);
-      }
+      // 2. Ensure single-thread conversation_id ('conv_' + visitor_id) is persisted directly in localStorage
+      const convId = `conv_${accessKey}`;
+      localStorage.setItem('conversation_id', convId);
+      localStorage.setItem('fesline_current_conversation_id', convId);
 
       const updatedProfile: VisitorMessagingProfile = {
         name: displayName,
