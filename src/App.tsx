@@ -138,7 +138,7 @@ export default function App() {
         activePart={activePart}
         onSelectPart={handleSelectPart}
         onResumeClick={handleOneClickResumeDownload}
-        onRecruiterScanClick={() => alert('Coming Soon')}
+        onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
         resumeDownloadCount={resumeDownloadCount}
       />
 
@@ -151,7 +151,7 @@ export default function App() {
             <LandingHomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={handleOneClickResumeDownload}
-              onRecruiterScanClick={() => alert('Coming Soon')}
+              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
             />
           </section>
         )}
@@ -193,7 +193,7 @@ export default function App() {
             <HomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={() => setIsResumeOpen(true)}
-              onRecruiterScanClick={() => alert('Coming Soon')}
+              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
             />
 
             {/* Bottom Sequential Navigator */}
@@ -280,6 +280,12 @@ export default function App() {
         isOpen={isResumeOpen}
         onClose={() => setIsResumeOpen(false)}
         onDownloaded={handleResumeDownload}
+      />
+
+      <RecruiterScanMode
+        isOpen={isRecruiterScanOpen}
+        onClose={() => setIsRecruiterScanOpen(false)}
+        onResumeClick={handleOneClickResumeDownload}
       />
 
       {/* Floating Scroll to Top Quick Action */}

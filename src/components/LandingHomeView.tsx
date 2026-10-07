@@ -98,7 +98,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             <div className="mt-4 flex items-center justify-center gap-1.5 text-xs font-sans text-slate-600">
               <span>3D Modeling</span>
               <button
-                onClick={() => alert('Coming Soon')}
+                onClick={onRecruiterScanClick}
                 className="inline-flex items-center gap-1 font-bold text-cyan-900 hover:text-cyan-950 underline cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-600" />

@@ -166,7 +166,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Recruiter Scan Button */}
             {onRecruiterScanClick && (
               <button
-                onClick={() => alert('Coming Soon')}
+                onClick={onRecruiterScanClick}
                 className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-900/10 hover:bg-cyan-900/20 text-cyan-950 border border-cyan-800/30 text-xs font-sans font-bold shadow-2xs transition-colors cursor-pointer"
                 title="Recruiter Quick Scan Mode"
               >

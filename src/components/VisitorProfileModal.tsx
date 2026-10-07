@@ -107,7 +107,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Submit Profile Form (Rely strictly on supabase.auth.signInAnonymously() without email dependencies)
+  // Submit Profile Form: Manage guest visitor state entirely via localStorage without Supabase Auth
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const displayName = name.trim() || 'Visitor';
@@ -117,11 +117,24 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     setRestoreError(null);
 
     try {
-      // 1. Generate a unique 6-character Visitor Access Key (VIS-XXXX) without Supabase Auth requirements
-      let accessKey = activeVisitorId;
-      if (!accessKey) {
-        const randomNum = Math.floor(1000 + Math.random() * 9000);
-        accessKey = `VIS-${randomNum}`;
+      // 1. Generate or use persistent visitor_id (visitor_ + crypto.randomUUID())
+      let accessKey = activeVisitorId || localStorage.getItem('visitor_id') || localStorage.getItem('fesline_current_visitor_id');
+      if (!accessKey || !accessKey.trim()) {
+        const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        accessKey = `visitor_${uuid}`;
+      }
+
+      // 2. Ensure conversation_id is persisted directly in localStorage
+      let convId = localStorage.getItem('conversation_id') || localStorage.getItem('fesline_current_conversation_id');
+      if (!convId || !convId.trim()) {
+        const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        convId = `conv_${uuid}`;
+        localStorage.setItem('conversation_id', convId);
+        localStorage.setItem('fesline_current_conversation_id', convId);
       }
 
       const updatedProfile: VisitorMessagingProfile = {
@@ -131,35 +144,44 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
         avatarColor,
       };
 
-      // 2. Directly write visitor profile credentials to database using basic upsert queries
-      await saveVisitorProfileToSupabase({
-        visitor_id: accessKey,
-        display_name: displayName,
-        role_subject: roleSubject,
-        avatar_url: avatarUrl || '',
-        avatar_color: avatarColor,
-        id: accessKey, // Use visitor_id string itself as secure DB representation
-      });
-
-      // 4. Save to localStorage to persist session
+      // 3. Persist visitor_id, conversation_id, display_name, and profile details directly in localStorage
+      localStorage.setItem('visitor_id', accessKey);
+      localStorage.setItem('conversation_id', convId);
+      localStorage.setItem('display_name', displayName);
+      localStorage.setItem('visitor_profile', JSON.stringify(updatedProfile));
+      localStorage.setItem('fesline_visitor_messaging_profile', JSON.stringify(updatedProfile));
       localStorage.setItem('fesline_visitor_access_key', accessKey);
+      localStorage.setItem('fesline_current_visitor_id', accessKey);
+
+      // 4. Save visitor profile to Supabase database wrapped in try/catch without wiping local state
+      try {
+        await saveVisitorProfileToSupabase({
+          visitor_id: accessKey,
+          display_name: displayName,
+          role_subject: roleSubject,
+          avatar_url: avatarUrl || '',
+          avatar_color: avatarColor,
+        });
+      } catch (dbErr) {
+        console.error('[Supabase Visitor Profile Save Error]:', dbErr);
+      }
 
       onSave(updatedProfile, accessKey);
       onClose();
     } catch (err: any) {
-      console.warn('Submit profile error:', err);
+      console.error('Submit profile error:', err);
       setRestoreError(err?.message || 'Failed to establish visitor credentials.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Restore Session via Access Key
+  // Restore Session via Visitor ID / Key
   const handleRestoreSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    const keyToSearch = enteredKey.trim().toUpperCase();
+    const keyToSearch = enteredKey.trim();
     if (!keyToSearch) {
-      setRestoreError('Please enter your 6-character Visitor Access Key.');
+      setRestoreError('Please enter your Visitor ID.');
       return;
     }
 
@@ -167,38 +189,37 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     setRestoreError(null);
 
     try {
-      // 1. Direct query visitor_profiles by the 6-character Access Key without Auth requirement
+      // 1. Direct query visitor_profiles by visitor_id without referencing non-existent id column
       const { data, error } = await supabase
         .from('visitor_profiles')
         .select('*')
         .eq('visitor_id', keyToSearch)
         .maybeSingle();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Supabase query error on restore:', error);
+        throw error;
+      }
 
       if (!data) {
-        setRestoreError('Access Key not found. Please try again.');
+        setRestoreError('Visitor ID not found. Please verify the ID or create a new profile.');
         return;
       }
 
       const restoredProfile: VisitorMessagingProfile = {
         name: data.display_name || data.name || 'Visitor',
-        roleOrCompany: data.role_subject || data.role_or_company || 'Visitor Inquiry',
+        roleOrCompany: data.role_subject || data.role_or_company || 'Visitor Direct Chat',
         avatarUrl: data.avatar_url || '',
         avatarColor: data.avatar_color || 'bg-slate-700',
       };
 
-      // 2. Update the record directly
-      await saveVisitorProfileToSupabase({
-        visitor_id: keyToSearch,
-        display_name: restoredProfile.name,
-        role_subject: restoredProfile.roleOrCompany,
-        avatar_url: restoredProfile.avatarUrl || '',
-        avatar_color: restoredProfile.avatarColor,
-        id: keyToSearch,
-      });
-
+      // 2. Persist visitor_id, display_name, and profile details directly in localStorage
+      localStorage.setItem('visitor_id', keyToSearch);
+      localStorage.setItem('display_name', restoredProfile.name);
+      localStorage.setItem('visitor_profile', JSON.stringify(restoredProfile));
+      localStorage.setItem('fesline_visitor_messaging_profile', JSON.stringify(restoredProfile));
       localStorage.setItem('fesline_visitor_access_key', keyToSearch);
+      localStorage.setItem('fesline_current_visitor_id', keyToSearch);
 
       onSave(restoredProfile, keyToSearch);
       onClose();
@@ -247,9 +268,9 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
         {activeVisitorId && (
           <div className="mb-3.5 p-2 rounded-lg bg-slate-50 border border-slate-200 text-[10px] flex items-center justify-between">
             <div className="flex items-center gap-1.5 min-w-0">
-              <Key className="w-3 h-3 text-slate-400" />
-              <span className="font-semibold text-slate-500 whitespace-nowrap">Your Access Key:</span>
-              <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-150 text-cyan-800 font-mono font-bold text-[10px] tracking-wider truncate">
+              <Key className="w-3 h-3 text-slate-400 shrink-0" />
+              <span className="font-semibold text-slate-500 whitespace-nowrap">Your Visitor ID:</span>
+              <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-150 text-cyan-800 font-mono font-bold text-[10px] tracking-wider truncate max-w-[170px]">
                 {activeVisitorId}
               </span>
             </div>
@@ -261,7 +282,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                 setTimeout(() => setCopiedKey(false), 2000);
               }}
               className="p-1 rounded bg-white hover:bg-slate-150 border border-slate-250 text-slate-500 hover:text-slate-800 cursor-pointer shadow-2xs shrink-0"
-              title="Copy Key"
+              title="Copy Visitor ID"
             >
               {copiedKey ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
             </button>
@@ -461,20 +482,20 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
               <span className="font-bold text-slate-800 flex items-center gap-1 mb-0.5">
                 <History className="w-3 h-3 text-cyan-600" /> Restore Account
               </span>
-              Enter your saved 6-character Visitor Access Key (e.g. <span className="font-mono font-bold">VIS-8392</span>) to restore your identity and message history instantly.
+              Enter your saved Visitor ID (e.g. <span className="font-mono font-bold text-[9px]">visitor_...</span>) to restore your identity and message history instantly.
             </div>
 
             <div>
               <label className="block font-bold text-slate-700 mb-0.5">
-                Access Key
+                Visitor ID
               </label>
               <input
                 type="text"
                 required
-                placeholder="e.g. VIS-8392"
+                placeholder="e.g. visitor_9b1deb4d..."
                 value={enteredKey}
                 onChange={(e) => setEnteredKey(e.target.value)}
-                className="w-full px-3 py-1.5 rounded border border-slate-300 text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#243346] text-[11px] font-mono font-semibold uppercase tracking-wider text-center"
+                className="w-full px-3 py-1.5 rounded border border-slate-300 text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#243346] text-[11px] font-mono font-semibold text-center"
               />
             </div>
 

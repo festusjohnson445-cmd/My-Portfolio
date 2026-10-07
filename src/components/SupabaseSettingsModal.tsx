@@ -52,6 +52,7 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
   } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -90,10 +91,11 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
     const cleanKey = anonKeyInput.trim();
 
     if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
-      alert('Please enter a valid URL starting with https:// or http://');
+      setFormError('Please enter a valid URL starting with https:// or http://');
       return;
     }
 
+    setFormError(null);
     updateCustomSupabaseConfig(cleanUrl, cleanKey);
     onSuccessNotice('Supabase settings updated & synced successfully!');
     if (onSyncProfile) {
@@ -192,6 +194,20 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Form Error Banner */}
+          {formError && (
+            <div className="p-3 bg-red-950/60 border border-red-800 rounded-xl text-red-200 text-xs flex items-center justify-between">
+              <span>{formError}</span>
+              <button
+                type="button"
+                onClick={() => setFormError(null)}
+                className="text-red-400 hover:text-white ml-2 text-xs font-bold cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {/* Form Fields */}
           <div className="space-y-4 bg-slate-950/50 p-4 sm:p-5 rounded-2xl border border-slate-800">
