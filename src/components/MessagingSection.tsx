@@ -75,6 +75,7 @@ export interface ChatMessage {
   status: 'seen' | 'unseen';
   attachments?: ChatAttachment[];
   voiceNote?: VoiceNoteData;
+  created_at?: string;
 }
 
 export interface Conversation {
@@ -707,6 +708,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   // Active conversation depending on whether user is Owner or Visitor
   const activeConversation: Conversation = useMemo(() => {
+    const sortChronological = (msgs: ChatMessage[]) => {
+      return [...msgs].sort((a, b) => {
+        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return timeA - timeB;
+      });
+    };
+
     if (!isOwner) {
       // Find visitor's conversation in master list by conversationId or visitorId
       const targetId = conversationId || myDeterministicConvId;
@@ -719,6 +728,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           customName: visitorProfile.name || found.customName,
           avatarUrl: visitorProfile.avatarUrl !== undefined ? visitorProfile.avatarUrl : found.avatarUrl,
           roleOrCompany: visitorProfile.roleOrCompany || found.roleOrCompany,
+          messages: sortChronological(found.messages || []),
         };
       }
       return {
@@ -737,8 +747,20 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
     const validOwnerConvs = conversations.filter((c) => c && ((c.messages && c.messages.length > 0) || Boolean(c.lastMessage)));
     const found = validOwnerConvs.find((c) => c.id === activeOwnerConvId);
-    if (found) return found;
-    return validOwnerConvs[0] || {
+    if (found) {
+      return {
+        ...found,
+        messages: sortChronological(found.messages || []),
+      };
+    }
+    const fallback = validOwnerConvs[0];
+    if (fallback) {
+      return {
+        ...fallback,
+        messages: sortChronological(fallback.messages || []),
+      };
+    }
+    return {
       id: 'inbox-empty',
       defaultLabel: 'Inbox',
       roleOrCompany: 'Visitor Inquiries',
@@ -883,6 +905,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
               attachments: m.attachments || undefined,
               voiceNote: m.voice_note || m.voiceNote || undefined,
+              created_at: m.created_at,
             };
           });
 
@@ -894,6 +917,12 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               for (const em of existing.messages || []) if (em && em.id) msgMap.set(em.id, em);
               for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
               const merged = Array.from(msgMap.values());
+              // Strictly ascending chronological order (ORDER BY created_at ASC)
+              merged.sort((a, b) => {
+                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return timeA - timeB;
+              });
               const last = merged[merged.length - 1];
 
               const updatedConv: Conversation = {
@@ -1748,16 +1777,62 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     setInputMessage(chip);
   };
 
-  // Filtered Conversations for Owner (conversations with at least 1 message or lastMessage)
+  // Deduplicated & Filtered Conversations for Owner (each visitor e.g. Billy, DavidG appears exactly ONCE)
   const filteredConversations = useMemo(() => {
-    return conversations.filter((c) => {
-      if (!c) return false;
+    const dedupedMap = new Map<string, Conversation>();
+
+    for (const c of conversations) {
+      if (!c || !c.id) continue;
       const hasContent = (c.messages && c.messages.length > 0) || Boolean(c.lastMessage);
-      if (!hasContent) return false;
-      if (sidebarFilter === 'important') return c.important;
-      if (sidebarFilter === 'unread') return c.unread;
-      return true;
+      if (!hasContent) continue;
+      if (sidebarFilter === 'important' && !c.important) continue;
+      if (sidebarFilter === 'unread' && !c.unread) continue;
+
+      // Unique deduplication key per visitor
+      const normalizedKey = (c.visitorName && c.visitorName !== 'Visitor')
+        ? c.visitorName.trim().toLowerCase()
+        : (c.id.startsWith('conv_') ? c.id.replace(/^conv_/, '') : c.id);
+
+      const existing = dedupedMap.get(normalizedKey);
+      if (!existing) {
+        dedupedMap.set(normalizedKey, c);
+      } else {
+        // Merge messages and preserve the most recent timestamp and details
+        const msgMap = new Map<string, ChatMessage>();
+        for (const m of existing.messages || []) if (m && m.id) msgMap.set(m.id, m);
+        for (const m of c.messages || []) if (m && m.id) msgMap.set(m.id, m);
+        const mergedMsgs = Array.from(msgMap.values());
+        mergedMsgs.sort((a, b) => {
+          const tA = (a as any).created_at ? new Date((a as any).created_at).getTime() : 0;
+          const tB = (b as any).created_at ? new Date((b as any).created_at).getTime() : 0;
+          return tA - tB;
+        });
+
+        const timeExisting = existing.lastTimestamp ? new Date(existing.lastTimestamp).getTime() : 0;
+        const timeC = c.lastTimestamp ? new Date(c.lastTimestamp).getTime() : 0;
+        const isCNewer = timeC >= timeExisting;
+
+        dedupedMap.set(normalizedKey, {
+          ...(isCNewer ? c : existing),
+          visitorName: c.visitorName || existing.visitorName || c.customName || existing.customName || 'Visitor',
+          customName: c.customName || existing.customName || c.visitorName || existing.visitorName || '',
+          avatarUrl: c.avatarUrl || existing.avatarUrl || '',
+          roleOrCompany: c.roleOrCompany || existing.roleOrCompany || 'Visitor Inquiry',
+          messages: mergedMsgs,
+          unread: existing.unread || c.unread,
+          important: existing.important || c.important,
+        });
+      }
+    }
+
+    const list = Array.from(dedupedMap.values());
+    list.sort((a, b) => {
+      const timeA = a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : 0;
+      const timeB = b.lastTimestamp ? new Date(b.lastTimestamp).getTime() : 0;
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
+
+    return list;
   }, [conversations, sidebarFilter]);
 
   // Search Results
