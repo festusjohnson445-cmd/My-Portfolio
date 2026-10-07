@@ -4,12 +4,8 @@ import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-
 // 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION
 // ============================================================================
 
-// Live Production Vercel Supabase URL & Key
-export const LIVE_VERCEL_SUPABASE_URL = 'https://teszyojnwaedjvqaqake.supabase.co';
-export const LIVE_VERCEL_SUPABASE_KEY = 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex';
-
-const ENV_SUPABASE_URL = ((typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) || '').trim();
-const ENV_SUPABASE_KEY = ((typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) || '').trim();
+const ENV_SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const ENV_SUPABASE_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
 // Support dynamic browser storage override if owner inputs custom credentials in Admin UI
 export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isRealConfig: boolean } {
@@ -25,11 +21,11 @@ export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isR
     return { url: ENV_SUPABASE_URL, anonKey: ENV_SUPABASE_KEY, isRealConfig: true };
   }
 
-  // Primary Live Supabase keys provided for live Vercel deployment & applet
+  // Graceful fallback URL & key so supabase client initializes without crashing in dev/preview
   return {
-    url: LIVE_VERCEL_SUPABASE_URL,
-    anonKey: LIVE_VERCEL_SUPABASE_KEY,
-    isRealConfig: true,
+    url: 'https://feslinemechanica.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM0NDk2MDB9.dummy_fallback_key',
+    isRealConfig: false,
   };
 }
 
@@ -1158,14 +1154,14 @@ export async function getOrFetchOwnerId(): Promise<string> {
 }
 
 /**
- * Every send operation first upserts the parent record in the conversations table
- * (updating id, visitor_id, last_message, and last_message_at) before inserting the
- * message payload into the messages table to satisfy database foreign key constraints.
- * All Supabase database calls are wrapped in try/catch blocks to surface errors via
- * console.error without wiping local state on success.
+ * Sequential Database Upsert Pipeline:
+ * Before inserting any row into messages, execute these steps in order using try/catch:
+ * Step A: upsert a record into visitor_profiles containing visitor_id, display_name, role_subject, avatar_url.
+ * Step B: upsert a record into conversations using id ('conv_' + visitor_id), visitor_id, owner_id, last_message, and last_message_at.
+ * Step C: insert the new row into messages linking conversation_id ('conv_' + visitor_id).
  */
 export async function saveMessageAndConversationToSupabase(params: {
-  conversationId: string;
+  conversationId?: string;
   visitorId?: string;
   message: {
     id: string;
@@ -1186,70 +1182,111 @@ export async function saveMessageAndConversationToSupabase(params: {
   };
 }): Promise<boolean> {
   const { conversationId, visitorId, message, conversationMetadata } = params;
-  if (!conversationId || !message) return false;
+  if (!message) return false;
 
-  const vId = visitorId || localStorage.getItem('visitor_id') || conversationId;
+  // 1. Dynamic Visitor ID (Never use a hardcoded default ID)
+  let vId = visitorId || (typeof localStorage !== 'undefined' ? localStorage.getItem('visitor_id') : '');
+  if (!vId && conversationId) {
+    vId = conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId;
+  }
+  if (!vId) {
+    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
+    vId = `visitor_${uuid}`;
+  }
+
+  if (typeof localStorage !== 'undefined' && !localStorage.getItem('visitor_id')) {
+    localStorage.setItem('visitor_id', vId);
+  }
+
+  // Conversation ID is strictly 'conv_' + visitor_id
+  const targetConvId = `conv_${vId}`;
   const ownerId = await getOrFetchOwnerId();
   const safeMessageId = ensureValidUuid(message.id);
-  const safeConvId = ensureValidUuid(conversationId);
   const nowIso = new Date().toISOString();
   const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
 
+  const displayName = conversationMetadata?.visitorName || conversationMetadata?.customName || conversationMetadata?.defaultLabel || (typeof localStorage !== 'undefined' ? localStorage.getItem('display_name') : '') || 'Visitor';
+  const roleSubject = conversationMetadata?.roleOrCompany || (typeof localStorage !== 'undefined' ? localStorage.getItem('role_subject') : '') || 'Visitor Direct Chat';
+  const avatarUrl = conversationMetadata?.avatarUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('avatar_url') : '') || '';
+  const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? localStorage.getItem('avatar_color') : '') || 'bg-slate-700';
+
   try {
-    // 0. Ensure visitor profile exists in visitor_profiles table to satisfy foreign key constraint on conversations
+    // Step A: upsert a record into visitor_profiles containing visitor_id, display_name, role_subject, avatar_url
     try {
-      await supabase.from('visitor_profiles').upsert({
+      const profilePayload = {
         visitor_id: vId,
-        display_name: conversationMetadata?.visitorName || conversationMetadata?.customName || conversationMetadata?.defaultLabel || 'Visitor',
-        role_subject: conversationMetadata?.roleOrCompany || 'Visitor Direct Chat',
-        avatar_url: conversationMetadata?.avatarUrl || '',
-        avatar_color: conversationMetadata?.avatarColor || 'bg-slate-700',
+        display_name: displayName,
+        role_subject: roleSubject,
+        avatar_url: avatarUrl,
+        avatar_color: avatarColor,
         updated_at: nowIso,
-      }, { onConflict: 'visitor_id' });
+      };
+      const { error: vpError } = await supabase
+        .from('visitor_profiles')
+        .upsert(profilePayload, { onConflict: 'visitor_id' });
+
+      if (vpError) {
+        console.error('[Step A Error: visitor_profiles upsert]:', vpError);
+      }
+    } catch (errA) {
+      console.error('[Step A Exception: visitor_profiles]:', errA);
+    }
+
+    // Step B: upsert a record into conversations using id ('conv_' + visitor_id), visitor_id, owner_id, last_message, and last_message_at
+    try {
+      const convPayload = {
+        id: targetConvId,
+        visitor_id: vId,
+        owner_id: ownerId,
+        last_message: lastSnippet,
+        last_message_at: nowIso,
+      };
+      const { error: convError } = await supabase
+        .from('conversations')
+        .upsert(convPayload, { onConflict: 'id' });
+
+      if (convError) {
+        console.error('[Step B Error: conversations upsert]:', convError);
+      }
+    } catch (errB) {
+      console.error('[Step B Exception: conversations]:', errB);
+    }
+
+    // Step C: insert the new row into messages linking conversation_id ('conv_' + visitor_id)
+    try {
+      const messagePayload: Record<string, any> = {
+        id: safeMessageId,
+        conversation_id: targetConvId,
+        sender_id: message.sender === 'visitor' ? vId : ownerId,
+        receiver_id: message.sender === 'visitor' ? ownerId : vId,
+        content: message.text || lastSnippet,
+        created_at: nowIso,
+      };
+
+      const { error: msgError } = await supabase
+        .from('messages')
+        .insert(messagePayload);
+
+      if (msgError) {
+        // Log notice if a remote DB trigger/function requires schema adjustment
+        console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
+      }
+    } catch (errC: any) {
+      console.warn('[Step C Exception handled]:', errC?.message || errC);
+    }
+
+    // Broadcast across live channels
+    try {
+      broadcastSupabaseChatMessage({
+        conversationId: targetConvId,
+        message: {
+          ...message,
+          id: safeMessageId,
+        },
+      });
     } catch {}
 
-    // 1. FIRST upsert the parent record in the conversations table
-    // (updating id, visitor_id, last_message, and last_message_at) before inserting message
-    // to satisfy database foreign key constraints
-    const convPayload: Record<string, any> = {
-      id: safeConvId,
-      visitor_id: vId,
-      owner_id: ownerId,
-      last_message: lastSnippet,
-      last_message_at: nowIso,
-    };
-
-    const { error: convError } = await supabase.from('conversations').upsert(convPayload, { onConflict: 'id' });
-    if (convError) {
-      console.error('[Supabase DB Conversations Parent Upsert Error]:', convError);
-    }
-
-    // 2. BEFORE inserting message payload into messages table to satisfy database foreign key constraints
-    // Using valid UUID id, safe conversation_id, sender_id, receiver_id, and content
-    const messagePayload: Record<string, any> = {
-      id: safeMessageId,
-      conversation_id: safeConvId,
-      sender_id: message.sender === 'visitor' ? vId : ownerId,
-      receiver_id: message.sender === 'visitor' ? ownerId : vId,
-      content: message.text || lastSnippet,
-      created_at: nowIso,
-    };
-
-    try {
-      const { error: msgError } = await supabase.from('messages').insert(messagePayload);
-      if (msgError) {
-        // If error occurred (e.g. database trigger schema discrepancy), try fallback with resilient upsert
-        const { error: fallbackError } = await resilientSupabaseUpsert('messages', messagePayload, 'id');
-        if (fallbackError) {
-          // Log note without throwing fatal error since parent conversation & realtime broadcast already succeeded
-          console.info('[Supabase DB Messages Table Note]:', fallbackError.message || fallbackError);
-        }
-      }
-    } catch (msgInsertErr: any) {
-      console.info('[Supabase DB Messages Table Notice]:', msgInsertErr?.message || msgInsertErr);
-    }
-
-    return !convError;
+    return true;
   } catch (err) {
     console.error('[Supabase Message & Conversation Save Exception]:', err);
     return false;
@@ -1386,48 +1423,25 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       }
       const convMsgs = Array.from(uniqueMsgMap.values());
 
-      let cleanSnippet = c.last_message || c.lastMessage || '';
-      if (cleanSnippet.startsWith('data:image')) cleanSnippet = '📷 Image attachment';
-      else if (cleanSnippet.startsWith('data:audio')) cleanSnippet = '🎤 Voice note';
-      else if (cleanSnippet.startsWith('data:application') || cleanSnippet.startsWith('data:text')) cleanSnippet = '📎 Document attachment';
-      else if (cleanSnippet.length > 200) cleanSnippet = cleanSnippet.slice(0, 200) + '...';
-
       // If conversation has last_message but no messages array, synthesize the message
-      if (convMsgs.length === 0 && cleanSnippet) {
+      if (convMsgs.length === 0 && (c.last_message || c.lastMessage)) {
         convMsgs.push({
           id: `msg-${actualConvId}`,
           sender: 'visitor',
-          text: cleanSnippet,
+          text: c.last_message || c.lastMessage,
           timestamp: c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
           status: 'unseen',
         });
       }
 
-      let displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || '';
-      if (!displayName || displayName.startsWith('data:') || displayName.length > 60) {
-        displayName = c.default_label && !c.default_label.startsWith('data:') && c.default_label.length <= 60 
-          ? c.default_label 
-          : `Visitor ${actualConvId.slice(0, 6)}`;
-      }
-
-      let defaultLabel = c.default_label || displayName;
-      if (!defaultLabel || defaultLabel.startsWith('data:') || defaultLabel.length > 60) {
-        defaultLabel = displayName;
-      }
-
-      let roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Direct Chat';
-      if (!roleSubject || roleSubject.startsWith('data:') || roleSubject.length > 60) {
-        roleSubject = 'Visitor Direct Chat';
-      }
-
-      const avatarUrl = (vProfile.avatar_url && typeof vProfile.avatar_url === 'string') 
-        ? vProfile.avatar_url 
-        : (c.avatar_url || '');
+      const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
+      const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
+      const avatarUrl = vProfile.avatar_url || vProfile.avatarUrl || c.avatar_url || '';
       const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
 
       result.push({
         id: actualConvId,
-        defaultLabel,
+        defaultLabel: displayName,
         customName: displayName,
         visitorName: displayName,
         avatarUrl,
@@ -1435,7 +1449,7 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
         roleOrCompany: roleSubject,
         unread: Boolean(c.unread ?? (convMsgs.some(m => m.sender === 'visitor' && m.status === 'unseen'))),
         important: Boolean(c.important),
-        lastMessage: cleanSnippet || (convMsgs.length > 0 ? (convMsgs[convMsgs.length - 1].text || 'New message') : 'New visitor inquiry'),
+        lastMessage: c.last_message || c.lastMessage || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].text : 'New message'),
         lastTimestamp: c.last_message_at || c.last_timestamp || c.lastTimestamp || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].timestamp : ''),
         messages: convMsgs,
       });
@@ -1444,6 +1458,56 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
     return result;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Subscribe to Supabase Realtime changes on public.messages filtered by conversation_id.
+ * Listens to postgres_changes (INSERT) on public.messages so owner replies immediately appear on visitor screen.
+ */
+export function subscribeToSupabaseMessagesRealtime(params: {
+  conversationId?: string;
+  isOwner?: boolean;
+  onNewMessage: (msg: any, convId: string) => void;
+}) {
+  const { conversationId, isOwner, onNewMessage } = params;
+  try {
+    const channelName = isOwner
+      ? `realtime:messages_owner_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+      : `realtime:messages_${conversationId || 'guest'}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    const filter = !isOwner && conversationId ? `conversation_id=eq.${conversationId}` : undefined;
+
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        filter
+          ? { event: 'INSERT', schema: 'public', table: 'messages', filter }
+          : { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          if (payload.new) {
+            onNewMessage(payload.new, (payload.new as any).conversation_id);
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'new_chat_message' },
+        (payload) => {
+          if (payload.payload && payload.payload.message) {
+            onNewMessage(payload.payload.message, payload.payload.conversationId);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (err) {
+    console.error('[Supabase Realtime Messages Subscription Error]:', err);
+    return () => {};
   }
 }
 

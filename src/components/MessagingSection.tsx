@@ -48,6 +48,7 @@ import {
   fetchVisitorProfileFromSupabase,
   saveVisitorProfileToSupabase,
   subscribeToSupabaseMessagingRealtime,
+  subscribeToSupabaseMessagesRealtime,
   generateDeterministicConversationId,
   getOrFetchOwnerId,
   ensureValidUuid,
@@ -234,41 +235,14 @@ async function pushChatsToServer(conversations: Conversation[], overwrite = fals
   }
 }
 
-// Helper function to check if two conversation lists are deeply equal to prevent unnecessary re-renders & flickering
-function areConversationsEqual(a: Conversation[], b: Conversation[]): boolean {
-  if (a === b) return true;
-  if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const c1 = a[i];
-    const c2 = b[i];
-    if (!c1 || !c2) return false;
-    if (c1.id !== c2.id) return false;
-    if (c1.unread !== c2.unread) return false;
-    if (c1.important !== c2.important) return false;
-    if (c1.lastMessage !== c2.lastMessage) return false;
-    if (c1.lastTimestamp !== c2.lastTimestamp) return false;
-    if (c1.visitorName !== c2.visitorName) return false;
-    if (c1.customName !== c2.customName) return false;
-    const m1 = c1.messages || [];
-    const m2 = c2.messages || [];
-    if (m1.length !== m2.length) return false;
-    if (m1.length > 0 && m2.length > 0) {
-      const last1 = m1[m1.length - 1];
-      const last2 = m2[m2.length - 1];
-      if (last1?.id !== last2?.id || last1?.text !== last2?.text || last1?.status !== last2?.status) return false;
-    }
-  }
-  return true;
-}
-
-// Helper to get or create a unique visitor_id in localStorage
+// Helper to get or create a unique dynamic visitor_id in localStorage (Never use a hardcoded default ID)
 const getOrCreateVisitorId = (): string => {
   try {
-    const existing = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || sessionStorage.getItem(STORAGE_KEY_VISITOR_ID);
+    const existing = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID);
     if (existing && existing.trim()) {
-      localStorage.setItem('visitor_id', existing);
-      localStorage.setItem(STORAGE_KEY_VISITOR_ID, existing);
-      return existing;
+      localStorage.setItem('visitor_id', existing.trim());
+      localStorage.setItem(STORAGE_KEY_VISITOR_ID, existing.trim());
+      return existing.trim();
     }
     const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const newId = `visitor_${uuid}`;
@@ -276,26 +250,20 @@ const getOrCreateVisitorId = (): string => {
     localStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
     return newId;
   } catch {
-    return `visitor_${Date.now()}`;
+    const fallbackUuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}`;
+    return `visitor_${fallbackUuid}`;
   }
 };
 
-// Helper to get or create a conversation_id in localStorage
-const getOrCreateConversationId = (): string => {
+// Helper to get or create a conversation_id in localStorage ('conv_' + visitor_id)
+const getOrCreateConversationId = (vId?: string): string => {
+  const visitorKey = vId || getOrCreateVisitorId();
+  const convKey = `conv_${visitorKey}`;
   try {
-    const existing = localStorage.getItem('conversation_id') || localStorage.getItem('fesline_current_conversation_id');
-    if (existing && existing.trim()) {
-      localStorage.setItem('conversation_id', existing);
-      return existing;
-    }
-    const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const newId = `conv_${uuid}`;
-    localStorage.setItem('conversation_id', newId);
-    localStorage.setItem('fesline_current_conversation_id', newId);
-    return newId;
-  } catch {
-    return `conv_${Date.now()}`;
-  }
+    localStorage.setItem('conversation_id', convKey);
+    localStorage.setItem('fesline_current_conversation_id', convKey);
+  } catch {}
+  return convKey;
 };
 
 // Helper to generate RFC4122 v4 compliant UUID for message IDs to satisfy Supabase uuid type constraint
@@ -371,7 +339,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           const { data: dbMessages, error: dbMsgError } = await supabase
             .from('messages')
             .select('*')
-            .eq('conversation_id', safeCId)
+            .or(`conversation_id.eq.${savedCId},conversation_id.eq.${safeCId},sender_id.eq.${savedVId}`)
             .order('created_at', { ascending: true });
 
           if (dbMsgError) {
@@ -541,13 +509,15 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           }
 
           const finalConvs = Array.from(mergedMap.values());
-          if (areConversationsEqual(prev, finalConvs)) {
-            return prev;
+          const currentStr = JSON.stringify(prev);
+          const finalStr = JSON.stringify(finalConvs);
+          if (currentStr !== finalStr) {
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, finalStr);
+            } catch {}
+            return finalConvs;
           }
-          try {
-            localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(finalConvs));
-          } catch {}
-          return finalConvs;
+          return prev;
         });
       }
     } finally {
@@ -609,6 +579,70 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       }
     });
 
+    // Supabase Realtime changes on public.messages (INSERT) so owner replies immediately appear on visitor screen
+    const currentActiveConvId = isOwner ? undefined : (conversationId || `conv_${visitorId}`);
+    const unsubMessagesStream = subscribeToSupabaseMessagesRealtime({
+      conversationId: currentActiveConvId,
+      isOwner,
+      onNewMessage: (msgRow, convId) => {
+        const isOwnerMsg = msgRow.sender === 'festus' || msgRow.sender_id === 'festus' || msgRow.sender_id === resolvedOwnerId;
+        const newMsg: ChatMessage = {
+          id: msgRow.id || generateMessageId(),
+          sender: isOwnerMsg ? 'festus' : 'visitor',
+          text: msgRow.content || msgRow.text || '',
+          timestamp: msgRow.timestamp || (msgRow.created_at ? new Date(msgRow.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+          status: msgRow.status || (isOwnerMsg ? 'seen' : 'unseen'),
+          attachments: msgRow.attachments || undefined,
+          voiceNote: msgRow.voice_note || msgRow.voiceNote || undefined,
+        };
+
+        setConversations((prev) => {
+          const targetId = convId || (isOwner ? activeOwnerConvId : (conversationId || `conv_${visitorId}`));
+          const idx = prev.findIndex((c) => c.id === targetId || c.id === `conv_${visitorId}` || c.id === visitorId || c.id === convId);
+
+          if (idx >= 0) {
+            const existing = prev[idx];
+            if (existing.messages.some((m) => m.id === newMsg.id)) return prev;
+            const updated = prev.map((c, i) =>
+              i === idx
+                ? {
+                    ...c,
+                    unread: newMsg.sender === 'visitor',
+                    messages: [...c.messages, newMsg],
+                    lastMessage: newMsg.text || (newMsg.voiceNote ? '🎤 Voice note' : 'Attachment'),
+                    lastTimestamp: newMsg.timestamp,
+                  }
+                : c
+            );
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          } else {
+            const newC: Conversation = {
+              id: targetId,
+              defaultLabel: 'Visitor',
+              customName: '',
+              visitorName: 'Visitor',
+              avatarUrl: '',
+              avatarColor: 'bg-slate-700',
+              roleOrCompany: 'Visitor Direct Chat',
+              unread: newMsg.sender === 'visitor',
+              important: false,
+              messages: [newMsg],
+              lastMessage: newMsg.text || 'New message',
+              lastTimestamp: newMsg.timestamp,
+            };
+            const updated = [newC, ...prev];
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          }
+        });
+      },
+    });
+
     // Supabase Database Table Changes Subscription (messages, conversations, visitor_profiles)
     const unsubSupabaseDbStream = subscribeToSupabaseMessagingRealtime(() => {
       fetchChatsFromServer();
@@ -624,13 +658,13 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           if (data && data.conversations && Array.isArray(data.conversations)) {
             const cleaned = data.conversations.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
             setConversations((prev) => {
-              if (areConversationsEqual(prev, cleaned)) {
-                return prev;
+              if (JSON.stringify(prev) !== JSON.stringify(cleaned)) {
+                try {
+                  localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(cleaned));
+                } catch {}
+                return cleaned;
               }
-              try {
-                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(cleaned));
-              } catch {}
-              return cleaned;
+              return prev;
             });
           }
         } catch {}
@@ -649,6 +683,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     return () => {
       clearInterval(syncInterval);
       unsubSupabaseRealtime();
+      unsubMessagesStream();
       unsubSupabaseDbStream();
       if (sseSource) sseSource.close();
       window.removeEventListener('storage', handleStorage);
@@ -2144,7 +2179,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
               {/* VISITOR PERSONA STATUS BANNER */}
               {!isOwner && (
-                <div className="bg-[#e4ebf3] border-b border-[#b8c6d4] px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700 shrink-0">
+                <div className="bg-[#e4ebf3] border-b border-[#b8c6d4] px-3 sm:px-4 py-1.5 flex items-center justify-between text-xs text-slate-700 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="relative w-6 h-6 rounded-full overflow-hidden bg-slate-300 border border-slate-400 shrink-0 flex items-center justify-center font-bold text-[10px] text-white shadow-2xs">
                       <div className={`w-full h-full ${visitorProfile.avatarColor || 'bg-slate-700'} flex items-center justify-center`}>
@@ -2169,39 +2204,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                       )}
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2 shrink-0 text-[11px]">
-                    {/* Visitor ID Chip with Instant Copy */}
-                    <div className="flex items-center gap-1 bg-white/70 px-2 py-0.5 rounded border border-slate-300 font-mono text-[10px]">
-                      <span className="text-slate-500 font-sans font-bold">ID:</span>
-                      <span className="text-cyan-800 font-bold max-w-[100px] truncate" title={visitorId}>
-                        {visitorId}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(visitorId);
-                          setCopiedVisitorId(true);
-                          setTimeout(() => setCopiedVisitorId(false), 2000);
-                        }}
-                        className="text-slate-500 hover:text-slate-800 cursor-pointer ml-0.5"
-                        title="Copy Visitor ID"
-                      >
-                        {copiedVisitorId ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                      </button>
-                    </div>
-
-                    {/* Edit Profile & Generate New ID Modal Trigger */}
-                    <button
-                      type="button"
-                      onClick={() => setIsVisitorProfileModalOpen(true)}
-                      className="text-[11px] text-[#243346] hover:text-black font-bold hover:underline flex items-center gap-1 cursor-pointer shrink-0"
-                      title="Edit display name, photo, or generate new Visitor ID"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>Edit / New ID</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsVisitorProfileModalOpen(true)}
+                    className="text-[11px] text-[#243346] hover:text-black font-bold hover:underline flex items-center gap-1 cursor-pointer shrink-0"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    <span>Edit Name &amp; Photo</span>
+                  </button>
                 </div>
               )}
 

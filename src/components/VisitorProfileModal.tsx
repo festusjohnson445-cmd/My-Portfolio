@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Camera, User, Trash2, CheckCircle2, Key, History, AlertCircle, Copy, Check, RefreshCw, Sparkles } from 'lucide-react';
+import { X, Camera, User, Trash2, CheckCircle2, Key, History, AlertCircle, Copy, Check } from 'lucide-react';
 import { compressAvatarToWebP } from '../utils/profileState';
 import {
   uploadVisitorAvatarToSupabaseBucket,
@@ -33,13 +33,6 @@ const PRESET_COLORS = [
   'bg-teal-700',
 ];
 
-const generateFreshVisitorIdHelper = (): string => {
-  const uuid = typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  return `visitor_${uuid}`;
-};
-
 export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   isOpen,
   onClose,
@@ -58,11 +51,6 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Dynamic Visitor ID State & Generation
-  const initialId = visitorId || localStorage.getItem('visitor_id') || localStorage.getItem('fesline_visitor_access_key') || generateFreshVisitorIdHelper();
-  const [currentVisitorId, setCurrentVisitorId] = useState<string>(initialId);
-  const [isFreshIdGenerated, setIsFreshIdGenerated] = useState(false);
-
   // Restore session state
   const [enteredKey, setEnteredKey] = useState('');
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -70,6 +58,8 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
 
   // Copy helper inside modal
   const [copiedKey, setCopiedKey] = useState(false);
+
+  const activeVisitorId = visitorId || localStorage.getItem('fesline_visitor_access_key') || '';
 
   useEffect(() => {
     if (isOpen) {
@@ -79,20 +69,10 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       setAvatarColor(currentProfile.avatarColor || 'bg-slate-700');
       setRestoreError(null);
       setEnteredKey('');
-      const activeId = visitorId || localStorage.getItem('visitor_id') || localStorage.getItem('fesline_visitor_access_key') || generateFreshVisitorIdHelper();
-      setCurrentVisitorId(activeId);
-      setIsFreshIdGenerated(false);
     }
-  }, [isOpen, currentProfile, visitorId]);
+  }, [isOpen, currentProfile]);
 
   if (!isOpen) return null;
-
-  const handleGenerateNewVisitorId = () => {
-    const newId = generateFreshVisitorIdHelper();
-    setCurrentVisitorId(newId);
-    setIsFreshIdGenerated(true);
-    setRestoreError(null);
-  };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -103,7 +83,10 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       const compressed = await compressAvatarToWebP(file, 400, 0.80);
 
       // Determine upload ID
-      const uploadId = currentVisitorId || `temp_${Date.now()}`;
+      let uploadId = activeVisitorId;
+      if (!uploadId) {
+        uploadId = `temp_${Date.now()}`;
+      }
 
       // 2. Upload custom profile photo directly to Supabase Storage avatars bucket
       const uploadRes = await uploadVisitorAvatarToSupabaseBucket(compressed.dataUrl, uploadId);
@@ -134,16 +117,24 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     setRestoreError(null);
 
     try {
-      // 1. Target access key is the active or newly generated visitor ID
-      const accessKey = currentVisitorId.trim() || generateFreshVisitorIdHelper();
+      // 1. Generate or use persistent visitor_id (visitor_ + crypto.randomUUID())
+      let accessKey = activeVisitorId || localStorage.getItem('visitor_id') || localStorage.getItem('fesline_current_visitor_id');
+      if (!accessKey || !accessKey.trim()) {
+        const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        accessKey = `visitor_${uuid}`;
+      }
 
-      // 2. Generate or update conversation_id in localStorage
-      let convId = localStorage.getItem('conversation_id');
-      if (!convId || isFreshIdGenerated || !convId.trim()) {
+      // 2. Ensure conversation_id is persisted directly in localStorage
+      let convId = localStorage.getItem('conversation_id') || localStorage.getItem('fesline_current_conversation_id');
+      if (!convId || !convId.trim()) {
         const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
           ? crypto.randomUUID() 
           : `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
         convId = `conv_${uuid}`;
+        localStorage.setItem('conversation_id', convId);
+        localStorage.setItem('fesline_current_conversation_id', convId);
       }
 
       const updatedProfile: VisitorMessagingProfile = {
@@ -153,17 +144,18 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
         avatarColor,
       };
 
-      // 3. Persist visitor_id, conversation_id, display_name, and profile details directly in localStorage
+      // 3. Persist visitor_id, conversation_id, display_name, avatar_url, and role_subject directly in localStorage
       localStorage.setItem('visitor_id', accessKey);
       localStorage.setItem('conversation_id', convId);
       localStorage.setItem('display_name', displayName);
+      localStorage.setItem('avatar_url', avatarUrl || '');
+      localStorage.setItem('role_subject', roleSubject);
       localStorage.setItem('visitor_profile', JSON.stringify(updatedProfile));
       localStorage.setItem('fesline_visitor_messaging_profile', JSON.stringify(updatedProfile));
       localStorage.setItem('fesline_visitor_access_key', accessKey);
       localStorage.setItem('fesline_current_visitor_id', accessKey);
-      localStorage.setItem('fesline_current_conversation_id', convId);
 
-      // 4. Save visitor profile to Supabase database (uses onConflict: 'visitor_id' without non-existent 'id' column)
+      // 4. Save visitor profile to Supabase database wrapped in try/catch without wiping local state
       try {
         await saveVisitorProfileToSupabase({
           visitor_id: accessKey,
@@ -202,7 +194,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       // 1. Direct query visitor_profiles by visitor_id without referencing non-existent id column
       const { data, error } = await supabase
         .from('visitor_profiles')
-        .select('visitor_id, display_name, role_subject, avatar_url, avatar_color')
+        .select('*')
         .eq('visitor_id', keyToSearch)
         .maybeSingle();
 
@@ -217,8 +209,8 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       }
 
       const restoredProfile: VisitorMessagingProfile = {
-        name: data.display_name || 'Visitor',
-        roleOrCompany: data.role_subject || 'Visitor Direct Chat',
+        name: data.display_name || data.name || 'Visitor',
+        roleOrCompany: data.role_subject || data.role_or_company || 'Visitor Direct Chat',
         avatarUrl: data.avatar_url || '',
         avatarColor: data.avatar_color || 'bg-slate-700',
       };
@@ -246,7 +238,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-950/65 backdrop-blur-xs animate-fade-in font-sans">
-      {/* Compact container */}
+      {/* Compact reduced padding container */}
       <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-sm w-full p-4 sm:p-5 relative max-h-[90vh] overflow-y-auto">
         
         {/* Close/Dismiss Button */}
@@ -266,60 +258,38 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
           </div>
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-slate-900 truncate">
-              Visitor Profile & ID
+              InChat Profile Setup
             </h3>
             <p className="text-[10.5px] text-slate-400 truncate">
-              Set your name & avatar or generate a new Visitor ID
+              Set your name & avatar or load a saved session
             </p>
           </div>
         </div>
 
-        {/* Active Key Display & Quick Action Buttons */}
-        <div className="mb-3.5 p-2 rounded-lg bg-slate-50 border border-slate-200 text-[10px] space-y-1.5">
-          <div className="flex items-center justify-between gap-1">
+        {/* Active Key Display */}
+        {activeVisitorId && (
+          <div className="mb-3.5 p-2 rounded-lg bg-slate-50 border border-slate-200 text-[10px] flex items-center justify-between">
             <div className="flex items-center gap-1.5 min-w-0">
               <Key className="w-3 h-3 text-slate-400 shrink-0" />
-              <span className="font-semibold text-slate-500 whitespace-nowrap">Visitor ID:</span>
-              <span className={`px-1.5 py-0.5 rounded ${isFreshIdGenerated ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-cyan-50 border-cyan-150 text-cyan-800'} border font-mono font-bold text-[10px] tracking-wider truncate max-w-[140px]`}>
-                {currentVisitorId}
+              <span className="font-semibold text-slate-500 whitespace-nowrap">Your Visitor ID:</span>
+              <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-150 text-cyan-800 font-mono font-bold text-[10px] tracking-wider truncate max-w-[170px]">
+                {activeVisitorId}
               </span>
             </div>
-            
-            <div className="flex items-center gap-1 shrink-0">
-              {/* Copy ID */}
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(currentVisitorId);
-                  setCopiedKey(true);
-                  setTimeout(() => setCopiedKey(false), 2000);
-                }}
-                className="p-1 rounded bg-white hover:bg-slate-100 border border-slate-250 text-slate-600 hover:text-slate-900 cursor-pointer shadow-2xs"
-                title="Copy Visitor ID"
-              >
-                {copiedKey ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-              </button>
-
-              {/* Generate New ID Button */}
-              <button
-                type="button"
-                onClick={handleGenerateNewVisitorId}
-                className="flex items-center gap-1 px-1.5 py-1 rounded bg-[#243346] hover:bg-[#1a2533] text-white text-[9.5px] font-bold cursor-pointer shadow-2xs transition-colors"
-                title="Generate a brand new unique Visitor ID for a new inquiry"
-              >
-                <RefreshCw className={`w-2.5 h-2.5 ${isFreshIdGenerated ? 'rotate-180 transition-transform' : ''}`} />
-                <span>New ID</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(activeVisitorId);
+                setCopiedKey(true);
+                setTimeout(() => setCopiedKey(false), 2000);
+              }}
+              className="p-1 rounded bg-white hover:bg-slate-150 border border-slate-250 text-slate-500 hover:text-slate-800 cursor-pointer shadow-2xs shrink-0"
+              title="Copy Visitor ID"
+            >
+              {copiedKey ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+            </button>
           </div>
-
-          {isFreshIdGenerated && (
-            <div className="flex items-center gap-1 text-[9.5px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-              <Sparkles className="w-3 h-3 text-emerald-600 shrink-0" />
-              <span>Fresh Visitor ID generated! Saving will start a new session.</span>
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Tab Navigation */}
         <div className="flex rounded-md bg-slate-100 p-0.5 mb-3.5 text-[11px]">
@@ -332,7 +302,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                 : 'text-slate-500 hover:text-slate-950'
             }`}
           >
-            Profile Details
+            Create Profile
           </button>
           <button
             type="button"
@@ -474,10 +444,10 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="font-bold text-slate-900 truncate text-[10px] leading-tight">{displayName}</p>
-                  <p className="text-[8px] text-slate-400 truncate leading-none">{role || 'Visitor Direct Chat'}</p>
+                  <p className="text-[8px] text-slate-400 truncate leading-none">{role || 'Visitor Inquiry'}</p>
                 </div>
                 <span className="text-[8px] text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-250 shrink-0">
-                  Active
+                  Verified
                 </span>
               </div>
             </div>
