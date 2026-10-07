@@ -1258,38 +1258,18 @@ export const sendAndPersistMessageToSupabase = saveMessageAndConversationToSupab
  */
 export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
   try {
+    const ownerId = await getOrFetchOwnerId();
     let convsMap: Record<string, any> = {};
 
     try {
-      let ownerUid = '';
-      const { data: sessData } = await supabase.auth.getSession();
-      if (sessData?.session?.user) {
-        ownerUid = sessData.session.user.id;
-      } else {
-        ownerUid = getAuthenticatedOwnerUid();
-      }
+      // 1. Fetch all conversations from Supabase without restrictive owner_id filtering
+      // to ensure all visitor inquiries are always visible to the owner on live hosting (e.g. Vercel)
+      const { data: all, error } = await supabase
+        .from('conversations')
+        .select('*');
 
-      let data: any[] | null = null;
-      if (ownerUid) {
-        const { data: filtered, error } = await supabase
-          .from('conversations')
-          .select('*')
-          .eq('owner_id', ownerUid);
-        
-        if (!error && filtered) {
-          data = filtered;
-        }
-      }
-
-      if (!data) {
-        const { data: all } = await supabase
-          .from('conversations')
-          .select('*');
-        data = all;
-      }
-
-      if (data && Array.isArray(data)) {
-        for (const c of data) {
+      if (!error && all && Array.isArray(all)) {
+        for (const c of all) {
           if (c && c.id) convsMap[c.id] = c;
         }
       }
@@ -1318,18 +1298,36 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
 
       if (msgs && Array.isArray(msgs)) {
         for (const m of msgs) {
-          const cId = m.conversation_id;
-          if (!cId) continue;
-          if (!messagesMap[cId]) messagesMap[cId] = [];
-          messagesMap[cId].push({
+          const isFromOwner = m.sender === 'festus' || m.sender_id === ownerId || m.sender_id === 'festus';
+          const msgObj = {
             id: m.id,
-            sender: m.sender || (m.sender_id === profilesMap[m.sender_id]?.visitor_id ? 'visitor' : 'festus'),
+            sender: isFromOwner ? ('festus' as const) : ('visitor' as const),
             text: m.content || m.text || '',
             timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
-            status: m.status || 'seen',
+            status: m.status || (isFromOwner ? 'seen' : 'unseen'),
             attachments: m.attachments,
             voiceNote: m.voice_note || m.voiceNote,
-          });
+          };
+
+          // Index by conversation_id
+          if (m.conversation_id) {
+            if (!messagesMap[m.conversation_id]) messagesMap[m.conversation_id] = [];
+            messagesMap[m.conversation_id].push(msgObj);
+          }
+          // Also index by sender_id if it's a visitor ID
+          if (m.sender_id && m.sender_id !== ownerId) {
+            if (!messagesMap[m.sender_id]) messagesMap[m.sender_id] = [];
+            if (m.sender_id !== m.conversation_id) {
+              messagesMap[m.sender_id].push(msgObj);
+            }
+          }
+          // Also index by receiver_id if it's a visitor ID
+          if (m.receiver_id && m.receiver_id !== ownerId) {
+            if (!messagesMap[m.receiver_id]) messagesMap[m.receiver_id] = [];
+            if (m.receiver_id !== m.conversation_id && m.receiver_id !== m.sender_id) {
+              messagesMap[m.receiver_id].push(msgObj);
+            }
+          }
         }
       }
     } catch {}
@@ -1363,7 +1361,32 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
 
       const vProfile = profilesMap[c.visitor_id] || profilesMap[id] || {};
       const actualConvId = c.id || id;
-      const convMsgs = messagesMap[actualConvId] || (Array.isArray(c.messages) ? c.messages : []);
+      
+      // Merge all messages belonging to this conversation or visitor ID
+      const rawMsgs = [
+        ...(messagesMap[actualConvId] || []),
+        ...(c.visitor_id && c.visitor_id !== actualConvId ? (messagesMap[c.visitor_id] || []) : []),
+        ...(c.id && c.id !== actualConvId ? (messagesMap[c.id] || []) : []),
+        ...(Array.isArray(c.messages) ? c.messages : []),
+      ];
+
+      // Deduplicate by message id
+      const uniqueMsgMap = new Map<string, any>();
+      for (const m of rawMsgs) {
+        if (m && m.id) uniqueMsgMap.set(m.id, m);
+      }
+      const convMsgs = Array.from(uniqueMsgMap.values());
+
+      // If conversation has last_message but no messages array, synthesize the message
+      if (convMsgs.length === 0 && (c.last_message || c.lastMessage)) {
+        convMsgs.push({
+          id: `msg-${actualConvId}`,
+          sender: 'visitor',
+          text: c.last_message || c.lastMessage,
+          timestamp: c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+          status: 'unseen',
+        });
+      }
 
       const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
       const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
@@ -1378,10 +1401,10 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
         avatarUrl,
         avatarColor,
         roleOrCompany: roleSubject,
-        unread: Boolean(c.unread),
+        unread: Boolean(c.unread ?? (convMsgs.some(m => m.sender === 'visitor' && m.status === 'unseen'))),
         important: Boolean(c.important),
         lastMessage: c.last_message || c.lastMessage || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].text : 'New message'),
-        lastTimestamp: c.last_message_at || c.last_timestamp || c.lastTimestamp || '',
+        lastTimestamp: c.last_message_at || c.last_timestamp || c.lastTimestamp || (convMsgs.length > 0 ? convMsgs[convMsgs.length - 1].timestamp : ''),
         messages: convMsgs,
       });
     }

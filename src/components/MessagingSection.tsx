@@ -612,11 +612,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       };
     } catch {}
 
+    // 3-second live sync interval for Vercel and multi-tab sync
+    const syncInterval = setInterval(() => {
+      fetchChatsFromServer();
+    }, 3000);
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', fetchChatsFromServer);
     window.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
+      clearInterval(syncInterval);
       unsubSupabaseRealtime();
       unsubSupabaseDbStream();
       if (sseSource) sseSource.close();
@@ -656,7 +662,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       };
     }
 
-    const validOwnerConvs = conversations.filter((c) => c && c.messages && c.messages.length > 0);
+    const validOwnerConvs = conversations.filter((c) => c && ((c.messages && c.messages.length > 0) || Boolean(c.lastMessage)));
     const found = validOwnerConvs.find((c) => c.id === activeOwnerConvId);
     if (found) return found;
     return validOwnerConvs[0] || {
@@ -1579,10 +1585,12 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     setInputMessage(chip);
   };
 
-  // Filtered Conversations for Owner (only conversations with at least 1 message)
+  // Filtered Conversations for Owner (conversations with at least 1 message or lastMessage)
   const filteredConversations = useMemo(() => {
     return conversations.filter((c) => {
-      if (!c || !c.messages || c.messages.length === 0) return false;
+      if (!c) return false;
+      const hasContent = (c.messages && c.messages.length > 0) || Boolean(c.lastMessage);
+      if (!hasContent) return false;
       if (sidebarFilter === 'important') return c.important;
       if (sidebarFilter === 'unread') return c.unread;
       return true;
