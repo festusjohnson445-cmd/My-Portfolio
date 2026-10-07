@@ -80,6 +80,7 @@ export interface ChatMessage {
 
 export interface Conversation {
   id: string;
+  visitorId?: string;
   defaultLabel: string; // e.g. "Messenger 1"
   customName?: string;  // e.g. "David Miller (Optomechanics Lead)"
   visitorName?: string; // Visitor's custom display name
@@ -600,58 +601,84 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       isOwner,
       onNewMessage: (msgRow, convId) => {
         const isOwnerMsg = msgRow.sender === 'festus' || msgRow.sender_id === 'festus' || msgRow.sender_id === resolvedOwnerId;
-        const newMsg: ChatMessage = {
+        const rawTargetId = convId || msgRow.conversation_id || msgRow.id;
+        if (!rawTargetId) return;
+
+        const targetId = rawTargetId.startsWith('conv_') ? rawTargetId : `conv_${rawTargetId}`;
+        const vId = msgRow.visitor_id || targetId.replace(/^conv_/, '');
+        if (deletedConvIdsRef.current.has(targetId) || deletedConvIdsRef.current.has(vId)) return;
+
+        const lastMsgText = msgRow.content || msgRow.text || msgRow.last_message || (msgRow.voice_note || msgRow.voiceNote ? '🎤 Voice note' : 'New message');
+        const lastTimeStr = msgRow.timestamp || (msgRow.created_at ? new Date(msgRow.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+        const newMsgObj: ChatMessage = {
           id: msgRow.id || generateMessageId(),
           sender: isOwnerMsg ? 'festus' : 'visitor',
           text: msgRow.content || msgRow.text || '',
-          timestamp: msgRow.timestamp || (msgRow.created_at ? new Date(msgRow.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+          timestamp: lastTimeStr,
           status: msgRow.status || (isOwnerMsg ? 'seen' : 'unseen'),
           attachments: msgRow.attachments || undefined,
           voiceNote: msgRow.voice_note || msgRow.voiceNote || undefined,
+          created_at: msgRow.created_at,
         };
 
         setConversations((prev) => {
-          const targetId = convId || (isOwner ? activeOwnerConvId : (conversationId || `conv_${visitorId}`));
-          const idx = prev.findIndex((c) => c.id === targetId || c.id === `conv_${visitorId}` || c.id === visitorId || c.id === convId);
+          const existingIdx = prev.findIndex((c) => c.id === targetId || c.id === `conv_${vId}` || c.visitorId === vId || c.id === vId);
 
-          if (idx >= 0) {
-            const existing = prev[idx];
-            if (existing.messages.some((m) => m.id === newMsg.id)) return prev;
-            const updated = prev.map((c, i) =>
-              i === idx
-                ? {
-                    ...c,
-                    unread: newMsg.sender === 'visitor',
-                    messages: [...c.messages, newMsg],
-                    lastMessage: newMsg.text || (newMsg.voiceNote ? '🎤 Voice note' : 'Attachment'),
-                    lastTimestamp: newMsg.timestamp,
-                  }
-                : c
-            );
-            try {
-              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
-            } catch {}
-            return updated;
-          } else {
-            const newC: Conversation = {
+          if (existingIdx >= 0) {
+            const existing = prev[existingIdx];
+            let updatedMsgs = existing.messages || [];
+
+            if (!updatedMsgs.some((m) => m.id === newMsgObj.id)) {
+              updatedMsgs = [...updatedMsgs, newMsgObj];
+              updatedMsgs.sort((a, b) => {
+                const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return tA - tB;
+              });
+            }
+
+            const updatedConv: Conversation = {
+              ...existing,
               id: targetId,
-              defaultLabel: 'Visitor',
-              customName: '',
-              visitorName: 'Visitor',
-              avatarUrl: '',
-              avatarColor: 'bg-slate-700',
-              roleOrCompany: 'Visitor Direct Chat',
-              unread: newMsg.sender === 'visitor',
-              important: false,
-              messages: [newMsg],
-              lastMessage: newMsg.text || 'New message',
-              lastTimestamp: newMsg.timestamp,
+              visitorId: vId,
+              lastMessage: lastMsgText,
+              lastTimestamp: lastTimeStr,
+              unread: isOwnerMsg ? existing.unread : true,
+              messages: updatedMsgs,
             };
-            const updated = [newC, ...prev];
+
+            // Move updated conversation to top of the list
+            const remaining = prev.filter((_, idx) => idx !== existingIdx);
+            const result = [updatedConv, ...remaining];
+
             try {
-              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(result));
             } catch {}
-            return updated;
+            return result;
+          } else {
+            // Add as a single new entry at top
+            const newConv: Conversation = {
+              id: targetId,
+              visitorId: vId,
+              defaultLabel: msgRow.display_name || msgRow.visitorName || 'Visitor',
+              customName: msgRow.display_name || msgRow.visitorName || '',
+              visitorName: msgRow.display_name || msgRow.visitorName || 'Visitor',
+              avatarUrl: msgRow.avatar_url || '',
+              avatarColor: msgRow.avatar_color || 'bg-slate-700',
+              roleOrCompany: msgRow.role_subject || 'Visitor Direct Chat',
+              unread: !isOwnerMsg,
+              important: false,
+              lastMessage: lastMsgText,
+              lastTimestamp: lastTimeStr,
+              messages: [newMsgObj],
+            };
+
+            const result = [newConv, ...prev];
+            try {
+              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(result));
+            } catch {}
+            return result;
           }
         });
       },

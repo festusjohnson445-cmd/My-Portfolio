@@ -1323,24 +1323,35 @@ export const sendAndPersistMessageToSupabase = saveMessageAndConversationToSupab
  */
 export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
   try {
-    const ownerId = await getOrFetchOwnerId();
-    let convsMap: Record<string, any> = {};
-
+    // 1. Fetch conversations joined with visitor_profiles ordered by visitor_id, last_message_at desc
+    let convsData: any[] = [];
     try {
-      const { data: all, error } = await supabase
+      const { data, error } = await supabase
         .from('conversations')
-        .select('*');
+        .select('*, visitor_profiles(*)')
+        .order('visitor_id')
+        .order('last_message_at', { ascending: false });
 
-      if (!error && all && Array.isArray(all)) {
-        for (const c of all) {
-          if (c && c.id) {
-            const canonicalId = c.id.startsWith('conv_') ? c.id : `conv_${c.visitor_id || c.id}`;
-            convsMap[canonicalId] = { ...c, id: canonicalId };
-          }
-        }
+      if (!error && data && Array.isArray(data)) {
+        convsData = data;
+      } else {
+        const { data: cData } = await supabase
+          .from('conversations')
+          .select('*')
+          .order('visitor_id')
+          .order('last_message_at', { ascending: false });
+        if (cData && Array.isArray(cData)) convsData = cData;
       }
-    } catch {}
+    } catch {
+      const { data: cData } = await supabase
+        .from('conversations')
+        .select('*')
+        .order('visitor_id')
+        .order('last_message_at', { ascending: false });
+      if (cData && Array.isArray(cData)) convsData = cData;
+    }
 
+    // 2. Fetch visitor_profiles fallback
     let profilesMap: Record<string, any> = {};
     try {
       const { data: profiles } = await supabase
@@ -1355,133 +1366,54 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
       }
     } catch {}
 
-    let messagesMap: Record<string, any[]> = {};
-    try {
-      const { data: msgs } = await supabase
-        .from('messages')
-        .select('*')
-        .order('created_at', { ascending: true });
+    // 3. Deduplicate strictly by visitor_id (SELECT DISTINCT ON (visitor_id))
+    const dedupedVisitorIds = new Set<string>();
+    const visitorMap = new Map<string, any>();
 
-      if (msgs && Array.isArray(msgs)) {
-        for (const m of msgs) {
-          const isFromOwner = m.sender === 'festus' || m.sender_id === ownerId || m.sender_id === 'festus';
-          const msgObj = {
-            id: m.id,
-            sender: isFromOwner ? ('festus' as const) : ('visitor' as const),
-            text: m.content || m.text || '',
-            timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
-            status: m.status || (isFromOwner ? 'seen' : 'unseen'),
-            attachments: m.attachments,
-            voiceNote: m.voice_note || m.voiceNote,
-            created_at: m.created_at,
-          };
+    for (const c of convsData) {
+      if (!c) continue;
+      const rawVId = c.visitor_id || (c.id ? c.id.replace(/^conv_/, '') : '');
+      if (!rawVId) continue;
 
-          const cId = m.conversation_id ? (m.conversation_id.startsWith('conv_') ? m.conversation_id : `conv_${m.conversation_id}`) : '';
-          if (cId) {
-            if (!messagesMap[cId]) messagesMap[cId] = [];
-            messagesMap[cId].push(msgObj);
-          }
-          const visitorKey = m.sender_id && m.sender_id !== ownerId && m.sender_id !== 'festus' ? m.sender_id : (m.receiver_id && m.receiver_id !== ownerId ? m.receiver_id : '');
-          if (visitorKey) {
-            const canonKey = `conv_${visitorKey}`;
-            if (canonKey !== cId) {
-              if (!messagesMap[canonKey]) messagesMap[canonKey] = [];
-              messagesMap[canonKey].push(msgObj);
-            }
-          }
-        }
-      }
-    } catch {}
+      const normVId = rawVId.trim();
+      if (!dedupedVisitorIds.has(normVId)) {
+        dedupedVisitorIds.add(normVId);
 
-    // Deduplicate visitors strictly so each visitor occupies exactly 1 row in the owner's inbox panel
-    // Normalize keys: strip 'conv_' and trim to find base visitor identity
-    const visitorKeyMap = new Map<string, string>(); // normalized_visitor_id -> canonical convId
-    const normalizeKey = (k: string) => k.replace(/^conv_/, '').trim();
+        const vProfile = (c.visitor_profiles && typeof c.visitor_profiles === 'object' && !Array.isArray(c.visitor_profiles))
+          ? c.visitor_profiles
+          : (profilesMap[normVId] || profilesMap[`conv_${normVId}`] || {});
 
-    for (const vId of Object.keys(profilesMap)) {
-      const norm = normalizeKey(vId);
-      if (norm) visitorKeyMap.set(norm, `conv_${norm}`);
-    }
-    for (const cId of Object.keys(convsMap)) {
-      const c = convsMap[cId];
-      const norm = normalizeKey(c.visitor_id || cId);
-      if (norm && !visitorKeyMap.has(norm)) {
-        visitorKeyMap.set(norm, `conv_${norm}`);
-      }
-    }
-    for (const cId of Object.keys(messagesMap)) {
-      const norm = normalizeKey(cId);
-      if (norm && !visitorKeyMap.has(norm)) {
-        visitorKeyMap.set(norm, `conv_${norm}`);
-      }
-    }
+        const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
+        const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
+        const avatarUrl = vProfile.avatar_url || vProfile.avatarUrl || c.avatar_url || '';
+        const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
 
-    if (visitorKeyMap.size === 0) return [];
+        const canonicalId = c.id && c.id.startsWith('conv_') ? c.id : `conv_${normVId}`;
+        const timeFormatted = c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (c.last_timestamp || '');
 
-    const result: any[] = [];
-    for (const [vId, convId] of visitorKeyMap.entries()) {
-      const c = convsMap[convId] || convsMap[vId] || convsMap[`conv_${vId}`] || {};
-      const vProfile = profilesMap[vId] || profilesMap[`conv_${vId}`] || profilesMap[c.visitor_id] || {};
-
-      const rawMsgs = [
-        ...(messagesMap[convId] || []),
-        ...(messagesMap[`conv_${vId}`] || []),
-        ...(messagesMap[vId] || []),
-        ...(Array.isArray(c.messages) ? c.messages : []),
-      ];
-
-      const uniqueMsgMap = new Map<string, any>();
-      for (const m of rawMsgs) {
-        if (m && m.id) uniqueMsgMap.set(m.id, m);
-      }
-      const convMsgs = Array.from(uniqueMsgMap.values());
-
-      // Strictly sort all messages in ascending chronological order (ORDER BY created_at ASC)
-      // Never group by role or sender; interleaved strictly by time
-      convMsgs.sort((a, b) => {
-        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-        return timeA - timeB;
-      });
-
-      if (convMsgs.length === 0 && (c.last_message || c.lastMessage)) {
-        convMsgs.push({
-          id: `msg-${convId}`,
-          sender: 'visitor',
-          text: c.last_message || c.lastMessage,
-          timestamp: c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
-          status: 'unseen',
-          created_at: c.last_message_at,
+        visitorMap.set(normVId, {
+          id: canonicalId,
+          visitorId: normVId,
+          defaultLabel: displayName,
+          customName: displayName,
+          visitorName: displayName,
+          avatarUrl,
+          avatarColor,
+          roleOrCompany: roleSubject,
+          unread: Boolean(c.unread),
+          important: Boolean(c.important),
+          lastMessage: c.last_message || 'New message',
+          lastTimestamp: timeFormatted,
+          lastMessageAtIso: c.last_message_at || '',
+          messages: [],
         });
       }
-
-      const lastMsg = convMsgs[convMsgs.length - 1];
-      const displayName = vProfile.display_name || vProfile.name || c.visitor_name || c.custom_name || c.default_label || 'Visitor';
-      const roleSubject = vProfile.role_subject || vProfile.roleOrCompany || c.role_or_company || 'Visitor Inquiry';
-      const avatarUrl = vProfile.avatar_url || vProfile.avatarUrl || c.avatar_url || '';
-      const avatarColor = vProfile.avatar_color || vProfile.avatarColor || c.avatar_color || 'bg-slate-700';
-
-      result.push({
-        id: convId,
-        visitorId: vId,
-        defaultLabel: displayName,
-        customName: displayName,
-        visitorName: displayName,
-        avatarUrl,
-        avatarColor,
-        roleOrCompany: roleSubject,
-        unread: Boolean(c.unread ?? (convMsgs.some(m => m.sender === 'visitor' && m.status === 'unseen'))),
-        important: Boolean(c.important),
-        lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : (c.last_message || 'New message'))),
-        lastTimestamp: lastMsg?.timestamp || c.last_message_at || c.last_timestamp || c.lastTimestamp || '',
-        messages: convMsgs,
-      });
     }
 
-    // Sort conversations chronologically by most recent message/activity on top
+    const result = Array.from(visitorMap.values());
     result.sort((a, b) => {
-      const timeA = a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : 0;
-      const timeB = b.lastTimestamp ? new Date(b.lastTimestamp).getTime() : 0;
+      const timeA = a.lastMessageAtIso ? new Date(a.lastMessageAtIso).getTime() : 0;
+      const timeB = b.lastMessageAtIso ? new Date(b.lastMessageAtIso).getTime() : 0;
       return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
     });
 
