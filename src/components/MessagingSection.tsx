@@ -57,7 +57,7 @@ import {
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
-import { generateDemoVoiceNote, formatDuration } from '../utils/audioUtils';
+import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
@@ -419,17 +419,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           } else if (dbMessages && Array.isArray(dbMessages)) {
             const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
               const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+              const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
               return {
                 id: m.id || generateMessageId(),
                 sender: isOwnerMsg ? 'festus' : 'visitor',
                 sender_id: m.sender_id || (isOwnerMsg ? ownerId : savedVId),
                 receiver_id: m.receiver_id || (isOwnerMsg ? savedVId : ownerId),
                 conversation_id: savedCId,
-                text: m.content || m.text || '',
+                text,
                 timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
                 status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
                 attachments: m.attachments || undefined,
-                voiceNote: m.voice_note || m.voiceNote || undefined,
+                voiceNote,
                 created_at: m.created_at || new Date().toISOString(),
               };
             });
@@ -437,8 +438,23 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             // Strict Timestamp Sorting
             mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
 
-            // Set single unified messages array strictly scoped to this visitor
-            setMessages(mappedMessages);
+            // Set single unified messages array strictly scoped to this visitor, preserving in-memory voice notes
+            setMessages((prevMsgs) => {
+              const msgMap = new Map<string, ChatMessage>();
+              for (const em of prevMsgs) if (em?.id) msgMap.set(em.id, em);
+              for (const mm of mappedMessages) {
+                if (mm?.id) {
+                  const existing = msgMap.get(mm.id);
+                  msgMap.set(mm.id, {
+                    ...mm,
+                    voiceNote: mm.voiceNote || existing?.voiceNote,
+                  });
+                }
+              }
+              const unified = Array.from(msgMap.values());
+              unified.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+              return unified;
+            });
 
             const lastMsg = mappedMessages[mappedMessages.length - 1];
             const updatedConv: Conversation = {
@@ -574,17 +590,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           if (!dbMsgError && dbMessages && Array.isArray(dbMessages)) {
             const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
               const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+              const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
               return {
                 id: m.id || generateMessageId(),
                 sender: isOwnerMsg ? 'festus' : 'visitor',
                 sender_id: m.sender_id || (isOwnerMsg ? ownerId : currVisId),
                 receiver_id: m.receiver_id || (isOwnerMsg ? currVisId : ownerId),
                 conversation_id: currCId,
-                text: m.content || m.text || '',
+                text,
                 timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
                 status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
                 attachments: m.attachments || undefined,
-                voiceNote: m.voice_note || m.voiceNote || undefined,
+                voiceNote,
                 created_at: m.created_at || new Date().toISOString(),
               };
             });
@@ -592,11 +609,19 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             // Strict Timestamp Sorting
             mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
 
-            // 1. Unified Single Array State
+            // 1. Unified Single Array State (preserving in-memory voice notes)
             setMessages((prevMsgs) => {
               const msgMap = new Map<string, ChatMessage>();
               for (const em of prevMsgs) if (em?.id) msgMap.set(em.id, em);
-              for (const mm of mappedMessages) if (mm?.id) msgMap.set(mm.id, mm);
+              for (const mm of mappedMessages) {
+                if (mm?.id) {
+                  const existing = msgMap.get(mm.id);
+                  msgMap.set(mm.id, {
+                    ...mm,
+                    voiceNote: mm.voiceNote || existing?.voiceNote,
+                  });
+                }
+              }
               const unified = Array.from(msgMap.values());
               unified.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
               return unified;
@@ -818,7 +843,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const vId = msgRow.visitor_id || targetId.replace(/^conv_/, '');
         if (deletedConvIdsRef.current.has(targetId) || deletedConvIdsRef.current.has(vId)) return;
 
-        const lastMsgText = msgRow.content || msgRow.text || msgRow.last_message || (msgRow.voice_note || msgRow.voiceNote ? '🎤 Voice note' : 'New message');
+        const { text, voiceNote } = parseVoiceNoteFromContent(msgRow.content || msgRow.text, msgRow.voice_note || msgRow.voiceNote);
+        const lastMsgText = text || (voiceNote ? '🎤 Voice note' : (msgRow.last_message || 'New message'));
         const lastTimeStr = msgRow.timestamp || (msgRow.created_at ? new Date(msgRow.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
         const newMsgObj: ChatMessage = {
@@ -827,11 +853,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           sender_id: msgRow.sender_id || (isOwnerMsg ? resolvedOwnerId : vId),
           receiver_id: msgRow.receiver_id || (isOwnerMsg ? vId : resolvedOwnerId),
           conversation_id: targetId,
-          text: msgRow.content || msgRow.text || '',
+          text,
           timestamp: lastTimeStr,
           status: msgRow.status || (isOwnerMsg ? 'seen' : 'unseen'),
           attachments: msgRow.attachments || undefined,
-          voiceNote: msgRow.voice_note || msgRow.voiceNote || undefined,
+          voiceNote,
           created_at: msgRow.created_at || new Date().toISOString(),
         };
 
@@ -850,7 +876,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
         if (isForActiveThread) {
           setMessages((prev) => {
-            if (prev.some((m) => m.id === newMsgObj.id)) return prev;
+            const existingIdx = prev.findIndex((m) => m.id === newMsgObj.id);
+            if (existingIdx >= 0) {
+              const existing = prev[existingIdx];
+              const updated = [...prev];
+              updated[existingIdx] = {
+                ...existing,
+                ...newMsgObj,
+                voiceNote: newMsgObj.voiceNote || existing.voiceNote,
+              };
+              return updated;
+            }
             const updated = [...prev, newMsgObj];
             return updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
           });
@@ -866,7 +902,15 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             const existing = prev[existingIdx];
             let updatedMsgs = existing.messages || [];
 
-            if (!updatedMsgs.some((m) => m.id === newMsgObj.id)) {
+            const msgIdx = updatedMsgs.findIndex((m) => m.id === newMsgObj.id);
+            if (msgIdx >= 0) {
+              const exMsg = updatedMsgs[msgIdx];
+              updatedMsgs[msgIdx] = {
+                ...exMsg,
+                ...newMsgObj,
+                voiceNote: newMsgObj.voiceNote || exMsg.voiceNote,
+              };
+            } else {
               updatedMsgs = [...updatedMsgs, newMsgObj];
               updatedMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             }
@@ -1178,17 +1222,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
       const mappedMessages: ChatMessage[] = (dbMessages || []).map((m: any) => {
         const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+        const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
         return {
           id: m.id || generateMessageId(),
           sender: isOwnerMsg ? 'festus' : 'visitor',
           sender_id: m.sender_id || (isOwnerMsg ? ownerId : cleanVId),
           receiver_id: m.receiver_id || (isOwnerMsg ? cleanVId : ownerId),
           conversation_id: restoredConvId,
-          text: m.content || m.text || '',
+          text,
           timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
           status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
           attachments: m.attachments || undefined,
-          voiceNote: m.voice_note || m.voiceNote || undefined,
+          voiceNote,
           created_at: m.created_at || new Date().toISOString(),
         };
       });
@@ -1323,17 +1368,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         if (!error && dbMessages && Array.isArray(dbMessages)) {
           const mapped: ChatMessage[] = dbMessages.map((m: any) => {
             const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+            const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
             return {
               id: m.id || generateMessageId(),
               sender: isOwnerMsg ? 'festus' : 'visitor',
               sender_id: m.sender_id || (isOwnerMsg ? ownerId : vId),
               receiver_id: m.receiver_id || (isOwnerMsg ? vId : ownerId),
               conversation_id: m.conversation_id || targetCId,
-              text: m.content || m.text || '',
+              text,
               timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
               status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
               attachments: m.attachments || undefined,
-              voiceNote: m.voice_note || m.voiceNote || undefined,
+              voiceNote,
               created_at: m.created_at || new Date().toISOString(),
             };
           });
@@ -1343,14 +1389,20 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
           mapped.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
 
-          // 1. Unified Single Array State:
-          // Store all chat messages (both owner sent messages and visitor received messages) inside a single React state array.
-          // Never maintain separate arrays for sent vs. received messages or concatenate them manually.
+          // 1. Unified Single Array State (preserving in-memory voice notes)
           setMessages((prev) => {
             const currentThreadMsgs = prev.filter(m => m && (m.conversation_id === targetCId || m.conversation_id === `conv_${vId}` || m.conversation_id === vId || (!isOwner && (m.sender_id === vId || m.receiver_id === vId))));
             const msgMap = new Map<string, ChatMessage>();
             for (const em of currentThreadMsgs) if (em && em.id) msgMap.set(em.id, em);
-            for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
+            for (const mm of mapped) {
+              if (mm && mm.id) {
+                const existing = msgMap.get(mm.id);
+                msgMap.set(mm.id, {
+                  ...mm,
+                  voiceNote: mm.voiceNote || existing?.voiceNote,
+                });
+              }
+            }
             const merged = Array.from(msgMap.values());
             merged.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             return merged;
@@ -1362,7 +1414,15 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               const existing = prev[idx];
               const msgMap = new Map<string, ChatMessage>();
               for (const em of existing.messages || []) if (em && em.id) msgMap.set(em.id, em);
-              for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
+              for (const mm of mapped) {
+                if (mm && mm.id) {
+                  const existingMsg = msgMap.get(mm.id);
+                  msgMap.set(mm.id, {
+                    ...mm,
+                    voiceNote: mm.voiceNote || existingMsg?.voiceNote,
+                  });
+                }
+              }
               const merged = Array.from(msgMap.values());
               merged.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
               const last = merged[merged.length - 1];
@@ -1805,7 +1865,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
           conversationId: activeOwnerConvId,
-          visitorId: activeOwnerConvId,
+          visitorId: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
           message: festusMsg,
           conversationMetadata: {
             defaultLabel: activeConversation.defaultLabel,

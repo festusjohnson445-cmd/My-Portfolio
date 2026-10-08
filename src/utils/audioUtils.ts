@@ -74,3 +74,91 @@ export async function generateDemoVoiceNote(durationSec = 6, label = 'Audio Note
     reader.readAsDataURL(blob);
   });
 }
+
+/**
+ * Format a voice note payload into a structured string for safe cross-platform persistence
+ */
+export function serializeVoiceNoteContent(voiceNote: { url: string; duration: number }, text?: string): string {
+  if (!voiceNote || !voiceNote.url) return text || '';
+  return `__VOICENOTE__:${JSON.stringify({
+    url: voiceNote.url,
+    duration: Math.round(Number(voiceNote.duration) || 1),
+    text: text || '',
+  })}`;
+}
+
+/**
+ * Safely parse voice note data and plain text from database content or column
+ */
+export function parseVoiceNoteFromContent(
+  content: any,
+  existingVoiceNote?: any
+): { text: string; voiceNote?: { url: string; duration: number } } {
+  // 1. Direct object in voice_note column
+  if (existingVoiceNote && typeof existingVoiceNote === 'object' && existingVoiceNote.url) {
+    const isEncodedInContent = typeof content === 'string' && content.startsWith('__VOICENOTE__:');
+    return {
+      text: isEncodedInContent ? '' : (typeof content === 'string' ? content : ''),
+      voiceNote: {
+        url: existingVoiceNote.url,
+        duration: Math.max(1, Math.round(Number(existingVoiceNote.duration) || 1)),
+      },
+    };
+  }
+
+  // 2. Stringified JSON in voice_note column
+  if (typeof existingVoiceNote === 'string' && existingVoiceNote.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(existingVoiceNote);
+      if (parsed && parsed.url) {
+        const isEncodedInContent = typeof content === 'string' && content.startsWith('__VOICENOTE__:');
+        return {
+          text: isEncodedInContent ? '' : (typeof content === 'string' ? content : ''),
+          voiceNote: {
+            url: parsed.url,
+            duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
+          },
+        };
+      }
+    } catch {}
+  }
+
+  // 3. Encoded voice note in content column (__VOICENOTE__:{"url":"...","duration":5})
+  if (typeof content === 'string') {
+    if (content.startsWith('__VOICENOTE__:')) {
+      try {
+        const rawJson = content.slice('__VOICENOTE__:'.length);
+        const parsed = JSON.parse(rawJson);
+        if (parsed && parsed.url) {
+          return {
+            text: parsed.text || '',
+            voiceNote: {
+              url: parsed.url,
+              duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
+            },
+          };
+        }
+      } catch {}
+    } else if (content.startsWith('{"type":"voice_note"') || (content.startsWith('{') && content.includes('"voice_note"'))) {
+      try {
+        const parsed = JSON.parse(content);
+        const vn = parsed.voiceNote || parsed;
+        if (vn && vn.url) {
+          return {
+            text: parsed.text || '',
+            voiceNote: {
+              url: vn.url,
+              duration: Math.max(1, Math.round(Number(vn.duration) || 1)),
+            },
+          };
+        }
+      } catch {}
+    }
+  }
+
+  return {
+    text: typeof content === 'string' ? content : '',
+    voiceNote: undefined,
+  };
+}
+

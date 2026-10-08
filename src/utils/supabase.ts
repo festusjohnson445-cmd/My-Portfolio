@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
+import { parseVoiceNoteFromContent, serializeVoiceNoteContent } from './audioUtils';
 
 // ============================================================================
 // 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION
@@ -886,9 +887,22 @@ export function subscribeToSupabaseRealtimeChat(callback: RealtimeChatCallback) 
 /**
  * Broadcast message instantly over Supabase Realtime channel
  */
+export const CHAT_REALTIME_BROADCAST_CHANNEL = 'fesline_portfolio_realtime_chat';
+
+let globalBroadcastChannel: any = null;
+export function getSharedChatBroadcastChannel() {
+  if (!globalBroadcastChannel) {
+    globalBroadcastChannel = supabase.channel(CHAT_REALTIME_BROADCAST_CHANNEL);
+    try {
+      globalBroadcastChannel.subscribe();
+    } catch {}
+  }
+  return globalBroadcastChannel;
+}
+
 export async function broadcastSupabaseChatMessage(messagePayload: any): Promise<void> {
   try {
-    const channel = supabase.channel('fesline_portfolio_realtime_chat');
+    const channel = getSharedChatBroadcastChannel();
     await channel.send({
       type: 'broadcast',
       event: 'new_chat_message',
@@ -1193,9 +1207,11 @@ export async function saveMessageAndConversationToSupabase(params: {
   const lastSnippet = message.text || (message.voiceNote ? '🎤 Voice note' : (message.attachments?.length ? `📎 ${message.attachments[0].name}` : 'File sent'));
 
   // Determine visitor ID and conversation ID
-  let vId = visitorId || (conversationId ? (conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId) : '');
+  const rawVId = visitorId || (conversationId ? (conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId) : '');
+  let vId = rawVId.startsWith('conv_') ? rawVId.replace(/^conv_/, '') : rawVId;
   if (!vId && !isOwnerSender) {
     vId = typeof localStorage !== 'undefined' ? (localStorage.getItem('visitor_id') || '') : '';
+    if (vId.startsWith('conv_')) vId = vId.replace(/^conv_/, '');
   }
   if (!vId) {
     vId = 'visitor_guest';
@@ -1277,30 +1293,55 @@ export async function saveMessageAndConversationToSupabase(params: {
 
     // Step C: Insert the new row into messages linking conversation_id ('conv_' + visitor_id)
     try {
-      const messagePayload = {
+      const hasVoiceNote = Boolean(message.voiceNote && message.voiceNote.url);
+      const contentToSave = hasVoiceNote
+        ? serializeVoiceNoteContent(message.voiceNote, message.text)
+        : (message.text || lastSnippet);
+
+      const basePayload: any = {
         id: safeMessageId,
         conversation_id: targetConvId,
         sender_id: isOwnerSender ? ownerId : vId,
         receiver_id: isOwnerSender ? vId : ownerId,
-        content: message.text || lastSnippet,
+        content: contentToSave,
         created_at: nowIso,
       };
 
-      let { error: msgError } = await supabase
-        .from('messages')
-        .insert(messagePayload);
+      let msgError: any = null;
+
+      // If voice note is attached, try inserting with voice_note column first (for projects where the column is added)
+      if (hasVoiceNote) {
+        const payloadWithCol = {
+          ...basePayload,
+          voice_note: message.voiceNote,
+        };
+        const { error: colErr } = await supabase.from('messages').insert(payloadWithCol);
+        if (colErr) {
+          // Fallback to basePayload where content safely encodes the voice note
+          if (colErr.message?.includes('voice_note') || colErr.code === '42703' || colErr.message?.includes('column')) {
+            const { error: fallbackErr } = await supabase.from('messages').insert(basePayload);
+            msgError = fallbackErr;
+          } else {
+            msgError = colErr;
+          }
+        }
+      } else {
+        const { error: stdErr } = await supabase.from('messages').insert(basePayload);
+        msgError = stdErr;
+      }
 
       if (msgError) {
         console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
         // Fallback without client-generated UUID in case ID generation is database-managed
         if (msgError.message?.includes('id') || msgError.code === '23505') {
-          const { error: fallbackErr } = await supabase.from('messages').insert({
+          const fallbackBody = {
             conversation_id: targetConvId,
             sender_id: isOwnerSender ? ownerId : vId,
             receiver_id: isOwnerSender ? vId : ownerId,
-            content: message.text || lastSnippet,
+            content: contentToSave,
             created_at: nowIso,
-          });
+          };
+          const { error: fallbackErr } = await supabase.from('messages').insert(fallbackBody);
           msgError = fallbackErr;
         }
       }
@@ -1325,6 +1366,8 @@ export async function saveMessageAndConversationToSupabase(params: {
           sender_id: isOwnerSender ? ownerId : vId,
           receiver_id: isOwnerSender ? vId : ownerId,
           conversation_id: targetConvId,
+          voiceNote: message.voiceNote,
+          voice_note: message.voiceNote,
           created_at: nowIso,
         },
       });
@@ -1491,6 +1534,18 @@ export function subscribeToGlobalOwnerInbox(params: {
       )
       .subscribe();
 
+    // Also attach to shared broadcast channel so cross-party broadcasts are immediately delivered
+    const broadcastChan = getSharedChatBroadcastChannel();
+    broadcastChan.on(
+      'broadcast',
+      { event: 'new_chat_message' },
+      (payload: any) => {
+        if (payload?.payload?.message) {
+          onNewMessage(payload.payload.message, payload.payload.conversationId);
+        }
+      }
+    );
+
     return () => {
       supabase.removeChannel(channel);
     };
@@ -1542,6 +1597,18 @@ export function subscribeToSupabaseMessagesRealtime(params: {
         }
       )
       .subscribe();
+
+    // Also attach to shared broadcast channel so cross-party broadcasts are immediately delivered
+    const broadcastChan = getSharedChatBroadcastChannel();
+    broadcastChan.on(
+      'broadcast',
+      { event: 'new_chat_message' },
+      (payload: any) => {
+        if (payload?.payload?.message) {
+          onNewMessage(payload.payload.message, payload.payload.conversationId);
+        }
+      }
+    );
 
     return () => {
       supabase.removeChannel(channel);
