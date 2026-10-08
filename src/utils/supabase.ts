@@ -1257,6 +1257,13 @@ export async function saveMessageAndConversationToSupabase(params: {
           id: targetConvId,
           visitor_id: vId,
           owner_id: ownerId,
+          default_label: displayName,
+          visitor_name: displayName,
+          custom_name: displayName,
+          role_or_company: roleSubject,
+          avatar_url: avatarUrl,
+          avatar_color: avatarColor,
+          unread: true,
           last_message: lastSnippet,
           last_message_at: nowIso,
         };
@@ -1277,8 +1284,11 @@ export async function saveMessageAndConversationToSupabase(params: {
       const messagePayload: Record<string, any> = {
         id: safeMessageId,
         conversation_id: targetConvId,
+        visitor_id: vId,
         sender_id: isOwnerSender ? ownerId : vId,
         receiver_id: isOwnerSender ? vId : ownerId,
+        sender_type: isOwnerSender ? 'owner' : 'visitor',
+        sender: isOwnerSender ? 'festus' : 'visitor',
         content: message.text || lastSnippet,
         created_at: nowIso,
       };
@@ -1289,6 +1299,19 @@ export async function saveMessageAndConversationToSupabase(params: {
 
       if (msgError) {
         console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
+        // Fallback without optional columns if database table schema does not include sender_type
+        if (msgError.message?.includes('column') || msgError.code === '42703') {
+          await supabase.from('messages').insert({
+            id: safeMessageId,
+            conversation_id: targetConvId,
+            visitor_id: vId,
+            sender_id: isOwnerSender ? ownerId : vId,
+            receiver_id: isOwnerSender ? vId : ownerId,
+            sender: isOwnerSender ? 'festus' : 'visitor',
+            content: message.text || lastSnippet,
+            created_at: nowIso,
+          });
+        }
       }
     } catch (errC: any) {
       console.warn('[Step C Exception handled]:', errC?.message || errC);
@@ -1428,6 +1451,57 @@ export async function fetchConversationsJoinedFromSupabase(): Promise<any[]> {
 }
 
 /**
+ * Global Realtime Inbox Subscription: In the Owner Panel, subscribe to ALL row insertions
+ * on public.messages and public.conversations globally using supabase.channel('global-owner-inbox')
+ * without scoping the filter to a single active conversation ID.
+ */
+export function subscribeToGlobalOwnerInbox(params: {
+  onNewMessage: (msg: any, convId: string) => void;
+  onNewConversation?: (conv: any) => void;
+}) {
+  const { onNewMessage, onNewConversation } = params;
+  try {
+    const channel = supabase
+      .channel('global-owner-inbox')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          if (payload.new) {
+            onNewMessage(payload.new, (payload.new as any).conversation_id);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'conversations' },
+        (payload) => {
+          if (payload.new && onNewConversation) {
+            onNewConversation(payload.new);
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'new_chat_message' },
+        (payload) => {
+          if (payload.payload && payload.payload.message) {
+            onNewMessage(payload.payload.message, payload.payload.conversationId);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (err) {
+    console.error('[Global Owner Inbox Subscription Error]:', err);
+    return () => {};
+  }
+}
+
+/**
  * Subscribe to Supabase Realtime changes on public.messages filtered by conversation_id.
  * Listens to postgres_changes (INSERT) on public.messages so owner replies immediately appear on visitor screen.
  */
@@ -1435,14 +1509,16 @@ export function subscribeToSupabaseMessagesRealtime(params: {
   conversationId?: string;
   isOwner?: boolean;
   onNewMessage: (msg: any, convId: string) => void;
+  onNewConversation?: (conv: any) => void;
 }) {
-  const { conversationId, isOwner, onNewMessage } = params;
-  try {
-    const channelName = isOwner
-      ? `realtime:messages_owner_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
-      : `realtime:messages_${conversationId || 'guest'}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const { conversationId, isOwner, onNewMessage, onNewConversation } = params;
+  if (isOwner) {
+    return subscribeToGlobalOwnerInbox({ onNewMessage, onNewConversation });
+  }
 
-    const filter = !isOwner && conversationId ? `conversation_id=eq.${conversationId}` : undefined;
+  try {
+    const channelName = `realtime:messages_${conversationId || 'guest'}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const filter = conversationId ? `conversation_id=eq.${conversationId}` : undefined;
 
     const channel = supabase
       .channel(channelName)

@@ -118,13 +118,14 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
 
     try {
       // 1. Generate or use persistent visitor_id (visitor_ + crypto.randomUUID())
-      let accessKey = activeVisitorId || localStorage.getItem('visitor_id') || localStorage.getItem('fesline_current_visitor_id');
-      if (!accessKey || !accessKey.trim()) {
-        const uuid = typeof crypto !== 'undefined' && crypto.randomUUID 
-          ? crypto.randomUUID() 
-          : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        accessKey = `visitor_${uuid}`;
-      }
+      // 2. Strict Session Reset & Id Generation:
+      // When a user submits the "InChat" profile setup form to register a new identity,
+      // DO NOT update or mutate the existing visitor profile row.
+      // Generate a brand-new visitor_id ('visitor_' + crypto.randomUUID()) and matching conversation_id ('conv_' + new visitor_id)
+      const uuid = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const accessKey = `visitor_${uuid}`;
 
       // 2. Ensure single-thread conversation_id ('conv_' + visitor_id) is persisted directly in localStorage
       const convId = `conv_${accessKey}`;
