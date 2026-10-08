@@ -1212,27 +1212,26 @@ export async function saveMessageAndConversationToSupabase(params: {
   const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_color') || '') : '') || 'bg-slate-700';
 
   try {
-    // Step A: Only upsert visitor_profiles when visitor is sending or when profile metadata is present
-    if (!isOwnerSender || (conversationMetadata?.visitorName || conversationMetadata?.customName)) {
-      try {
-        const profilePayload = {
-          visitor_id: vId,
-          display_name: displayName,
-          role_subject: roleSubject,
-          avatar_url: avatarUrl,
-          avatar_color: avatarColor,
-          updated_at: nowIso,
-        };
-        const { error: vpError } = await supabase
-          .from('visitor_profiles')
-          .upsert(profilePayload, { onConflict: 'visitor_id' });
+    // Step A: Ensure visitor_profiles row exists so conversations foreign key constraint is always satisfied
+    try {
+      const profilePayload: any = {
+        visitor_id: vId,
+        updated_at: nowIso,
+      };
+      if (displayName) profilePayload.display_name = displayName;
+      if (roleSubject) profilePayload.role_subject = roleSubject;
+      if (avatarUrl) profilePayload.avatar_url = avatarUrl;
+      if (avatarColor) profilePayload.avatar_color = avatarColor;
 
-        if (vpError) {
-          console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
-        }
-      } catch (errA) {
-        console.warn('[Step A Exception: visitor_profiles]:', errA);
+      const { error: vpError } = await supabase
+        .from('visitor_profiles')
+        .upsert(profilePayload, { onConflict: 'visitor_id' });
+
+      if (vpError) {
+        console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
       }
+    } catch (errA) {
+      console.warn('[Step A Exception: visitor_profiles]:', errA);
     }
 
     // Step B: For Owner replies: strictly update existing conversation in place without creating new conversations.
