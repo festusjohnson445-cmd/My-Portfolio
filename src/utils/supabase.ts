@@ -1239,14 +1239,17 @@ export async function saveMessageAndConversationToSupabase(params: {
     // For Visitor messages: upsert the parent record in conversations.
     try {
       if (isOwnerSender) {
-        // Owner sends reply -> never create or upsert new conversation, update existing in place
+        // Owner sends reply -> update existing conversation record in place
         const { error: convUpdateErr } = await supabase
           .from('conversations')
-          .update({
+          .upsert({
+            id: targetConvId,
+            visitor_id: vId,
+            owner_id: ownerId,
             last_message: lastSnippet,
             last_message_at: nowIso,
-          })
-          .eq('id', targetConvId);
+            unread_count: 0,
+          }, { onConflict: 'id' });
 
         if (convUpdateErr) {
           console.warn('[Step B Notice: conversations update on owner reply]:', convUpdateErr.message || convUpdateErr);
@@ -1257,15 +1260,9 @@ export async function saveMessageAndConversationToSupabase(params: {
           id: targetConvId,
           visitor_id: vId,
           owner_id: ownerId,
-          default_label: displayName,
-          visitor_name: displayName,
-          custom_name: displayName,
-          role_or_company: roleSubject,
-          avatar_url: avatarUrl,
-          avatar_color: avatarColor,
-          unread: true,
           last_message: lastSnippet,
           last_message_at: nowIso,
+          unread_count: 1,
         };
         const { error: convError } = await supabase
           .from('conversations')
@@ -1281,40 +1278,42 @@ export async function saveMessageAndConversationToSupabase(params: {
 
     // Step C: Insert the new row into messages linking conversation_id ('conv_' + visitor_id)
     try {
-      const messagePayload: Record<string, any> = {
+      const messagePayload = {
         id: safeMessageId,
         conversation_id: targetConvId,
-        visitor_id: vId,
         sender_id: isOwnerSender ? ownerId : vId,
         receiver_id: isOwnerSender ? vId : ownerId,
-        sender_type: isOwnerSender ? 'owner' : 'visitor',
-        sender: isOwnerSender ? 'festus' : 'visitor',
         content: message.text || lastSnippet,
         created_at: nowIso,
       };
 
-      const { error: msgError } = await supabase
+      let { error: msgError } = await supabase
         .from('messages')
         .insert(messagePayload);
 
       if (msgError) {
         console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
-        // Fallback without optional columns if database table schema does not include sender_type
-        if (msgError.message?.includes('column') || msgError.code === '42703') {
-          await supabase.from('messages').insert({
-            id: safeMessageId,
+        // Fallback without client-generated UUID in case ID generation is database-managed
+        if (msgError.message?.includes('id') || msgError.code === '23505') {
+          const { error: fallbackErr } = await supabase.from('messages').insert({
             conversation_id: targetConvId,
-            visitor_id: vId,
             sender_id: isOwnerSender ? ownerId : vId,
             receiver_id: isOwnerSender ? vId : ownerId,
-            sender: isOwnerSender ? 'festus' : 'visitor',
             content: message.text || lastSnippet,
             created_at: nowIso,
           });
+          msgError = fallbackErr;
         }
       }
+
+      if (msgError) {
+        const errorDetail = msgError.message || 'Database insert failed on public.messages';
+        console.error('[Step C Failure]:', errorDetail);
+        throw new Error(errorDetail);
+      }
     } catch (errC: any) {
-      console.warn('[Step C Exception handled]:', errC?.message || errC);
+      console.error('[Step C Exception]:', errC?.message || errC);
+      throw errC;
     }
 
     // Broadcast across live channels
@@ -1333,9 +1332,9 @@ export async function saveMessageAndConversationToSupabase(params: {
     } catch {}
 
     return true;
-  } catch (err) {
+  } catch (err: any) {
     console.error('[Supabase Message & Conversation Save Exception]:', err);
-    return false;
+    throw err;
   }
 }
 
@@ -1461,8 +1460,9 @@ export function subscribeToGlobalOwnerInbox(params: {
 }) {
   const { onNewMessage, onNewConversation } = params;
   try {
+    const channelName = `global-owner-inbox-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const channel = supabase
-      .channel('global-owner-inbox')
+      .channel(channelName)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
@@ -1474,7 +1474,7 @@ export function subscribeToGlobalOwnerInbox(params: {
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'conversations' },
+        { event: '*', schema: 'public', table: 'conversations' },
         (payload) => {
           if (payload.new && onNewConversation) {
             onNewConversation(payload.new);

@@ -19,6 +19,7 @@ interface VisitorProfileModalProps {
   onClose: () => void;
   currentProfile: VisitorMessagingProfile;
   onSave: (updated: VisitorMessagingProfile, accessKey: string) => void;
+  onRestoreSession?: (targetId: string) => Promise<boolean>;
   visitorId?: string;
   isMandatory?: boolean;
 }
@@ -38,6 +39,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   onClose,
   currentProfile,
   onSave,
+  onRestoreSession,
   visitorId,
   isMandatory = false,
 }) => {
@@ -186,6 +188,17 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     setRestoreError(null);
 
     try {
+      if (onRestoreSession) {
+        const success = await onRestoreSession(keyToSearch);
+        if (success) {
+          onClose();
+          return;
+        } else {
+          setRestoreError(`No session found matching "${keyToSearch}". Check your Visitor ID or create a new profile.`);
+          return;
+        }
+      }
+
       // 1. Direct query visitor_profiles by visitor_id without referencing non-existent id column
       const { data, error } = await supabase
         .from('visitor_profiles')
@@ -210,8 +223,11 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
         avatarColor: data.avatar_color || 'bg-slate-700',
       };
 
-      // 2. Persist visitor_id, display_name, and profile details directly in localStorage
+      // 2. Persist visitor_id, conversation_id, display_name, and profile details directly in localStorage
+      const restoredConvId = keyToSearch.startsWith('conv_') ? keyToSearch : `conv_${keyToSearch}`;
       localStorage.setItem('visitor_id', keyToSearch);
+      localStorage.setItem('conversation_id', restoredConvId);
+      localStorage.setItem('fesline_current_conversation_id', restoredConvId);
       localStorage.setItem('display_name', restoredProfile.name);
       localStorage.setItem('visitor_profile', JSON.stringify(restoredProfile));
       localStorage.setItem('fesline_visitor_messaging_profile', JSON.stringify(restoredProfile));

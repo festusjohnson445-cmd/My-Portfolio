@@ -29,7 +29,8 @@ import {
   Copy,
   Check,
   MessageSquare,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import {
   useProfileSync,
@@ -292,15 +293,15 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           }
         }
       } else {
-        // Requirement 4: Strict Session & Identity Isolation
-        // For New Visitors: Initialize as clean, empty state. Do not automatically load or associate other conversations.
+        // Strict Session & Identity Isolation with Page Reload Preservation
+        // For existing visitors who have a stored visitor_id on this device: preserve their active chat session
+        // For new visitors with no stored visitor_id: initialize as clean, empty state
         const vId = getStoredVisitorId();
-        const savedName = localStorage.getItem('display_name');
-        if (vId && savedName && savedName !== 'Visitor') {
+        if (vId) {
           const scopedChat = localStorage.getItem(`fesline_visitor_chat_${vId}`);
           if (scopedChat) {
             const parsed = JSON.parse(scopedChat);
-            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
           }
         }
       }
@@ -347,17 +348,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   // Initial useEffect hook on component mount:
   // Requirement 4 & 5: Strict Session Isolation & Reliable State Synchronization
-  // - For New Visitors: Initialize the chat view as a clean, empty state.
-  // - For Returning Visitors: Load ONLY the messages matching their unique visitor_id and conversation_id.
-  // - Query Supabase directly using ORDER BY created_at ASC on mount.
+  // 3. TWO-WAY DELIVERY & PAGE RELOAD PRESERVATION:
+  // On component mount (useEffect), automatically fetch the complete message history
+  // directly from Supabase for the active conversation_id ordered by created_at ASC.
   useEffect(() => {
     if (isOwner) return;
 
     const savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || '';
-    const savedDisplayName = localStorage.getItem('display_name');
+    const savedDisplayName = localStorage.getItem('display_name') || 'Visitor';
 
-    // For New Visitors without completed InChat login: maintain clean, empty state
-    if (!savedVId || !savedDisplayName || savedDisplayName === 'Visitor') {
+    // If no saved visitor_id in localStorage, visitor receives a clean initial state
+    if (!savedVId) {
       setMessages([]);
       setConversations([]);
       return;
@@ -365,9 +366,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
     const initAndFetchVisitorSession = async () => {
       try {
-        const savedCId = `conv_${savedVId}`;
+        const savedCId = localStorage.getItem('conversation_id') || `conv_${savedVId}`;
         const ownerId = await getOrFetchOwnerId();
-        const safeCId = ensureValidUuid(savedCId);
 
         if (savedVId !== visitorId) setVisitorId(savedVId);
         if (savedCId !== conversationId) setConversationId(savedCId);
@@ -394,13 +394,25 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           console.error('[Supabase Initial Profile Fetch Error]:', profileErr);
         }
 
-        // Direct fetch strictly matching this visitor session with ORDER BY created_at ASC
+        // Direct fetch strictly matching active conversation_id with ORDER BY created_at ASC
         try {
-          const { data: dbMessages, error: dbMsgError } = await supabase
+          let { data: dbMessages, error: dbMsgError } = await supabase
             .from('messages')
             .select('*')
-            .or(`conversation_id.eq.${savedCId},conversation_id.eq.${safeCId},and(sender_id.eq.${savedVId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${savedVId})`)
+            .eq('conversation_id', savedCId)
             .order('created_at', { ascending: true });
+
+          // Fallback if messages were recorded with raw visitor_id as conversation_id
+          if (!dbMsgError && (!dbMessages || dbMessages.length === 0)) {
+            const { data: altMsgs } = await supabase
+              .from('messages')
+              .select('*')
+              .or(`conversation_id.eq.${savedVId},sender_id.eq.${savedVId},receiver_id.eq.${savedVId}`)
+              .order('created_at', { ascending: true });
+            if (altMsgs && altMsgs.length > 0) {
+              dbMessages = altMsgs;
+            }
+          }
 
           if (dbMsgError) {
             console.error('[Supabase Initial Messages Fetch Error]:', dbMsgError);
@@ -422,10 +434,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               };
             });
 
-            // Requirement 2: Strict Timestamp Sorting
+            // Strict Timestamp Sorting
             mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
 
-            // Requirement 1 & 4: Set single unified messages array strictly scoped to this visitor
+            // Set single unified messages array strictly scoped to this visitor
             setMessages(mappedMessages);
 
             const lastMsg = mappedMessages[mappedMessages.length - 1];
@@ -466,6 +478,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const [resumeInput, setResumeInput] = useState('');
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [copiedVisitorId, setCopiedVisitorId] = useState(false);
+  const [dbWriteError, setDbWriteError] = useState<string | null>(null);
 
   // For visitor: clear chat confirmation modal state
   const [isVisitorClearModalOpen, setIsVisitorClearModalOpen] = useState(false);
@@ -1104,131 +1117,152 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     } catch {}
   };
 
-  const handleResumeConversation = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // 2. VISITOR SESSION RECOVERY VIA UNIQUE ID:
+  // Directly queries Supabase for messages matching restoredConvId ordered by created_at ASC,
+  // sets active visitor_id and conversation_id in localStorage, loads fetched array into React state,
+  // and subscribes the Realtime listener to that specific conversation_id
+  const handleRestoreSessionById = async (targetId: string): Promise<boolean> => {
     setResumeError(null);
-    const target = resumeInput.trim();
+    const target = targetId.trim();
     if (!target) {
       setResumeError('Please enter your Visitor Identity Code or access key.');
-      return;
+      return false;
     }
 
-    // 4. Strict Session & Identity Isolation:
-    // Completely flush active chat state to prevent previous visitor messages from appearing
-    setMessages([]);
-    setConversations([]);
+    const cleanVId = target.replace(/^conv_/, '');
+    const restoredConvId = `conv_${cleanVId}`;
+    const ownerId = await getOrFetchOwnerId();
 
     try {
-      const targetVId = target.replace(/^conv_/, '');
-      const targetCId = target.startsWith('conv_') ? target : `conv_${target}`;
-      const ownerId = await getOrFetchOwnerId();
+      // Direct query Supabase:
+      // supabase.from('messages').select('*').eq('conversation_id', restoredConvId).order('created_at', { ascending: true })
+      let { data: dbMessages, error: msgError } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', restoredConvId)
+        .order('created_at', { ascending: true });
 
-      // Check remote visitor_profiles for matching credentials
+      // Fallback if messages were recorded with clean visitor ID as conversation_id
+      if (!msgError && (!dbMessages || dbMessages.length === 0)) {
+        const { data: altMsgs } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`conversation_id.eq.${cleanVId},and(sender_id.eq.${cleanVId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${cleanVId})`)
+          .order('created_at', { ascending: true });
+        if (altMsgs && altMsgs.length > 0) {
+          dbMessages = altMsgs;
+        }
+      }
+
+      // Check remote visitor_profiles for matching profile details
       let profileMatch: any = null;
       try {
         const { data: pData } = await supabase
           .from('visitor_profiles')
           .select('*')
-          .or(`visitor_id.eq.${targetVId},visitor_id.eq.${target}`)
+          .or(`visitor_id.eq.${cleanVId},visitor_id.eq.${target}`)
           .maybeSingle();
         if (pData) profileMatch = pData;
       } catch {}
 
-      const resolvedVId = profileMatch?.visitor_id || targetVId;
-      const resolvedCId = `conv_${resolvedVId}`;
-      const safeCId = ensureValidUuid(resolvedCId);
-
-      // 2 & 5. Reliable State Synchronization & Strict Timestamp Sorting:
-      // Load ONLY the messages matching their unique visitor_id and conversation_id directly from Supabase
-      const { data: dbMessages, error: msgError } = await supabase
-        .from('messages')
-        .select('*')
-        .or(`conversation_id.eq.${resolvedCId},conversation_id.eq.${safeCId},conversation_id.eq.${resolvedVId},and(sender_id.eq.${resolvedVId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${resolvedVId})`)
-        .order('created_at', { ascending: true });
-
       const hasMessages = !msgError && dbMessages && Array.isArray(dbMessages) && dbMessages.length > 0;
 
-      if (profileMatch || hasMessages) {
-        const mappedMessages: ChatMessage[] = (dbMessages || []).map((m: any) => {
-          const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
-          return {
-            id: m.id || generateMessageId(),
-            sender: isOwnerMsg ? 'festus' : 'visitor',
-            sender_id: m.sender_id || (isOwnerMsg ? ownerId : resolvedVId),
-            receiver_id: m.receiver_id || (isOwnerMsg ? resolvedVId : ownerId),
-            conversation_id: resolvedCId,
-            text: m.content || m.text || '',
-            timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
-            status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
-            attachments: m.attachments || undefined,
-            voiceNote: m.voice_note || m.voiceNote || undefined,
-            created_at: m.created_at || new Date().toISOString(),
-          };
-        });
-
-        // 2. Strict Timestamp Sorting:
-        // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-        mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
-
-        // 1. Unified Single Array State:
-        setMessages(mappedMessages);
-
-        const restoredName = profileMatch?.display_name || profileMatch?.name || 'Visitor';
-        const restoredProfile: VisitorMessagingProfile = {
-          name: restoredName,
-          roleOrCompany: profileMatch?.role_subject || profileMatch?.role_or_company || 'Visitor Direct Chat',
-          avatarUrl: profileMatch?.avatar_url || '',
-          avatarColor: profileMatch?.avatar_color || 'bg-slate-700',
-        };
-
-        setVisitorProfile(restoredProfile);
-        setVisitorId(resolvedVId);
-        setConversationId(resolvedCId);
-
-        const lastMsg = mappedMessages[mappedMessages.length - 1];
-        const singleVisitorConv: Conversation = {
-          id: resolvedCId,
-          visitorId: resolvedVId,
-          defaultLabel: restoredName,
-          customName: restoredName,
-          visitorName: restoredName,
-          avatarUrl: restoredProfile.avatarUrl,
-          avatarColor: restoredProfile.avatarColor,
-          roleOrCompany: restoredProfile.roleOrCompany,
-          unread: false,
-          important: false,
-          messages: mappedMessages,
-          lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : '')),
-          lastTimestamp: lastMsg?.timestamp || '',
-        };
-
-        setConversations([singleVisitorConv]);
-
-        // Prevent Cross-Contamination: Strictly scope local storage to active visitor_id
-        try {
-          localStorage.setItem('visitor_id', resolvedVId);
-          localStorage.setItem('conversation_id', resolvedCId);
-          localStorage.setItem(STORAGE_KEY_VISITOR_ID, resolvedVId);
-          localStorage.setItem('fesline_visitor_access_key', resolvedVId);
-          localStorage.setItem('display_name', restoredName);
-          localStorage.setItem('role_subject', restoredProfile.roleOrCompany || '');
-          localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(restoredProfile));
-          localStorage.setItem(`fesline_visitor_chat_${resolvedVId}`, JSON.stringify([singleVisitorConv]));
-          sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, resolvedVId);
-          document.cookie = `fesline_visitor_id=${encodeURIComponent(resolvedVId)}; path=/; max-age=31536000; SameSite=Lax`;
-        } catch {}
-
-        setIsResumeModalOpen(false);
-        setResumeInput('');
-        setShowMailNotice(`Welcome back ${restoredName}! Restored session with ${mappedMessages.length} message${mappedMessages.length === 1 ? '' : 's'}.`);
-        return;
+      if (!profileMatch && !hasMessages) {
+        setResumeError(`No session found matching "${target}". Check your Visitor ID or create a new profile.`);
+        return false;
       }
 
-      setResumeError(`No session found matching "${target}". Check the code or set up a new profile.`);
+      // Flush active chat state before loading restored messages
+      setMessages([]);
+      setConversations([]);
+
+      const mappedMessages: ChatMessage[] = (dbMessages || []).map((m: any) => {
+        const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+        return {
+          id: m.id || generateMessageId(),
+          sender: isOwnerMsg ? 'festus' : 'visitor',
+          sender_id: m.sender_id || (isOwnerMsg ? ownerId : cleanVId),
+          receiver_id: m.receiver_id || (isOwnerMsg ? cleanVId : ownerId),
+          conversation_id: restoredConvId,
+          text: m.content || m.text || '',
+          timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+          status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+          attachments: m.attachments || undefined,
+          voiceNote: m.voice_note || m.voiceNote || undefined,
+          created_at: m.created_at || new Date().toISOString(),
+        };
+      });
+
+      // Strict Chronological Timestamp Sorting
+      mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+      // Load fetched message array into React state
+      setMessages(mappedMessages);
+
+      const restoredName = profileMatch?.display_name || profileMatch?.name || 'Visitor';
+      const restoredProfile: VisitorMessagingProfile = {
+        name: restoredName,
+        roleOrCompany: profileMatch?.role_subject || profileMatch?.role_or_company || 'Visitor Direct Chat',
+        avatarUrl: profileMatch?.avatar_url || '',
+        avatarColor: profileMatch?.avatar_color || 'bg-slate-700',
+      };
+
+      visitorIdRef.current = cleanVId;
+      conversationIdRef.current = restoredConvId;
+      setVisitorProfile(restoredProfile);
+      setVisitorId(cleanVId);
+      setConversationId(restoredConvId);
+
+      const lastMsg = mappedMessages[mappedMessages.length - 1];
+      const singleVisitorConv: Conversation = {
+        id: restoredConvId,
+        visitorId: cleanVId,
+        defaultLabel: restoredName,
+        customName: restoredName,
+        visitorName: restoredName,
+        avatarUrl: restoredProfile.avatarUrl,
+        avatarColor: restoredProfile.avatarColor,
+        roleOrCompany: restoredProfile.roleOrCompany,
+        unread: false,
+        important: false,
+        messages: mappedMessages,
+        lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : '')),
+        lastTimestamp: lastMsg?.timestamp || '',
+      };
+
+      setConversations([singleVisitorConv]);
+
+      // Save active visitor_id and conversation_id (conv_ + visitor_id) in localStorage
+      try {
+        localStorage.setItem('visitor_id', cleanVId);
+        localStorage.setItem('conversation_id', restoredConvId);
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, cleanVId);
+        localStorage.setItem('fesline_visitor_access_key', cleanVId);
+        localStorage.setItem('fesline_current_visitor_id', cleanVId);
+        localStorage.setItem('fesline_current_conversation_id', restoredConvId);
+        localStorage.setItem('display_name', restoredName);
+        localStorage.setItem('role_subject', restoredProfile.roleOrCompany || '');
+        localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(restoredProfile));
+        localStorage.setItem(`fesline_visitor_chat_${cleanVId}`, JSON.stringify([singleVisitorConv]));
+        sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, cleanVId);
+        document.cookie = `fesline_visitor_id=${encodeURIComponent(cleanVId)}; path=/; max-age=31536000; SameSite=Lax`;
+      } catch {}
+
+      setIsResumeModalOpen(false);
+      setIsVisitorProfileModalOpen(false);
+      setResumeInput('');
+      setShowMailNotice(`Session restored! Loaded ${mappedMessages.length} message${mappedMessages.length === 1 ? '' : 's'}.`);
+      return true;
     } catch (err: any) {
       console.error('[Session Restore Exception]:', err);
       setResumeError(err?.message || 'Error occurred while restoring session.');
+      return false;
     }
+  };
+
+  const handleResumeConversation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await handleRestoreSessionById(resumeInput);
   };
 
   const [attachedFiles, setAttachedFiles] = useState<ChatAttachment[]>([]);
@@ -1652,20 +1686,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     // Create a new row in public.conversations for the Owner Panel
     try {
       const ownerId = await getOrFetchOwnerId();
-      await supabase.from('conversations').insert({
+      await supabase.from('conversations').upsert({
         id: targetConvId,
         visitor_id: accessKey,
         owner_id: ownerId,
-        default_label: updated.name || 'Visitor',
-        visitor_name: updated.name || 'Visitor',
-        custom_name: updated.name || '',
-        avatar_url: updated.avatarUrl || '',
-        avatar_color: updated.avatarColor || 'bg-slate-700',
-        role_or_company: updated.roleOrCompany || 'Visitor Direct Chat',
-        unread: false,
         last_message: '',
         last_message_at: new Date().toISOString(),
-      });
+        unread_count: 0,
+      }, { onConflict: 'id' });
     } catch (insertConvErr) {
       console.warn('[Supabase Insert Conversation Notice]:', insertConvErr);
     }
@@ -1708,7 +1736,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   };
 
   // Send voice note between owner and visitor
-  const sendVoiceNoteMessage = (audioUrl: string, duration: number) => {
+  const sendVoiceNoteMessage = async (audioUrl: string, duration: number) => {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const voiceData: VoiceNoteData = {
       url: audioUrl,
@@ -1773,23 +1801,28 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         }),
       }).catch((err) => console.error('Send error:', err));
 
-      saveMessageAndConversationToSupabase({
-        conversationId: activeOwnerConvId,
-        visitorId: activeOwnerConvId,
-        message: festusMsg,
-        conversationMetadata: {
-          defaultLabel: activeConversation.defaultLabel,
-          customName: activeConversation.customName,
-          visitorName: activeConversation.visitorName,
-          avatarUrl: activeConversation.avatarUrl,
-          roleOrCompany: activeConversation.roleOrCompany,
-        },
-      }).catch((err) => console.error('[Supabase Owner Voice Note Save Error]:', err));
-
       try {
-        broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
-      } catch (err) {
-        console.error('Supabase broadcast error:', err);
+        setDbWriteError(null);
+        await saveMessageAndConversationToSupabase({
+          conversationId: activeOwnerConvId,
+          visitorId: activeOwnerConvId,
+          message: festusMsg,
+          conversationMetadata: {
+            defaultLabel: activeConversation.defaultLabel,
+            customName: activeConversation.customName,
+            visitorName: activeConversation.visitorName,
+            avatarUrl: activeConversation.avatarUrl,
+            roleOrCompany: activeConversation.roleOrCompany,
+          },
+        });
+        try {
+          broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
+        } catch (err) {
+          console.error('Supabase broadcast error:', err);
+        }
+      } catch (err: any) {
+        console.error('[Supabase Owner Voice Note Save Error]:', err);
+        setDbWriteError(`Owner Voice Note Error: ${err?.message || 'Failed to save to database.'}`);
       }
     } else {
       // 2. VISITOR SENDS VOICE NOTE
@@ -1798,15 +1831,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         currentVisitorId = `visitor_${uuid}`;
         setVisitorId(currentVisitorId);
-        try {
-          localStorage.setItem('visitor_id', currentVisitorId);
-          localStorage.setItem(STORAGE_KEY_VISITOR_ID, currentVisitorId);
-        } catch {}
       }
       let currentConvId = conversationId || getStoredConversationId(currentVisitorId) || `conv_${currentVisitorId}`;
       if (currentConvId !== conversationId) {
         setConversationId(currentConvId);
       }
+      try {
+        localStorage.setItem('visitor_id', currentVisitorId);
+        localStorage.setItem('conversation_id', currentConvId);
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, currentVisitorId);
+        localStorage.setItem('fesline_current_conversation_id', currentConvId);
+        localStorage.setItem('fesline_visitor_access_key', currentVisitorId);
+      } catch {}
 
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
@@ -1888,25 +1924,31 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         }),
       }).catch((err) => console.error('Send voice note error:', err));
 
-      // Supabase send operation: first upserts parent record in conversations before inserting message
-      saveMessageAndConversationToSupabase({
-        conversationId: currentConvId,
-        visitorId: currentVisitorId,
-        message: visitorMsg,
-        conversationMetadata: {
-          defaultLabel: visitorProfile.name || 'Direct Message',
-          customName: visitorProfile.name || '',
-          visitorName: visitorProfile.name || '',
-          avatarUrl: visitorProfile.avatarUrl || '',
-          roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-          avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-        },
-      }).catch((err) => console.error('[Supabase Visitor Voice Note Save Error]:', err));
-
+      // Supabase send operation: explicit sequential database pipeline
       try {
-        broadcastSupabaseChatMessage({ conversationId: currentConvId, message: visitorMsg });
-      } catch (err) {
-        console.error('Supabase broadcast error:', err);
+        setDbWriteError(null);
+        await saveMessageAndConversationToSupabase({
+          conversationId: currentConvId,
+          visitorId: currentVisitorId,
+          message: visitorMsg,
+          conversationMetadata: {
+            defaultLabel: visitorProfile.name || 'Direct Message',
+            customName: visitorProfile.name || '',
+            visitorName: visitorProfile.name || '',
+            avatarUrl: visitorProfile.avatarUrl || '',
+            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+          },
+        });
+        try {
+          broadcastSupabaseChatMessage({ conversationId: currentConvId, message: visitorMsg });
+        } catch (err) {
+          console.error('Supabase broadcast error:', err);
+        }
+      } catch (err: any) {
+        console.error('[Supabase Visitor Voice Note Save Error]:', err);
+        const errDetail = err?.message || 'Database write failed. Check your network or RLS configuration.';
+        setDbWriteError(`Voice Note Delivery Notice: ${errDetail}`);
       }
     }
   };
@@ -2011,7 +2053,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   };
 
   // Send message
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMessage.trim() && attachedFiles.length === 0) return;
 
@@ -2080,23 +2122,29 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         }),
       }).catch((err) => console.error('Send error:', err));
 
-      saveMessageAndConversationToSupabase({
-        conversationId: activeOwnerConvId,
-        visitorId: activeOwnerConvId,
-        message: festusMsg,
-        conversationMetadata: {
-          defaultLabel: activeConversation.defaultLabel,
-          customName: activeConversation.customName,
-          visitorName: activeConversation.visitorName,
-          avatarUrl: activeConversation.avatarUrl,
-          roleOrCompany: activeConversation.roleOrCompany,
-        },
-      }).catch((err) => console.error('[Supabase Owner Message Save Error]:', err));
-
       try {
-        broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
-      } catch (err) {
-        console.error('Supabase broadcast error:', err);
+        setDbWriteError(null);
+        await saveMessageAndConversationToSupabase({
+          conversationId: activeOwnerConvId,
+          visitorId: activeOwnerConvId,
+          message: festusMsg,
+          conversationMetadata: {
+            defaultLabel: activeConversation.defaultLabel,
+            customName: activeConversation.customName,
+            visitorName: activeConversation.visitorName,
+            avatarUrl: activeConversation.avatarUrl,
+            roleOrCompany: activeConversation.roleOrCompany,
+          },
+        });
+
+        try {
+          broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
+        } catch (err) {
+          console.error('Supabase broadcast error:', err);
+        }
+      } catch (err: any) {
+        console.error('[Supabase Owner Message Save Error]:', err);
+        setDbWriteError(`Owner Message Persistence Warning: ${err?.message || 'Failed to save to database.'}`);
       }
     } else {
       // 3. Unauthenticated Database Writes:
@@ -2107,15 +2155,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         currentVisitorId = `visitor_${uuid}`;
         setVisitorId(currentVisitorId);
-        try {
-          localStorage.setItem('visitor_id', currentVisitorId);
-          localStorage.setItem(STORAGE_KEY_VISITOR_ID, currentVisitorId);
-        } catch {}
       }
       let currentConvId = conversationId || getStoredConversationId(currentVisitorId) || `conv_${currentVisitorId}`;
       if (currentConvId !== conversationId) {
         setConversationId(currentConvId);
       }
+      try {
+        localStorage.setItem('visitor_id', currentVisitorId);
+        localStorage.setItem('conversation_id', currentConvId);
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, currentVisitorId);
+        localStorage.setItem('fesline_current_conversation_id', currentConvId);
+        localStorage.setItem('fesline_visitor_access_key', currentVisitorId);
+      } catch {}
 
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
@@ -2183,12 +2234,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         return updated;
       });
 
-      // Dispatch immediately to backend with SSE broadcast
-      fetch('/api/chats/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // 1. PERSISTENCE & DATABASE WRITE ENSURANCE (Fix Disappearing Visitor Messages):
+      // Executes sequential database pipeline upon sending a message:
+      // a. Check/Upsert public.visitor_profiles matching visitor_id
+      // b. Check/Upsert public.conversations matching conversation_id
+      // c. Execute supabase.from('messages').insert([...])
+      // Add error handling (try/catch) to alert the UI if a network or RLS permission error blocks insert
+      try {
+        setDbWriteError(null);
+        await saveMessageAndConversationToSupabase({
           conversationId: currentConvId,
+          visitorId: currentVisitorId,
           message: visitorMsg,
           conversationMetadata: {
             defaultLabel: visitorProfile.name || 'Direct Message',
@@ -2197,31 +2253,36 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             avatarUrl: visitorProfile.avatarUrl || '',
             roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
             avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-          }
-        }),
-      }).catch((err) => console.error('Send error:', err));
+          },
+        });
 
-      // Supabase database persistence:
-      // First upserts the parent record in the conversations table (updating id, visitor_id, last_message, and last_message_at)
-      // before inserting the message payload into the messages table to satisfy database foreign key constraints
-      saveMessageAndConversationToSupabase({
-        conversationId: currentConvId,
-        visitorId: currentVisitorId,
-        message: visitorMsg,
-        conversationMetadata: {
-          defaultLabel: visitorProfile.name || 'Direct Message',
-          customName: visitorProfile.name || '',
-          visitorName: visitorProfile.name || '',
-          avatarUrl: visitorProfile.avatarUrl || '',
-          roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-          avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-        },
-      }).catch((err) => console.error('[Supabase Send Message Error]:', err));
+        try {
+          broadcastSupabaseChatMessage({ conversationId: currentConvId, message: visitorMsg });
+        } catch (err) {
+          console.error('Supabase broadcast error:', err);
+        }
 
-      try {
-        broadcastSupabaseChatMessage({ conversationId: currentConvId, message: visitorMsg });
-      } catch (err) {
-        console.error('Supabase broadcast error:', err);
+        // Dispatch to backend with SSE broadcast
+        fetch('/api/chats/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: currentConvId,
+            message: visitorMsg,
+            conversationMetadata: {
+              defaultLabel: visitorProfile.name || 'Direct Message',
+              customName: visitorProfile.name || '',
+              visitorName: visitorProfile.name || '',
+              avatarUrl: visitorProfile.avatarUrl || '',
+              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+            }
+          }),
+        }).catch((err) => console.error('Send error:', err));
+      } catch (err: any) {
+        console.error('[Supabase Send Message Error]:', err);
+        const errDetail = err?.message || 'Database write blocked by network or RLS permission error.';
+        setDbWriteError(`Message Delivery Warning: ${errDetail}. Check Supabase connectivity.`);
       }
     }
 
@@ -2402,6 +2463,22 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             <button
               onClick={() => setShowMailNotice(null)}
               className="text-slate-400 hover:text-white p-1 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* DATABASE WRITE ERROR / RLS ALERT */}
+        {dbWriteError && (
+          <div className="mx-4 mt-2 p-3 rounded-xl bg-rose-950 text-rose-100 shadow-xl border border-rose-500/60 flex items-center justify-between font-sans text-xs animate-fade-in shrink-0 z-30">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span className="font-medium">{dbWriteError}</span>
+            </div>
+            <button
+              onClick={() => setDbWriteError(null)}
+              className="text-rose-300 hover:text-white p-1 cursor-pointer transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -2741,6 +2818,19 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                       >
                         <User className="w-3.5 h-3.5 text-cyan-100" />
                         <span>InChat</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResumeError(null);
+                          setIsResumeModalOpen(true);
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-800/90 hover:bg-slate-700 text-white text-[11px] font-bold transition-all cursor-pointer border border-cyan-400/40 shadow-xs mr-1 shrink-0 active:scale-95"
+                        title="Restore Session / Recover History using Visitor ID"
+                      >
+                        <History className="w-3.5 h-3.5 text-cyan-300" />
+                        <span>Restore</span>
                       </button>
 
                       {visitorId && (
@@ -3568,6 +3658,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           onClose={() => setIsVisitorProfileModalOpen(false)}
           currentProfile={visitorProfile}
           onSave={handleSaveVisitorProfile}
+          onRestoreSession={handleRestoreSessionById}
           visitorId={visitorId}
           isMandatory={!isOwner && !visitorId}
         />
@@ -3591,23 +3682,23 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               </button>
 
               <div className="flex items-center gap-2.5 mb-3">
-                <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <div className="w-9 h-9 rounded-full bg-cyan-100 text-cyan-800 flex items-center justify-center shrink-0">
                   <History className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-950">Continue Conversation</h3>
-                  <p className="text-xs text-slate-500">Pick up where you left off with Festus</p>
+                  <h3 className="text-base font-bold text-slate-950">Restore Session / Recover History</h3>
+                  <p className="text-xs text-slate-500">Recover your complete message history from cloud database</p>
                 </div>
               </div>
 
               <p className="text-xs text-slate-600 mb-3.5 leading-relaxed">
-                Leaving the group or changing pages never erases your messages. All messages are securely saved. Reconnect using your <strong>Visitor Session ID</strong>, your <strong>Name</strong>, or <strong>Email</strong>.
+                Enter your unique <strong>Visitor ID</strong> to query Supabase directly, load your complete message history, and reconnect your live Realtime stream.
               </p>
 
               {/* Current Visitor Session Chip */}
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 mb-4 space-y-1.5">
                 <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
-                  <span>YOUR CURRENT SESSION ID:</span>
+                  <span>YOUR CURRENT VISITOR ID:</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -3615,7 +3706,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                       setCopiedVisitorId(true);
                       setTimeout(() => setCopiedVisitorId(false), 2500);
                     }}
-                    className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-bold cursor-pointer"
+                    className="inline-flex items-center gap-1 text-cyan-700 hover:text-cyan-900 font-bold cursor-pointer"
                   >
                     {copiedVisitorId ? (
                       <>
@@ -3631,21 +3722,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                   </button>
                 </div>
                 <code className="block text-xs font-mono font-bold text-slate-800 select-all bg-white px-2 py-1 rounded border border-slate-200 truncate">
-                  {visitorId}
+                  {visitorId || 'No active Visitor ID yet'}
                 </code>
               </div>
 
               <form onSubmit={handleResumeConversation} className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Enter Previous Session ID or Name:
+                    Enter Unique Visitor ID:
                   </label>
                   <input
                     type="text"
                     value={resumeInput}
                     onChange={(e) => setResumeInput(e.target.value)}
-                    placeholder="e.g. visitor-172... or John Smith"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    placeholder="e.g. visitor_7c3a0..."
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-600 font-mono"
                     autoFocus
                   />
                 </div>
@@ -3669,10 +3760,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 shadow-sm"
+                    className="px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-bold cursor-pointer text-xs flex items-center gap-1.5 shadow-sm"
                   >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Reconnect &amp; Continue</span>
+                    <History className="w-3.5 h-3.5" />
+                    <span>Restore Session / Recover History</span>
                   </button>
                 </div>
               </form>
