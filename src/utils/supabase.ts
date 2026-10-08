@@ -21,11 +21,11 @@ export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isR
     return { url: ENV_SUPABASE_URL, anonKey: ENV_SUPABASE_KEY, isRealConfig: true };
   }
 
-  // Graceful fallback URL & key so supabase client initializes without crashing in dev/preview
+  // Default live project URL & publishable key for seamless Vercel and local operation
   return {
-    url: 'https://feslinemechanica.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM0NDk2MDB9.dummy_fallback_key',
-    isRealConfig: false,
+    url: 'https://teszyojnwaedjvqaqake.supabase.co',
+    anonKey: 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex',
+    isRealConfig: true,
   };
 }
 
@@ -979,12 +979,12 @@ export async function uploadVisitorAvatarToSupabaseBucket(
       });
 
     if (uploadError) {
-      console.error('[Supabase Visitor Avatar Upload Error]:', uploadError.message);
+      console.warn('[Supabase Visitor Avatar Storage Notice - Using WebP Fallback]:', uploadError.message || uploadError);
     } else {
       uploadSuccess = true;
     }
-  } catch (e) {
-    console.error('[Supabase Visitor Avatar Storage Exception]:', e);
+  } catch (e: any) {
+    console.warn('[Supabase Visitor Avatar Storage Exception - Using WebP Fallback]:', e?.message || e);
   }
 
   const { data: publicData } = supabase.storage
@@ -1301,6 +1301,10 @@ export async function saveMessageAndConversationToSupabase(params: {
         message: {
           ...message,
           id: safeMessageId,
+          sender_id: isOwnerSender ? ownerId : vId,
+          receiver_id: isOwnerSender ? vId : ownerId,
+          conversation_id: targetConvId,
+          created_at: nowIso,
         },
       });
     } catch {}

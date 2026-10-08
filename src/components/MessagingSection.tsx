@@ -70,6 +70,10 @@ export interface ChatAttachment {
 export interface ChatMessage {
   id: string;
   sender: 'visitor' | 'festus';
+  sender_id?: string;
+  receiver_id?: string;
+  conversation_id?: string;
+  content?: string;
   text: string;
   timestamp: string;
   status: 'seen' | 'unseen';
@@ -274,16 +278,30 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
 
-  // Master persistent multi-chat database (shared between visitor submissions & owner replies)
+  // Master persistent multi-chat database (strictly isolated between owner panel and visitor sessions)
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_CHATS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
-          const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
-          return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
+      if (isOwner) {
+        const saved = localStorage.getItem(STORAGE_KEY_CHATS);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            const deletedRaw = localStorage.getItem('fesline_deleted_conv_ids');
+            const deletedSet = new Set<string>(deletedRaw ? JSON.parse(deletedRaw) : []);
+            return parsed.filter((c: any) => c && c.id && !deletedSet.has(c.id));
+          }
+        }
+      } else {
+        // Requirement 4: Strict Session & Identity Isolation
+        // For New Visitors: Initialize as clean, empty state. Do not automatically load or associate other conversations.
+        const vId = getStoredVisitorId();
+        const savedName = localStorage.getItem('display_name');
+        if (vId && savedName && savedName !== 'Visitor') {
+          const scopedChat = localStorage.getItem(`fesline_visitor_chat_${vId}`);
+          if (scopedChat) {
+            const parsed = JSON.parse(scopedChat);
+            if (Array.isArray(parsed)) return parsed;
+          }
         }
       }
     } catch {}
@@ -328,27 +346,35 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   }, [ownerUid]);
 
   // Initial useEffect hook on component mount:
-  // Strictly reads existing stored visitor_id only if visitor previously logged in.
-  // Never creates visitor_id or Supabase records for anonymous page landings.
+  // Requirement 4 & 5: Strict Session Isolation & Reliable State Synchronization
+  // - For New Visitors: Initialize the chat view as a clean, empty state.
+  // - For Returning Visitors: Load ONLY the messages matching their unique visitor_id and conversation_id.
+  // - Query Supabase directly using ORDER BY created_at ASC on mount.
   useEffect(() => {
     if (isOwner) return;
 
     const savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || '';
-    if (!savedVId) return; // Lazy: do nothing for unauthenticated visitors
+    const savedDisplayName = localStorage.getItem('display_name');
+
+    // For New Visitors without completed InChat login: maintain clean, empty state
+    if (!savedVId || !savedDisplayName || savedDisplayName === 'Visitor') {
+      setMessages([]);
+      setConversations([]);
+      return;
+    }
 
     const initAndFetchVisitorSession = async () => {
       try {
         const savedCId = `conv_${savedVId}`;
+        const ownerId = await getOrFetchOwnerId();
+        const safeCId = ensureValidUuid(savedCId);
 
         if (savedVId !== visitorId) setVisitorId(savedVId);
         if (savedCId !== conversationId) setConversationId(savedCId);
 
-        const savedDisplayName = localStorage.getItem('display_name');
-        if (savedDisplayName) {
-          setVisitorProfile((prev) => ({ ...prev, name: savedDisplayName }));
-        }
+        setVisitorProfile((prev) => ({ ...prev, name: savedDisplayName }));
 
-        // Fetch remote visitor profile if available without wiping local state
+        // Fetch remote visitor profile
         try {
           const p = await fetchVisitorProfileFromSupabase(savedVId);
           if (p) {
@@ -368,68 +394,61 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           console.error('[Supabase Initial Profile Fetch Error]:', profileErr);
         }
 
-        // Direct fetch of all messages from Supabase for this conversation or visitor
+        // Direct fetch strictly matching this visitor session with ORDER BY created_at ASC
         try {
-          const safeCId = ensureValidUuid(savedCId);
           const { data: dbMessages, error: dbMsgError } = await supabase
             .from('messages')
             .select('*')
-            .or(`conversation_id.eq.${savedCId},conversation_id.eq.${safeCId},sender_id.eq.${savedVId}`)
+            .or(`conversation_id.eq.${savedCId},conversation_id.eq.${safeCId},and(sender_id.eq.${savedVId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${savedVId})`)
             .order('created_at', { ascending: true });
 
           if (dbMsgError) {
             console.error('[Supabase Initial Messages Fetch Error]:', dbMsgError);
-          } else if (dbMessages && Array.isArray(dbMessages) && dbMessages.length > 0) {
-            const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => ({
-              id: m.id || generateMessageId(),
-              sender: m.sender || (m.sender_id === savedVId ? 'visitor' : 'festus'),
-              text: m.content || m.text || '',
-              timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
-              status: m.status || 'seen',
-              attachments: m.attachments || undefined,
-              voiceNote: m.voice_note || m.voiceNote || undefined,
-            }));
-
-            // Merge with local conversations without wiping state
-            setConversations((prev) => {
-              const existingIdx = prev.findIndex((c) => c.id === savedCId || c.id === savedVId);
-              const localMsgs = existingIdx >= 0 ? prev[existingIdx].messages : [];
-              const msgMap = new Map<string, ChatMessage>();
-              for (const lm of localMsgs) if (lm && lm.id) msgMap.set(lm.id, lm);
-              for (const dm of mappedMessages) if (dm && dm.id) msgMap.set(dm.id, dm);
-              const merged = Array.from(msgMap.values());
-              const lastMsg = merged[merged.length - 1];
-
-              const updatedConv: Conversation = existingIdx >= 0 ? {
-                ...prev[existingIdx],
-                id: savedCId,
-                messages: merged,
-                lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : 'Message')),
-                lastTimestamp: lastMsg?.timestamp || prev[existingIdx].lastTimestamp,
-              } : {
-                id: savedCId,
-                defaultLabel: savedDisplayName || visitorProfile.name || 'Direct Message',
-                customName: savedDisplayName || visitorProfile.name || '',
-                visitorName: savedDisplayName || visitorProfile.name || '',
-                avatarUrl: visitorProfile.avatarUrl || '',
-                roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-                avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-                unread: false,
-                important: false,
-                messages: merged,
-                lastMessage: lastMsg?.text || 'Message',
-                lastTimestamp: lastMsg?.timestamp || '',
+          } else if (dbMessages && Array.isArray(dbMessages)) {
+            const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
+              const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+              return {
+                id: m.id || generateMessageId(),
+                sender: isOwnerMsg ? 'festus' : 'visitor',
+                sender_id: m.sender_id || (isOwnerMsg ? ownerId : savedVId),
+                receiver_id: m.receiver_id || (isOwnerMsg ? savedVId : ownerId),
+                conversation_id: savedCId,
+                text: m.content || m.text || '',
+                timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+                status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+                attachments: m.attachments || undefined,
+                voiceNote: m.voice_note || m.voiceNote || undefined,
+                created_at: m.created_at || new Date().toISOString(),
               };
-
-              const nextList = existingIdx >= 0
-                ? prev.map((c, i) => (i === existingIdx ? updatedConv : c))
-                : [updatedConv, ...prev];
-
-              try {
-                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(nextList));
-              } catch {}
-              return nextList;
             });
+
+            // Requirement 2: Strict Timestamp Sorting
+            mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+            // Requirement 1 & 4: Set single unified messages array strictly scoped to this visitor
+            setMessages(mappedMessages);
+
+            const lastMsg = mappedMessages[mappedMessages.length - 1];
+            const updatedConv: Conversation = {
+              id: savedCId,
+              visitorId: savedVId,
+              defaultLabel: savedDisplayName || visitorProfile.name || 'Direct Message',
+              customName: savedDisplayName || visitorProfile.name || '',
+              visitorName: savedDisplayName || visitorProfile.name || '',
+              avatarUrl: visitorProfile.avatarUrl || '',
+              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+              unread: false,
+              important: false,
+              messages: mappedMessages,
+              lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : 'Message')),
+              lastTimestamp: lastMsg?.timestamp || '',
+            };
+
+            setConversations([updatedConv]);
+            try {
+              localStorage.setItem(`fesline_visitor_chat_${savedVId}`, JSON.stringify([updatedConv]));
+            } catch {}
           }
         } catch (fetchMsgErr) {
           console.error('[Supabase Initial Message Query Exception]:', fetchMsgErr);
@@ -440,7 +459,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     };
 
     initAndFetchVisitorSession();
-  }, [isOwner, visitorId, conversationId]);
+  }, [isOwner]);
 
   // Visitor Resume / Continue Chat modal states
   const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
@@ -465,6 +484,19 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     return conversations[0]?.id || visitorId;
   });
 
+  // 1. Unified Single Array State:
+  // Store all chat messages (both owner sent messages and visitor received messages) inside a single React state array (messages).
+  // Never maintain separate arrays for sent vs. received messages or concatenate them manually.
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const initialConv = conversations[0];
+      if (initialConv?.messages && Array.isArray(initialConv.messages)) {
+        return [...initialConv.messages].sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+      }
+    } catch {}
+    return [];
+  });
+
   // Sidebar filter for Owner: 'all' | 'important' | 'unread'
   const [sidebarFilter, setSidebarFilter] = useState<'all' | 'important' | 'unread'>('all');
 
@@ -485,11 +517,107 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   const isFetchingRef = useRef(false);
 
-  // Fetch chats from server
+  // Active conversation thread reference anchors for Realtime subscription closures
+  const activeOwnerConvIdRef = useRef(activeOwnerConvId);
+  useEffect(() => { activeOwnerConvIdRef.current = activeOwnerConvId; }, [activeOwnerConvId]);
+  const isOwnerRef = useRef(isOwner);
+  useEffect(() => { isOwnerRef.current = isOwner; }, [isOwner]);
+  const visitorIdRef = useRef(visitorId);
+  useEffect(() => { visitorIdRef.current = visitorId; }, [visitorId]);
+  const conversationIdRef = useRef(conversationId);
+  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+
+  // Fetch chats from server (isolated: Owner sees all threads, Visitor only sees their own thread)
   const fetchChatsFromServer = async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     try {
+      const inOwnerMode = isOwnerRef.current;
+
+      // 4. Strict Session & Identity Isolation for Visitors:
+      // For New Visitors: Initialize the chat view as a clean, empty state.
+      // Do not automatically load or associate any existing conversation until InChat profile setup or valid token.
+      if (!inOwnerMode) {
+        const currVisId = visitorIdRef.current;
+        const currCId = conversationIdRef.current || (currVisId ? `conv_${currVisId}` : '');
+        const savedName = typeof localStorage !== 'undefined' ? localStorage.getItem('display_name') : null;
+
+        if (!currVisId || !savedName || savedName === 'Visitor') {
+          return;
+        }
+
+        try {
+          const ownerId = await getOrFetchOwnerId();
+          const safeCId = ensureValidUuid(currCId);
+
+          // 2 & 5. Reliable State Synchronization & Strict Timestamp Sorting:
+          // Query Supabase directly using ORDER BY created_at ASC
+          const { data: dbMessages, error: dbMsgError } = await supabase
+            .from('messages')
+            .select('*')
+            .or(`conversation_id.eq.${currCId},conversation_id.eq.${safeCId},conversation_id.eq.conv_${currVisId},conversation_id.eq.${currVisId},and(sender_id.eq.${currVisId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${currVisId})`)
+            .order('created_at', { ascending: true });
+
+          if (!dbMsgError && dbMessages && Array.isArray(dbMessages)) {
+            const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
+              const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+              return {
+                id: m.id || generateMessageId(),
+                sender: isOwnerMsg ? 'festus' : 'visitor',
+                sender_id: m.sender_id || (isOwnerMsg ? ownerId : currVisId),
+                receiver_id: m.receiver_id || (isOwnerMsg ? currVisId : ownerId),
+                conversation_id: currCId,
+                text: m.content || m.text || '',
+                timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+                status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+                attachments: m.attachments || undefined,
+                voiceNote: m.voice_note || m.voiceNote || undefined,
+                created_at: m.created_at || new Date().toISOString(),
+              };
+            });
+
+            // Strict Timestamp Sorting
+            mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+            // 1. Unified Single Array State
+            setMessages((prevMsgs) => {
+              const msgMap = new Map<string, ChatMessage>();
+              for (const em of prevMsgs) if (em?.id) msgMap.set(em.id, em);
+              for (const mm of mappedMessages) if (mm?.id) msgMap.set(mm.id, mm);
+              const unified = Array.from(msgMap.values());
+              unified.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+              return unified;
+            });
+
+            const lastMsg = mappedMessages[mappedMessages.length - 1];
+            const updatedConv: Conversation = {
+              id: currCId,
+              visitorId: currVisId,
+              defaultLabel: savedName || visitorProfile.name || 'Direct Message',
+              customName: savedName || visitorProfile.name || '',
+              visitorName: savedName || visitorProfile.name || '',
+              avatarUrl: visitorProfile.avatarUrl || '',
+              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+              unread: false,
+              important: false,
+              messages: mappedMessages,
+              lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : '')),
+              lastTimestamp: lastMsg?.timestamp || '',
+            };
+
+            setConversations([updatedConv]);
+            try {
+              localStorage.setItem(`fesline_visitor_chat_${currVisId}`, JSON.stringify([updatedConv]));
+            } catch {}
+          }
+        } catch (visSyncErr) {
+          console.warn('[Visitor Chat Sync Warning]:', visSyncErr);
+        }
+        return;
+      }
+
+      // Owner Mode: Synchronize all conversation threads for the Owner inbox panel
       const fetched = await fetchChatsFromServerHelper(deletedConvIdsRef.current);
       if (fetched && Array.isArray(fetched)) {
         const cleaned = fetched.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
@@ -524,6 +652,22 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           }
 
           const finalConvs = Array.from(mergedMap.values());
+
+          // Sync unified messages state for the active conversation thread
+          const currOwnerId = activeOwnerConvIdRef.current;
+          const activeConvTarget = finalConvs.find((c) => c.id === currOwnerId || c.visitorId === currOwnerId.replace(/^conv_/, ''));
+
+          if (activeConvTarget?.messages && Array.isArray(activeConvTarget.messages)) {
+            setMessages((prevMsgs) => {
+              const msgMap = new Map<string, ChatMessage>();
+              for (const m of prevMsgs) if (m?.id) msgMap.set(m.id, m);
+              for (const m of activeConvTarget.messages) if (m?.id) msgMap.set(m.id, m);
+              const unified = Array.from(msgMap.values());
+              unified.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+              return unified;
+            });
+          }
+
           const currentStr = JSON.stringify(prev);
           const finalStr = JSON.stringify(finalConvs);
           if (currentStr !== finalStr) {
@@ -567,25 +711,72 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       fetchChatsFromServer();
       if (payload && payload.conversationId && payload.message) {
         const { conversationId, message } = payload;
+        const vId = conversationId.startsWith('conv_') ? conversationId.replace(/^conv_/, '') : conversationId;
+
+        const isOwnerMsg = message.sender === 'festus' || message.sender_id === 'festus' || message.sender_id === resolvedOwnerId;
+        const newRealtimeMsg: ChatMessage = {
+          id: message.id || generateMessageId(),
+          sender: isOwnerMsg ? 'festus' : 'visitor',
+          sender_id: message.sender_id || (isOwnerMsg ? resolvedOwnerId : vId),
+          receiver_id: message.receiver_id || (isOwnerMsg ? vId : resolvedOwnerId),
+          conversation_id: conversationId,
+          text: message.text || '',
+          timestamp: message.timestamp || (message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+          status: message.status || (isOwnerMsg ? 'seen' : 'unseen'),
+          attachments: message.attachments || undefined,
+          voiceNote: message.voiceNote || undefined,
+          created_at: message.created_at || new Date().toISOString(),
+        };
+
+        // 4. Realtime Append Preservation:
+        // When received via Realtime subscription, push into existing messages array,
+        // run strict timestamp sort function, and trigger re-render without altering layout
+        const curOwnerConvId = activeOwnerConvIdRef.current;
+        const curVisId = visitorIdRef.current;
+        const curConvId = conversationIdRef.current;
+        const isOwnerView = isOwnerRef.current;
+
+        const isForActiveThread = isOwnerView
+          ? (conversationId === curOwnerConvId || vId === curOwnerConvId.replace(/^conv_/, '') || curOwnerConvId === `conv_${vId}` || curOwnerConvId === vId)
+          : (conversationId === curConvId || conversationId === `conv_${curVisId}` || vId === curVisId);
+
+        if (isForActiveThread) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newRealtimeMsg.id)) return prev;
+            const updated = [...prev, newRealtimeMsg];
+            // 2. Strict Timestamp Sorting:
+            // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+            updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+            return updated;
+          });
+        }
+
         setConversations((prev) => {
           if (deletedConvIdsRef.current.has(conversationId)) return prev;
           const idx = prev.findIndex((c) => c.id === conversationId);
           if (idx >= 0) {
             const existing = prev[idx];
             if (existing.messages.some((m) => m.id === message.id)) return prev;
+            const updatedMsgs = [...existing.messages, newRealtimeMsg];
+            updatedMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
             const updated = prev.map((c, i) =>
               i === idx
                 ? {
                     ...c,
                     unread: message.sender === 'visitor',
-                    messages: [...c.messages, message],
+                    messages: updatedMsgs,
                     lastMessage: message.text || (message.voiceNote ? '🎤 Voice note' : 'Attachment'),
                     lastTimestamp: message.timestamp,
                   }
                 : c
             );
             try {
-              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+              if (isOwnerView) {
+                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+              } else {
+                localStorage.setItem(`fesline_visitor_chat_${vId}`, JSON.stringify(updated));
+              }
             } catch {}
             return updated;
           }
@@ -614,13 +805,39 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const newMsgObj: ChatMessage = {
           id: msgRow.id || generateMessageId(),
           sender: isOwnerMsg ? 'festus' : 'visitor',
+          sender_id: msgRow.sender_id || (isOwnerMsg ? resolvedOwnerId : vId),
+          receiver_id: msgRow.receiver_id || (isOwnerMsg ? vId : resolvedOwnerId),
+          conversation_id: targetId,
           text: msgRow.content || msgRow.text || '',
           timestamp: lastTimeStr,
           status: msgRow.status || (isOwnerMsg ? 'seen' : 'unseen'),
           attachments: msgRow.attachments || undefined,
           voiceNote: msgRow.voice_note || msgRow.voiceNote || undefined,
-          created_at: msgRow.created_at,
+          created_at: msgRow.created_at || new Date().toISOString(),
         };
+
+        // 4. Realtime Append Preservation:
+        // When a new message is received via Realtime subscription, push it into the existing messages array,
+        // run the timestamp sort function, and trigger a re-render without altering the chat layout structure.
+        const curOwnerConvId = activeOwnerConvIdRef.current;
+        const curVisId = visitorIdRef.current;
+        const curConvId = conversationIdRef.current;
+        const isOwnerView = isOwnerRef.current;
+
+        const isForActiveThread = isOwnerView
+          ? (targetId === curOwnerConvId || vId === curOwnerConvId.replace(/^conv_/, '') || curOwnerConvId === `conv_${vId}` || curOwnerConvId === vId)
+          : (targetId === curConvId || targetId === `conv_${curVisId}` || vId === curVisId);
+
+        if (isForActiveThread) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newMsgObj.id)) return prev;
+            const updated = [...prev, newMsgObj];
+            // 2. Strict Timestamp Sorting:
+            // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+            updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+            return updated;
+          });
+        }
 
         setConversations((prev) => {
           const existingIdx = prev.findIndex((c) => c.id === targetId || c.id === `conv_${vId}` || c.visitorId === vId || c.id === vId);
@@ -653,7 +870,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             const result = [updatedConv, ...remaining];
 
             try {
-              localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(result));
+              if (isOwnerView) {
+                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(result));
+              } else {
+                localStorage.setItem(`fesline_visitor_chat_${vId}`, JSON.stringify([updatedConv]));
+              }
             } catch {}
             return result;
           } else {
@@ -755,7 +976,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           customName: visitorProfile.name || found.customName,
           avatarUrl: visitorProfile.avatarUrl !== undefined ? visitorProfile.avatarUrl : found.avatarUrl,
           roleOrCompany: visitorProfile.roleOrCompany || found.roleOrCompany,
-          messages: sortChronological(found.messages || []),
+          messages: messages.length > 0 ? messages : sortChronological(found.messages || []),
         };
       }
       return {
@@ -768,7 +989,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
         unread: false,
         important: false,
-        messages: [] // NO automatic welcome message!
+        messages: messages
       };
     }
 
@@ -777,14 +998,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     if (found) {
       return {
         ...found,
-        messages: sortChronological(found.messages || []),
+        messages: messages.length > 0 ? messages : sortChronological(found.messages || []),
       };
     }
     const fallback = validOwnerConvs[0];
     if (fallback) {
       return {
         ...fallback,
-        messages: sortChronological(fallback.messages || []),
+        messages: messages.length > 0 ? messages : sortChronological(fallback.messages || []),
       };
     }
     return {
@@ -793,9 +1014,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       roleOrCompany: 'Visitor Inquiries',
       unread: false,
       important: false,
-      messages: []
+      messages: messages
     };
-  }, [isOwner, visitorId, conversationId, myDeterministicConvId, conversations, activeOwnerConvId, visitorProfile]);
+  }, [isOwner, visitorId, conversationId, myDeterministicConvId, conversations, activeOwnerConvId, visitorProfile, messages]);
 
   // Header Avatar Size Adjustment ('sm' | 'md' | 'lg')
   const [headerAvatarSize, setHeaderAvatarSize] = useState<'sm' | 'md' | 'lg'>('md');
@@ -831,51 +1052,125 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     setResumeError(null);
     const target = resumeInput.trim();
     if (!target) {
-      setResumeError('Please enter your Visitor Session ID, Name, or Email.');
+      setResumeError('Please enter your Visitor Identity Code or access key.');
       return;
     }
 
-    const cleanTarget = target.toLowerCase();
-    // 1. Search existing conversations
-    let match = conversations.find(
-      (c) =>
-        c.id.toLowerCase() === cleanTarget ||
-        (c.visitorName && c.visitorName.toLowerCase() === cleanTarget) ||
-        (c.customName && c.customName.toLowerCase() === cleanTarget) ||
-        (c.defaultLabel && c.defaultLabel.toLowerCase() === cleanTarget)
-    );
+    // 4. Strict Session & Identity Isolation:
+    // Completely flush active chat state to prevent previous visitor messages from appearing
+    setMessages([]);
+    setConversations([]);
 
-    // 2. Query server if not found in memory
-    if (!match) {
-      try {
-        const fresh = await fetchChatsFromServerHelper();
-        if (fresh && Array.isArray(fresh)) {
-          match = fresh.find(
-            (c) =>
-              c.id.toLowerCase() === cleanTarget ||
-              (c.visitorName && c.visitorName.toLowerCase() === cleanTarget) ||
-              (c.customName && c.customName.toLowerCase() === cleanTarget) ||
-              (c.defaultLabel && c.defaultLabel.toLowerCase() === cleanTarget)
-          );
-          if (match) {
-            setConversations(fresh);
-          }
-        }
-      } catch {}
-    }
+    try {
+      const targetVId = target.replace(/^conv_/, '');
+      const targetCId = target.startsWith('conv_') ? target : `conv_${target}`;
+      const ownerId = await getOrFetchOwnerId();
 
-    if (match) {
-      setVisitorId(match.id);
+      // Check remote visitor_profiles for matching credentials
+      let profileMatch: any = null;
       try {
-        localStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
-        sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, match.id);
-        document.cookie = `fesline_visitor_id=${encodeURIComponent(match.id)}; path=/; max-age=31536000; SameSite=Lax`;
+        const { data: pData } = await supabase
+          .from('visitor_profiles')
+          .select('*')
+          .or(`visitor_id.eq.${targetVId},visitor_id.eq.${target}`)
+          .maybeSingle();
+        if (pData) profileMatch = pData;
       } catch {}
-      setIsResumeModalOpen(false);
-      setResumeInput('');
-      setShowMailNotice(`Welcome back ${match.visitorName || match.customName || 'Visitor'}! Continued conversation from where you left off.`);
-    } else {
-      setResumeError(`No prior conversation found matching "${target}". Please check and try again, or continue with your current chat.`);
+
+      const resolvedVId = profileMatch?.visitor_id || targetVId;
+      const resolvedCId = `conv_${resolvedVId}`;
+      const safeCId = ensureValidUuid(resolvedCId);
+
+      // 2 & 5. Reliable State Synchronization & Strict Timestamp Sorting:
+      // Load ONLY the messages matching their unique visitor_id and conversation_id directly from Supabase
+      const { data: dbMessages, error: msgError } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`conversation_id.eq.${resolvedCId},conversation_id.eq.${safeCId},conversation_id.eq.${resolvedVId},and(sender_id.eq.${resolvedVId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${resolvedVId})`)
+        .order('created_at', { ascending: true });
+
+      const hasMessages = !msgError && dbMessages && Array.isArray(dbMessages) && dbMessages.length > 0;
+
+      if (profileMatch || hasMessages) {
+        const mappedMessages: ChatMessage[] = (dbMessages || []).map((m: any) => {
+          const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+          return {
+            id: m.id || generateMessageId(),
+            sender: isOwnerMsg ? 'festus' : 'visitor',
+            sender_id: m.sender_id || (isOwnerMsg ? ownerId : resolvedVId),
+            receiver_id: m.receiver_id || (isOwnerMsg ? resolvedVId : ownerId),
+            conversation_id: resolvedCId,
+            text: m.content || m.text || '',
+            timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+            status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+            attachments: m.attachments || undefined,
+            voiceNote: m.voice_note || m.voiceNote || undefined,
+            created_at: m.created_at || new Date().toISOString(),
+          };
+        });
+
+        // 2. Strict Timestamp Sorting:
+        // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+        // 1. Unified Single Array State:
+        setMessages(mappedMessages);
+
+        const restoredName = profileMatch?.display_name || profileMatch?.name || 'Visitor';
+        const restoredProfile: VisitorMessagingProfile = {
+          name: restoredName,
+          roleOrCompany: profileMatch?.role_subject || profileMatch?.role_or_company || 'Visitor Direct Chat',
+          avatarUrl: profileMatch?.avatar_url || '',
+          avatarColor: profileMatch?.avatar_color || 'bg-slate-700',
+        };
+
+        setVisitorProfile(restoredProfile);
+        setVisitorId(resolvedVId);
+        setConversationId(resolvedCId);
+
+        const lastMsg = mappedMessages[mappedMessages.length - 1];
+        const singleVisitorConv: Conversation = {
+          id: resolvedCId,
+          visitorId: resolvedVId,
+          defaultLabel: restoredName,
+          customName: restoredName,
+          visitorName: restoredName,
+          avatarUrl: restoredProfile.avatarUrl,
+          avatarColor: restoredProfile.avatarColor,
+          roleOrCompany: restoredProfile.roleOrCompany,
+          unread: false,
+          important: false,
+          messages: mappedMessages,
+          lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : '')),
+          lastTimestamp: lastMsg?.timestamp || '',
+        };
+
+        setConversations([singleVisitorConv]);
+
+        // Prevent Cross-Contamination: Strictly scope local storage to active visitor_id
+        try {
+          localStorage.setItem('visitor_id', resolvedVId);
+          localStorage.setItem('conversation_id', resolvedCId);
+          localStorage.setItem(STORAGE_KEY_VISITOR_ID, resolvedVId);
+          localStorage.setItem('fesline_visitor_access_key', resolvedVId);
+          localStorage.setItem('display_name', restoredName);
+          localStorage.setItem('role_subject', restoredProfile.roleOrCompany || '');
+          localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(restoredProfile));
+          localStorage.setItem(`fesline_visitor_chat_${resolvedVId}`, JSON.stringify([singleVisitorConv]));
+          sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, resolvedVId);
+          document.cookie = `fesline_visitor_id=${encodeURIComponent(resolvedVId)}; path=/; max-age=31536000; SameSite=Lax`;
+        } catch {}
+
+        setIsResumeModalOpen(false);
+        setResumeInput('');
+        setShowMailNotice(`Welcome back ${restoredName}! Restored session with ${mappedMessages.length} message${mappedMessages.length === 1 ? '' : 's'}.`);
+        return;
+      }
+
+      setResumeError(`No session found matching "${target}". Check the code or set up a new profile.`);
+    } catch (err: any) {
+      console.error('[Session Restore Exception]:', err);
+      setResumeError(err?.message || 'Error occurred while restoring session.');
     }
   };
 
@@ -901,13 +1196,24 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   // Auto scroll to bottom of active conversation
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeConversation?.messages, activeOwnerConvId, isOwner]);
+  }, [messages, activeOwnerConvId, isOwner]);
 
   // Unified Thread Message Loading: When owner selects a visitor thread or visitor opens chat,
   // load all chronological messages directly from Supabase to guarantee complete thread rendering
   useEffect(() => {
     const targetCId = isOwner ? activeOwnerConvId : (conversationId || `conv_${visitorId}`);
-    if (!targetCId || targetCId === 'inbox-empty') return;
+    if (!targetCId || targetCId === 'inbox-empty') {
+      setMessages([]);
+      return;
+    }
+
+    // Pre-populate unified single array state from local cache if available
+    const localThread = conversations.find((c) => c.id === targetCId || c.id === `conv_${targetCId.replace(/^conv_/, '')}` || c.visitorId === targetCId);
+    if (localThread?.messages && Array.isArray(localThread.messages) && localThread.messages.length > 0) {
+      const localSorted = [...localThread.messages];
+      localSorted.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+      setMessages(localSorted);
+    }
 
     const loadThreadMessages = async () => {
       try {
@@ -915,25 +1221,47 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const ownerId = await getOrFetchOwnerId();
         const safeCId = ensureValidUuid(targetCId);
 
+        // 2. Strict Timestamp Sorting:
+        // Ensure the SQL query fetching messages also includes `ORDER BY created_at ASC`
         const { data: dbMessages, error } = await supabase
           .from('messages')
           .select('*')
           .or(`conversation_id.eq.${targetCId},conversation_id.eq.conv_${vId},conversation_id.eq.${vId},conversation_id.eq.${safeCId},and(sender_id.eq.${vId},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${vId})`)
           .order('created_at', { ascending: true });
 
-        if (!error && dbMessages && Array.isArray(dbMessages) && dbMessages.length > 0) {
+        if (!error && dbMessages && Array.isArray(dbMessages)) {
           const mapped: ChatMessage[] = dbMessages.map((m: any) => {
             const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
             return {
               id: m.id || generateMessageId(),
               sender: isOwnerMsg ? 'festus' : 'visitor',
+              sender_id: m.sender_id || (isOwnerMsg ? ownerId : vId),
+              receiver_id: m.receiver_id || (isOwnerMsg ? vId : ownerId),
+              conversation_id: m.conversation_id || targetCId,
               text: m.content || m.text || '',
-              timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
+              timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
               status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
               attachments: m.attachments || undefined,
               voiceNote: m.voice_note || m.voiceNote || undefined,
-              created_at: m.created_at,
+              created_at: m.created_at || new Date().toISOString(),
             };
+          });
+
+          // 2. Strict Timestamp Sorting:
+          // Explicitly sort the unified array by parsing timestamps into JavaScript Date objects:
+          // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+          mapped.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
+          // 1. Unified Single Array State:
+          // Store all chat messages (both owner sent messages and visitor received messages) inside a single React state array.
+          // Never maintain separate arrays for sent vs. received messages or concatenate them manually.
+          setMessages((prev) => {
+            const msgMap = new Map<string, ChatMessage>();
+            for (const em of prev) if (em && em.id) msgMap.set(em.id, em);
+            for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
+            const merged = Array.from(msgMap.values());
+            merged.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+            return merged;
           });
 
           setConversations((prev) => {
@@ -944,12 +1272,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               for (const em of existing.messages || []) if (em && em.id) msgMap.set(em.id, em);
               for (const mm of mapped) if (mm && mm.id) msgMap.set(mm.id, mm);
               const merged = Array.from(msgMap.values());
-              // Strictly ascending chronological order (ORDER BY created_at ASC)
-              merged.sort((a, b) => {
-                const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                return timeA - timeB;
-              });
+              merged.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
               const last = merged[merged.length - 1];
 
               const updatedConv: Conversation = {
@@ -961,7 +1284,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
               const nextList = prev.map((c, i) => (i === idx ? updatedConv : c));
               try {
-                localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(nextList));
+                if (isOwner) {
+                  localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(nextList));
+                } else {
+                  localStorage.setItem(`fesline_visitor_chat_${vId}`, JSON.stringify(nextList));
+                }
               } catch {}
               return nextList;
             }
@@ -980,6 +1307,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   const handleSelectConversation = (convId: string) => {
     setActiveOwnerConvId(convId);
     setIsMobileListOpen(false);
+
+    // Immediately populate unified single array state from selected conversation
+    const selected = conversations.find((c) => c.id === convId);
+    if (selected?.messages && Array.isArray(selected.messages) && selected.messages.length > 0) {
+      const sorted = [...selected.messages];
+      sorted.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+      setMessages(sorted);
+    } else {
+      setMessages([]);
+    }
+
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === convId) {
@@ -1088,6 +1426,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   // Delete a specific message within the active conversation
   const handleDeleteMessage = (convId: string, msgId: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== msgId));
     setConversations((prev) => {
       const updated = prev.map((c) => {
         if (c.id === convId) {
@@ -1167,10 +1506,20 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   // Visitor clears their chat screen
   const handleVisitorClearChat = () => {
+    const oldVisitorId = visitorId;
     const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const freshVisitorId = `visitor_${uuid}`;
     const freshConvId = `conv_${uuid}`;
+
+    // 4. Strict Session & Identity Isolation:
+    // Clearing sessions must completely flush the active chat state to prevent previous visitor messages from appearing
+    setMessages([]);
+    setConversations([]);
+
     try {
+      if (oldVisitorId) {
+        localStorage.removeItem(`fesline_visitor_chat_${oldVisitorId}`);
+      }
       localStorage.setItem('visitor_id', freshVisitorId);
       localStorage.setItem('conversation_id', freshConvId);
       localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshVisitorId);
@@ -1178,6 +1527,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshVisitorId);
       document.cookie = `fesline_visitor_id=${encodeURIComponent(freshVisitorId)}; path=/; max-age=31536000; SameSite=Lax`;
     } catch {}
+
     setVisitorId(freshVisitorId);
     setConversationId(freshConvId);
     setIsVisitorClearModalOpen(false);
@@ -1219,31 +1569,64 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       avatarColor: updated.avatarColor || 'bg-slate-700',
     };
 
-    // Update conversation record in local state and Supabase
-    setConversations((prev) => {
-      const idx = prev.findIndex((c) => c.id === accessKey || c.id === targetConvId);
-      if (idx >= 0) {
-        const u = {
-          ...prev[idx],
-          id: targetConvId,
-          ...updatedConvMetadata,
-        };
-        saveConversationToSupabaseTable(u).catch((err) => console.error('[Supabase Save Conversation Error]:', err));
-        return prev.map((c, i) => (i === idx ? u : c));
-      } else {
-        const newC: Conversation = {
-          id: targetConvId,
-          ...updatedConvMetadata,
-          unread: false,
-          important: false,
-          messages: [],
-          lastMessage: '',
-          lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
-        saveConversationToSupabaseTable(newC).catch((err) => console.error('[Supabase Save Conversation Error]:', err));
-        return [newC, ...prev];
+    // 5. Reliable State Synchronization:
+    // Query Supabase directly using ORDER BY created_at ASC after profile setup
+    try {
+      const ownerId = await getOrFetchOwnerId();
+      const safeCId = ensureValidUuid(targetConvId);
+      const { data: dbMessages, error: dbMsgError } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`conversation_id.eq.${targetConvId},conversation_id.eq.${safeCId},conversation_id.eq.${accessKey},and(sender_id.eq.${accessKey},receiver_id.eq.${ownerId}),and(sender_id.eq.${ownerId},receiver_id.eq.${accessKey})`)
+        .order('created_at', { ascending: true });
+
+      let mappedMessages: ChatMessage[] = [];
+      if (!dbMsgError && dbMessages && Array.isArray(dbMessages)) {
+        mappedMessages = dbMessages.map((m: any) => {
+          const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
+          return {
+            id: m.id || generateMessageId(),
+            sender: isOwnerMsg ? 'festus' : 'visitor',
+            sender_id: m.sender_id || (isOwnerMsg ? ownerId : accessKey),
+            receiver_id: m.receiver_id || (isOwnerMsg ? accessKey : ownerId),
+            conversation_id: targetConvId,
+            text: m.content || m.text || '',
+            timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+            status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
+            attachments: m.attachments || undefined,
+            voiceNote: m.voice_note || m.voiceNote || undefined,
+            created_at: m.created_at || new Date().toISOString(),
+          };
+        });
+
+        // 2. Strict Timestamp Sorting:
+        mappedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
       }
-    });
+
+      // 1. Unified Single Array State
+      setMessages(mappedMessages);
+
+      const lastMsg = mappedMessages[mappedMessages.length - 1];
+      const singleConv: Conversation = {
+        id: targetConvId,
+        visitorId: accessKey,
+        ...updatedConvMetadata,
+        unread: false,
+        important: false,
+        messages: mappedMessages,
+        lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? '🎤 Voice note' : (lastMsg?.attachments?.length ? `📎 ${lastMsg.attachments[0].name}` : '')),
+        lastTimestamp: lastMsg?.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      setConversations([singleConv]);
+      try {
+        localStorage.setItem(`fesline_visitor_chat_${accessKey}`, JSON.stringify([singleConv]));
+      } catch {}
+
+      saveConversationToSupabaseTable(singleConv).catch((err) => console.error('[Supabase Save Conversation Error]:', err));
+    } catch (fetchErr) {
+      console.warn('[Supabase Profile Sync Error]:', fetchErr);
+    }
 
     // Save visitor profile to Supabase
     try {
@@ -1294,19 +1677,36 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
+        sender_id: resolvedOwnerId,
+        receiver_id: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
+        conversation_id: activeOwnerConvId,
         text: '',
         timestamp: timeStr,
         status: 'seen',
         voiceNote: voiceData,
+        created_at: new Date().toISOString(),
       };
+
+      // 4. Realtime Append Preservation:
+      // When a new message is sent by the owner, push it into the existing messages array,
+      // run strict timestamp sort function, and trigger re-render
+      setMessages((prev) => {
+        const updated = [...prev, festusMsg];
+        // 2. Strict Timestamp Sorting:
+        // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        return updated;
+      });
 
       setConversations((prev) => {
         const updated = prev.map((c) => {
           if (c.id === activeOwnerConvId) {
+            const nextMsgs = [...c.messages, festusMsg];
+            nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             return {
               ...c,
               unread: false,
-              messages: [...c.messages, festusMsg],
+              messages: nextMsgs,
               lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
               lastTimestamp: timeStr,
             };
@@ -1366,11 +1766,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'visitor',
+        sender_id: currentVisitorId,
+        receiver_id: resolvedOwnerId,
+        conversation_id: currentConvId,
         text: '',
         timestamp: timeStr,
         status: 'unseen',
         voiceNote: voiceData,
+        created_at: new Date().toISOString(),
       };
+
+      setMessages((prev) => {
+        const updated = [...prev, visitorMsg];
+        updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        return updated;
+      });
 
       setConversations((prev) => {
         const existingIdx = prev.findIndex((c) => c.id === currentConvId || c.id === currentVisitorId);
@@ -1378,11 +1788,13 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
+              const nextMsgs = [...c.messages, visitorMsg];
+              nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
               return {
                 ...c,
                 id: currentConvId,
                 unread: true,
-                messages: [...c.messages, visitorMsg],
+                messages: nextMsgs,
                 lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
                 lastTimestamp: timeStr,
               };
@@ -1408,7 +1820,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           updated = [newVisitorRecord, ...prev];
         }
         try {
-          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+          localStorage.setItem(`fesline_visitor_chat_${currentVisitorId}`, JSON.stringify(updated));
         } catch {}
         return updated;
       });
@@ -1580,19 +1992,36 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
+        sender_id: resolvedOwnerId,
+        receiver_id: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
+        conversation_id: activeOwnerConvId,
         text: currentText,
         timestamp: timeStr,
         status: 'seen',
-        attachments: currentAttachments.length > 0 ? currentAttachments : undefined
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+        created_at: new Date().toISOString(),
       };
+
+      // 4. Realtime Append Preservation:
+      // When a new message is sent by the owner, push it into the existing messages array,
+      // run strict timestamp sort function, and trigger a re-render without altering the chat layout structure
+      setMessages((prev) => {
+        const updated = [...prev, festusMsg];
+        // 2. Strict Timestamp Sorting:
+        // messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        return updated;
+      });
 
       setConversations((prev) => {
         const updated = prev.map((c) => {
           if (c.id === activeOwnerConvId) {
+            const nextMsgs = [...c.messages, festusMsg];
+            nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             return {
               ...c,
               unread: false,
-              messages: [...c.messages, festusMsg],
+              messages: nextMsgs,
               lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
               lastTimestamp: timeStr
             };
@@ -1648,11 +2077,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'visitor',
+        sender_id: currentVisitorId,
+        receiver_id: resolvedOwnerId,
+        conversation_id: currentConvId,
         text: currentText,
         timestamp: timeStr,
         status: 'unseen', // Unseen until owner logs in and opens it
-        attachments: currentAttachments.length > 0 ? currentAttachments : undefined
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+        created_at: new Date().toISOString(),
       };
+
+      setMessages((prev) => {
+        const updated = [...prev, visitorMsg];
+        updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        return updated;
+      });
 
       // Record this message into master conversations database
       setConversations((prev) => {
@@ -1661,11 +2100,13 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         if (existingIdx >= 0) {
           updated = prev.map((c, idx) => {
             if (idx === existingIdx) {
+              const nextMsgs = [...c.messages, visitorMsg];
+              nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
               const uConv = {
                 ...c,
                 id: currentConvId,
                 unread: true,
-                messages: [...c.messages, visitorMsg],
+                messages: nextMsgs,
                 lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
                 lastTimestamp: timeStr
               };
@@ -1692,7 +2133,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           updated = [newVisitorRecord, ...prev];
         }
         try {
-          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+          localStorage.setItem(`fesline_visitor_chat_${currentVisitorId}`, JSON.stringify(updated));
         } catch {}
         return updated;
       });
@@ -2547,32 +2988,40 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                   </span>
                 </div>
 
-                {/* Empty State Welcome Card for Visitor (when no messages sent yet) */}
-                {activeConversation.messages.length === 0 && (
+                {/* Empty State Welcome Card */}
+                {messages.length === 0 && (
                   <div className="my-8 max-w-md mx-auto p-4 rounded-2xl bg-white/90 backdrop-blur-xs border border-slate-300 text-center space-y-2 shadow-xs">
                     <div className="w-10 h-10 rounded-full bg-cyan-100 text-cyan-800 flex items-center justify-center mx-auto">
                       <Mail className="w-5 h-5" />
                     </div>
                     <h3 className="font-bold text-slate-900 text-sm">
-                      Direct Messaging with Festus Johnson
+                      {isOwner ? `Direct Channel with ${activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel || 'Visitor'}` : 'Direct Messaging with Festus Johnson'}
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Send a message, design review request, voice note, or project specification below. Messages are delivered directly to Festus's private inbox.
+                      {isOwner
+                        ? 'No messages in this inquiry thread yet. Reply to this visitor or initiate communication below.'
+                        : "Send a message, design review request, voice note, or project specification below. Messages are delivered directly to Festus's private inbox."}
                     </p>
                   </div>
                 )}
 
-                {activeConversation.messages.map((msg) => {
-                  // For public visitor: 'festus' is incoming (left side), 'visitor' is outgoing (right side)
-                  // For owner Festus: 'festus' is outgoing (right side), 'visitor' is incoming (left side)
-                  const isLeft = isOwner ? msg.sender === 'visitor' : msg.sender === 'festus';
+                {/* 3. Interleaved Rendering:
+                    Render the unified messages array linearly in a single map loop:
+                    - If sender_id is the owner, align the chat bubble to the right (green: #dcf8c6).
+                    - If sender_id is the visitor, align the chat bubble to the left (white: bg-white).
+                    Ensure messages interleave back-and-forth naturally by their exact creation time (01:45 PM -> 01:46 PM -> 01:47 PM)
+                    rather than grouping sent messages together and received messages together. */}
+                {messages.map((msg) => {
+                  const isOwnerSender = msg.sender === 'festus' || (msg.sender_id && (msg.sender_id === resolvedOwnerId || msg.sender_id === 'festus'));
+                  const isRight = isOwner ? isOwnerSender : !isOwnerSender;
+                  const isLeft = !isRight;
 
                   return (
                     <div
                       key={msg.id}
-                      className={`flex items-end gap-2 ${isLeft ? 'justify-start' : 'justify-end'}`}
+                      className={`flex items-end gap-2 ${isRight ? 'justify-end' : 'justify-start'}`}
                     >
-                      {/* Left Avatar */}
+                      {/* Left Avatar for received messages */}
                       {isLeft && (
                         <div className="relative w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
                           <span className={`${activeConversation.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
@@ -2596,12 +3045,12 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                         </div>
                       )}
 
-                      {/* Message Bubble */}
+                      {/* Message Bubble: Right is Green (#dcf8c6), Left is White (bg-white) */}
                       <div
                         className={`max-w-[85%] sm:max-w-md md:max-w-lg px-3 py-2 rounded-xl text-[11.5px] sm:text-[12.5px] leading-snug shadow-xs relative group/msg ${
-                          isLeft
-                            ? 'bg-white text-slate-900 rounded-bl-xs border border-slate-200'
-                            : 'bg-[#dcf8c6] text-slate-950 rounded-br-xs border border-[#c4e8aa]'
+                          isRight
+                            ? 'bg-[#dcf8c6] text-slate-950 rounded-br-xs border border-[#c4e8aa]'
+                            : 'bg-white text-slate-900 rounded-bl-xs border border-slate-200'
                         }`}
                       >
                         {/* Text Content */}
@@ -2721,8 +3170,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                         </div>
                       </div>
 
-                      {/* Right Avatar for Visitor */}
-                      {!isLeft && !isOwner && (
+                      {/* Right Avatar for Visitor (in visitor view) */}
+                      {isRight && !isOwner && (
                         <div className="relative w-6.5 h-6.5 rounded-full overflow-hidden bg-slate-300 shrink-0 mb-0.5 shadow-xs border border-white flex items-center justify-center text-[10px] font-bold text-white">
                           <span className={`${visitorProfile.avatarColor || 'bg-slate-700'} w-full h-full flex items-center justify-center`}>
                             {(visitorProfile.name || 'V').charAt(0).toUpperCase()}
