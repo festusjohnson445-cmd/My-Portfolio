@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Download, Mic } from 'lucide-react';
-import { formatDuration } from '../utils/audioUtils';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Play, Pause, Download, Mic, Loader2 } from 'lucide-react';
+import { formatDuration, safeDataUrlToBlobUrl } from '../utils/audioUtils';
 
 export interface VoiceNoteData {
   url: string;
@@ -21,57 +21,196 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  useEffect(() => {
-    const audio = new Audio(voiceNote.url);
-    audioRef.current = audio;
+  // Web Audio API fallback refs for devices/browsers that reject WebM in HTML5 audio
+  const webAudioCtxRef = useRef<AudioContext | null>(null);
+  const webAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const webAudioBufferRef = useRef<AudioBuffer | null>(null);
+  const webAudioStartTimeRef = useRef<number>(0);
+  const webAudioPauseOffsetRef = useRef<number>(0);
+  const webAudioTimerRef = useRef<any>(null);
 
-    const onTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-    };
-
-    const onEnded = () => {
-      setIsPlaying(false);
-      setCurrentTime(0);
-    };
-
-    const onError = () => {
-      setIsPlaying(false);
-    };
-
-    audio.addEventListener('timeupdate', onTimeUpdate);
-    audio.addEventListener('ended', onEnded);
-    audio.addEventListener('error', onError);
-
-    return () => {
-      audio.pause();
-      audio.removeEventListener('timeupdate', onTimeUpdate);
-      audio.removeEventListener('ended', onEnded);
-      audio.removeEventListener('error', onError);
-    };
+  // Convert raw Base64 data URL to clean in-memory Blob URL to eliminate data URI parsing bugs in Safari/WebKit
+  const { blobUrl, revoke } = useMemo(() => {
+    return safeDataUrlToBlobUrl(voiceNote.url);
   }, [voiceNote.url]);
 
-  const togglePlay = () => {
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-      setIsPlaying(false);
-    } else {
-      audioRef.current.playbackRate = playbackRate;
-      audioRef.current.play().then(() => setIsPlaying(true)).catch((e) => {
-        console.warn('Playback error:', e);
+  useEffect(() => {
+    return () => {
+      revoke();
+      if (webAudioTimerRef.current) clearInterval(webAudioTimerRef.current);
+      if (webAudioSourceRef.current) {
+        try { webAudioSourceRef.current.stop(); } catch {}
+      }
+      if (webAudioCtxRef.current && webAudioCtxRef.current.state !== 'closed') {
+        try { webAudioCtxRef.current.close(); } catch {}
+      }
+    };
+  }, [revoke]);
+
+  // Clean and parse duration
+  const fallbackDuration = Math.max(1, Math.round(Number(voiceNote.duration) || 1));
+  const [audioDuration, setAudioDuration] = useState<number>(fallbackDuration);
+
+  // Sync duration when metadata loads
+  const handleLoadedMetadata = () => {
+    if (audioRef.current && !isNaN(audioRef.current.duration) && audioRef.current.duration > 0) {
+      setAudioDuration(Math.round(audioRef.current.duration));
+    }
+  };
+
+  const onTimeUpdate = () => {
+    if (audioRef.current) {
+      setCurrentTime(audioRef.current.currentTime);
+    }
+  };
+
+  const onEnded = () => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+  };
+
+  // Web Audio API playback fallback for unsupported HTML5 media
+  const playWithWebAudioFallback = async (targetOffset = 0) => {
+    try {
+      setIsLoading(true);
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) throw new Error('Web Audio not supported');
+
+      if (!webAudioCtxRef.current || webAudioCtxRef.current.state === 'closed') {
+        webAudioCtxRef.current = new AudioCtx();
+      }
+      const ctx = webAudioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      if (!webAudioBufferRef.current) {
+        const response = await fetch(blobUrl || voiceNote.url);
+        const arrayBuffer = await response.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(arrayBuffer);
+        webAudioBufferRef.current = decoded;
+        if (decoded.duration > 0) {
+          setAudioDuration(Math.round(decoded.duration));
+        }
+      }
+
+      const buffer = webAudioBufferRef.current;
+      if (!buffer) throw new Error('Could not decode audio buffer');
+
+      if (webAudioSourceRef.current) {
+        try { webAudioSourceRef.current.stop(); } catch {}
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = playbackRate;
+      source.connect(ctx.destination);
+
+      const offset = targetOffset >= buffer.duration ? 0 : targetOffset;
+      webAudioStartTimeRef.current = ctx.currentTime - (offset / playbackRate);
+      webAudioPauseOffsetRef.current = offset;
+
+      source.onended = () => {
         setIsPlaying(false);
-      });
+        setCurrentTime(0);
+        webAudioPauseOffsetRef.current = 0;
+        if (webAudioTimerRef.current) clearInterval(webAudioTimerRef.current);
+      };
+
+      source.start(0, offset);
+      webAudioSourceRef.current = source;
+      setIsPlaying(true);
+      setIsLoading(false);
+      setLoadError(false);
+
+      if (webAudioTimerRef.current) clearInterval(webAudioTimerRef.current);
+      webAudioTimerRef.current = setInterval(() => {
+        if (!webAudioCtxRef.current) return;
+        const cur = (webAudioCtxRef.current.currentTime - webAudioStartTimeRef.current) * playbackRate;
+        if (cur >= buffer.duration) {
+          setCurrentTime(buffer.duration);
+          setIsPlaying(false);
+          clearInterval(webAudioTimerRef.current);
+        } else {
+          setCurrentTime(cur);
+        }
+      }, 100);
+
+      return true;
+    } catch (fallbackErr) {
+      console.warn('[Web Audio Fallback Error]:', fallbackErr);
+      setIsLoading(false);
+      setLoadError(true);
+      return false;
+    }
+  };
+
+  const stopWebAudioFallback = () => {
+    if (webAudioTimerRef.current) clearInterval(webAudioTimerRef.current);
+    if (webAudioSourceRef.current) {
+      try { webAudioSourceRef.current.stop(); } catch {}
+      webAudioSourceRef.current = null;
+    }
+    if (webAudioCtxRef.current) {
+      webAudioPauseOffsetRef.current = currentTime;
+    }
+    setIsPlaying(false);
+  };
+
+  const togglePlay = async () => {
+    // If currently playing, pause
+    if (isPlaying) {
+      if (webAudioSourceRef.current) {
+        stopWebAudioFallback();
+      } else if (audioRef.current) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      }
+      return;
+    }
+
+    // Try HTML5 Audio element first
+    const audio = audioRef.current;
+    if (audio) {
+      audio.playbackRate = playbackRate;
+      setIsLoading(true);
+
+      try {
+        await audio.play();
+        setIsPlaying(true);
+        setIsLoading(false);
+        setLoadError(false);
+        return;
+      } catch (playErr) {
+        console.warn('[HTML5 Audio play failed, switching to Web Audio API fallback]:', playErr);
+        // Fallback to Web Audio API
+        const ok = await playWithWebAudioFallback(currentTime);
+        if (!ok) {
+          setIsPlaying(false);
+          setIsLoading(false);
+        }
+      }
+    } else {
+      await playWithWebAudioFallback(currentTime);
     }
   };
 
   const handleSeek = (percentage: number) => {
-    if (!audioRef.current) return;
-    const dur = voiceNote.duration || audioRef.current.duration || 1;
-    const target = percentage * dur;
-    audioRef.current.currentTime = target;
+    const target = percentage * audioDuration;
     setCurrentTime(target);
+
+    if (webAudioSourceRef.current) {
+      playWithWebAudioFallback(target);
+    } else if (audioRef.current) {
+      try {
+        audioRef.current.currentTime = target;
+      } catch {}
+    }
   };
 
   const cycleSpeed = () => {
@@ -80,35 +219,56 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
     if (audioRef.current) {
       audioRef.current.playbackRate = nextRate;
     }
+    if (webAudioSourceRef.current) {
+      webAudioSourceRef.current.playbackRate.value = nextRate;
+    }
   };
 
-  const totalDuration = voiceNote.duration || (audioRef.current?.duration ? Math.round(audioRef.current.duration) : 1);
-  const progressPct = totalDuration > 0 ? Math.min(100, (currentTime / totalDuration) * 100) : 0;
+  const progressPct = audioDuration > 0 ? Math.min(100, (currentTime / audioDuration) * 100) : 0;
 
-  // 24 simulated acoustic waveform bars
+  // WhatsApp-style 28 acoustic equalizer waveform bars with dynamic visual variance
   const waveformHeights = [
-    12, 20, 14, 28, 18, 30, 24, 16, 22, 28,
-    32, 20, 26, 14, 22, 30, 18, 24, 16, 20,
-    14, 24, 18, 12
+    8, 14, 22, 12, 18, 28, 16, 24, 30, 20,
+    14, 26, 32, 22, 18, 28, 20, 26, 14, 22,
+    30, 16, 24, 18, 12, 20, 14, 10
   ];
 
   return (
-    <div className="flex items-center gap-2.5 py-1 min-w-[210px] sm:min-w-[260px] select-none font-sans">
-      {/* Play / Pause Round Button */}
+    <div className="flex items-center gap-2.5 py-1 min-w-[220px] sm:min-w-[270px] select-none font-sans">
+      {/* Hidden standard HTML5 Audio element in DOM with playsInline */}
+      <audio
+        ref={audioRef}
+        src={blobUrl || voiceNote.url}
+        playsInline
+        preload="auto"
+        onTimeUpdate={onTimeUpdate}
+        onLoadedMetadata={handleLoadedMetadata}
+        onEnded={onEnded}
+        onError={() => {
+          // If HTML5 element fails, Web Audio fallback will handle it on togglePlay
+          setLoadError(false);
+        }}
+        className="hidden"
+      />
+
+      {/* WhatsApp Play / Pause Round Button */}
       <button
         type="button"
         onClick={togglePlay}
-        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 shadow-sm transition-all active:scale-95 cursor-pointer ${
+        disabled={isLoading}
+        className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm transition-all active:scale-95 cursor-pointer ${
           isSender
             ? 'bg-[#243346] hover:bg-[#1a2533] text-white'
-            : 'bg-slate-800 hover:bg-slate-900 text-white'
+            : 'bg-[#00a884] hover:bg-[#008f6f] text-white'
         }`}
         title={isPlaying ? 'Pause voice note' : 'Play voice note'}
       >
-        {isPlaying ? (
-          <Pause className="w-4 h-4 fill-current" />
+        {isLoading ? (
+          <Loader2 className="w-4 h-4 animate-spin text-white" />
+        ) : isPlaying ? (
+          <Pause className="w-4 h-4 fill-current text-white" />
         ) : (
-          <Play className="w-4 h-4 fill-current ml-0.5" />
+          <Play className="w-4 h-4 fill-current text-white ml-0.5" />
         )}
       </button>
 
@@ -131,11 +291,11 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
               <span
                 key={i}
                 style={{ height: `${h}px` }}
-                className={`w-[3px] rounded-full transition-colors ${
+                className={`w-[2.5px] sm:w-[3px] rounded-full transition-colors ${
                   isPlayed
                     ? isSender
                       ? 'bg-[#243346]'
-                      : 'bg-slate-800'
+                      : 'bg-[#00a884]'
                     : isSender
                     ? 'bg-slate-400/50'
                     : 'bg-slate-300'
@@ -147,33 +307,43 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
 
         {/* Timestamps & Quick Actions */}
         <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono -mt-0.5">
-          <span>
-            {formatDuration(Math.round(currentTime > 0 ? currentTime : totalDuration))}
+          <span className="font-medium">
+            {formatDuration(Math.round(currentTime > 0 ? currentTime : audioDuration))}
           </span>
 
           <div className="flex items-center gap-1.5">
+            {/* Speed Toggle Pill (WhatsApp 1x, 1.5x, 2x) */}
             <button
               type="button"
               onClick={cycleSpeed}
-              className="px-1.5 py-0.5 rounded bg-black/10 hover:bg-black/20 text-slate-700 font-bold text-[9px] transition-colors cursor-pointer"
-              title="Toggle speed (1x, 1.5x, 2x)"
+              className="px-1.5 py-0.5 rounded-full bg-black/10 hover:bg-black/20 text-slate-700 font-bold text-[9px] transition-colors cursor-pointer"
+              title="Toggle playback speed (1x, 1.5x, 2x)"
             >
               {playbackRate}x
             </button>
 
+            {/* Download audio backup link */}
             <a
-              href={voiceNote.url}
-              download="voice_note.wav"
+              href={blobUrl || voiceNote.url}
+              download="voicenote.wav"
               className="p-1 hover:text-slate-900 transition-colors cursor-pointer"
               title="Download audio recording"
             >
               <Download className="w-3 h-3 text-slate-500" />
             </a>
 
-            <Mic className="w-3 h-3 text-slate-400" />
+            {/* WhatsApp voice note mic badge */}
+            <Mic className={`w-3 h-3 ${isSender ? 'text-[#243346]' : 'text-[#00a884]'}`} />
           </div>
         </div>
+
+        {loadError && (
+          <span className="text-[9px] text-rose-500 font-sans mt-0.5">
+            Unable to stream audio codec. Click download icon to listen offline.
+          </span>
+        )}
       </div>
     </div>
   );
 };
+
