@@ -222,15 +222,15 @@ export default function App() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full flex-1">
               <EaseStudyView onNavigatePart={handleSelectPart} />
 
-              {/* Bottom Navigator (Center Justified, Text size reduced by 10%) */}
+              {/* Bottom Navigator (Center Justified, Text size reduced by 15%) */}
               <div className="pt-8 mt-auto flex justify-center">
-                <div className="p-4 sm:p-5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-center text-center gap-3.5 sm:gap-6 max-w-4xl mx-auto w-full">
-                  <div className="text-[12.5px] sm:text-[14px] text-slate-700 text-center">
+                <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-center text-center gap-3.5 sm:gap-6 max-w-4xl mx-auto w-full">
+                  <div className="text-[10.6px] sm:text-[11.9px] text-slate-700 text-center">
                     <span className="text-cyan-900 font-bold font-sans">EASESTUDY COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
                   </div>
                   <button
                     onClick={() => handleSelectPart('messaging')}
-                    className="inline-flex items-center justify-center gap-2 px-4.5 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[12px] sm:text-[13.5px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap shrink-0"
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[10.2px] sm:text-[11.5px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <span>Proceed to Messaging (Part 05)</span>
                     <ArrowRight className="w-3.5 h-3.5" />

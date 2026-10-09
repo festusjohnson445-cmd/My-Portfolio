@@ -57,7 +57,7 @@ import {
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
-import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent } from '../utils/audioUtils';
+import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, UniversalAudioRecorder } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
@@ -502,6 +502,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   // Voice note recording states
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const universalRecorderRef = useRef<UniversalAudioRecorder | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<any>(null);
@@ -2013,56 +2014,23 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     }
   };
 
-  // Start physical microphone recording
+  // Start physical microphone recording (Universal WAV format compatible with all iOS Safari and Android browsers)
   const startVoiceRecording = async () => {
     if (isRecording) return;
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setShowMailNotice('Microphone access is not supported by this browser environment. You can use the Demo Audio button.');
         return;
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordingStreamRef.current = stream;
+      const recorder = new UniversalAudioRecorder();
+      universalRecorderRef.current = recorder;
+      await recorder.start();
 
-      let mimeType = 'audio/webm';
-      if (typeof MediaRecorder !== 'undefined') {
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          mimeType = 'audio/webm;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-          mimeType = 'audio/ogg;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-          mimeType = 'audio/mp4';
-        }
-      }
-
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-      recordingStartTimeRef.current = Date.now();
+      setIsRecording(true);
       setRecordingSeconds(0);
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
-        }
-      };
-
-      mediaRecorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const durationSeconds = Math.max(1, Math.round((Date.now() - recordingStartTimeRef.current) / 1000));
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64Audio = reader.result as string;
-          sendVoiceNoteMessage(base64Audio, durationSeconds);
-        };
-        reader.readAsDataURL(blob);
-      };
-
-      mediaRecorder.start(250);
-      setIsRecording(true);
-
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
@@ -2077,28 +2045,33 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   };
 
   const cancelVoiceRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (universalRecorderRef.current) {
+      universalRecorderRef.current.cancel();
+      universalRecorderRef.current = null;
+    }
     if (recordingStreamRef.current) {
       recordingStreamRef.current.getTracks().forEach((t) => t.stop());
     }
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.onstop = () => {};
-      try {
-        mediaRecorderRef.current.stop();
-      } catch {}
-    }
-    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     setIsRecording(false);
     setRecordingSeconds(0);
   };
 
-  const stopAndSendVoiceRecording = () => {
+  const stopAndSendVoiceRecording = async () => {
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-    if (mediaRecorderRef.current && isRecording) {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch {}
-    }
     setIsRecording(false);
+
+    if (universalRecorderRef.current) {
+      try {
+        const { url, duration } = await universalRecorderRef.current.stop();
+        universalRecorderRef.current = null;
+        setRecordingSeconds(0);
+        await sendVoiceNoteMessage(url, duration);
+      } catch (err: any) {
+        console.warn('Failed to encode voice note:', err);
+        setRecordingSeconds(0);
+      }
+    }
   };
 
   const handleSendDemoAudio = async () => {
@@ -3414,57 +3387,64 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 </div>
               )}
 
-              {/* 3. COMPACT BOTTOM INPUT BAR & SEND / VOICE RECORDING BUTTONS */}
+              {/* 3. COMPACT BOTTOM INPUT BAR & WHATSAPP-STYLE VOICE RECORDER */}
               {isRecording ? (
-                /* LIVE VOICE RECORDING BAR */
-                <div className="bg-[#fdedeb] p-2 sm:p-2.5 border-t border-red-200 shrink-0 animate-fade-in flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-3 h-3 rounded-full bg-red-600 animate-pulse shrink-0" />
-                    <span className="text-xs font-mono font-bold text-red-700 whitespace-nowrap">
-                      REC {formatDuration(recordingSeconds)}
-                    </span>
-                    {/* Animated sound wave bars */}
-                    <div className="hidden sm:flex items-center gap-1 h-5">
-                      {[10, 18, 12, 22, 16, 20, 14, 24, 12, 16].map((h, i) => (
+                /* LIVE WHATSAPP-STYLE VOICE RECORDING BAR */
+                <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0 flex items-center gap-2 select-none animate-fadeIn">
+                  {/* WhatsApp White Capsule Container */}
+                  <div className="flex-1 flex items-center justify-between bg-white rounded-full px-3.5 sm:px-4 py-2 shadow-xs border border-slate-200/90 gap-2.5 sm:gap-3 min-w-0">
+                    {/* Left: Blinking red recording dot + Live Timer */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="relative flex h-3 w-3 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600" />
+                      </span>
+                      <span className="text-xs sm:text-sm font-mono font-bold text-slate-800 whitespace-nowrap tracking-wide">
+                        {formatDuration(recordingSeconds)}
+                      </span>
+                    </div>
+
+                    {/* Middle: WhatsApp Dynamic Acoustic Equalizer Waveform */}
+                    <div className="flex-1 flex items-center justify-center gap-[2.5px] sm:gap-1 h-5 overflow-hidden px-1">
+                      {[10, 16, 22, 12, 26, 18, 30, 14, 24, 16, 28, 20, 14, 22, 18, 26, 14, 20].map((h, i) => (
                         <span
                           key={i}
                           style={{
-                            height: `${h}px`,
-                            animationDelay: `${i * 120}ms`
+                            height: `${Math.max(4, h * (0.8 + ((recordingSeconds + i) % 4) * 0.15))}px`,
+                            animationDelay: `${(i % 5) * 120}ms`
                           }}
-                          className="w-1 bg-red-500 rounded-full animate-bounce"
+                          className="w-[2.5px] sm:w-[3px] bg-[#00a884] rounded-full animate-pulse transition-all duration-300"
                         />
                       ))}
                     </div>
-                    <span className="text-[11px] text-red-600 truncate hidden md:inline">
+
+                    <span className="text-[11px] text-slate-400 hidden lg:inline font-sans truncate select-none">
                       Recording voice note...
                     </span>
-                  </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                    {/* Right inside capsule: Discard Trash Button */}
                     <button
                       type="button"
                       onClick={cancelVoiceRecording}
-                      className="px-3 py-1.5 rounded-lg border border-red-300 hover:bg-red-100 text-red-700 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
-                      title="Discard recording"
+                      className="p-1.5 rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors cursor-pointer shrink-0"
+                      title="Discard and cancel voice note"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Discard</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={stopAndSendVoiceRecording}
-                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                      title="Send voice note"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Send Note</span>
+                      <Trash2 className="w-4.5 h-4.5" />
                     </button>
                   </div>
+
+                  {/* Outside Capsule: Iconic WhatsApp Circular Green Send Button */}
+                  <button
+                    type="button"
+                    onClick={stopAndSendVoiceRecording}
+                    className="w-10 h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                    title="Send voice note"
+                  >
+                    <Send className="w-4 h-4 fill-current ml-0.5" />
+                  </button>
                 </div>
               ) : (
-                /* STANDARD MESSAGE & ATTACHMENT INPUT BAR */
+                /* STANDARD MESSAGE & ATTACHMENT INPUT BAR (WHATSAPP STRUCTURE) */
                 <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0">
                   <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
                     
@@ -3484,32 +3464,22 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                         className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
                         title="Attach documents, CAD files or images"
                       >
-                        <Paperclip className="w-4 h-4 text-[#243346]" />
+                        <Paperclip className="w-4.5 h-4.5 text-[#243346]" />
                       </button>
                     </div>
 
-                    {/* Microphone Voice Note Button */}
-                    <button
-                      type="button"
-                      onClick={startVoiceRecording}
-                      className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
-                      title="Record Voice Note"
-                    >
-                      <Mic className="w-4 h-4 text-[#243346]" />
-                    </button>
-
-                    {/* Quick Demo Audio Button for quick testing */}
+                    {/* Quick Demo Audio Memo Button */}
                     <button
                       type="button"
                       onClick={handleSendDemoAudio}
                       className="hidden md:inline-flex p-1.5 rounded-lg bg-slate-200/80 hover:bg-slate-300 text-slate-700 text-[10px] font-bold items-center gap-1 cursor-pointer shrink-0 transition-colors"
-                      title="Send sample voice memo"
+                      title="Send sample audio memo"
                     >
                       <Volume2 className="w-3 h-3 text-[#243346]" />
                       <span>Audio Memo</span>
                     </button>
 
-                    {/* Message Input Box */}
+                    {/* Message Input Box with Engineering Symbol Picker */}
                     <div className="flex-1 relative">
                       <input
                         type="text"
@@ -3520,42 +3490,41 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                         }
                         value={inputMessage}
                         onChange={(e) => updateInputMessage(e.target.value)}
-                        className="w-full px-3 py-2 bg-white rounded-xl text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#243346] shadow-xs pr-8"
+                        className="w-full px-3.5 py-2 bg-white rounded-full text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00a884] border border-slate-200 shadow-xs pr-8"
                       />
                       <button
                         type="button"
                         onClick={() => updateInputMessage(inputMessage + ' ⚙️ ')}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                        title="Engineering symbol"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                        title="Insert engineering symbol"
                       >
                         <Smile className="w-4 h-4" />
                       </button>
                     </div>
 
-                    {/* Compact Message Send Button with Visual InChat Login Prompt Tooltip */}
-                    <div className="relative flex items-center">
-                      {loginTooltipVisible && !isOwner && !isVisitorLoggedIn && (
-                        <div
-                          role="alert"
-                          className="absolute bottom-full right-0 mb-3 z-50 flex items-center gap-2 bg-[#243346] text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-2xl border border-white/20 whitespace-nowrap animate-bounce"
+                    {/* InChat Login Prompt Tooltip for Visitors */}
+                    {loginTooltipVisible && !isOwner && !isVisitorLoggedIn && (
+                      <div
+                        role="alert"
+                        className="absolute bottom-16 right-4 z-50 flex items-center gap-2 bg-[#243346] text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-2xl border border-white/20 whitespace-nowrap animate-bounce"
+                      >
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                        <span>Click the InChat to Login First</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLoginTooltipVisible(false);
+                            setIsVisitorProfileModalOpen(true);
+                          }}
+                          className="ml-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
                         >
-                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
-                          <span>Click the InChat to Login First</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLoginTooltipVisible(false);
-                              setIsVisitorProfileModalOpen(true);
-                            }}
-                            className="ml-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
-                          >
-                            InChat
-                          </button>
-                          {/* Tooltip arrow pointing down to Send button */}
-                          <div className="absolute top-full right-4 -mt-1 w-0 h-0 border-x-4 border-x-transparent border-t-6 border-t-[#243346]" />
-                        </div>
-                      )}
+                          InChat
+                        </button>
+                      </div>
+                    )}
 
+                    {/* WhatsApp Circular Action Button (Mic when empty, Send when text present) */}
+                    {inputMessage.trim() || attachedFiles.length > 0 ? (
                       <button
                         type="submit"
                         onClick={(e) => {
@@ -3564,18 +3533,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                             triggerLoginPrompt();
                           }
                         }}
-                        disabled={!inputMessage.trim() && attachedFiles.length === 0}
-                        className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs ${
-                          inputMessage.trim() || attachedFiles.length > 0
-                            ? 'bg-[#243346] hover:bg-[#1a2533] text-white'
-                            : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                        }`}
+                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
                         title="Send message"
                       >
-                        <Send className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline text-xs">Send</span>
+                        <Send className="w-4 h-4 fill-current ml-0.5" />
                       </button>
-                    </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={startVoiceRecording}
+                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                        title="Record voice note (WhatsApp style)"
+                      >
+                        <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                      </button>
+                    )}
                   </form>
                 </div>
               )}
