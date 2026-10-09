@@ -903,10 +903,26 @@ export function getSharedChatBroadcastChannel() {
 export async function broadcastSupabaseChatMessage(messagePayload: any): Promise<void> {
   try {
     const channel = getSharedChatBroadcastChannel();
+    // If voice note payload contains a large base64 data URL (> 80KB), send a lightweight notice
+    // to prevent Supabase WebSocket from exceeding the 256KB message limit and dropping
+    let payloadToSend = messagePayload;
+    if (messagePayload?.message?.voiceNote?.url && messagePayload.message.voiceNote.url.length > 80000) {
+      payloadToSend = {
+        ...messagePayload,
+        message: {
+          ...messagePayload.message,
+          voiceNote: {
+            ...messagePayload.message.voiceNote,
+            url: messagePayload.message.voiceNote.url.slice(0, 50) + '...',
+            _isLightBroadcast: true,
+          },
+        },
+      };
+    }
     await channel.send({
       type: 'broadcast',
       event: 'new_chat_message',
-      payload: messagePayload,
+      payload: payloadToSend,
     });
   } catch (err) {
     console.warn('[Supabase Realtime Broadcast Note]:', err);
@@ -1227,27 +1243,61 @@ export async function saveMessageAndConversationToSupabase(params: {
   const avatarUrl = conversationMetadata?.avatarUrl || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_url') || '') : '') || '';
   const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_color') || '') : '') || 'bg-slate-700';
 
-  try {
-    // Step A: Ensure visitor_profiles row exists so conversations foreign key constraint is always satisfied
-    try {
-      const profilePayload: any = {
-        visitor_id: vId,
-        updated_at: nowIso,
-      };
-      if (displayName) profilePayload.display_name = displayName;
-      if (roleSubject) profilePayload.role_subject = roleSubject;
-      if (avatarUrl) profilePayload.avatar_url = avatarUrl;
-      if (avatarColor) profilePayload.avatar_color = avatarColor;
-
-      const { error: vpError } = await supabase
-        .from('visitor_profiles')
-        .upsert(profilePayload, { onConflict: 'visitor_id' });
-
-      if (vpError) {
-        console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
+  // Resilient retry helper for transient network hiccups across mobile cellular connections
+  const retryDbCall = async (fn: () => PromiseLike<any> | Promise<any>, retries = 2, delayMs = 300): Promise<any> => {
+    let lastError: any;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const result = await fn();
+        const rAny = result as any;
+        if (rAny && rAny.error) {
+          const errText = String(rAny.error.message || '');
+          if ((errText.includes('Network') || errText.includes('fetch') || errText.includes('timeout')) && attempt < retries) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+            continue;
+          }
+        }
+        return result;
+      } catch (err: any) {
+        lastError = err;
+        const errText = String(err?.message || '');
+        if ((errText.includes('Network') || errText.includes('fetch') || errText.includes('timeout')) && attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+          continue;
+        }
+        throw err;
       }
-    } catch (errA) {
-      console.warn('[Step A Exception: visitor_profiles]:', errA);
+    }
+    throw lastError;
+  };
+
+  try {
+    // Step A: Upsert visitor_profiles ONLY for visitor messages (never during owner replies,
+    // avoiding redundant roundtrips and massive avatar base64 re-uploads over mobile network)
+    if (!isOwnerSender) {
+      try {
+        const profilePayload: any = {
+          visitor_id: vId,
+          updated_at: nowIso,
+        };
+        if (displayName) profilePayload.display_name = displayName;
+        if (roleSubject) profilePayload.role_subject = roleSubject;
+        // Avoid sending huge data URLs on every message if already in localStorage
+        if (avatarUrl && !avatarUrl.startsWith('data:image/') || avatarUrl.length < 5000) {
+          profilePayload.avatar_url = avatarUrl;
+        }
+        if (avatarColor) profilePayload.avatar_color = avatarColor;
+
+        const { error: vpError } = await retryDbCall(() =>
+          supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })
+        );
+
+        if (vpError) {
+          console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
+        }
+      } catch (errA) {
+        console.warn('[Step A Exception: visitor_profiles]:', errA);
+      }
     }
 
     // Step B: For Owner replies: strictly update existing conversation in place without creating new conversations.
@@ -1255,16 +1305,18 @@ export async function saveMessageAndConversationToSupabase(params: {
     try {
       if (isOwnerSender) {
         // Owner sends reply -> update existing conversation record in place
-        const { error: convUpdateErr } = await supabase
-          .from('conversations')
-          .upsert({
-            id: targetConvId,
-            visitor_id: vId,
-            owner_id: ownerId,
-            last_message: lastSnippet,
-            last_message_at: nowIso,
-            unread_count: 0,
-          }, { onConflict: 'id' });
+        const { error: convUpdateErr } = await retryDbCall(() =>
+          supabase
+            .from('conversations')
+            .upsert({
+              id: targetConvId,
+              visitor_id: vId,
+              owner_id: ownerId,
+              last_message: lastSnippet,
+              last_message_at: nowIso,
+              unread_count: 0,
+            }, { onConflict: 'id' })
+        );
 
         if (convUpdateErr) {
           console.warn('[Step B Notice: conversations update on owner reply]:', convUpdateErr.message || convUpdateErr);
@@ -1279,9 +1331,11 @@ export async function saveMessageAndConversationToSupabase(params: {
           last_message_at: nowIso,
           unread_count: 1,
         };
-        const { error: convError } = await supabase
-          .from('conversations')
-          .upsert(convPayload, { onConflict: 'id' });
+        const { error: convError } = await retryDbCall(() =>
+          supabase
+            .from('conversations')
+            .upsert(convPayload, { onConflict: 'id' })
+        );
 
         if (convError) {
           console.warn('[Step B Notice: conversations upsert]:', convError.message || convError);
@@ -1294,16 +1348,16 @@ export async function saveMessageAndConversationToSupabase(params: {
     // Step C: Insert the new row into messages linking conversation_id ('conv_' + visitor_id)
     try {
       const hasVoiceNote = Boolean(message.voiceNote && message.voiceNote.url);
-      const contentToSave = hasVoiceNote
-        ? serializeVoiceNoteContent(message.voiceNote, message.text)
-        : (message.text || lastSnippet);
+      const cleanTextContent = message.text || lastSnippet;
 
       const basePayload: any = {
         id: safeMessageId,
         conversation_id: targetConvId,
         sender_id: isOwnerSender ? ownerId : vId,
         receiver_id: isOwnerSender ? vId : ownerId,
-        content: contentToSave,
+        content: hasVoiceNote
+          ? cleanTextContent // Keep content column light when voice_note column is present
+          : (message.text || lastSnippet),
         created_at: nowIso,
       };
 
@@ -1315,18 +1369,22 @@ export async function saveMessageAndConversationToSupabase(params: {
           ...basePayload,
           voice_note: message.voiceNote,
         };
-        const { error: colErr } = await supabase.from('messages').insert(payloadWithCol);
+        const { error: colErr } = await retryDbCall(() => supabase.from('messages').insert(payloadWithCol));
         if (colErr) {
-          // Fallback to basePayload where content safely encodes the voice note
+          // Fallback to encoding serialized voice note in content if voice_note column is missing
           if (colErr.message?.includes('voice_note') || colErr.code === '42703' || colErr.message?.includes('column')) {
-            const { error: fallbackErr } = await supabase.from('messages').insert(basePayload);
+            const fallbackBody = {
+              ...basePayload,
+              content: serializeVoiceNoteContent(message.voiceNote, message.text),
+            };
+            const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
             msgError = fallbackErr;
           } else {
             msgError = colErr;
           }
         }
       } else {
-        const { error: stdErr } = await supabase.from('messages').insert(basePayload);
+        const { error: stdErr } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
         msgError = stdErr;
       }
 
@@ -1338,10 +1396,10 @@ export async function saveMessageAndConversationToSupabase(params: {
             conversation_id: targetConvId,
             sender_id: isOwnerSender ? ownerId : vId,
             receiver_id: isOwnerSender ? vId : ownerId,
-            content: contentToSave,
+            content: hasVoiceNote ? serializeVoiceNoteContent(message.voiceNote, message.text) : cleanTextContent,
             created_at: nowIso,
           };
-          const { error: fallbackErr } = await supabase.from('messages').insert(fallbackBody);
+          const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
           msgError = fallbackErr;
         }
       }

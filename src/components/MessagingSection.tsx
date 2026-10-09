@@ -354,14 +354,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   useEffect(() => {
     if (isOwner) return;
 
-    const savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || '';
+    let savedVId = localStorage.getItem('visitor_id') || localStorage.getItem(STORAGE_KEY_VISITOR_ID) || localStorage.getItem('fesline_visitor_access_key') || '';
     const savedDisplayName = localStorage.getItem('display_name') || 'Visitor';
 
-    // If no saved visitor_id in localStorage, visitor receives a clean initial state
+    // If no saved visitor_id in localStorage, assign a persistent anonymous visitor ID immediately
     if (!savedVId) {
-      setMessages([]);
-      setConversations([]);
-      return;
+      const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      savedVId = `visitor_${uuid}`;
+      try {
+        localStorage.setItem('visitor_id', savedVId);
+        localStorage.setItem(STORAGE_KEY_VISITOR_ID, savedVId);
+        localStorage.setItem('conversation_id', `conv_${savedVId}`);
+      } catch {}
     }
 
     const initAndFetchVisitorSession = async () => {
@@ -568,11 +572,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       // For New Visitors: Initialize the chat view as a clean, empty state.
       // Do not automatically load or associate any existing conversation until InChat profile setup or valid token.
       if (!inOwnerMode) {
-        const currVisId = visitorIdRef.current;
+        const currVisId = visitorIdRef.current || getStoredVisitorId();
         const currCId = conversationIdRef.current || (currVisId ? `conv_${currVisId}` : '');
         const savedName = typeof localStorage !== 'undefined' ? localStorage.getItem('display_name') : null;
 
-        if (!currVisId || !savedName || savedName === 'Visitor') {
+        if (!currVisId) {
           return;
         }
 
@@ -1846,22 +1850,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         return updated;
       });
 
-      fetch('/api/chats/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId: activeOwnerConvId,
-          message: festusMsg,
-          conversationMetadata: {
-            defaultLabel: activeConversation.defaultLabel,
-            customName: activeConversation.customName,
-            visitorName: activeConversation.visitorName,
-            avatarUrl: activeConversation.avatarUrl,
-            roleOrCompany: activeConversation.roleOrCompany,
-          },
-        }),
-      }).catch((err) => console.error('Send error:', err));
-
       try {
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
@@ -1881,9 +1869,27 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         } catch (err) {
           console.error('Supabase broadcast error:', err);
         }
+
+        // Secondary background push to local dev server if present
+        fetch('/api/chats/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: activeOwnerConvId,
+            message: festusMsg,
+            conversationMetadata: {
+              defaultLabel: activeConversation.defaultLabel,
+              customName: activeConversation.customName,
+              visitorName: activeConversation.visitorName,
+              avatarUrl: activeConversation.avatarUrl,
+              roleOrCompany: activeConversation.roleOrCompany,
+            },
+          }),
+        }).catch(() => {});
       } catch (err: any) {
         console.error('[Supabase Owner Voice Note Save Error]:', err);
         setDbWriteError(`Owner Voice Note Error: ${err?.message || 'Failed to save to database.'}`);
+        setTimeout(() => setDbWriteError(null), 6000);
       }
     } else {
       // 2. VISITOR SENDS VOICE NOTE
@@ -1968,24 +1974,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         return updated;
       });
 
-      fetch('/api/chats/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId: currentConvId,
-          message: visitorMsg,
-          conversationMetadata: {
-            defaultLabel: visitorProfile.name || 'Direct Message',
-            customName: visitorProfile.name || '',
-            visitorName: visitorProfile.name || '',
-            avatarUrl: visitorProfile.avatarUrl || '',
-            roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-            avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-          },
-        }),
-      }).catch((err) => console.error('Send voice note error:', err));
-
-      // Supabase send operation: explicit sequential database pipeline
+      // Supabase send operation: primary persistent cloud database pipeline
       try {
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
@@ -2006,10 +1995,29 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         } catch (err) {
           console.error('Supabase broadcast error:', err);
         }
+
+        // Secondary background push to local dev server if present
+        fetch('/api/chats/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: currentConvId,
+            message: visitorMsg,
+            conversationMetadata: {
+              defaultLabel: visitorProfile.name || 'Direct Message',
+              customName: visitorProfile.name || '',
+              visitorName: visitorProfile.name || '',
+              avatarUrl: visitorProfile.avatarUrl || '',
+              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+            },
+          }),
+        }).catch(() => {});
       } catch (err: any) {
         console.error('[Supabase Visitor Voice Note Save Error]:', err);
         const errDetail = err?.message || 'Database write failed. Check your network or RLS configuration.';
         setDbWriteError(`Voice Note Delivery Notice: ${errDetail}`);
+        setTimeout(() => setDbWriteError(null), 6000);
       }
     }
   };
@@ -2138,28 +2146,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         return updated;
       });
 
-      // Dispatch immediately to backend with SSE broadcast
-      fetch('/api/chats/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId: activeOwnerConvId,
-          message: festusMsg,
-          conversationMetadata: {
-            defaultLabel: activeConversation.defaultLabel,
-            customName: activeConversation.customName,
-            visitorName: activeConversation.visitorName,
-            avatarUrl: activeConversation.avatarUrl,
-            roleOrCompany: activeConversation.roleOrCompany,
-          }
-        }),
-      }).catch((err) => console.error('Send error:', err));
-
       try {
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
           conversationId: activeOwnerConvId,
-          visitorId: activeOwnerConvId,
+          visitorId: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
           message: festusMsg,
           conversationMetadata: {
             defaultLabel: activeConversation.defaultLabel,
@@ -2175,9 +2166,27 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         } catch (err) {
           console.error('Supabase broadcast error:', err);
         }
+
+        // Secondary background push to local dev server if present
+        fetch('/api/chats/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: activeOwnerConvId,
+            message: festusMsg,
+            conversationMetadata: {
+              defaultLabel: activeConversation.defaultLabel,
+              customName: activeConversation.customName,
+              visitorName: activeConversation.visitorName,
+              avatarUrl: activeConversation.avatarUrl,
+              roleOrCompany: activeConversation.roleOrCompany,
+            }
+          }),
+        }).catch(() => {});
       } catch (err: any) {
         console.error('[Supabase Owner Message Save Error]:', err);
         setDbWriteError(`Owner Message Persistence Warning: ${err?.message || 'Failed to save to database.'}`);
+        setTimeout(() => setDbWriteError(null), 6000);
       }
     } else {
       // 3. Unauthenticated Database Writes:
@@ -2295,7 +2304,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           console.error('Supabase broadcast error:', err);
         }
 
-        // Dispatch to backend with SSE broadcast
+        // Secondary background push to local dev server if present
         fetch('/api/chats/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2311,11 +2320,12 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
             }
           }),
-        }).catch((err) => console.error('Send error:', err));
+        }).catch(() => {});
       } catch (err: any) {
         console.error('[Supabase Send Message Error]:', err);
         const errDetail = err?.message || 'Database write blocked by network or RLS permission error.';
         setDbWriteError(`Message Delivery Warning: ${errDetail}. Check Supabase connectivity.`);
+        setTimeout(() => setDbWriteError(null), 6000);
       }
     }
 
@@ -3527,12 +3537,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                     {inputMessage.trim() || attachedFiles.length > 0 ? (
                       <button
                         type="submit"
-                        onClick={(e) => {
-                          if (!isOwner && !isVisitorLoggedIn && (inputMessage.trim() || attachedFiles.length > 0)) {
-                            e.preventDefault();
-                            triggerLoginPrompt();
-                          }
-                        }}
                         className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
                         title="Send message"
                       >

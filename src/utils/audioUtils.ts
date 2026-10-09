@@ -97,8 +97,42 @@ export class UniversalAudioRecorder {
 
     this.startTime = Date.now();
     this.pcmChunks = [];
+    this.mediaChunks = [];
 
-    // 1. Primary path: Web Audio API PCM capture (100% universal WAV format)
+    // 1. Primary path: Native compressed MediaRecorder (Opus / AAC / WebM / MP4)
+    // Produces compact, bandwidth-friendly audio (10-30KB) that uploads instantly across mobile
+    // cellular connections, preventing Supabase payload limit drops and NetworkError failures.
+    if (typeof MediaRecorder !== 'undefined') {
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/aac',
+      ];
+      let selectedMime = '';
+      for (const mime of candidates) {
+        if (MediaRecorder.isTypeSupported(mime)) {
+          selectedMime = mime;
+          break;
+        }
+      }
+      try {
+        const options: MediaRecorderOptions = selectedMime ? { mimeType: selectedMime } : {};
+        this.mediaRecorder = new MediaRecorder(this.stream, options);
+        this.mediaChunks = [];
+        this.mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) this.mediaChunks.push(e.data);
+        };
+        this.mediaRecorder.start(250);
+        return;
+      } catch (err) {
+        console.warn('[MediaRecorder primary init notice, falling back to Web Audio]:', err);
+      }
+    }
+
+    // 2. Secondary fallback path: Web Audio API PCM capture downsampled to 16kHz mono WAV
     const AudioCtxClass = typeof window !== 'undefined' ? (window.AudioContext || (window as any).webkitAudioContext) : null;
     if (AudioCtxClass) {
       try {
@@ -122,25 +156,9 @@ export class UniversalAudioRecorder {
         this.processor.connect(ctx.destination);
         return;
       } catch (e) {
-        console.warn('[Web Audio recorder fallback to MediaRecorder]:', e);
+        console.warn('[Web Audio recorder fallback notice]:', e);
       }
     }
-
-    // 2. Secondary fallback path: MediaRecorder
-    let mimeType = 'audio/webm';
-    if (typeof MediaRecorder !== 'undefined') {
-      if (MediaRecorder.isTypeSupported('audio/mp4')) {
-        mimeType = 'audio/mp4';
-      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-        mimeType = 'audio/webm';
-      }
-    }
-    this.mediaRecorder = new MediaRecorder(this.stream, { mimeType });
-    this.mediaChunks = [];
-    this.mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) this.mediaChunks.push(e.data);
-    };
-    this.mediaRecorder.start(250);
   }
 
   async stop(): Promise<{ url: string; duration: number }> {
@@ -151,7 +169,43 @@ export class UniversalAudioRecorder {
       this.stream.getTracks().forEach((t) => t.stop());
     }
 
-    // A. Web Audio PCM recording path -> Universal WAV
+    // A. MediaRecorder primary compressed path (Opus / AAC / WebM / MP4)
+    if (this.mediaRecorder) {
+      return new Promise((resolve) => {
+        this.mediaRecorder!.onstop = () => {
+          const mime = this.mediaRecorder?.mimeType || 'audio/webm';
+          const blob = new Blob(this.mediaChunks, { type: mime });
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve({
+              url: (reader.result as string) || '',
+              duration: elapsedSec,
+            });
+          };
+          reader.readAsDataURL(blob);
+        };
+        try {
+          if (this.mediaRecorder!.state !== 'inactive') {
+            this.mediaRecorder!.stop();
+          } else {
+            const mime = this.mediaRecorder?.mimeType || 'audio/webm';
+            const blob = new Blob(this.mediaChunks, { type: mime });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              resolve({
+                url: (reader.result as string) || '',
+                duration: elapsedSec,
+              });
+            };
+            reader.readAsDataURL(blob);
+          }
+        } catch {
+          resolve(generateDemoVoiceNote(elapsedSec));
+        }
+      });
+    }
+
+    // B. Web Audio PCM recording path -> Universal WAV fallback
     if (this.processor && this.pcmChunks.length > 0) {
       try {
         if (this.source) this.source.disconnect();
@@ -185,29 +239,6 @@ export class UniversalAudioRecorder {
       });
     }
 
-    // B. MediaRecorder fallback path
-    if (this.mediaRecorder) {
-      return new Promise((resolve) => {
-        this.mediaRecorder!.onstop = () => {
-          const mime = this.mediaRecorder?.mimeType || 'audio/webm';
-          const blob = new Blob(this.mediaChunks, { type: mime });
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            resolve({
-              url: reader.result as string,
-              duration: elapsedSec,
-            });
-          };
-          reader.readAsDataURL(blob);
-        };
-        try {
-          this.mediaRecorder!.stop();
-        } catch {
-          resolve(generateDemoVoiceNote(elapsedSec));
-        }
-      });
-    }
-
     return generateDemoVoiceNote(elapsedSec);
   }
 
@@ -234,7 +265,7 @@ export class UniversalAudioRecorder {
 }
 
 export function formatDuration(sec: number): string {
-  if (isNaN(sec) || sec < 0) return '0:00';
+  if (!isFinite(sec) || isNaN(sec) || sec <= 0) return '0:00';
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s < 10 ? '0' : ''}${s}`;

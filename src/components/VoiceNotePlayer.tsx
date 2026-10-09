@@ -58,7 +58,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
 
   // Sync duration when metadata loads
   const handleLoadedMetadata = () => {
-    if (audioRef.current && !isNaN(audioRef.current.duration) && audioRef.current.duration > 0) {
+    if (audioRef.current && isFinite(audioRef.current.duration) && !isNaN(audioRef.current.duration) && audioRef.current.duration > 0) {
       setAudioDuration(Math.round(audioRef.current.duration));
     }
   };
@@ -94,7 +94,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
         const arrayBuffer = await response.arrayBuffer();
         const decoded = await ctx.decodeAudioData(arrayBuffer);
         webAudioBufferRef.current = decoded;
-        if (decoded.duration > 0) {
+        if (decoded.duration > 0 && isFinite(decoded.duration)) {
           setAudioDuration(Math.round(decoded.duration));
         }
       }
@@ -308,7 +308,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
         {/* Timestamps & Quick Actions */}
         <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono -mt-0.5">
           <span className="font-medium">
-            {formatDuration(Math.round(currentTime > 0 ? currentTime : audioDuration))}
+            {formatDuration(Math.round(currentTime > 0 ? currentTime : (isFinite(audioDuration) && audioDuration > 0 ? audioDuration : fallbackDuration)))}
           </span>
 
           <div className="flex items-center gap-1.5">
