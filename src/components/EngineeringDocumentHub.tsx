@@ -119,6 +119,23 @@ export interface QueuedUploadItem {
   fileType: string;
 }
 
+const THUMB_CACHE_PREFIX = 'fesline_thumb_v2_';
+const inMemoryThumbCache = new Map<string, string>();
+
+function getCachedThumb(docId: string): string | null {
+  if (inMemoryThumbCache.has(docId)) return inMemoryThumbCache.get(docId)!;
+  if (typeof window !== 'undefined') {
+    try {
+      const c = localStorage.getItem(`${THUMB_CACHE_PREFIX}${docId}`);
+      if (c && !isMockDrawingPreview(c)) {
+        inMemoryThumbCache.set(docId, c);
+        return c;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 export const EngineeringHubPdfCardThumbnail: React.FC<{
   doc: PublicEngineeringDocument;
 }> = ({ doc }) => {
@@ -127,8 +144,8 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
       ? doc.previewUrl
       : null;
 
-  const [renderedImg, setRenderedImg] = useState<string | null>(initialImg);
-  const [isRendering, setIsRendering] = useState(!initialImg);
+  const cachedThumb = getCachedThumb(doc.id) || initialImg;
+  const [renderedImg, setRenderedImg] = useState<string | null>(cachedThumb);
 
   const pdfSource =
     doc.dataUrl ||
@@ -136,22 +153,38 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     (doc as any).fileUrl ||
     (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
 
+  const [isRendering, setIsRendering] = useState(!cachedThumb && Boolean(pdfSource));
+
   useEffect(() => {
     let isMounted = true;
+
+    if (cachedThumb) {
+      setRenderedImg(cachedThumb);
+      setIsRendering(false);
+      return;
+    }
 
     if (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf') && !doc.previewUrl.startsWith('data:application/pdf')) {
       setRenderedImg(doc.previewUrl);
       setIsRendering(false);
+      try {
+        localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, doc.previewUrl);
+        inMemoryThumbCache.set(doc.id, doc.previewUrl);
+      } catch {}
       return;
     }
 
     if (pdfSource) {
       setIsRendering(true);
-      renderPdfFirstPageToImage(pdfSource, 900)
+      renderPdfFirstPageToImage(pdfSource, 600)
         .then((img) => {
           if (isMounted) {
             if (img) {
               setRenderedImg(img);
+              try {
+                localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, img);
+                inMemoryThumbCache.set(doc.id, img);
+              } catch {}
             }
             setIsRendering(false);
           }
@@ -166,7 +199,7 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     return () => {
       isMounted = false;
     };
-  }, [doc.id, doc.previewUrl, pdfSource]);
+  }, [doc.id, doc.previewUrl, pdfSource, cachedThumb]);
 
   if (renderedImg) {
     return (
@@ -180,23 +213,37 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     );
   }
 
-  if (isRendering) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-300 gap-2 p-3">
-        <Loader2 className="w-7 h-7 text-cyan-400 animate-spin" />
-        <span className="text-[11px] font-mono text-slate-300 font-medium">Rendering PDF Page 1...</span>
-      </div>
-    );
-  }
-
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 bg-[#f8fafc]">
-      {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' ? (
-        <BookOpen className="w-12 h-12 text-cyan-600/80" />
-      ) : (
-        <FileText className="w-12 h-12 text-cyan-600/70" />
+    <div
+      className="w-full h-full flex flex-col items-center justify-center p-3 relative bg-[#f1f5f9] select-none overflow-hidden"
+      style={{
+        backgroundImage: `radial-gradient(#94a3b8 1px, transparent 1px)`,
+        backgroundSize: '16px 16px'
+      }}
+    >
+      {/* Category Icon */}
+      <div className="w-12 h-12 rounded-2xl bg-white border border-slate-300 shadow-xs flex items-center justify-center text-cyan-800 mb-1">
+        {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' ? (
+          <BookOpen className="w-6 h-6 text-cyan-700" />
+        ) : doc.category === 'Technical Drawing' || doc.category === 'Production Blueprint' ? (
+          <FileCode className="w-6 h-6 text-blue-700" />
+        ) : doc.category === 'BOM & Specification' || doc.category === 'Calculation & Dataset' ? (
+          <FileSpreadsheet className="w-6 h-6 text-emerald-700" />
+        ) : (
+          <FileText className="w-6 h-6 text-slate-700" />
+        )}
+      </div>
+
+      <span className="text-[10px] font-mono font-bold text-slate-800 uppercase tracking-wider">{doc.fileType || 'PDF'}</span>
+      <span className="text-[9px] font-mono text-slate-500 max-w-[160px] truncate text-center mt-0.5">{doc.fileName}</span>
+
+      {/* Gentle loading badge if rendering in background */}
+      {isRendering && (
+        <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-white/90 border border-cyan-300 shadow-2xs flex items-center gap-1 text-[9px] font-mono font-semibold text-cyan-800">
+          <Loader2 className="w-2.5 h-2.5 text-cyan-600 animate-spin" />
+          <span>Page 1</span>
+        </div>
       )}
-      <span className="text-xs font-mono mt-1 text-slate-500">{doc.fileType}</span>
     </div>
   );
 };
@@ -303,10 +350,27 @@ export function formatBytes(bytes: number): string {
   return (bytes / 1024).toFixed(0) + ' KB';
 }
 
+const HUB_CACHE_KEY = 'fesline_hub_docs_cache_v2';
+
+function getInitialCachedDocuments(): PublicEngineeringDocument[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(HUB_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const deleted = getDeletedDocIds();
+        return sortDocumentsDescending(parsed.filter((d: any) => d && d.id && !deleted.has(d.id)));
+      }
+    }
+  } catch {}
+  return [];
+}
+
 export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ onNavigatePart }) => {
   const { isOwner } = useProfileSync();
-  const [documents, setDocuments] = useState<PublicEngineeringDocument[]>([]);
-  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(true);
+  const [documents, setDocuments] = useState<PublicEngineeringDocument[]>(() => getInitialCachedDocuments());
+  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(() => getInitialCachedDocuments().length === 0);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'newest' | 'downloads' | 'title' | 'size'>('newest');
@@ -464,6 +528,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       const sorted = sortDocumentsDescending(combined);
       setDocuments(sorted);
       saveHubDocumentsPersistently(sorted).catch(() => {});
+      try {
+        localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(sorted));
+      } catch {}
     } catch (e) {
       console.warn('Storage sync note:', e);
     } finally {
@@ -601,14 +668,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   };
 
   const handleOpenUploadModal = () => {
+    if (!isOwner) {
+      showToast('Owner authorization required to upload engineering documents to public archive.', 'error');
+      return;
+    }
     setUploadError(null);
     setUploadSuccessMsg(null);
     setQueuedFiles([]);
-    if (isOwner) {
-      setUploaderName('Festus, Olorunsogo Johnson (Owner)');
-    } else if (!uploaderName) {
-      setUploaderName('Visitor Contributor');
-    }
+    setUploaderName('Festus, Olorunsogo Johnson (Owner)');
     setIsUploadModalOpen(true);
   };
 
@@ -971,13 +1038,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 <span>ACCESSORIES &amp; ARCHIVE</span>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={handleOpenUploadModal}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Upload Documents</span>
-                </button>
+                {isOwner && (
+                  <button
+                    onClick={handleOpenUploadModal}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Upload Documents</span>
+                  </button>
+                )}
                 {isOwner ? (
                   <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
                     <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
@@ -1131,13 +1200,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   : 'Upload technical drawings, Christian & inspirational books, 3D CAD models, or engineering blueprints.'}
               </p>
             </div>
-            <button
-              onClick={handleOpenUploadModal}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>Upload Document Now</span>
-            </button>
+            {isOwner && (
+              <button
+                onClick={handleOpenUploadModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload Document Now</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -1258,8 +1329,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         )}
       </div>
 
-      {/* 5. MODAL: DEDICATED UPLOAD MODAL */}
-      {isUploadModalOpen && (
+      {/* 5. MODAL: DEDICATED UPLOAD MODAL (Owner Only) */}
+      {isOwner && isUploadModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="relative w-full max-w-3xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-7 shadow-2xl text-slate-800 space-y-5 animate-fadeIn my-8 max-h-[90vh] flex flex-col">
             {/* Modal Header */}

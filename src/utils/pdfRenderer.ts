@@ -32,14 +32,23 @@ export function isMockDrawingPreview(url?: string | null): boolean {
   );
 }
 
+const pdfFirstPageCache = new Map<string, string>();
+
 /**
  * Render the first page of a PDF data URL or ArrayBuffer to a crisp image data URL (JPEG)
  * Returns null if rendering fails so the UI displays the clean, professional document badge & metadata.
  */
 export async function renderPdfFirstPageToImage(
   pdfDataUrlOrBuffer: string | ArrayBuffer,
-  targetWidth = 900
+  targetWidth = 600
 ): Promise<string | null> {
+  const cacheKey = typeof pdfDataUrlOrBuffer === 'string'
+    ? (pdfDataUrlOrBuffer.length > 200 ? pdfDataUrlOrBuffer.slice(0, 100) + '_' + pdfDataUrlOrBuffer.length : pdfDataUrlOrBuffer)
+    : null;
+
+  if (cacheKey && pdfFirstPageCache.has(cacheKey)) {
+    return pdfFirstPageCache.get(cacheKey)!;
+  }
   const renderTask = async (): Promise<string | null> => {
     let loadingTask;
     if (typeof pdfDataUrlOrBuffer === 'string') {
@@ -94,7 +103,11 @@ export async function renderPdfFirstPageToImage(
   );
 
   try {
-    return await Promise.race([renderTask(), timeoutTask]);
+    const res = await Promise.race([renderTask(), timeoutTask]);
+    if (res && cacheKey) {
+      pdfFirstPageCache.set(cacheKey, res);
+    }
+    return res;
   } catch (err) {
     console.warn('PDF.js render note:', err);
     return null;

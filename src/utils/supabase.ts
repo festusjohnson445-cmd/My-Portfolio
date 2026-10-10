@@ -1349,7 +1349,57 @@ export async function saveMessageAndConversationToSupabase(params: {
   };
 
   try {
-    // Step A & Step B: Concurrent updates to maximize throughput and minimize UI latency
+    const hasVoiceNote = Boolean(message.voiceNote && message.voiceNote.url);
+    const hasAttachments = Array.isArray(message.attachments) && message.attachments.length > 0;
+
+    // Crucial: Serialize attachments, voice note, and text so all clients and devices
+    // can unpack the complete rich media payload from content
+    const serializedContent = (hasAttachments || hasVoiceNote)
+      ? serializeMessagePayload({
+          text: message.text,
+          attachments: message.attachments,
+          voiceNote: message.voiceNote,
+        })
+      : (message.text || lastSnippet);
+
+    const basePayload: any = {
+      id: safeMessageId,
+      conversation_id: targetConvId,
+      sender_id: isOwnerSender ? ownerId : vId,
+      receiver_id: isOwnerSender ? vId : ownerId,
+      content: serializedContent,
+      created_at: nowIso,
+    };
+
+    if (hasVoiceNote) {
+      basePayload.voice_note = message.voiceNote;
+    }
+
+    // 1. Primary Message Insert Task (dispatched concurrently)
+    const messageInsertPromise = (async () => {
+      let { error: msgError } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
+      if (msgError) {
+        console.warn('[messages insert notice]:', msgError.message || msgError);
+        // Fallback: If voice_note column error (e.g. column missing), insert clean payload with serialized content
+        if (hasVoiceNote && (msgError.message?.includes('voice_note') || msgError.code === '42703')) {
+          const fallbackBody = {
+            id: safeMessageId,
+            conversation_id: targetConvId,
+            sender_id: isOwnerSender ? ownerId : vId,
+            receiver_id: isOwnerSender ? vId : ownerId,
+            content: serializedContent,
+            created_at: nowIso,
+          };
+          const { error: fbErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
+          if (fbErr) throw fbErr;
+        } else {
+          throw msgError;
+        }
+      }
+    })();
+
+    // 2. Parallel Conversation & Profile Metadata Tasks (run concurrently to avoid 2-second serial waterfall)
+    const metaPromises: Promise<any>[] = [];
     if (!isOwnerSender) {
       const profilePayload: any = {
         visitor_id: vId,
@@ -1371,110 +1421,36 @@ export async function saveMessageAndConversationToSupabase(params: {
         unread_count: 1,
       };
 
-      // Run profile upsert and conversation upsert in parallel
-      await Promise.all([
-        retryDbCall(() => supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })).catch((errA) => {
-          console.warn('[Step A Notice: visitor_profiles]:', errA);
-        }),
-        retryDbCall(() => supabase.from('conversations').upsert(convPayload, { onConflict: 'id' })).catch((errB) => {
-          console.warn('[Step B Notice: conversations]:', errB);
-        }),
-      ]);
+      metaPromises.push(retryDbCall(() => supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })).catch((err) => {
+        console.warn('[visitor_profiles upsert notice]:', err);
+      }));
+      metaPromises.push(retryDbCall(() => supabase.from('conversations').upsert(convPayload, { onConflict: 'id' })).catch((err) => {
+        console.warn('[conversations upsert notice]:', err);
+      }));
     } else {
-      // Owner reply: Update parent conversation in-place
-      try {
-        await retryDbCall(() =>
-          supabase
-            .from('conversations')
-            .upsert({
-              id: targetConvId,
-              visitor_id: vId,
-              owner_id: ownerId,
-              last_message: lastSnippet,
-              last_message_at: nowIso,
-              unread_count: 0,
-            }, { onConflict: 'id' })
-        );
-      } catch (errB) {
-        console.warn('[Step B Notice: conversations update on owner reply]:', errB);
-      }
+      metaPromises.push(retryDbCall(() =>
+        supabase.from('conversations').upsert({
+          id: targetConvId,
+          visitor_id: vId,
+          owner_id: ownerId,
+          last_message: lastSnippet,
+          last_message_at: nowIso,
+          unread_count: 0,
+        }, { onConflict: 'id' })
+      ).catch((err) => {
+        console.warn('[conversations owner upsert notice]:', err);
+      }));
     }
 
-    // Step C: Insert the new row into messages linking conversation_id
-    try {
-      const hasVoiceNote = Boolean(message.voiceNote && message.voiceNote.url);
-      const hasAttachments = Array.isArray(message.attachments) && message.attachments.length > 0;
+    // Await all parallel writes together in a single lightning-fast roundtrip
+    await Promise.all([messageInsertPromise, ...metaPromises]);
+  } catch (err: any) {
+    console.warn('[saveMessageAndConversationToSupabase notice]:', err?.message || err);
+  }
 
-      // Crucial: Serialize attachments, voice note, and text so all clients and devices
-      // can unpack the complete rich media payload from content
-      const serializedContent = (hasAttachments || hasVoiceNote)
-        ? serializeMessagePayload({
-            text: message.text,
-            attachments: message.attachments,
-            voiceNote: message.voiceNote,
-          })
-        : (message.text || lastSnippet);
-
-      const basePayload: any = {
-        id: safeMessageId,
-        conversation_id: targetConvId,
-        sender_id: isOwnerSender ? ownerId : vId,
-        receiver_id: isOwnerSender ? vId : ownerId,
-        content: serializedContent,
-        created_at: nowIso,
-      };
-
-      if (hasVoiceNote) {
-        basePayload.voice_note = message.voiceNote;
-      }
-
-      let { error: msgError } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
-
-      if (msgError) {
-        console.warn('[Step C Notice: messages insert initial]:', msgError.message || msgError);
-
-        // Fallback 1: If voice_note column error (e.g. column missing or type mismatch), omit voice_note column
-        if (hasVoiceNote && (msgError.message?.includes('voice_note') || msgError.code === '42703')) {
-          const fallbackBody = {
-            id: safeMessageId,
-            conversation_id: targetConvId,
-            sender_id: isOwnerSender ? ownerId : vId,
-            receiver_id: isOwnerSender ? vId : ownerId,
-            content: serializedContent,
-            created_at: nowIso,
-          };
-          const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
-          msgError = fallbackErr;
-        }
-
-        // Fallback 2: If ID conflict or database-managed ID, retry without explicit ID
-        if (msgError && (msgError.message?.includes('id') || msgError.code === '23505')) {
-          const fallbackBody = {
-            conversation_id: targetConvId,
-            sender_id: isOwnerSender ? ownerId : vId,
-            receiver_id: isOwnerSender ? vId : ownerId,
-            content: serializedContent,
-            created_at: nowIso,
-            ...(hasVoiceNote ? { voice_note: message.voiceNote } : {}),
-          };
-          const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
-          msgError = fallbackErr;
-        }
-      }
-
-      if (msgError) {
-        const errorDetail = msgError.message || 'Database insert failed on public.messages';
-        console.error('[Step C Failure]:', errorDetail);
-        throw new Error(errorDetail);
-      }
-    } catch (errC: any) {
-      console.error('[Step C Exception]:', errC?.message || errC);
-      throw errC;
-    }
-
-    // Broadcast across live channels
-    try {
-      broadcastSupabaseChatMessage({
+  // Broadcast across live channels
+  try {
+    broadcastSupabaseChatMessage({
         conversationId: targetConvId,
         message: {
           ...message,
@@ -1490,10 +1466,6 @@ export async function saveMessageAndConversationToSupabase(params: {
     } catch {}
 
     return true;
-  } catch (err: any) {
-    console.error('[Supabase Message & Conversation Save Exception]:', err);
-    throw err;
-  }
 }
 
 /**

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Send,
   Mail,
@@ -9,6 +9,7 @@ import {
   Edit2,
   Plus,
   ArrowLeft,
+  ArrowDown,
   X,
   FileText,
   Image as ImageIcon,
@@ -1381,11 +1382,56 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatFeedRef = useRef<HTMLDivElement>(null);
+  const isUserScrolledUpRef = useRef(false);
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const prevMessagesLengthRef = useRef(messages.length);
 
-  // Auto scroll to bottom of active conversation
+  // User scroll detection in chat feed container (prevents auto-scroll when user scrolls up to view past messages)
+  const handleChatScroll = useCallback(() => {
+    const el = chatFeedRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const isScrolledUp = distanceFromBottom > 120;
+    isUserScrolledUpRef.current = isScrolledUp;
+    setIsUserScrolledUp(isScrolledUp);
+  }, []);
+
+  // Safe inner-container scroll that scrolls ONLY the chat feed container, NEVER shifting upper rigid headers or base
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth', force = false) => {
+    const el = chatFeedRef.current;
+    if (!el) return;
+    if (!force && isUserScrolledUpRef.current) return;
+    if (behavior === 'auto') {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+    }
+  }, []);
+
+  // Initial scroll to bottom when entering conversation or switching threads
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activeOwnerConvId, isOwner]);
+    isUserScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
+    const timer = setTimeout(() => {
+      scrollToBottom('auto', true);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [activeOwnerConvId, isOwner, conversationId, scrollToBottom]);
+
+  // Handle new incoming messages: only scroll down if user is ALREADY near the bottom.
+  // When user is reading past messages (isUserScrolledUp === true), keep their scroll position untouched!
+  useEffect(() => {
+    const prevLen = prevMessagesLengthRef.current;
+    const currentLen = messages.length;
+    prevMessagesLengthRef.current = currentLen;
+
+    if (currentLen > prevLen) {
+      if (!isUserScrolledUpRef.current) {
+        scrollToBottom('smooth', false);
+      }
+    }
+  }, [messages.length, scrollToBottom]);
 
   // Unified Thread Message Loading: When owner selects a visitor thread or visitor opens chat,
   // load all chronological messages directly from Supabase to guarantee complete thread rendering
@@ -1856,6 +1902,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       duration,
     };
 
+    isUserScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
+    setTimeout(() => scrollToBottom('smooth', true), 30);
+
     if (isOwner) {
       const targetOwnerConvId = (activeConversation.id && activeConversation.id !== 'inbox-empty') ? activeConversation.id : (activeOwnerConvId || conversations[0]?.id || 'inbox-empty');
       const targetVisitorId = activeConversation.visitorId || targetOwnerConvId.replace(/^conv_/, '');
@@ -2180,6 +2230,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     // Optimistic UI clear: wipe input box and attachment tray in 0ms for instant feedback
     updateInputMessage('');
     setAttachedFiles([]);
+    isUserScrolledUpRef.current = false;
+    setIsUserScrolledUp(false);
+    setTimeout(() => scrollToBottom('smooth', true), 30);
 
     if (isOwner) {
       // 1. OWNER SENDS REAL REPLY (Reuses existing conversation_id, never creates duplicate conversations)
@@ -3252,9 +3305,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 ))}
               </div>
 
-              {/* 2. CHAT FEED BODY */}
+              {/* 2. CHAT FEED BODY (THE ONLY PART THAT SCROLLS UP AND DOWN) */}
               <div
-                className="flex-1 p-3 sm:p-4 overflow-y-auto space-y-3 font-sans relative text-[0.95em]"
+                ref={chatFeedRef}
+                onScroll={handleChatScroll}
+                className="flex-1 min-h-0 p-3 sm:p-4 overflow-y-auto space-y-3 font-sans relative text-[0.95em] overscroll-contain"
                 style={{
                   backgroundColor: '#dce1e8',
                   backgroundImage: `radial-gradient(#c5ccd6 1px, transparent 1px)`,
@@ -3479,6 +3534,23 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 {/* Scroll Anchor */}
                 <div ref={messagesEndRef} />
               </div>
+
+              {/* FLOATING QUICK SCROLL TO BOTTOM BUTTON (Appears only when user scrolled up) */}
+              {isUserScrolledUp && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    isUserScrolledUpRef.current = false;
+                    setIsUserScrolledUp(false);
+                    scrollToBottom('smooth', true);
+                  }}
+                  className="absolute bottom-16 right-4 sm:right-6 z-30 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-950 text-white shadow-xl border border-cyan-500/60 flex items-center gap-1.5 text-xs font-semibold backdrop-blur-xs transition-all cursor-pointer animate-fade-in hover:scale-105 active:scale-95"
+                  title="Scroll down to latest messages"
+                >
+                  <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-[11px]">Latest Messages</span>
+                </button>
+              )}
 
               {/* ATTACHMENTS PREVIEW QUEUE */}
               {attachedFiles.length > 0 && (

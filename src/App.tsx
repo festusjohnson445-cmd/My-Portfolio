@@ -132,7 +132,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full max-w-full bg-[#dce1e8] text-slate-900 flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden">
+    <div className={`w-full max-w-full bg-[#dce1e8] text-slate-900 flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden ${activePart === 'messaging' ? 'h-screen h-[100dvh] max-h-[100dvh] overflow-hidden' : 'min-h-screen'}`}>
       {/* 1. Sticky Navigation Bar */}
       <Navbar
         activePart={activePart}
@@ -142,7 +142,7 @@ export default function App() {
         resumeDownloadCount={resumeDownloadCount}
       />
 
-      <main className="flex-1 w-full flex flex-col">
+      <main className={`flex-1 w-full flex flex-col ${activePart === 'messaging' ? 'min-h-0 overflow-hidden' : ''}`}>
         {/* ======================================================== */}
         {/* 01. LANDING HOME VIEW (HERO & WELCOMING MESSAGE & CTA)  */}
         {/* ======================================================== */}
@@ -245,7 +245,7 @@ export default function App() {
         {/* 05. FULL PAGE MESSAGING SECTION ONLY                     */}
         {/* ======================================================== */}
         {activePart === 'messaging' && (
-          <section id="messaging" className="h-[calc(100vh-4rem)] sm:h-[calc(100vh-4.5rem)] w-full bg-[#dce1e8] flex flex-col overflow-hidden">
+          <section id="messaging" className="flex-1 min-h-0 h-full w-full bg-[#dce1e8] flex flex-col overflow-hidden">
             <MessagingSection onBack={() => handleSelectPart('home')} />
           </section>
         )}
