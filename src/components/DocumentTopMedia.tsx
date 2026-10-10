@@ -3,6 +3,32 @@ import { Eye, FileCode, Layers, Upload, Download, Check, Loader2, BookOpen, File
 import { DocumentItem } from '../utils/profileState';
 import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 
+const PROFILE_THUMB_CACHE_PREFIX = 'fesline_profile_thumb_v2_';
+const profileInMemoryThumbCache = new Map<string, string>();
+
+function getProfileCachedThumb(docId: string): string | null {
+  if (profileInMemoryThumbCache.has(docId)) return profileInMemoryThumbCache.get(docId)!;
+  if (typeof window !== 'undefined') {
+    try {
+      const c = localStorage.getItem(`${PROFILE_THUMB_CACHE_PREFIX}${docId}`);
+      if (c && !isMockDrawingPreview(c)) {
+        profileInMemoryThumbCache.set(docId, c);
+        return c;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function setProfileCachedThumb(docId: string, url: string): void {
+  profileInMemoryThumbCache.set(docId, url);
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(`${PROFILE_THUMB_CACHE_PREFIX}${docId}`, url);
+    } catch {}
+  }
+}
+
 interface DocumentTopMediaProps {
   doc: DocumentItem;
   isOwnerAuthenticated: boolean;
@@ -22,7 +48,9 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
   onUpdatePreviewUrl,
   onDirectAttachFile,
 }) => {
-  const initialPreview = doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) ? doc.previewImageDataUrl : null;
+  const initialPreview =
+    (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) ? doc.previewImageDataUrl : null) ||
+    getProfileCachedThumb(doc.id);
   const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(initialPreview);
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -38,10 +66,17 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     Boolean(doc.attachmentDataUrl?.startsWith('data:image/')) ||
     Boolean(doc.attachmentName && /\.(png|jpe?g|webp|svg|gif|bmp|heic|heif)$/i.test(doc.attachmentName));
 
-  // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 on the fly
+  // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 quickly and cache
   useEffect(() => {
     if (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl)) {
       setRenderedPdfImage(doc.previewImageDataUrl);
+      setProfileCachedThumb(doc.id, doc.previewImageDataUrl);
+      return;
+    }
+
+    const cached = getProfileCachedThumb(doc.id);
+    if (cached) {
+      setRenderedPdfImage(cached);
       return;
     }
 
@@ -49,11 +84,12 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       let isMounted = true;
       setIsRenderingPdf(true);
 
-      renderPdfFirstPageToImage(doc.attachmentDataUrl, 900)
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 600)
         .then((imgDataUrl) => {
           if (isMounted) {
             if (imgDataUrl) {
               setRenderedPdfImage(imgDataUrl);
+              setProfileCachedThumb(doc.id, imgDataUrl);
               if (onUpdatePreviewUrl) {
                 onUpdatePreviewUrl(doc.id, imgDataUrl);
               }
@@ -97,24 +133,19 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     fileInputRef.current?.click();
   };
 
-  // 1. RENDER PDF CONTENT ON DARK COLORED TOP (Real first-page PDF render or clean PDF badge)
+  // 1. RENDER PDF CONTENT ON DARK COLORED TOP (Real first-page PDF render or clean instant PDF card)
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
         onClick={() => onOpenPreview(doc)}
         className="w-full h-56 sm:h-64 bg-slate-950 border-b border-slate-700/80 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
-        title="Click to view full PDF document"
+        title="Click to view full PDF document preview"
       >
         <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40 pointer-events-none" />
 
-        {isRenderingPdf && !renderedPdfImage ? (
-          <div className="flex flex-col items-center justify-center text-slate-300 gap-2 p-4 z-10">
-            <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-            <span className="text-xs font-mono font-medium">Loading document content...</span>
-          </div>
-        ) : renderedPdfImage ? (
+        {renderedPdfImage ? (
           /* Rendered First Page of PDF */
-          <div className="relative w-full h-full p-3 sm:p-4 flex items-center justify-center z-10">
+          <div className="relative w-full h-full p-3 sm:p-4 flex items-center justify-center z-10 animate-fade-in">
             <div className="relative max-h-full max-w-full rounded-sm shadow-2xl overflow-hidden border border-slate-700/60 bg-white transition-transform duration-300 group-hover/pdf:scale-[1.02]">
               <img
                 src={renderedPdfImage}
@@ -126,13 +157,19 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             </div>
           </div>
         ) : (
-          /* Clean Professional PDF Header */
-          <div className="flex flex-col items-center justify-center text-center p-4 z-10">
+          /* Clean Professional Instant PDF Header without blocking blank spinner */
+          <div className="flex flex-col items-center justify-center text-center p-4 z-10 animate-fade-in">
             <div className="w-14 h-14 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 mb-2.5 shadow-inner">
               <FileCode className="w-7 h-7" />
             </div>
             <p className="font-bold text-xs sm:text-sm text-white max-w-[240px] truncate">{doc.attachmentName || doc.title}</p>
-            <span className="text-[11px] text-slate-400 font-mono mt-0.5">PDF Document Attached · Click to Expand</span>
+            <span className="text-[11px] text-slate-400 font-mono mt-0.5">PDF Document Attached · Click to Preview</span>
+            {isRenderingPdf && (
+              <span className="inline-flex items-center gap-1 text-[10px] text-cyan-300 font-mono mt-2 bg-slate-900/80 px-2 py-0.5 rounded-full border border-cyan-500/30">
+                <Loader2 className="w-2.5 h-2.5 text-cyan-400 animate-spin" />
+                <span>Loading preview...</span>
+              </span>
+            )}
           </div>
         )}
 
@@ -236,26 +273,30 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
 
         <div className="flex items-center justify-between pt-3 border-t border-white/10 font-sans">
           <span className="text-[11px] text-slate-300 font-mono">Document Record</span>
-          {doc.attachmentDataUrl ? (
-            <a
-              href={doc.attachmentDataUrl}
-              download={doc.attachmentName || doc.title}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download File</span>
-            </a>
-          ) : isOwnerAuthenticated ? (
-            <button
-              type="button"
-              onClick={() => onDownloadAttachment(doc)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download File</span>
-            </button>
+          {isOwnerAuthenticated ? (
+            doc.attachmentDataUrl ? (
+              <a
+                href={doc.attachmentDataUrl}
+                download={doc.attachmentName || doc.title}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                title="Download attachment file (Owner Only)"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download File</span>
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onDownloadAttachment(doc)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                title="Download attachment file (Owner Only)"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download File</span>
+              </button>
+            )
           ) : (
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-sans font-medium">
               <Check className="w-3.5 h-3.5 text-emerald-400" />

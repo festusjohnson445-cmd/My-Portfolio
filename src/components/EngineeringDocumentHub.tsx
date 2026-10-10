@@ -1026,19 +1026,19 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
   return (
     <div className="w-full space-y-7 font-sans">
-      {/* 1. HERO BANNER: ACCESSORIES & ENGINEERING PORTAL */}
-      <div className="bg-white rounded-3xl border border-slate-300 p-5 sm:p-6 shadow-sm text-slate-800 relative overflow-hidden text-center">
-        <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0284c7_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
+      {/* 1. HERO BANNER: ACCESSORIES & ENGINEERING PORTAL (VISIBLE ONLY TO OWNER WHEN LOGGED IN) */}
+      {isOwner && (
+        <div className="bg-white rounded-3xl border border-slate-300 p-5 sm:p-6 shadow-sm text-slate-800 relative overflow-hidden text-center animate-fade-in">
+          <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0284c7_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
 
-        <div className="relative z-10 flex flex-col items-center justify-center text-center gap-4 max-w-4xl mx-auto">
-          <div className="space-y-2.5 w-full flex flex-col items-center justify-center text-center">
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
-                <FolderDown className="w-3 h-3 text-cyan-700" />
-                <span>ACCESSORIES &amp; ARCHIVE</span>
-              </div>
-              <div className="flex items-center gap-2">
-                {isOwner && (
+          <div className="relative z-10 flex flex-col items-center justify-center text-center gap-4 max-w-4xl mx-auto">
+            <div className="space-y-2.5 w-full flex flex-col items-center justify-center text-center">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
+                  <FolderDown className="w-3 h-3 text-cyan-700" />
+                  <span>ACCESSORIES &amp; ARCHIVE</span>
+                </div>
+                <div className="flex items-center gap-2">
                   <button
                     onClick={handleOpenUploadModal}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
@@ -1046,55 +1046,48 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     <Plus className="w-3 h-3" />
                     <span>Upload Documents</span>
                   </button>
-                )}
-                {isOwner ? (
                   <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
                     <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
                     <span>Owner Mode</span>
                   </span>
-                ) : (
-                  <span className="text-[8.5px] sm:text-[9px] font-mono text-cyan-800 bg-cyan-50 px-2 py-0.5 rounded-full border border-cyan-300 flex items-center gap-1 font-semibold">
-                    <User className="w-2.5 h-2.5 text-cyan-600" />
-                    <span>Public Hub</span>
-                  </span>
-                )}
+                </div>
               </div>
-            </div>
 
-            <h1 className="text-[13.5px] sm:text-[15.5px] md:text-[17.5px] font-bold font-serif tracking-tight text-slate-900 text-center max-w-2xl mx-auto">
-              Engineering Document Hub &amp; Technical Archive
-            </h1>
-            <p className="text-[9px] sm:text-[10.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
-              Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), inspirational literature, and calculation datasets. Upload new documents or download existing archives with 1-click.
-            </p>
+              <h1 className="text-[13.5px] sm:text-[15.5px] md:text-[17.5px] font-bold font-serif tracking-tight text-slate-900 text-center max-w-2xl mx-auto">
+                Engineering Document Hub &amp; Technical Archive
+              </h1>
+              <p className="text-[9px] sm:text-[10.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
+                Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), inspirational literature, and calculation datasets. Upload new documents or download existing archives with 1-click.
+              </p>
 
-            {/* Quick Metrics Bar */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1.5 w-full">
-              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOCUMENTS</span>
-                <strong className="text-xs sm:text-sm font-bold text-slate-900 font-mono text-center">{approvedDocs.length}</strong>
-              </div>
-              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOWNLOADS</span>
-                <strong className="text-xs sm:text-sm font-bold text-cyan-700 font-mono text-center">{totalDownloads.toLocaleString()}</strong>
-              </div>
-              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">SUPPORTED FORMATS</span>
-                <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-slate-800 block truncate font-mono text-center max-w-full" title={supportedFormatsText}>
-                  {supportedFormatsText}
-                </strong>
-              </div>
-              <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">ACCESS LEVEL</span>
-                <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-emerald-700 flex items-center justify-center gap-1 font-mono text-center">
-                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                  <span>Public 1-Click</span>
-                </strong>
+              {/* Quick Metrics Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1.5 w-full">
+                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOCUMENTS</span>
+                  <strong className="text-xs sm:text-sm font-bold text-slate-900 font-mono text-center">{approvedDocs.length}</strong>
+                </div>
+                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOWNLOADS</span>
+                  <strong className="text-xs sm:text-sm font-bold text-cyan-700 font-mono text-center">{totalDownloads.toLocaleString()}</strong>
+                </div>
+                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">SUPPORTED FORMATS</span>
+                  <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-slate-800 block truncate font-mono text-center max-w-full" title={supportedFormatsText}>
+                    {supportedFormatsText}
+                  </strong>
+                </div>
+                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
+                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">ACCESS LEVEL</span>
+                  <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-emerald-700 flex items-center justify-center gap-1 font-mono text-center">
+                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                    <span>Public 1-Click</span>
+                  </strong>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* 2. SEARCH, CATEGORY FILTER & SORT CONTROLS */}
       <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-300 shadow-sm space-y-3.5">

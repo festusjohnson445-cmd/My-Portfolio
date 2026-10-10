@@ -2242,14 +2242,15 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     {/* Footer Actions */}
                     <div className="pt-3 border-t border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-xs font-sans">
                       <div className="flex flex-wrap items-center gap-2">
-                        {doc.attachmentDataUrl && (
+                        {/* Download Button (Only visible to owner; hidden from all visitors) */}
+                        {isOwnerAuthenticated && doc.attachmentDataUrl && (
                           <a
                             href={doc.attachmentDataUrl}
                             download={doc.attachmentName || doc.title}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
-                            title="Download document attachment"
+                            title="Download document attachment (Owner Only)"
                           >
                             <Download className="w-3.5 h-3.5" />
                             <span>Download</span>
