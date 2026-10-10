@@ -54,10 +54,11 @@ import {
   getOrFetchOwnerId,
   ensureValidUuid,
   supabase,
+  uploadChatFileToMaterialsBucket,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
-import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, UniversalAudioRecorder } from '../utils/audioUtils';
+import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload, safeDataUrlToBlobUrl, UniversalAudioRecorder } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
@@ -152,25 +153,31 @@ const TOPIC_SUGGESTIONS = [
 
 const DEFAULT_CONVERSATIONS: Conversation[] = [];
 
-// Helper to fetch chats from server (joins Express backend and Supabase database)
+// Helper to fetch chats from server (joins Express backend on localhost and Supabase database)
 async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Conversation[] | null> {
   let apiConvs: Conversation[] = [];
   try {
-    const res = await fetch('/api/chats');
-    if (res.ok) {
-      const json = await res.json();
-      if (json && json.success && Array.isArray(json.conversations)) {
-        if (Array.isArray(json.deletedIds) && deletedSet) {
-          json.deletedIds.forEach((id: string) => deletedSet.add(id));
-          try {
-            localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedSet)));
-          } catch {}
+    const isLocalDev = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (isLocalDev) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 800);
+      const res = await fetch('/api/chats', { signal: controller.signal }).catch(() => null);
+      clearTimeout(timeoutId);
+      if (res && res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json && json.success && Array.isArray(json.conversations)) {
+          if (Array.isArray(json.deletedIds) && deletedSet) {
+            json.deletedIds.forEach((id: string) => deletedSet.add(id));
+            try {
+              localStorage.setItem('fesline_deleted_conv_ids', JSON.stringify(Array.from(deletedSet)));
+            } catch {}
+          }
+          apiConvs = json.conversations;
         }
-        apiConvs = json.conversations;
       }
     }
   } catch (err) {
-    console.warn('Failed to fetch chats from server:', err);
+    console.warn('Notice on local chats check:', err);
   }
 
   let supabaseConvs: Conversation[] = [];
@@ -316,7 +323,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
   // Lazy Visitor ID & Conversation State (Only populated after visitor logs in via InChat)
   const [visitorId, setVisitorId] = useState<string>(() => getStoredVisitorId());
   const [conversationId, setConversationId] = useState<string>(() => getStoredConversationId());
-  const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1');
+  const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'a5eb7797-7da2-41ff-9547-3975af3958b7');
   const myDeterministicConvId = useMemo(() => conversationId || (visitorId ? `conv_${visitorId}` : generateDeterministicConversationId(visitorId || 'guest', resolvedOwnerId)), [conversationId, visitorId, resolvedOwnerId]);
 
   // Login tooltip on send button when unauthenticated visitor tries to send
@@ -423,7 +430,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           } else if (dbMessages && Array.isArray(dbMessages)) {
             const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
               const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
-              const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
+              const { text, voiceNote, attachments } = parseMessagePayload(m.content || m.text, m.voice_note || m.voiceNote, m.attachments);
               return {
                 id: m.id || generateMessageId(),
                 sender: isOwnerMsg ? 'festus' : 'visitor',
@@ -433,7 +440,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 text,
                 timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
                 status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
-                attachments: m.attachments || undefined,
+                attachments: attachments || m.attachments || undefined,
                 voiceNote,
                 created_at: m.created_at || new Date().toISOString(),
               };
@@ -595,7 +602,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           if (!dbMsgError && dbMessages && Array.isArray(dbMessages)) {
             const mappedMessages: ChatMessage[] = dbMessages.map((m: any) => {
               const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
-              const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
+              const { text, voiceNote, attachments } = parseMessagePayload(m.content || m.text, m.voice_note || m.voiceNote, m.attachments);
               return {
                 id: m.id || generateMessageId(),
                 sender: isOwnerMsg ? 'festus' : 'visitor',
@@ -605,7 +612,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 text,
                 timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
                 status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
-                attachments: m.attachments || undefined,
+                attachments: attachments || m.attachments || undefined,
                 voiceNote,
                 created_at: m.created_at || new Date().toISOString(),
               };
@@ -695,6 +702,17 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           }
 
           const finalConvs = Array.from(mergedMap.values());
+
+          // Automatically select first active conversation if activeOwnerConvId is not yet established
+          if (finalConvs.length > 0) {
+            const currentActive = activeOwnerConvIdRef.current;
+            const exists = finalConvs.some((c) => c.id === currentActive || c.visitorId === currentActive?.replace(/^conv_/, ''));
+            if (!currentActive || !exists || currentActive === 'inbox-empty') {
+              const nextId = finalConvs[0].id;
+              setActiveOwnerConvId(nextId);
+              activeOwnerConvIdRef.current = nextId;
+            }
+          }
 
           // Sync unified messages state for the active conversation thread
           const currOwnerId = activeOwnerConvIdRef.current;
@@ -848,8 +866,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         const vId = msgRow.visitor_id || targetId.replace(/^conv_/, '');
         if (deletedConvIdsRef.current.has(targetId) || deletedConvIdsRef.current.has(vId)) return;
 
-        const { text, voiceNote } = parseVoiceNoteFromContent(msgRow.content || msgRow.text, msgRow.voice_note || msgRow.voiceNote);
-        const lastMsgText = text || (voiceNote ? '🎤 Voice note' : (msgRow.last_message || 'New message'));
+        const { text, voiceNote, attachments } = parseMessagePayload(msgRow.content || msgRow.text, msgRow.voice_note || msgRow.voiceNote, msgRow.attachments);
+        const lastMsgText = text || (voiceNote ? '🎤 Voice note' : (attachments?.length ? `📎 ${attachments[0].name}` : (msgRow.last_message || 'New message')));
         const lastTimeStr = msgRow.timestamp || (msgRow.created_at ? new Date(msgRow.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
         const newMsgObj: ChatMessage = {
@@ -861,7 +879,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           text,
           timestamp: lastTimeStr,
           status: msgRow.status || (isOwnerMsg ? 'seen' : 'unseen'),
-          attachments: msgRow.attachments || undefined,
+          attachments: attachments || msgRow.attachments || undefined,
           voiceNote,
           created_at: msgRow.created_at || new Date().toISOString(),
         };
@@ -895,6 +913,36 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
             const updated = [...prev, newMsgObj];
             return updated.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
           });
+
+          // If broadcast payload was flagged for full database fetch or missing media content, fetch immediately
+          if (msgRow._needsFullFetch || (msgRow.voiceNote && msgRow.voiceNote._needsFetch) || (!voiceNote?.url && (msgRow.content?.includes('__VOICENOTE__') || msgRow.content?.includes('__MSG_PAYLOAD__')))) {
+            if (newMsgObj.id) {
+              (async () => {
+                try {
+                  const { data: fullRow } = await supabase
+                    .from('messages')
+                    .select('*')
+                    .eq('id', newMsgObj.id)
+                    .maybeSingle();
+                  if (fullRow) {
+                    const parsedFull = parseMessagePayload(fullRow.content || fullRow.text, fullRow.voice_note || fullRow.voiceNote, fullRow.attachments);
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === fullRow.id
+                          ? {
+                              ...m,
+                              text: parsedFull.text,
+                              voiceNote: parsedFull.voiceNote || m.voiceNote,
+                              attachments: parsedFull.attachments || m.attachments,
+                            }
+                          : m
+                      )
+                    );
+                  }
+                } catch {}
+              })();
+            }
+          }
         }
 
         // 3. Dynamic Inbox Update:
@@ -1227,7 +1275,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
       const mappedMessages: ChatMessage[] = (dbMessages || []).map((m: any) => {
         const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
-        const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
+        const { text, voiceNote, attachments } = parseMessagePayload(m.content || m.text, m.voice_note || m.voiceNote, m.attachments);
         return {
           id: m.id || generateMessageId(),
           sender: isOwnerMsg ? 'festus' : 'visitor',
@@ -1237,7 +1285,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           text,
           timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
           status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
-          attachments: m.attachments || undefined,
+          attachments: attachments || m.attachments || undefined,
           voiceNote,
           created_at: m.created_at || new Date().toISOString(),
         };
@@ -1373,7 +1421,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         if (!error && dbMessages && Array.isArray(dbMessages)) {
           const mapped: ChatMessage[] = dbMessages.map((m: any) => {
             const isOwnerMsg = m.sender === 'festus' || m.sender_id === 'festus' || m.sender_id === ownerId;
-            const { text, voiceNote } = parseVoiceNoteFromContent(m.content || m.text, m.voice_note || m.voiceNote);
+            const { text, voiceNote, attachments } = parseMessagePayload(m.content || m.text, m.voice_note || m.voiceNote, m.attachments);
             return {
               id: m.id || generateMessageId(),
               sender: isOwnerMsg ? 'festus' : 'visitor',
@@ -1383,7 +1431,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
               text,
               timestamp: m.timestamp || (m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
               status: m.status || (isOwnerMsg ? 'seen' : 'unseen'),
-              attachments: m.attachments || undefined,
+              attachments: attachments || m.attachments || undefined,
               voiceNote,
               created_at: m.created_at || new Date().toISOString(),
             };
@@ -1471,7 +1519,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       const sorted = [...selected.messages];
       sorted.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
       setMessages(sorted);
-    } else {
+    } else if (convId !== activeOwnerConvId) {
       setMessages([]);
     }
 
@@ -1809,12 +1857,15 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     };
 
     if (isOwner) {
+      const targetOwnerConvId = (activeConversation.id && activeConversation.id !== 'inbox-empty') ? activeConversation.id : (activeOwnerConvId || conversations[0]?.id || 'inbox-empty');
+      const targetVisitorId = activeConversation.visitorId || targetOwnerConvId.replace(/^conv_/, '');
+
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
         sender_id: resolvedOwnerId,
-        receiver_id: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
-        conversation_id: activeOwnerConvId,
+        receiver_id: targetVisitorId,
+        conversation_id: targetOwnerConvId,
         text: '',
         timestamp: timeStr,
         status: 'seen',
@@ -1831,7 +1882,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
       setConversations((prev) => {
         const updated = prev.map((c) => {
-          if (c.id === activeOwnerConvId) {
+          if (c.id === targetOwnerConvId) {
             const nextMsgs = [...c.messages, festusMsg];
             nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             return {
@@ -1853,8 +1904,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       try {
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
-          conversationId: activeOwnerConvId,
-          visitorId: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
+          conversationId: targetOwnerConvId,
+          visitorId: targetVisitorId,
           message: festusMsg,
           conversationMetadata: {
             defaultLabel: activeConversation.defaultLabel,
@@ -1865,27 +1916,29 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           },
         });
         try {
-          broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
+          broadcastSupabaseChatMessage({ conversationId: targetOwnerConvId, message: festusMsg });
         } catch (err) {
           console.error('Supabase broadcast error:', err);
         }
 
-        // Secondary background push to local dev server if present
-        fetch('/api/chats/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            conversationId: activeOwnerConvId,
-            message: festusMsg,
-            conversationMetadata: {
-              defaultLabel: activeConversation.defaultLabel,
-              customName: activeConversation.customName,
-              visitorName: activeConversation.visitorName,
-              avatarUrl: activeConversation.avatarUrl,
-              roleOrCompany: activeConversation.roleOrCompany,
-            },
-          }),
-        }).catch(() => {});
+        // Secondary background push to local dev server only when on localhost
+        if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          fetch('/api/chats/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: targetOwnerConvId,
+              message: festusMsg,
+              conversationMetadata: {
+                defaultLabel: activeConversation.defaultLabel,
+                customName: activeConversation.customName,
+                visitorName: activeConversation.visitorName,
+                avatarUrl: activeConversation.avatarUrl,
+                roleOrCompany: activeConversation.roleOrCompany,
+              },
+            }),
+          }).catch(() => {});
+        }
       } catch (err: any) {
         console.error('[Supabase Owner Voice Note Save Error]:', err);
         setDbWriteError(`Owner Voice Note Error: ${err?.message || 'Failed to save to database.'}`);
@@ -1996,23 +2049,25 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           console.error('Supabase broadcast error:', err);
         }
 
-        // Secondary background push to local dev server if present
-        fetch('/api/chats/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            conversationId: currentConvId,
-            message: visitorMsg,
-            conversationMetadata: {
-              defaultLabel: visitorProfile.name || 'Direct Message',
-              customName: visitorProfile.name || '',
-              visitorName: visitorProfile.name || '',
-              avatarUrl: visitorProfile.avatarUrl || '',
-              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-            },
-          }),
-        }).catch(() => {});
+        // Secondary background push to local dev server only when on localhost
+        if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          fetch('/api/chats/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: currentConvId,
+              message: visitorMsg,
+              conversationMetadata: {
+                defaultLabel: visitorProfile.name || 'Direct Message',
+                customName: visitorProfile.name || '',
+                visitorName: visitorProfile.name || '',
+                avatarUrl: visitorProfile.avatarUrl || '',
+                roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+                avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+              },
+            }),
+          }).catch(() => {});
+        }
       } catch (err: any) {
         console.error('[Supabase Visitor Voice Note Save Error]:', err);
         const errDetail = err?.message || 'Database write failed. Check your network or RLS configuration.';
@@ -2071,10 +2126,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
     if (universalRecorderRef.current) {
       try {
-        const { url, duration } = await universalRecorderRef.current.stop();
+        const { url, duration, blob } = await universalRecorderRef.current.stop();
         universalRecorderRef.current = null;
         setRecordingSeconds(0);
-        await sendVoiceNoteMessage(url, duration);
+        let finalUrl = url;
+        if (blob) {
+          try {
+            const uploadRes = await uploadChatFileToMaterialsBucket(blob, `voicenote_${Date.now()}.wav`, 'voicenotes');
+            if (uploadRes?.url) {
+              finalUrl = uploadRes.url;
+            }
+          } catch (uploadErr) {
+            console.warn('[Materials bucket voicenote upload notice]:', uploadErr);
+          }
+        }
+        await sendVoiceNoteMessage(finalUrl, duration);
       } catch (err: any) {
         console.warn('Failed to encode voice note:', err);
         setRecordingSeconds(0);
@@ -2086,7 +2152,16 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     try {
       setShowMailNotice('Generating engineering voice memo...');
       const demo = await generateDemoVoiceNote(5, 'Voice Note');
-      sendVoiceNoteMessage(demo.url, demo.duration);
+      let finalUrl = demo.url;
+      if (demo.blob) {
+        try {
+          const uploadRes = await uploadChatFileToMaterialsBucket(demo.blob, `demo_voicenote_${Date.now()}.wav`, 'voicenotes');
+          if (uploadRes?.url) {
+            finalUrl = uploadRes.url;
+          }
+        } catch {}
+      }
+      await sendVoiceNoteMessage(finalUrl, demo.duration);
       setShowMailNotice('Voice note sent!');
     } catch (err) {
       console.warn(err);
@@ -2102,14 +2177,21 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     const currentText = inputMessage.trim();
     const currentAttachments = [...attachedFiles];
 
+    // Optimistic UI clear: wipe input box and attachment tray in 0ms for instant feedback
+    updateInputMessage('');
+    setAttachedFiles([]);
+
     if (isOwner) {
       // 1. OWNER SENDS REAL REPLY (Reuses existing conversation_id, never creates duplicate conversations)
+      const targetOwnerConvId = (activeConversation.id && activeConversation.id !== 'inbox-empty') ? activeConversation.id : (activeOwnerConvId || conversations[0]?.id || 'inbox-empty');
+      const targetVisitorId = activeConversation.visitorId || targetOwnerConvId.replace(/^conv_/, '');
+
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
         sender_id: resolvedOwnerId,
-        receiver_id: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
-        conversation_id: activeOwnerConvId,
+        receiver_id: targetVisitorId,
+        conversation_id: targetOwnerConvId,
         text: currentText,
         timestamp: timeStr,
         status: 'seen',
@@ -2127,7 +2209,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
       setConversations((prev) => {
         const updated = prev.map((c) => {
-          if (c.id === activeOwnerConvId) {
+          if (c.id === targetOwnerConvId) {
             const nextMsgs = [...c.messages, festusMsg];
             nextMsgs.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
             return {
@@ -2149,8 +2231,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       try {
         setDbWriteError(null);
         await saveMessageAndConversationToSupabase({
-          conversationId: activeOwnerConvId,
-          visitorId: activeConversation.visitorId || activeOwnerConvId.replace(/^conv_/, ''),
+          conversationId: targetOwnerConvId,
+          visitorId: targetVisitorId,
           message: festusMsg,
           conversationMetadata: {
             defaultLabel: activeConversation.defaultLabel,
@@ -2162,27 +2244,29 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         });
 
         try {
-          broadcastSupabaseChatMessage({ conversationId: activeOwnerConvId, message: festusMsg });
+          broadcastSupabaseChatMessage({ conversationId: targetOwnerConvId, message: festusMsg });
         } catch (err) {
           console.error('Supabase broadcast error:', err);
         }
 
-        // Secondary background push to local dev server if present
-        fetch('/api/chats/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            conversationId: activeOwnerConvId,
-            message: festusMsg,
-            conversationMetadata: {
-              defaultLabel: activeConversation.defaultLabel,
-              customName: activeConversation.customName,
-              visitorName: activeConversation.visitorName,
-              avatarUrl: activeConversation.avatarUrl,
-              roleOrCompany: activeConversation.roleOrCompany,
-            }
-          }),
-        }).catch(() => {});
+        // Secondary background push to local dev server only when on localhost
+        if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          fetch('/api/chats/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: targetOwnerConvId,
+              message: festusMsg,
+              conversationMetadata: {
+                defaultLabel: activeConversation.defaultLabel,
+                customName: activeConversation.customName,
+                visitorName: activeConversation.visitorName,
+                avatarUrl: activeConversation.avatarUrl,
+                roleOrCompany: activeConversation.roleOrCompany,
+              }
+            }),
+          }).catch(() => {});
+        }
       } catch (err: any) {
         console.error('[Supabase Owner Message Save Error]:', err);
         setDbWriteError(`Owner Message Persistence Warning: ${err?.message || 'Failed to save to database.'}`);
@@ -2304,23 +2388,25 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
           console.error('Supabase broadcast error:', err);
         }
 
-        // Secondary background push to local dev server if present
-        fetch('/api/chats/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            conversationId: currentConvId,
-            message: visitorMsg,
-            conversationMetadata: {
-              defaultLabel: visitorProfile.name || 'Direct Message',
-              customName: visitorProfile.name || '',
-              visitorName: visitorProfile.name || '',
-              avatarUrl: visitorProfile.avatarUrl || '',
-              roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
-              avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
-            }
-          }),
-        }).catch(() => {});
+        // Secondary background push to local dev server only when on localhost
+        if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+          fetch('/api/chats/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: currentConvId,
+              message: visitorMsg,
+              conversationMetadata: {
+                defaultLabel: visitorProfile.name || 'Direct Message',
+                customName: visitorProfile.name || '',
+                visitorName: visitorProfile.name || '',
+                avatarUrl: visitorProfile.avatarUrl || '',
+                roleOrCompany: visitorProfile.roleOrCompany || 'Visitor Direct Chat',
+                avatarColor: visitorProfile.avatarColor || 'bg-slate-700',
+              }
+            }),
+          }).catch(() => {});
+        }
       } catch (err: any) {
         console.error('[Supabase Send Message Error]:', err);
         const errDetail = err?.message || 'Database write blocked by network or RLS permission error.';
@@ -2328,12 +2414,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
         setTimeout(() => setDbWriteError(null), 6000);
       }
     }
-
-    updateInputMessage('');
-    setAttachedFiles([]);
   };
 
-  // File Upload Attachment (Base64 encoded for cross-visitor persistence)
+  // File Upload Attachment (Uploaded to Supabase "Materials" bucket with resilient Data URL fallback)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -2354,15 +2437,34 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
 
       let url = '';
       try {
-        if (type === 'image' && file.size > 600000) {
-          url = await compressImage(file, 1200, 0.85);
+        if (type === 'image') {
+          // Compress large images for instant rendering and compact storage
+          const compressedDataUrl = await compressImage(file, 1200, 0.85);
+          // Attempt upload to Materials bucket
+          try {
+            const { blobUrl, revoke } = safeDataUrlToBlobUrl(compressedDataUrl);
+            const blobRes = await fetch(blobUrl).then((r) => r.blob()).catch(() => null);
+            revoke();
+            const uploadTarget = blobRes || file;
+            const uploadRes = await uploadChatFileToMaterialsBucket(uploadTarget, file.name, 'images');
+            url = uploadRes?.url || compressedDataUrl;
+          } catch {
+            url = compressedDataUrl;
+          }
         } else {
-          url = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (ev) => resolve((ev.target?.result as string) || '');
-            reader.onerror = () => resolve('');
-            reader.readAsDataURL(file);
-          });
+          // Upload documents/CAD/PDF to Materials bucket
+          try {
+            const uploadRes = await uploadChatFileToMaterialsBucket(file, file.name, 'files');
+            url = uploadRes?.url || '';
+          } catch {}
+          if (!url) {
+            url = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+              reader.onerror = () => resolve('');
+              reader.readAsDataURL(file);
+            });
+          }
         }
       } catch {
         url = await new Promise<string>((resolve) => {
@@ -3250,69 +3352,75 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                         {/* Shared Files & Attachments */}
                         {msg.attachments && msg.attachments.length > 0 && (
                           <div className="mt-2 space-y-2 pt-1.5 border-t border-black/10">
-                            {msg.attachments.map((att) => (
-                              <div
-                                key={att.id}
-                                className="p-2 rounded-xl bg-black/5 flex flex-col gap-2 text-xs border border-black/10 overflow-hidden"
-                              >
-                                {/* Image Preview Card */}
-                                {att.type === 'image' && att.url && (
-                                  <div className="w-full max-h-56 overflow-hidden rounded-lg bg-slate-900/10 flex items-center justify-center relative group/img">
-                                    <img
-                                      src={att.url}
-                                      alt={att.name}
-                                      className="max-h-56 w-full object-contain cursor-pointer hover:scale-102 transition-transform"
-                                      onClick={() => setSelectedChatImage(att.url!)}
-                                    />
-                                    <button
-                                      type="button"
-                                      onClick={() => setSelectedChatImage(att.url!)}
-                                      className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/70 text-white opacity-0 group-hover/img:opacity-100 transition-opacity text-[10px] font-bold flex items-center gap-1 cursor-pointer"
-                                    >
-                                      <Eye className="w-3 h-3" />
-                                      <span>Expand</span>
-                                    </button>
-                                  </div>
-                                )}
+                            {msg.attachments.map((att) => {
+                              const isImage = att.type === 'image' || (att.url && (att.url.startsWith('data:image/') || att.url.includes('/images/'))) || /\.(jpg|jpeg|png|webp|gif|svg|bmp)$/i.test(att.name || '');
+                              const isPdf = att.type === 'pdf' || (att.url && att.url.includes('.pdf')) || /\.pdf$/i.test(att.name || '');
+                              const isCad = att.type === 'cad' || /\.(step|stp|sldprt|sldasm|iges|igs|dwg|dxf)$/i.test(att.name || '');
 
-                                <div className="flex items-center justify-between gap-2 min-w-0">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    {att.type === 'pdf' ? (
-                                      <FileText className="w-4 h-4 text-red-600 shrink-0" />
-                                    ) : att.type === 'cad' ? (
-                                      <FileText className="w-4 h-4 text-cyan-700 shrink-0" />
-                                    ) : (
-                                      <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-                                    )}
-                                    <div className="min-w-0">
-                                      <p className="font-semibold truncate text-[11px] text-slate-900" title={att.name}>
-                                        {att.name}
-                                      </p>
-                                      <span className="text-[10px] text-slate-500">{att.size}</span>
+                              return (
+                                <div
+                                  key={att.id}
+                                  className="p-2 rounded-xl bg-black/5 flex flex-col gap-2 text-xs border border-black/10 overflow-hidden"
+                                >
+                                  {/* Image Preview Card */}
+                                  {isImage && att.url && (
+                                    <div className="w-full max-h-56 overflow-hidden rounded-lg bg-slate-900/10 flex items-center justify-center relative group/img">
+                                      <img
+                                        src={att.url}
+                                        alt={att.name}
+                                        className="max-h-56 w-full object-contain cursor-pointer hover:scale-102 transition-transform"
+                                        onClick={() => setSelectedChatImage(att.url!)}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedChatImage(att.url!)}
+                                        className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/70 text-white opacity-0 group-hover/img:opacity-100 transition-opacity text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                                      >
+                                        <Eye className="w-3 h-3" />
+                                        <span>Expand</span>
+                                      </button>
                                     </div>
-                                  </div>
-
-                                  {/* Download / View Button */}
-                                  {att.url ? (
-                                    <a
-                                      href={att.url}
-                                      download={att.name}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="text-[10px] bg-[#243346] hover:bg-[#1a2533] text-white font-bold px-2.5 py-1 rounded-lg shadow-2xs shrink-0 flex items-center gap-1 cursor-pointer transition-colors"
-                                      title={`Download ${att.name}`}
-                                    >
-                                      <Download className="w-3 h-3" />
-                                      <span>Download</span>
-                                    </a>
-                                  ) : (
-                                    <span className="text-[10px] text-[#243346] font-bold bg-white/80 px-1.5 py-0.5 rounded shadow-xs shrink-0">
-                                      Shared File
-                                    </span>
                                   )}
+
+                                  <div className="flex items-center justify-between gap-2 min-w-0">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      {isPdf ? (
+                                        <FileText className="w-4 h-4 text-red-600 shrink-0" />
+                                      ) : isCad ? (
+                                        <FileText className="w-4 h-4 text-cyan-700 shrink-0" />
+                                      ) : (
+                                        <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
+                                      )}
+                                      <div className="min-w-0">
+                                        <p className="font-semibold truncate text-[11px] text-slate-900" title={att.name}>
+                                          {att.name}
+                                        </p>
+                                        <span className="text-[10px] text-slate-500">{att.size}</span>
+                                      </div>
+                                    </div>
+
+                                    {/* Download / View Button */}
+                                    {att.url ? (
+                                      <a
+                                        href={att.url}
+                                        download={att.name}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-[10px] bg-[#243346] hover:bg-[#1a2533] text-white font-bold px-2.5 py-1 rounded-lg shadow-2xs shrink-0 flex items-center gap-1 cursor-pointer transition-colors"
+                                        title={`Download ${att.name}`}
+                                      >
+                                        <Download className="w-3 h-3" />
+                                        <span>Download</span>
+                                      </a>
+                                    ) : (
+                                      <span className="text-[10px] text-[#243346] font-bold bg-white/80 px-1.5 py-0.5 rounded shadow-xs shrink-0">
+                                        Shared File
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
 

@@ -19,10 +19,18 @@ export function safeDataUrlToBlobUrl(url: string): { blobUrl: string; mimeType: 
     let mimeType = 'audio/webm';
     const match = header.match(/^data:([^;,]+)/i);
     if (match && match[1]) {
-      mimeType = match[1].trim();
+      const parsedMime = match[1].trim().toLowerCase();
+      if (parsedMime.includes('wav')) mimeType = 'audio/wav';
+      else if (parsedMime.includes('webm')) mimeType = 'audio/webm';
+      else if (parsedMime.includes('ogg')) mimeType = 'audio/ogg';
+      else if (parsedMime.includes('mp4') || parsedMime.includes('m4a') || parsedMime.includes('aac')) mimeType = 'audio/mp4';
+      else if (parsedMime.includes('mp3') || parsedMime.includes('mpeg')) mimeType = 'audio/mpeg';
+      else mimeType = parsedMime;
     }
 
-    const binaryStr = atob(base64);
+    // Clean whitespace, line breaks, or URI encoding from base64 string
+    const cleanBase64 = base64.replace(/[\s\r\n]+/g, '');
+    const binaryStr = atob(cleanBase64);
     const len = binaryStr.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
@@ -99,40 +107,9 @@ export class UniversalAudioRecorder {
     this.pcmChunks = [];
     this.mediaChunks = [];
 
-    // 1. Primary path: Native compressed MediaRecorder (Opus / AAC / WebM / MP4)
-    // Produces compact, bandwidth-friendly audio (10-30KB) that uploads instantly across mobile
-    // cellular connections, preventing Supabase payload limit drops and NetworkError failures.
-    if (typeof MediaRecorder !== 'undefined') {
-      const candidates = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4;codecs=mp4a.40.2',
-        'audio/mp4',
-        'audio/ogg;codecs=opus',
-        'audio/aac',
-      ];
-      let selectedMime = '';
-      for (const mime of candidates) {
-        if (MediaRecorder.isTypeSupported(mime)) {
-          selectedMime = mime;
-          break;
-        }
-      }
-      try {
-        const options: MediaRecorderOptions = selectedMime ? { mimeType: selectedMime } : {};
-        this.mediaRecorder = new MediaRecorder(this.stream, options);
-        this.mediaChunks = [];
-        this.mediaRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) this.mediaChunks.push(e.data);
-        };
-        this.mediaRecorder.start(250);
-        return;
-      } catch (err) {
-        console.warn('[MediaRecorder primary init notice, falling back to Web Audio]:', err);
-      }
-    }
-
-    // 2. Secondary fallback path: Web Audio API PCM capture downsampled to 16kHz mono WAV
+    // 1. Primary path: Universal Web Audio API PCM capture downsampled to 16kHz mono WAV.
+    // Works universally across iOS Safari, macOS Safari, Android Chrome, Windows Chrome, Firefox, and Edge.
+    // Eliminates WebM decoding/playback errors in Safari while keeping payload size tiny (~32KB/sec).
     const AudioCtxClass = typeof window !== 'undefined' ? (window.AudioContext || (window as any).webkitAudioContext) : null;
     if (AudioCtxClass) {
       try {
@@ -153,15 +130,50 @@ export class UniversalAudioRecorder {
         };
 
         this.source.connect(this.processor);
-        this.processor.connect(ctx.destination);
+        // Connect processor via zero-gain node to destination to keep onaudioprocess running without echoing microphone through speakers
+        const muteGain = ctx.createGain();
+        muteGain.gain.value = 0;
+        this.processor.connect(muteGain);
+        muteGain.connect(ctx.destination);
         return;
       } catch (e) {
-        console.warn('[Web Audio recorder fallback notice]:', e);
+        console.warn('[Web Audio recorder init notice, falling back to MediaRecorder]:', e);
+      }
+    }
+
+    // 2. Secondary fallback path: Native MediaRecorder (for legacy or constrained environments)
+    if (typeof MediaRecorder !== 'undefined') {
+      const candidates = [
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/aac',
+      ];
+      let selectedMime = '';
+      for (const mime of candidates) {
+        if (MediaRecorder.isTypeSupported(mime)) {
+          selectedMime = mime;
+          break;
+        }
+      }
+      try {
+        const options: MediaRecorderOptions = selectedMime ? { mimeType: selectedMime } : {};
+        this.mediaRecorder = new MediaRecorder(this.stream, options);
+        this.mediaChunks = [];
+        this.mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) this.mediaChunks.push(e.data);
+        };
+        this.mediaRecorder.start(250);
+        return;
+      } catch (err) {
+        console.warn('[MediaRecorder fallback init error]:', err);
       }
     }
   }
 
-  async stop(): Promise<{ url: string; duration: number }> {
+  async stop(): Promise<{ url: string; duration: number; blob?: Blob }> {
     const elapsedSec = Math.max(1, Math.round((Date.now() - this.startTime) / 1000));
 
     // Release microphone hardware
@@ -169,43 +181,7 @@ export class UniversalAudioRecorder {
       this.stream.getTracks().forEach((t) => t.stop());
     }
 
-    // A. MediaRecorder primary compressed path (Opus / AAC / WebM / MP4)
-    if (this.mediaRecorder) {
-      return new Promise((resolve) => {
-        this.mediaRecorder!.onstop = () => {
-          const mime = this.mediaRecorder?.mimeType || 'audio/webm';
-          const blob = new Blob(this.mediaChunks, { type: mime });
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            resolve({
-              url: (reader.result as string) || '',
-              duration: elapsedSec,
-            });
-          };
-          reader.readAsDataURL(blob);
-        };
-        try {
-          if (this.mediaRecorder!.state !== 'inactive') {
-            this.mediaRecorder!.stop();
-          } else {
-            const mime = this.mediaRecorder?.mimeType || 'audio/webm';
-            const blob = new Blob(this.mediaChunks, { type: mime });
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              resolve({
-                url: (reader.result as string) || '',
-                duration: elapsedSec,
-              });
-            };
-            reader.readAsDataURL(blob);
-          }
-        } catch {
-          resolve(generateDemoVoiceNote(elapsedSec));
-        }
-      });
-    }
-
-    // B. Web Audio PCM recording path -> Universal WAV fallback
+    // A. Web Audio PCM recording path -> Universal 16kHz mono WAV
     if (this.processor && this.pcmChunks.length > 0) {
       try {
         if (this.source) this.source.disconnect();
@@ -231,11 +207,50 @@ export class UniversalAudioRecorder {
         const reader = new FileReader();
         reader.onloadend = () => {
           resolve({
-            url: reader.result as string,
+            url: (reader.result as string) || '',
             duration: elapsedSec,
+            blob,
           });
         };
         reader.readAsDataURL(blob);
+      });
+    }
+
+    // B. MediaRecorder secondary compressed path
+    if (this.mediaRecorder) {
+      return new Promise((resolve) => {
+        this.mediaRecorder!.onstop = () => {
+          const mime = this.mediaRecorder?.mimeType || 'audio/webm';
+          const blob = new Blob(this.mediaChunks, { type: mime });
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve({
+              url: (reader.result as string) || '',
+              duration: elapsedSec,
+              blob,
+            });
+          };
+          reader.readAsDataURL(blob);
+        };
+        try {
+          if (this.mediaRecorder!.state !== 'inactive') {
+            this.mediaRecorder!.stop();
+          } else {
+            const mime = this.mediaRecorder?.mimeType || 'audio/webm';
+            const blob = new Blob(this.mediaChunks, { type: mime });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              resolve({
+                url: (reader.result as string) || '',
+                duration: elapsedSec,
+                blob,
+              });
+            };
+            reader.readAsDataURL(blob);
+          }
+        } catch {
+          resolve(generateDemoVoiceNote(elapsedSec));
+        }
       });
     }
 
@@ -310,7 +325,7 @@ export function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffe
 /**
  * Generates an audio data URL voice note (used for demo/fallback when microphone hardware is unavailable)
  */
-export async function generateDemoVoiceNote(durationSec = 6, label = 'Audio Note'): Promise<{ url: string; duration: number }> {
+export async function generateDemoVoiceNote(durationSec = 6, label = 'Audio Note'): Promise<{ url: string; duration: number; blob?: Blob }> {
   const sampleRate = 44100;
   const numSamples = sampleRate * durationSec;
   const buffer = new Float32Array(numSamples);
@@ -327,16 +342,55 @@ export async function generateDemoVoiceNote(durationSec = 6, label = 'Audio Note
   const wavBuffer = encodeWAV(buffer, sampleRate);
   const blob = new Blob([wavBuffer], { type: 'audio/wav' });
 
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      resolve({
-        url: reader.result as string,
-        duration: durationSec,
-      });
-    };
-    reader.readAsDataURL(blob);
+  if (typeof FileReader !== 'undefined') {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        resolve({
+          url: reader.result as string,
+          duration: durationSec,
+          blob,
+        });
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Node.js or SSR environment fallback
+  const base64 = typeof Buffer !== 'undefined' ? Buffer.from(wavBuffer).toString('base64') : '';
+  return Promise.resolve({
+    url: `data:audio/wav;base64,${base64}`,
+    duration: durationSec,
+    blob,
   });
+}
+
+/**
+ * Format a unified message payload into a structured string for safe cross-platform persistence in Supabase
+ */
+export function serializeMessagePayload(params: {
+  text?: string;
+  attachments?: any[];
+  voiceNote?: { url: string; duration: number };
+}): string {
+  const { text = '', attachments, voiceNote } = params;
+  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+  const hasVoice = Boolean(voiceNote && voiceNote.url);
+
+  if (!hasAttachments && !hasVoice) {
+    return text || '';
+  }
+
+  return `__MSG_PAYLOAD__:${JSON.stringify({
+    text: text || '',
+    attachments: hasAttachments ? attachments : undefined,
+    voiceNote: hasVoice
+      ? {
+          url: voiceNote!.url,
+          duration: Math.max(1, Math.round(Number(voiceNote!.duration) || 1)),
+        }
+      : undefined,
+  })}`;
 }
 
 /**
@@ -344,11 +398,102 @@ export async function generateDemoVoiceNote(durationSec = 6, label = 'Audio Note
  */
 export function serializeVoiceNoteContent(voiceNote: { url: string; duration: number }, text?: string): string {
   if (!voiceNote || !voiceNote.url) return text || '';
-  return `__VOICENOTE__:${JSON.stringify({
-    url: voiceNote.url,
-    duration: Math.round(Number(voiceNote.duration) || 1),
-    text: text || '',
-  })}`;
+  return serializeMessagePayload({ text, voiceNote });
+}
+
+/**
+ * Safely parse voice note data, attachments, and plain text from database content or columns
+ */
+export function parseMessagePayload(
+  content: any,
+  existingVoiceNote?: any,
+  existingAttachments?: any
+): { text: string; voiceNote?: { url: string; duration: number }; attachments?: any[] } {
+  let attachments = Array.isArray(existingAttachments) && existingAttachments.length > 0 ? existingAttachments : undefined;
+  let voiceNote: { url: string; duration: number } | undefined = undefined;
+  let text = typeof content === 'string' ? content : '';
+
+  // 1. Direct object or JSON string in voice_note column
+  if (existingVoiceNote) {
+    if (typeof existingVoiceNote === 'object' && existingVoiceNote.url) {
+      voiceNote = {
+        url: existingVoiceNote.url,
+        duration: Math.max(1, Math.round(Number(existingVoiceNote.duration) || 1)),
+      };
+    } else if (typeof existingVoiceNote === 'string' && existingVoiceNote.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(existingVoiceNote);
+        if (parsed?.url) {
+          voiceNote = {
+            url: parsed.url,
+            duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
+          };
+        }
+      } catch {}
+    }
+  }
+
+  // 2. Encoded __MSG_PAYLOAD__: JSON in content
+  if (typeof text === 'string' && text.startsWith('__MSG_PAYLOAD__:')) {
+    try {
+      const rawJson = text.slice('__MSG_PAYLOAD__:'.length);
+      const parsed = JSON.parse(rawJson);
+      if (parsed) {
+        text = parsed.text || '';
+        if (Array.isArray(parsed.attachments) && parsed.attachments.length > 0 && !attachments) {
+          attachments = parsed.attachments;
+        }
+        if (parsed.voiceNote && parsed.voiceNote.url && !voiceNote) {
+          voiceNote = {
+            url: parsed.voiceNote.url,
+            duration: Math.max(1, Math.round(Number(parsed.voiceNote.duration) || 1)),
+          };
+        }
+      }
+    } catch {}
+  }
+
+  // 3. Encoded __VOICENOTE__: in content column
+  if (typeof text === 'string' && text.startsWith('__VOICENOTE__:')) {
+    try {
+      const rawJson = text.slice('__VOICENOTE__:'.length);
+      const parsed = JSON.parse(rawJson);
+      if (parsed) {
+        text = parsed.text || '';
+        if (!voiceNote && parsed.url) {
+          voiceNote = {
+            url: parsed.url,
+            duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
+          };
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Raw JSON voice note format
+  if (typeof text === 'string' && (text.startsWith('{"type":"voice_note"') || (text.startsWith('{') && text.includes('"voice_note"')))) {
+    try {
+      const parsed = JSON.parse(text);
+      const vn = parsed.voiceNote || parsed;
+      if (vn && vn.url && !voiceNote) {
+        text = parsed.text || '';
+        voiceNote = {
+          url: vn.url,
+          duration: Math.max(1, Math.round(Number(vn.duration) || 1)),
+        };
+      }
+    } catch {}
+  }
+
+  // Clean placeholder text if it was generated as snippet
+  if (voiceNote && (text === '🎤 Voice note' || text.startsWith('🎤 Voice note ('))) {
+    text = '';
+  }
+  if (attachments && attachments.length > 0 && text.startsWith('📎 ')) {
+    text = '';
+  }
+
+  return { text, voiceNote, attachments };
 }
 
 /**
@@ -358,71 +503,7 @@ export function parseVoiceNoteFromContent(
   content: any,
   existingVoiceNote?: any
 ): { text: string; voiceNote?: { url: string; duration: number } } {
-  // 1. Direct object in voice_note column
-  if (existingVoiceNote && typeof existingVoiceNote === 'object' && existingVoiceNote.url) {
-    const isEncodedInContent = typeof content === 'string' && content.startsWith('__VOICENOTE__:');
-    return {
-      text: isEncodedInContent ? '' : (typeof content === 'string' ? content : ''),
-      voiceNote: {
-        url: existingVoiceNote.url,
-        duration: Math.max(1, Math.round(Number(existingVoiceNote.duration) || 1)),
-      },
-    };
-  }
-
-  // 2. Stringified JSON in voice_note column
-  if (typeof existingVoiceNote === 'string' && existingVoiceNote.trim().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(existingVoiceNote);
-      if (parsed && parsed.url) {
-        const isEncodedInContent = typeof content === 'string' && content.startsWith('__VOICENOTE__:');
-        return {
-          text: isEncodedInContent ? '' : (typeof content === 'string' ? content : ''),
-          voiceNote: {
-            url: parsed.url,
-            duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
-          },
-        };
-      }
-    } catch {}
-  }
-
-  // 3. Encoded voice note in content column (__VOICENOTE__:{"url":"...","duration":5})
-  if (typeof content === 'string') {
-    if (content.startsWith('__VOICENOTE__:')) {
-      try {
-        const rawJson = content.slice('__VOICENOTE__:'.length);
-        const parsed = JSON.parse(rawJson);
-        if (parsed && parsed.url) {
-          return {
-            text: parsed.text || '',
-            voiceNote: {
-              url: parsed.url,
-              duration: Math.max(1, Math.round(Number(parsed.duration) || 1)),
-            },
-          };
-        }
-      } catch {}
-    } else if (content.startsWith('{"type":"voice_note"') || (content.startsWith('{') && content.includes('"voice_note"'))) {
-      try {
-        const parsed = JSON.parse(content);
-        const vn = parsed.voiceNote || parsed;
-        if (vn && vn.url) {
-          return {
-            text: parsed.text || '',
-            voiceNote: {
-              url: vn.url,
-              duration: Math.max(1, Math.round(Number(vn.duration) || 1)),
-            },
-          };
-        }
-      } catch {}
-    }
-  }
-
-  return {
-    text: typeof content === 'string' ? content : '',
-    voiceNote: undefined,
-  };
+  const result = parseMessagePayload(content, existingVoiceNote);
+  return { text: result.text, voiceNote: result.voiceNote };
 }
 

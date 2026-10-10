@@ -35,7 +35,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   const webAudioTimerRef = useRef<any>(null);
 
   // Convert raw Base64 data URL to clean in-memory Blob URL to eliminate data URI parsing bugs in Safari/WebKit
-  const { blobUrl, revoke } = useMemo(() => {
+  const { blobUrl, mimeType, revoke } = useMemo(() => {
     return safeDataUrlToBlobUrl(voiceNote.url);
   }, [voiceNote.url]);
 
@@ -92,7 +92,16 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       if (!webAudioBufferRef.current) {
         const response = await fetch(blobUrl || voiceNote.url);
         const arrayBuffer = await response.arrayBuffer();
-        const decoded = await ctx.decodeAudioData(arrayBuffer);
+        const decoded = await new Promise<AudioBuffer>((resolve, reject) => {
+          const res = ctx.decodeAudioData(
+            arrayBuffer,
+            (buf) => resolve(buf),
+            (err) => reject(err)
+          );
+          if (res && typeof (res as any).then === 'function') {
+            (res as any).then(resolve).catch(reject);
+          }
+        });
         webAudioBufferRef.current = decoded;
         if (decoded.duration > 0 && isFinite(decoded.duration)) {
           setAudioDuration(Math.round(decoded.duration));
@@ -174,9 +183,18 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
       return;
     }
 
+    // Proactively unlock Web Audio context during user click gesture for iOS/Safari
+    if (webAudioCtxRef.current && webAudioCtxRef.current.state === 'suspended') {
+      try { await webAudioCtxRef.current.resume(); } catch {}
+    }
+
     // Try HTML5 Audio element first
     const audio = audioRef.current;
     if (audio) {
+      if (audio.ended || (audioDuration > 0 && Math.abs(audio.currentTime - audioDuration) < 0.2)) {
+        audio.currentTime = 0;
+        setCurrentTime(0);
+      }
       audio.playbackRate = playbackRate;
       setIsLoading(true);
 
@@ -248,7 +266,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
           // If HTML5 element fails, Web Audio fallback will handle it on togglePlay
           setLoadError(false);
         }}
-        className="hidden"
+        className="sr-only"
       />
 
       {/* WhatsApp Play / Pause Round Button */}
@@ -325,7 +343,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
             {/* Download audio backup link */}
             <a
               href={blobUrl || voiceNote.url}
-              download="voicenote.wav"
+              download={`voicenote_${Date.now()}.${mimeType?.includes('webm') ? 'webm' : mimeType?.includes('ogg') ? 'ogg' : mimeType?.includes('mp4') || mimeType?.includes('m4a') ? 'm4a' : mimeType?.includes('mp3') ? 'mp3' : 'wav'}`}
               className="p-1 hover:text-slate-900 transition-colors cursor-pointer"
               title="Download audio recording"
             >

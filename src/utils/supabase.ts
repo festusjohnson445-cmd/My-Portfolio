@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
-import { parseVoiceNoteFromContent, serializeVoiceNoteContent } from './audioUtils';
+import { parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload } from './audioUtils';
 
 // ============================================================================
 // 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION
@@ -475,6 +475,70 @@ export async function deleteMaterialFromSupabaseBucket(storagePath: string): Pro
   return true;
 }
 
+/**
+ * Uploads a shared file, image, or voice note to the "Materials" storage bucket in Supabase.
+ * - Checks both "Materials" and "materials" bucket aliases.
+ * - When successful, returns the public URL.
+ * - When bucket upload encounters an RLS permission restriction (or network disconnect),
+ *   gracefully falls back to a Data URL so that files and voice notes NEVER fail to send or render.
+ */
+export async function uploadChatFileToMaterialsBucket(
+  fileOrBlob: File | Blob,
+  fileName: string,
+  folder: 'files' | 'images' | 'voicenotes' = 'files'
+): Promise<{ url: string; isStoredInBucket: boolean }> {
+  const cleanName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const uniqueId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const filePath = `chat/${folder}/${uniqueId}_${cleanName}`;
+
+  let contentType = (fileOrBlob as any).type || '';
+  if (!contentType || contentType === 'application/octet-stream') {
+    if (cleanName.endsWith('.pdf')) contentType = 'application/pdf';
+    else if (cleanName.endsWith('.png')) contentType = 'image/png';
+    else if (cleanName.endsWith('.jpg') || cleanName.endsWith('.jpeg')) contentType = 'image/jpeg';
+    else if (cleanName.endsWith('.webp')) contentType = 'image/webp';
+    else if (cleanName.endsWith('.wav')) contentType = 'audio/wav';
+    else if (cleanName.endsWith('.webm')) contentType = 'audio/webm';
+    else if (cleanName.endsWith('.mp3')) contentType = 'audio/mpeg';
+    else if (cleanName.endsWith('.step') || cleanName.endsWith('.stp')) contentType = 'model/step';
+    else contentType = 'application/octet-stream';
+  }
+
+  // 1. Attempt upload to Materials bucket
+  try {
+    const bucketCandidates = ['Materials', 'materials'];
+    for (const bName of bucketCandidates) {
+      try {
+        const { data, error } = await supabase.storage
+          .from(bName)
+          .upload(filePath, fileOrBlob, {
+            contentType,
+            upsert: true,
+          });
+
+        if (!error && data?.path) {
+          const { data: pubData } = supabase.storage.from(bName).getPublicUrl(data.path);
+          if (pubData?.publicUrl) {
+            return { url: pubData.publicUrl, isStoredInBucket: true };
+          }
+        }
+      } catch {}
+    }
+  } catch (bucketErr) {
+    console.warn('[Materials bucket upload notice, falling back to data URL]:', bucketErr);
+  }
+
+  // 2. Resilient Fallback to Data URL
+  const dataUrl = await new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve((e.target?.result as string) || '');
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(fileOrBlob);
+  });
+
+  return { url: dataUrl, isStoredInBucket: false };
+}
+
 // ============================================================================
 // 5. SUPABASE DATABASE QUERIES & RLS ENFORCEMENT
 // ============================================================================
@@ -903,18 +967,21 @@ export function getSharedChatBroadcastChannel() {
 export async function broadcastSupabaseChatMessage(messagePayload: any): Promise<void> {
   try {
     const channel = getSharedChatBroadcastChannel();
-    // If voice note payload contains a large base64 data URL (> 80KB), send a lightweight notice
-    // to prevent Supabase WebSocket from exceeding the 256KB message limit and dropping
+    // Supabase Realtime WebSocket message payload limit is 256KB.
+    // When audio/image is stored in Materials bucket, the URL is a short string (~100 chars), so full payload is always broadcast.
+    // If a raw inline base64 string exceeds 180KB, flag for full database fetch instead of corrupting the URL.
     let payloadToSend = messagePayload;
-    if (messagePayload?.message?.voiceNote?.url && messagePayload.message.voiceNote.url.length > 80000) {
+    const vnUrl = messagePayload?.message?.voiceNote?.url || '';
+    if (typeof vnUrl === 'string' && vnUrl.length > 180000) {
       payloadToSend = {
         ...messagePayload,
         message: {
           ...messagePayload.message,
+          _needsFullFetch: true,
           voiceNote: {
             ...messagePayload.message.voiceNote,
-            url: messagePayload.message.voiceNote.url.slice(0, 50) + '...',
-            _isLightBroadcast: true,
+            url: '',
+            _needsFetch: true,
           },
         },
       };
@@ -1151,20 +1218,28 @@ export function generateDeterministicConversationId(visitorId: string, ownerId: 
   return `${hHex}-${vClean.slice(0,4)}-${vClean.slice(4,8)}-${oClean.slice(0,4)}-${oClean.slice(4,16)}`;
 }
 
+// In-memory cached owner ID to avoid redundant network calls on every send
+let memoryCachedOwnerId: string | null = null;
+
 /**
  * Retrieve or dynamically fetch owner user ID from Supabase profiles or active session
  */
 export async function getOrFetchOwnerId(): Promise<string> {
+  if (memoryCachedOwnerId) return memoryCachedOwnerId;
+  const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('fesline_owner_supabase_uid') : null;
+  if (saved && saved.trim()) {
+    memoryCachedOwnerId = saved.trim();
+    return memoryCachedOwnerId;
+  }
+
   try {
     const { data: sessData } = await supabase.auth.getSession();
     if (sessData?.session?.user) {
       const uid = sessData.session.user.id;
+      memoryCachedOwnerId = uid;
       localStorage.setItem('fesline_owner_supabase_uid', uid);
       return uid;
     }
-
-    const saved = localStorage.getItem('fesline_owner_supabase_uid');
-    if (saved && saved.trim()) return saved.trim();
 
     const { data } = await supabase
       .from('profiles')
@@ -1174,13 +1249,15 @@ export async function getOrFetchOwnerId(): Promise<string> {
       .maybeSingle();
 
     if (data?.id) {
+      memoryCachedOwnerId = data.id;
       localStorage.setItem('fesline_owner_supabase_uid', data.id);
       return data.id;
     }
   } catch (err) {
     console.error('[Supabase Fetch Owner ID Exception]:', err);
   }
-  return 'f4c47b59-42b4-4b5a-8bdf-87f53945a6c1';
+  memoryCachedOwnerId = 'a5eb7797-7da2-41ff-9547-3975af3958b7';
+  return memoryCachedOwnerId;
 }
 
 /**
@@ -1244,7 +1321,7 @@ export async function saveMessageAndConversationToSupabase(params: {
   const avatarColor = conversationMetadata?.avatarColor || (typeof localStorage !== 'undefined' ? (localStorage.getItem('avatar_color') || '') : '') || 'bg-slate-700';
 
   // Resilient retry helper for transient network hiccups across mobile cellular connections
-  const retryDbCall = async (fn: () => PromiseLike<any> | Promise<any>, retries = 2, delayMs = 300): Promise<any> => {
+  const retryDbCall = async (fn: () => PromiseLike<any> | Promise<any>, retries = 2, delayMs = 250): Promise<any> => {
     let lastError: any;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -1272,40 +1349,41 @@ export async function saveMessageAndConversationToSupabase(params: {
   };
 
   try {
-    // Step A: Upsert visitor_profiles ONLY for visitor messages (never during owner replies,
-    // avoiding redundant roundtrips and massive avatar base64 re-uploads over mobile network)
+    // Step A & Step B: Concurrent updates to maximize throughput and minimize UI latency
     if (!isOwnerSender) {
-      try {
-        const profilePayload: any = {
-          visitor_id: vId,
-          updated_at: nowIso,
-        };
-        if (displayName) profilePayload.display_name = displayName;
-        if (roleSubject) profilePayload.role_subject = roleSubject;
-        // Avoid sending huge data URLs on every message if already in localStorage
-        if (avatarUrl && !avatarUrl.startsWith('data:image/') || avatarUrl.length < 5000) {
-          profilePayload.avatar_url = avatarUrl;
-        }
-        if (avatarColor) profilePayload.avatar_color = avatarColor;
-
-        const { error: vpError } = await retryDbCall(() =>
-          supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })
-        );
-
-        if (vpError) {
-          console.warn('[Step A Notice: visitor_profiles upsert]:', vpError.message || vpError);
-        }
-      } catch (errA) {
-        console.warn('[Step A Exception: visitor_profiles]:', errA);
+      const profilePayload: any = {
+        visitor_id: vId,
+        updated_at: nowIso,
+      };
+      if (displayName) profilePayload.display_name = displayName;
+      if (roleSubject) profilePayload.role_subject = roleSubject;
+      if (avatarUrl && (!avatarUrl.startsWith('data:image/') || avatarUrl.length < 5000)) {
+        profilePayload.avatar_url = avatarUrl;
       }
-    }
+      if (avatarColor) profilePayload.avatar_color = avatarColor;
 
-    // Step B: For Owner replies: strictly update existing conversation in place without creating new conversations.
-    // For Visitor messages: upsert the parent record in conversations.
-    try {
-      if (isOwnerSender) {
-        // Owner sends reply -> update existing conversation record in place
-        const { error: convUpdateErr } = await retryDbCall(() =>
+      const convPayload = {
+        id: targetConvId,
+        visitor_id: vId,
+        owner_id: ownerId,
+        last_message: lastSnippet,
+        last_message_at: nowIso,
+        unread_count: 1,
+      };
+
+      // Run profile upsert and conversation upsert in parallel
+      await Promise.all([
+        retryDbCall(() => supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })).catch((errA) => {
+          console.warn('[Step A Notice: visitor_profiles]:', errA);
+        }),
+        retryDbCall(() => supabase.from('conversations').upsert(convPayload, { onConflict: 'id' })).catch((errB) => {
+          console.warn('[Step B Notice: conversations]:', errB);
+        }),
+      ]);
+    } else {
+      // Owner reply: Update parent conversation in-place
+      try {
+        await retryDbCall(() =>
           supabase
             .from('conversations')
             .upsert({
@@ -1317,87 +1395,67 @@ export async function saveMessageAndConversationToSupabase(params: {
               unread_count: 0,
             }, { onConflict: 'id' })
         );
-
-        if (convUpdateErr) {
-          console.warn('[Step B Notice: conversations update on owner reply]:', convUpdateErr.message || convUpdateErr);
-        }
-      } else {
-        // Visitor sends message -> upsert parent record in conversations
-        const convPayload = {
-          id: targetConvId,
-          visitor_id: vId,
-          owner_id: ownerId,
-          last_message: lastSnippet,
-          last_message_at: nowIso,
-          unread_count: 1,
-        };
-        const { error: convError } = await retryDbCall(() =>
-          supabase
-            .from('conversations')
-            .upsert(convPayload, { onConflict: 'id' })
-        );
-
-        if (convError) {
-          console.warn('[Step B Notice: conversations upsert]:', convError.message || convError);
-        }
+      } catch (errB) {
+        console.warn('[Step B Notice: conversations update on owner reply]:', errB);
       }
-    } catch (errB) {
-      console.warn('[Step B Exception: conversations]:', errB);
     }
 
-    // Step C: Insert the new row into messages linking conversation_id ('conv_' + visitor_id)
+    // Step C: Insert the new row into messages linking conversation_id
     try {
       const hasVoiceNote = Boolean(message.voiceNote && message.voiceNote.url);
-      const cleanTextContent = message.text || lastSnippet;
+      const hasAttachments = Array.isArray(message.attachments) && message.attachments.length > 0;
+
+      // Crucial: Serialize attachments, voice note, and text so all clients and devices
+      // can unpack the complete rich media payload from content
+      const serializedContent = (hasAttachments || hasVoiceNote)
+        ? serializeMessagePayload({
+            text: message.text,
+            attachments: message.attachments,
+            voiceNote: message.voiceNote,
+          })
+        : (message.text || lastSnippet);
 
       const basePayload: any = {
         id: safeMessageId,
         conversation_id: targetConvId,
         sender_id: isOwnerSender ? ownerId : vId,
         receiver_id: isOwnerSender ? vId : ownerId,
-        content: hasVoiceNote
-          ? cleanTextContent // Keep content column light when voice_note column is present
-          : (message.text || lastSnippet),
+        content: serializedContent,
         created_at: nowIso,
       };
 
-      let msgError: any = null;
-
-      // If voice note is attached, try inserting with voice_note column first (for projects where the column is added)
       if (hasVoiceNote) {
-        const payloadWithCol = {
-          ...basePayload,
-          voice_note: message.voiceNote,
-        };
-        const { error: colErr } = await retryDbCall(() => supabase.from('messages').insert(payloadWithCol));
-        if (colErr) {
-          // Fallback to encoding serialized voice note in content if voice_note column is missing
-          if (colErr.message?.includes('voice_note') || colErr.code === '42703' || colErr.message?.includes('column')) {
-            const fallbackBody = {
-              ...basePayload,
-              content: serializeVoiceNoteContent(message.voiceNote, message.text),
-            };
-            const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
-            msgError = fallbackErr;
-          } else {
-            msgError = colErr;
-          }
-        }
-      } else {
-        const { error: stdErr } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
-        msgError = stdErr;
+        basePayload.voice_note = message.voiceNote;
       }
 
+      let { error: msgError } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
+
       if (msgError) {
-        console.warn('[Step C Notice: messages insert]:', msgError.message || msgError);
-        // Fallback without client-generated UUID in case ID generation is database-managed
-        if (msgError.message?.includes('id') || msgError.code === '23505') {
+        console.warn('[Step C Notice: messages insert initial]:', msgError.message || msgError);
+
+        // Fallback 1: If voice_note column error (e.g. column missing or type mismatch), omit voice_note column
+        if (hasVoiceNote && (msgError.message?.includes('voice_note') || msgError.code === '42703')) {
+          const fallbackBody = {
+            id: safeMessageId,
+            conversation_id: targetConvId,
+            sender_id: isOwnerSender ? ownerId : vId,
+            receiver_id: isOwnerSender ? vId : ownerId,
+            content: serializedContent,
+            created_at: nowIso,
+          };
+          const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
+          msgError = fallbackErr;
+        }
+
+        // Fallback 2: If ID conflict or database-managed ID, retry without explicit ID
+        if (msgError && (msgError.message?.includes('id') || msgError.code === '23505')) {
           const fallbackBody = {
             conversation_id: targetConvId,
             sender_id: isOwnerSender ? ownerId : vId,
             receiver_id: isOwnerSender ? vId : ownerId,
-            content: hasVoiceNote ? serializeVoiceNoteContent(message.voiceNote, message.text) : cleanTextContent,
+            content: serializedContent,
             created_at: nowIso,
+            ...(hasVoiceNote ? { voice_note: message.voiceNote } : {}),
           };
           const { error: fallbackErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
           msgError = fallbackErr;
@@ -1844,7 +1902,12 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
--- Create 'materials' bucket
+-- Create 'Materials' bucket (with capital 'M' for shared voice notes, files, and images)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('Materials', 'Materials', true, 52428800, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- Also support lowercase alias 'materials'
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('materials', 'materials', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
@@ -1865,6 +1928,36 @@ USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::tex
 CREATE POLICY "Owner Delete Avatars" ON storage.objects
 FOR DELETE TO authenticated
 USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+
+-- Storage RLS for "Materials" bucket: Allow public & authenticated users to upload, read, update, and manage
+DROP POLICY IF EXISTS "Public Upload to Materials Bucket" ON storage.objects;
+CREATE POLICY "Public Upload to Materials Bucket"
+ON storage.objects
+FOR INSERT
+TO public
+WITH CHECK (bucket_id = 'Materials');
+
+DROP POLICY IF EXISTS "Public Read from Materials Bucket" ON storage.objects;
+CREATE POLICY "Public Read from Materials Bucket"
+ON storage.objects
+FOR SELECT
+TO public
+USING (bucket_id = 'Materials');
+
+DROP POLICY IF EXISTS "Public Update Materials Bucket" ON storage.objects;
+CREATE POLICY "Public Update Materials Bucket"
+ON storage.objects
+FOR UPDATE
+TO public
+USING (bucket_id = 'Materials')
+WITH CHECK (bucket_id = 'Materials');
+
+DROP POLICY IF EXISTS "Public Delete Materials Bucket" ON storage.objects;
+CREATE POLICY "Public Delete Materials Bucket"
+ON storage.objects
+FOR DELETE
+TO public
+USING (bucket_id = 'Materials');
 
 -- Storage RLS: Public read for materials
 CREATE POLICY "Public Read Materials" ON storage.objects
