@@ -7,7 +7,6 @@ import { LandingHomeView } from './components/LandingHomeView';
 import { ProfileView } from './components/ProfileView';
 import { HomeView } from './components/HomeView';
 import { ResumeDownloadModal } from './components/ResumeDownloadModal';
-import { RecruiterScanMode } from './components/RecruiterScanMode';
 import { ProjectDetailModal } from './components/ProjectDetailModal';
 import { WhitepaperModal } from './components/WhitepaperModal';
 import { MessagingSection } from './components/MessagingSection';
@@ -22,7 +21,6 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [whitepaperProject, setWhitepaperProject] = useState<Project | null>(null);
   const [isResumeOpen, setIsResumeOpen] = useState(false);
-  const [isRecruiterScanOpen, setIsRecruiterScanOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
@@ -61,6 +59,20 @@ export default function App() {
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  // When activePart is messaging, lock outer html and body scrolling so only the inner chat contents scroll
+  useEffect(() => {
+    if (activePart === 'messaging') {
+      const prevBodyOverflow = document.body.style.overflow;
+      const prevHtmlOverflow = document.documentElement.style.overflow;
+      document.body.style.overflow = 'hidden';
+      document.documentElement.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = prevBodyOverflow;
+        document.documentElement.style.overflow = prevHtmlOverflow;
+      };
+    }
+  }, [activePart]);
 
   const handleOneClickResumeDownload = () => {
     setResumeDownloadCount((c) => c + 1);
@@ -138,7 +150,6 @@ export default function App() {
         activePart={activePart}
         onSelectPart={handleSelectPart}
         onResumeClick={handleOneClickResumeDownload}
-        onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
         resumeDownloadCount={resumeDownloadCount}
       />
 
@@ -151,7 +162,6 @@ export default function App() {
             <LandingHomeView
               onNavigatePart={handleSelectPart}
               onResumeClick={handleOneClickResumeDownload}
-              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
             />
           </section>
         )}
@@ -192,8 +202,6 @@ export default function App() {
           <section id="overview" className="relative flex-1 w-full flex flex-col border-b border-[#b0bece]">
             <HomeView
               onNavigatePart={handleSelectPart}
-              onResumeClick={() => setIsResumeOpen(true)}
-              onRecruiterScanClick={() => setIsRecruiterScanOpen(true)}
             />
 
             {/* Bottom Sequential Navigator */}
@@ -280,12 +288,6 @@ export default function App() {
         isOpen={isResumeOpen}
         onClose={() => setIsResumeOpen(false)}
         onDownloaded={handleResumeDownload}
-      />
-
-      <RecruiterScanMode
-        isOpen={isRecruiterScanOpen}
-        onClose={() => setIsRecruiterScanOpen(false)}
-        onResumeClick={handleOneClickResumeDownload}
       />
 
       {/* Floating Scroll to Top Quick Action */}

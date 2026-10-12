@@ -14,13 +14,11 @@ import { withRecordVersion } from '../utils/supabase';
 interface LandingHomeViewProps {
   onNavigatePart: (part: PortfolioPart) => void;
   onResumeClick: () => void;
-  onRecruiterScanClick: () => void;
 }
 
 export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   onNavigatePart,
   onResumeClick,
-  onRecruiterScanClick,
 }) => {
   const { bio, documents, avatar, updatedAt } = useProfileSync();
   const heroMessage = bio.header || "Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.";
@@ -94,16 +92,14 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               </button>
             </div>
 
-            {/* Recruiter 60-Second Scan Link */}
-            <div className="mt-4 flex items-center justify-center gap-1.5 text-xs font-sans text-slate-600">
-              <span>3D Modeling</span>
-              <button
-                onClick={onRecruiterScanClick}
-                className="inline-flex items-center gap-1 font-bold text-cyan-900 hover:text-cyan-950 underline cursor-pointer"
-              >
-                <Zap className="w-3.5 h-3.5 text-amber-600" />
+            {/* 60-Second Executive Scan Text Design (Display only, non-functional text design) */}
+            <div className="mt-4 flex items-center justify-center gap-2 text-xs font-sans text-slate-600 select-none">
+              <span className="font-medium text-slate-700">3D Modeling</span>
+              <span className="text-slate-400">•</span>
+              <span className="inline-flex items-center gap-1 font-bold text-cyan-900 bg-white/70 border border-slate-300/80 px-2.5 py-0.5 rounded-full shadow-2xs">
+                <Zap className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                 <span>Launch 60-Second Executive Scan</span>
-              </button>
+              </span>
             </div>
           </div>
         </div>

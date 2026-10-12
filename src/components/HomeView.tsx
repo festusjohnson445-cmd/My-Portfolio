@@ -4,8 +4,6 @@ import { EngineeringDocumentHub } from './EngineeringDocumentHub';
 
 interface HomeViewProps {
   onNavigatePart?: (part: PortfolioPart) => void;
-  onResumeClick?: () => void;
-  onRecruiterScanClick?: () => void;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({ onNavigatePart }) => {

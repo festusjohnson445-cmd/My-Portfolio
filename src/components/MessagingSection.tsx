@@ -3544,7 +3544,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                     setIsUserScrolledUp(false);
                     scrollToBottom('smooth', true);
                   }}
-                  className="absolute bottom-16 right-4 sm:right-6 z-30 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-950 text-white shadow-xl border border-cyan-500/60 flex items-center gap-1.5 text-xs font-semibold backdrop-blur-xs transition-all cursor-pointer animate-fade-in hover:scale-105 active:scale-95"
+                  className="absolute bottom-20 right-4 sm:right-6 z-30 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-950 text-white shadow-xl border border-cyan-500/60 flex items-center gap-1.5 text-xs font-semibold backdrop-blur-xs transition-all cursor-pointer animate-fade-in hover:scale-105 active:scale-95"
                   title="Scroll down to latest messages"
                 >
                   <ArrowDown className="w-3.5 h-3.5 text-cyan-400" />
@@ -3552,189 +3552,195 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                 </button>
               )}
 
-              {/* ATTACHMENTS PREVIEW QUEUE */}
-              {attachedFiles.length > 0 && (
-                <div className="px-3 py-1.5 bg-[#e2e8f0] border-t border-slate-300 flex items-center gap-2 overflow-x-auto text-xs">
-                  <span className="text-slate-600 font-semibold text-[11px] shrink-0">
-                    Ready to send:
-                  </span>
-                  {attachedFiles.map((att) => (
-                    <div
-                      key={att.id}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-slate-300 shadow-xs"
-                    >
-                      <FileText className="w-3 h-3 text-[#243346]" />
-                      <span className="text-[11px] max-w-[120px] truncate">{att.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveAttachment(att.id)}
-                        className="text-slate-400 hover:text-red-500 ml-1 cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* 3. COMPACT BOTTOM INPUT BAR & WHATSAPP-STYLE VOICE RECORDER */}
-              {isRecording ? (
-                /* LIVE WHATSAPP-STYLE VOICE RECORDING BAR */
-                <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0 flex items-center gap-2 select-none animate-fadeIn">
-                  {/* WhatsApp White Capsule Container */}
-                  <div className="flex-1 flex items-center justify-between bg-white rounded-full px-3.5 sm:px-4 py-2 shadow-xs border border-slate-200/90 gap-2.5 sm:gap-3 min-w-0">
-                    {/* Left: Blinking red recording dot + Live Timer */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="relative flex h-3 w-3 shrink-0">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600" />
-                      </span>
-                      <span className="text-xs sm:text-sm font-mono font-bold text-slate-800 whitespace-nowrap tracking-wide">
-                        {formatDuration(recordingSeconds)}
-                      </span>
-                    </div>
-
-                    {/* Middle: WhatsApp Dynamic Acoustic Equalizer Waveform */}
-                    <div className="flex-1 flex items-center justify-center gap-[2.5px] sm:gap-1 h-5 overflow-hidden px-1">
-                      {[10, 16, 22, 12, 26, 18, 30, 14, 24, 16, 28, 20, 14, 22, 18, 26, 14, 20].map((h, i) => (
-                        <span
-                          key={i}
-                          style={{
-                            height: `${Math.max(4, h * (0.8 + ((recordingSeconds + i) % 4) * 0.15))}px`,
-                            animationDelay: `${(i % 5) * 120}ms`
-                          }}
-                          className="w-[2.5px] sm:w-[3px] bg-[#00a884] rounded-full animate-pulse transition-all duration-300"
-                        />
-                      ))}
-                    </div>
-
-                    <span className="text-[11px] text-slate-400 hidden lg:inline font-sans truncate select-none">
-                      Recording voice note...
+              {/* ======================================================== */}
+              {/* RIGIDLY FIXED BASE CONTAINER (SECOND ATTACHED SCREENSHOT) */}
+              {/* Fixed rigidly to the base of the page; inner chat scrolls */}
+              {/* ======================================================== */}
+              <div className="sticky bottom-0 left-0 right-0 z-30 w-full shrink-0 bg-[#f0f2f5] border-t border-[#b8c6d4] pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-[0_-3px_12px_rgba(0,0,0,0.08)]">
+                {/* ATTACHMENTS PREVIEW QUEUE */}
+                {attachedFiles.length > 0 && (
+                  <div className="px-3 py-1.5 bg-[#e2e8f0] border-b border-slate-300 flex items-center gap-2 overflow-x-auto text-xs">
+                    <span className="text-slate-600 font-semibold text-[11px] shrink-0">
+                      Ready to send:
                     </span>
-
-                    {/* Right inside capsule: Discard Trash Button */}
-                    <button
-                      type="button"
-                      onClick={cancelVoiceRecording}
-                      className="p-1.5 rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors cursor-pointer shrink-0"
-                      title="Discard and cancel voice note"
-                    >
-                      <Trash2 className="w-4.5 h-4.5" />
-                    </button>
-                  </div>
-
-                  {/* Outside Capsule: Iconic WhatsApp Circular Green Send Button */}
-                  <button
-                    type="button"
-                    onClick={stopAndSendVoiceRecording}
-                    className="w-10 h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
-                    title="Send voice note"
-                  >
-                    <Send className="w-4 h-4 fill-current ml-0.5" />
-                  </button>
-                </div>
-              ) : (
-                /* STANDARD MESSAGE & ATTACHMENT INPUT BAR (WHATSAPP STRUCTURE) */
-                <div className="bg-[#f0f2f5] p-2 sm:p-2.5 border-t border-[#d0ded7] shrink-0">
-                  <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
-                    
-                    {/* File Attachment Button */}
-                    <div className="relative">
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={handleFileUpload}
-                        multiple
-                        className="hidden"
-                        id="chat-file-input"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
-                        title="Attach documents, CAD files or images"
-                      >
-                        <Paperclip className="w-4.5 h-4.5 text-[#243346]" />
-                      </button>
-                    </div>
-
-                    {/* Quick Demo Audio Memo Button */}
-                    <button
-                      type="button"
-                      onClick={handleSendDemoAudio}
-                      className="hidden md:inline-flex p-1.5 rounded-lg bg-slate-200/80 hover:bg-slate-300 text-slate-700 text-[10px] font-bold items-center gap-1 cursor-pointer shrink-0 transition-colors"
-                      title="Send sample audio memo"
-                    >
-                      <Volume2 className="w-3 h-3 text-[#243346]" />
-                      <span>Audio Memo</span>
-                    </button>
-
-                    {/* Message Input Box with Engineering Symbol Picker */}
-                    <div className="flex-1 relative">
-                      <input
-                        type="text"
-                        placeholder={
-                          isOwner
-                            ? `Reply to ${activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel} as Festus...`
-                            : `Type message to Festus Johnson...`
-                        }
-                        value={inputMessage}
-                        onChange={(e) => updateInputMessage(e.target.value)}
-                        className="w-full px-3.5 py-2 bg-white rounded-full text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00a884] border border-slate-200 shadow-xs pr-8"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => updateInputMessage(inputMessage + ' ⚙️ ')}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                        title="Insert engineering symbol"
-                      >
-                        <Smile className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {/* InChat Login Prompt Tooltip for Visitors */}
-                    {loginTooltipVisible && !isOwner && !isVisitorLoggedIn && (
+                    {attachedFiles.map((att) => (
                       <div
-                        role="alert"
-                        className="absolute bottom-16 right-4 z-50 flex items-center gap-2 bg-[#243346] text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-2xl border border-white/20 whitespace-nowrap animate-bounce"
+                        key={att.id}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-slate-300 shadow-xs"
                       >
-                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
-                        <span>Click the InChat to Login First</span>
+                        <FileText className="w-3 h-3 text-[#243346]" />
+                        <span className="text-[11px] max-w-[120px] truncate">{att.name}</span>
                         <button
                           type="button"
-                          onClick={() => {
-                            setLoginTooltipVisible(false);
-                            setIsVisitorProfileModalOpen(true);
-                          }}
-                          className="ml-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
+                          onClick={() => handleRemoveAttachment(att.id)}
+                          className="text-slate-400 hover:text-red-500 ml-1 cursor-pointer"
                         >
-                          InChat
+                          <X className="w-3 h-3" />
                         </button>
                       </div>
-                    )}
+                    ))}
+                  </div>
+                )}
 
-                    {/* WhatsApp Circular Action Button (Mic when empty, Send when text present) */}
-                    {inputMessage.trim() || attachedFiles.length > 0 ? (
-                      <button
-                        type="submit"
-                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
-                        title="Send message"
-                      >
-                        <Send className="w-4 h-4 fill-current ml-0.5" />
-                      </button>
-                    ) : (
+                {/* 3. COMPACT BOTTOM INPUT BAR & WHATSAPP-STYLE VOICE RECORDER */}
+                {isRecording ? (
+                  /* LIVE WHATSAPP-STYLE VOICE RECORDING BAR */
+                  <div className="p-2 sm:p-2.5 flex items-center gap-2 select-none animate-fadeIn">
+                    {/* WhatsApp White Capsule Container */}
+                    <div className="flex-1 flex items-center justify-between bg-white rounded-full px-3.5 sm:px-4 py-2 shadow-xs border border-slate-200/90 gap-2.5 sm:gap-3 min-w-0">
+                      {/* Left: Blinking red recording dot + Live Timer */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="relative flex h-3 w-3 shrink-0">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600" />
+                        </span>
+                        <span className="text-xs sm:text-sm font-mono font-bold text-slate-800 whitespace-nowrap tracking-wide">
+                          {formatDuration(recordingSeconds)}
+                        </span>
+                      </div>
+
+                      {/* Middle: WhatsApp Dynamic Acoustic Equalizer Waveform */}
+                      <div className="flex-1 flex items-center justify-center gap-[2.5px] sm:gap-1 h-5 overflow-hidden px-1">
+                        {[10, 16, 22, 12, 26, 18, 30, 14, 24, 16, 28, 20, 14, 22, 18, 26, 14, 20].map((h, i) => (
+                          <span
+                            key={i}
+                            style={{
+                              height: `${Math.max(4, h * (0.8 + ((recordingSeconds + i) % 4) * 0.15))}px`,
+                              animationDelay: `${(i % 5) * 120}ms`
+                            }}
+                            className="w-[2.5px] sm:w-[3px] bg-[#00a884] rounded-full animate-pulse transition-all duration-300"
+                          />
+                        ))}
+                      </div>
+
+                      <span className="text-[11px] text-slate-400 hidden lg:inline font-sans truncate select-none">
+                        Recording voice note...
+                      </span>
+
+                      {/* Right inside capsule: Discard Trash Button */}
                       <button
                         type="button"
-                        onClick={startVoiceRecording}
-                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
-                        title="Record voice note (WhatsApp style)"
+                        onClick={cancelVoiceRecording}
+                        className="p-1.5 rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors cursor-pointer shrink-0"
+                        title="Discard and cancel voice note"
                       >
-                        <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                        <Trash2 className="w-4.5 h-4.5" />
                       </button>
-                    )}
-                  </form>
-                </div>
-              )}
+                    </div>
+
+                    {/* Outside Capsule: Iconic WhatsApp Circular Green Send Button */}
+                    <button
+                      type="button"
+                      onClick={stopAndSendVoiceRecording}
+                      className="w-10 h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                      title="Send voice note"
+                    >
+                      <Send className="w-4 h-4 fill-current ml-0.5" />
+                    </button>
+                  </div>
+                ) : (
+                  /* STANDARD MESSAGE & ATTACHMENT INPUT BAR (WHATSAPP STRUCTURE) */
+                  <div className="p-2 sm:p-2.5">
+                    <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
+                      
+                      {/* File Attachment Button */}
+                      <div className="relative">
+                        <input
+                          type="file"
+                          ref={fileInputRef}
+                          onChange={handleFileUpload}
+                          multiple
+                          className="hidden"
+                          id="chat-file-input"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="p-2 rounded-full hover:bg-slate-200 text-[#243346] transition-colors cursor-pointer shrink-0"
+                          title="Attach documents, CAD files or images"
+                        >
+                          <Paperclip className="w-4.5 h-4.5 text-[#243346]" />
+                        </button>
+                      </div>
+
+                      {/* Quick Demo Audio Memo Button */}
+                      <button
+                        type="button"
+                        onClick={handleSendDemoAudio}
+                        className="hidden md:inline-flex p-1.5 rounded-lg bg-slate-200/80 hover:bg-slate-300 text-slate-700 text-[10px] font-bold items-center gap-1 cursor-pointer shrink-0 transition-colors"
+                        title="Send sample audio memo"
+                      >
+                        <Volume2 className="w-3 h-3 text-[#243346]" />
+                        <span>Audio Memo</span>
+                      </button>
+
+                      {/* Message Input Box with Engineering Symbol Picker */}
+                      <div className="flex-1 relative">
+                        <input
+                          type="text"
+                          placeholder={
+                            isOwner
+                              ? `Reply to ${activeConversation.visitorName || activeConversation.customName || activeConversation.defaultLabel} as Festus...`
+                              : `Type message to Festus Johnson...`
+                          }
+                          value={inputMessage}
+                          onChange={(e) => updateInputMessage(e.target.value)}
+                          className="w-full px-3.5 py-2 bg-white rounded-full text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#00a884] border border-slate-200 shadow-xs pr-8"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateInputMessage(inputMessage + ' ⚙️ ')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                          title="Insert engineering symbol"
+                        >
+                          <Smile className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* InChat Login Prompt Tooltip for Visitors */}
+                      {loginTooltipVisible && !isOwner && !isVisitorLoggedIn && (
+                        <div
+                          role="alert"
+                          className="absolute bottom-16 right-4 z-50 flex items-center gap-2 bg-[#243346] text-white text-xs font-semibold py-2 px-3.5 rounded-xl shadow-2xl border border-white/20 whitespace-nowrap animate-bounce"
+                        >
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                          <span>Click the InChat to Login First</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLoginTooltipVisible(false);
+                              setIsVisitorProfileModalOpen(true);
+                            }}
+                            className="ml-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[11px] shadow-sm transition-colors cursor-pointer"
+                          >
+                            InChat
+                          </button>
+                        </div>
+                      )}
+
+                      {/* WhatsApp Circular Action Button (Mic when empty, Send when text present) */}
+                      {inputMessage.trim() || attachedFiles.length > 0 ? (
+                        <button
+                          type="submit"
+                          className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                          title="Send message"
+                        >
+                          <Send className="w-4 h-4 fill-current ml-0.5" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={startVoiceRecording}
+                          className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-md active:scale-95 transition-all cursor-pointer shrink-0"
+                          title="Record voice note (WhatsApp style)"
+                        >
+                          <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+                        </button>
+                      )}
+                    </form>
+                  </div>
+                )}
+              </div>
 
             </div>
 

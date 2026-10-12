@@ -45,14 +45,12 @@ import {
   Code,
   Wrench,
   Users,
-  Activity,
   Database,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
 import { SkillSelector } from './SkillSelector';
 import { categorizeSkills, SkillCategoryName } from '../data/skillsData';
-import { ErrorTestingComponent } from './ErrorTestingComponent';
 import {
   saveStoredAvatar,
   resetStoredAvatar,
@@ -253,9 +251,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   // Delete document confirmation modal state (Owner only)
   const [docToDelete, setDocToDelete] = useState<{ id: string; title: string } | null>(null);
   const [isDeletingDoc, setIsDeletingDoc] = useState(false);
-
-  // System Diagnostics & Error Testing Modal State
-  const [isErrorTestingOpen, setIsErrorTestingOpen] = useState(false);
 
   // 4. OWNER ACCESS CONTROL (Restricting changes to Festus Johnson only)
   const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState<boolean>(syncIsOwner);
@@ -2493,33 +2488,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </svg>
             </a>
           </div>
-
-          {/* System Diagnostics & Error Testing Bar (Only visible to owner when signed in) */}
-          {isOwnerAuthenticated && (
-            <div className="mt-6 p-4 rounded-2xl bg-white border border-[#b8c6d4] flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-700 shadow-2xs">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center text-cyan-800 shrink-0">
-                  <Activity className="w-4 h-4" />
-                </div>
-                <div>
-                  <span className="text-xs font-bold text-slate-900 block font-serif">
-                    System Diagnostics &amp; Error Testing
-                  </span>
-                  <span className="text-[11px] text-slate-500">
-                    Live automated test suite for database synchronization, dynamic memory, and profile integrity.
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsErrorTestingOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-xs shrink-0"
-              >
-                <Activity className="w-3.5 h-3.5" />
-                <span>Launch Diagnostics</span>
-              </button>
-            </div>
-          )}
         </div>
       </section>
 
@@ -3276,14 +3244,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       )}
-
-      {/* ======================================================== */}
-      {/* SYSTEM DIAGNOSTICS & ERROR TESTING SUITE MODAL           */}
-      {/* ======================================================== */}
-      <ErrorTestingComponent
-        isOpen={isErrorTestingOpen}
-        onClose={() => setIsErrorTestingOpen(false)}
-      />
     </div>
   );
 };

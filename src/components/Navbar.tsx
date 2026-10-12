@@ -18,7 +18,6 @@ interface NavbarProps {
   activePart: PortfolioPart;
   onSelectPart: (part: PortfolioPart) => void;
   onResumeClick?: () => void;
-  onRecruiterScanClick?: () => void;
   resumeDownloadCount?: number;
 }
 
@@ -26,7 +25,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   activePart,
   onSelectPart,
   onResumeClick,
-  onRecruiterScanClick,
   resumeDownloadCount = 148,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -160,18 +158,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <ShieldCheck className="w-3 h-3 text-cyan-800" />
                 <span>Visitor Mode</span>
-              </button>
-            )}
-
-            {/* Recruiter Scan Button */}
-            {onRecruiterScanClick && (
-              <button
-                onClick={onRecruiterScanClick}
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-900/10 hover:bg-cyan-900/20 text-cyan-950 border border-cyan-800/30 text-xs font-sans font-bold shadow-2xs transition-colors cursor-pointer"
-                title="Recruiter Quick Scan Mode"
-              >
-                <Zap className="w-3.5 h-3.5 text-cyan-800" />
-                <span>Recruiter Scan</span>
               </button>
             )}
 
