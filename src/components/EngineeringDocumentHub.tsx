@@ -352,7 +352,15 @@ export function formatBytes(bytes: number): string {
 
 const HUB_CACHE_KEY = 'fesline_hub_docs_cache_v2';
 
+// In-memory hub documents cache to prevent high internet data consumption on page navigation
+let globalHubDocsMemoryCache: PublicEngineeringDocument[] | null = null;
+let lastHubDocsFetchTimestamp = 0;
+const HUB_CACHE_WINDOW_MS = 3 * 60 * 1000; // 3 minutes cache window
+
 function getInitialCachedDocuments(): PublicEngineeringDocument[] {
+  if (globalHubDocsMemoryCache && globalHubDocsMemoryCache.length > 0) {
+    return globalHubDocsMemoryCache;
+  }
   if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(HUB_CACHE_KEY);
@@ -360,7 +368,9 @@ function getInitialCachedDocuments(): PublicEngineeringDocument[] {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         const deleted = getDeletedDocIds();
-        return sortDocumentsDescending(parsed.filter((d: any) => d && d.id && !deleted.has(d.id)));
+        const initial = sortDocumentsDescending(parsed.filter((d: any) => d && d.id && !deleted.has(d.id)));
+        globalHubDocsMemoryCache = initial;
+        return initial;
       }
     }
   } catch {}
@@ -405,8 +415,13 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   };
 
   // Load documents from Firestore & cache first, then sync with server
-  const loadDocuments = useCallback(async () => {
+  const loadDocuments = useCallback(async (force = false) => {
     if (isSyncingRef.current) return;
+    if (!force && globalHubDocsMemoryCache && Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS) {
+      setDocuments(globalHubDocsMemoryCache);
+      setIsLoadingDocs(false);
+      return;
+    }
     isSyncingRef.current = true;
 
     try {
@@ -526,6 +541,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       const activeDeleted = getDeletedDocIds();
       const combined = Array.from(docsMap.values()).filter((d) => d && d.id && !activeDeleted.has(d.id));
       const sorted = sortDocumentsDescending(combined);
+      globalHubDocsMemoryCache = sorted;
+      lastHubDocsFetchTimestamp = Date.now();
       setDocuments(sorted);
       saveHubDocumentsPersistently(sorted).catch(() => {});
       try {
@@ -565,6 +582,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               }
             });
             const merged = sortDocumentsDescending(Array.from(map.values()).filter((d) => !currentDeleted.has(d.id)));
+            globalHubDocsMemoryCache = merged;
+            lastHubDocsFetchTimestamp = Date.now();
             saveHubDocumentsPersistently(merged).catch(() => {});
             return merged;
           });
@@ -574,22 +593,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     );
 
     const handleUpdate = () => {
-      loadDocuments();
-    };
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        loadDocuments();
-      }
+      loadDocuments(true);
     };
 
     window.addEventListener('fesline_hub_docs_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
-    window.addEventListener('focus', handleUpdate);
-    document.addEventListener('visibilitychange', handleVisibility);
 
     const unsubscribeSupabase = subscribeToSupabaseMaterialsChanges(() => {
-      loadDocuments();
+      loadDocuments(true);
     });
 
     return () => {
@@ -597,13 +608,13 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       unsubscribeSupabase();
       window.removeEventListener('fesline_hub_docs_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
-      window.removeEventListener('focus', handleUpdate);
-      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [loadDocuments]);
 
   const saveDocumentsToStorage = (updatedDocs: PublicEngineeringDocument[]) => {
     const sorted = sortDocumentsDescending(updatedDocs);
+    globalHubDocsMemoryCache = sorted;
+    lastHubDocsFetchTimestamp = Date.now();
     setDocuments(sorted);
     saveHubDocumentsPersistently(sorted).catch(() => {});
     window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));

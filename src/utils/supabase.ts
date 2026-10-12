@@ -862,6 +862,7 @@ export async function saveMaterialToSupabaseTable(material: {
       console.warn('[Supabase DB Materials Upsert Note]:', error.message);
       return false;
     }
+    cachedMaterialsData = null;
     return true;
   } catch (err: any) {
     console.warn('[Supabase DB Materials Save Note]:', err?.message || err);
@@ -869,10 +870,20 @@ export async function saveMaterialToSupabaseTable(material: {
   }
 }
 
+// In-memory materials cache with 3-minute TTL to drastically cut bandwidth & data consumption
+let cachedMaterialsData: any[] | null = null;
+let lastMaterialsFetchTime = 0;
+const MATERIALS_CACHE_TTL_MS = 3 * 60 * 1000;
+
 /**
  * Fetch public materials from Supabase "materials" table (public for unauthenticated visitors)
+ * Cached in-memory to prevent high internet data consumption on repeated navigation
  */
-export async function fetchMaterialsFromSupabaseTable(): Promise<any[]> {
+export async function fetchMaterialsFromSupabaseTable(force = false): Promise<any[]> {
+  if (!force && cachedMaterialsData && Date.now() - lastMaterialsFetchTime < MATERIALS_CACHE_TTL_MS) {
+    return cachedMaterialsData;
+  }
+
   try {
     const { data, error } = await supabase
       .from('materials')
@@ -880,11 +891,13 @@ export async function fetchMaterialsFromSupabaseTable(): Promise<any[]> {
       .order('created_at', { ascending: false });
 
     if (error || !data) {
-      return [];
+      return cachedMaterialsData || [];
     }
+    cachedMaterialsData = data;
+    lastMaterialsFetchTime = Date.now();
     return data;
   } catch {
-    return [];
+    return cachedMaterialsData || [];
   }
 }
 
@@ -902,6 +915,7 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
     console.error('[Supabase DB Materials Delete Error]:', error.message);
     throw new Error(`Failed to delete material from Supabase database: ${error.message}`);
   }
+  cachedMaterialsData = null;
   return true;
 }
 
