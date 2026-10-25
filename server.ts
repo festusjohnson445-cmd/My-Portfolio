@@ -23,6 +23,7 @@ import {
   saveConversationsBatchToDb,
   deleteConversationFromDb,
   deleteMessageFromDb,
+  updateMessageInDb,
   getDeletedConversationIdsFromDb,
   getLearningSessionsFromDb,
   getLearningSessionByIdFromDb,
@@ -344,6 +345,21 @@ app.delete('/api/chats/:id', async (req, res) => {
   } catch (err: any) {
     console.error('Error deleting chat from database:', err);
     res.status(500).json({ success: false, message: err?.message || 'Failed to delete chat' });
+  }
+});
+
+// Update or edit a specific message within a conversation
+app.patch('/api/chats/:convId/messages/:msgId', async (req, res) => {
+  try {
+    const { convId, msgId } = req.params;
+    const { text, content } = req.body;
+    await updateMessageInDb(convId, msgId, text || content || '');
+    const updated = await getConversationsFromDb();
+    broadcastChats(updated);
+    res.json({ success: true, conversations: updated, updatedMessageId: msgId });
+  } catch (err: any) {
+    console.error('Error updating message in database:', err);
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update message' });
   }
 });
 

@@ -245,7 +245,7 @@ export default function App() {
         {/* 05. FULL PAGE MESSAGING SECTION ONLY                     */}
         {/* ======================================================== */}
         <section id="messaging" className={`flex-1 min-h-0 h-full w-full bg-[#dce1e8] flex-col overflow-hidden ${activePart === 'messaging' ? 'flex' : 'hidden'}`}>
-          <MessagingSection onBack={() => handleSelectPart('home')} />
+          <MessagingSection onBack={() => handleSelectPart('home')} isActive={activePart === 'messaging'} />
         </section>
       </main>
 

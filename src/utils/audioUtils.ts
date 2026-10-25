@@ -372,12 +372,14 @@ export function serializeMessagePayload(params: {
   text?: string;
   attachments?: any[];
   voiceNote?: { url: string; duration: number };
+  is_edited?: boolean;
+  edited_at?: string;
 }): string {
-  const { text = '', attachments, voiceNote } = params;
+  const { text = '', attachments, voiceNote, is_edited, edited_at } = params;
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
   const hasVoice = Boolean(voiceNote && voiceNote.url);
 
-  if (!hasAttachments && !hasVoice) {
+  if (!hasAttachments && !hasVoice && !is_edited) {
     return text || '';
   }
 
@@ -390,6 +392,8 @@ export function serializeMessagePayload(params: {
           duration: Math.max(1, Math.round(Number(voiceNote!.duration) || 1)),
         }
       : undefined,
+    is_edited: is_edited || undefined,
+    edited_at: edited_at || undefined,
   })}`;
 }
 
@@ -407,11 +411,14 @@ export function serializeVoiceNoteContent(voiceNote: { url: string; duration: nu
 export function parseMessagePayload(
   content: any,
   existingVoiceNote?: any,
-  existingAttachments?: any
-): { text: string; voiceNote?: { url: string; duration: number }; attachments?: any[] } {
+  existingAttachments?: any,
+  existingIsEdited?: boolean
+): { text: string; voiceNote?: { url: string; duration: number }; attachments?: any[]; is_edited?: boolean; edited_at?: string } {
   let attachments = Array.isArray(existingAttachments) && existingAttachments.length > 0 ? existingAttachments : undefined;
   let voiceNote: { url: string; duration: number } | undefined = undefined;
   let text = typeof content === 'string' ? content : '';
+  let is_edited: boolean | undefined = existingIsEdited ? true : undefined;
+  let edited_at: string | undefined = undefined;
 
   // 1. Direct object or JSON string in voice_note column
   if (existingVoiceNote) {
@@ -448,6 +455,12 @@ export function parseMessagePayload(
             url: parsed.voiceNote.url,
             duration: Math.max(1, Math.round(Number(parsed.voiceNote.duration) || 1)),
           };
+        }
+        if (parsed.is_edited) {
+          is_edited = true;
+        }
+        if (parsed.edited_at) {
+          edited_at = parsed.edited_at;
         }
       }
     } catch {}
@@ -493,7 +506,7 @@ export function parseMessagePayload(
     text = '';
   }
 
-  return { text, voiceNote, attachments };
+  return { text, voiceNote, attachments, is_edited, edited_at };
 }
 
 /**

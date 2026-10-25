@@ -58,7 +58,6 @@ import {
   saveStoredDocuments,
   setOwnerAuthenticated,
   compressImage,
-  compressAvatarToWebP,
   notifyProfileUpdated,
   OWNER_EMAIL,
   useProfileSync,
@@ -68,6 +67,8 @@ import {
   type ProfileBioData,
   type DocumentItem,
 } from '../utils/profileState';
+import { ProfilePictureRepositionModal } from './ProfilePictureRepositionModal';
+import { loadAndValidateImageFile, type LoadedImageDetails } from '../utils/imagePipeline';
 import { DocumentTopMedia } from './DocumentTopMedia';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
@@ -182,6 +183,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   // Delete Profile Picture Modal State
   const [isDeleteAvatarModalOpen, setIsDeleteAvatarModalOpen] = useState(false);
   const [isDeletingAvatar, setIsDeletingAvatar] = useState(false);
+
+  // Profile Picture Interactive Positioning & Pipeline State
+  const [repositionModalOpen, setRepositionModalOpen] = useState(false);
+  const [loadedImageForReposition, setLoadedImageForReposition] = useState<LoadedImageDetails | null>(null);
+  const [isDecodingImage, setIsDecodingImage] = useState(false);
 
   const handleConfirmDeleteAvatar = async () => {
     try {
@@ -351,7 +357,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return null;
   });
 
-  // Handle Profile Picture Upload (Owner Gated via Supabase Auth Session)
+  // Handle Profile Picture Selection (Owner Gated via Supabase Auth Session)
+  // No premature compression or resize is performed before positioning
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -362,6 +369,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     if (!activeSession || !activeSession.user) {
       setIsAuthModalOpen(true);
       showNotification('Active owner session required to change profile photo. Please log in.', 'error');
+      e.target.value = '';
       return;
     }
 
@@ -370,30 +378,44 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       /\.(png|jpe?g|webp|gif|svg|avif|bmp|ico|tiff?|heic|heif)$/i.test(file.name);
 
     if (!isImageFile) {
-      showNotification('Please select a valid image file (PNG, JPG, WebP, GIF, SVG).', 'error');
+      showNotification('Please select a valid image file (JPEG, PNG, HEIC, WebP).', 'error');
+      e.target.value = '';
       return;
     }
 
     try {
-      setAvatarImgError(false);
-      showNotification('Compressing and saving profile photo (400x400 WebP)...');
+      setIsDecodingImage(true);
+      showNotification('Loading full-resolution image for positioning...');
 
-      // 1. Client-side WebP compression (400x400 max, 80% quality)
-      const compressed = await compressAvatarToWebP(file, 400, 0.80);
+      // Pipeline Step 1: Decode and validate image file integrity (JPEG, PNG, HEIC)
+      // Preserves original picture size and dimensions for interactive framing
+      const imageDetails = await loadAndValidateImageFile(file);
 
-      // 2. OPTIMISTIC UI UPDATE: display immediately with 0ms visual latency
-      setEditAvatar(compressed.dataUrl);
-
-      // 3. Persist WebP blob to Supabase Storage bucket 'avatars' and database
-      const finalUrl = await syncSaveAvatar(compressed.blob);
-      setEditAvatar(finalUrl);
-      showNotification('Profile picture compressed and saved to Supabase!');
+      // Open interactive positioning workspace
+      setLoadedImageForReposition(imageDetails);
+      setRepositionModalOpen(true);
     } catch (err: any) {
-      console.error('[Avatar Upload Error]:', err);
-      // Report error
-      showNotification('Avatar upload failed: ' + (err?.message || 'Storage error'), 'error');
+      console.error('[Avatar File Validation Error]:', err);
+      showNotification(
+        err?.message || 'Corrupted or unreadable image file. Please choose a valid JPEG, PNG, or HEIC image.',
+        'error'
+      );
     } finally {
+      setIsDecodingImage(false);
       e.target.value = '';
+    }
+  };
+
+  // Callback triggered after automated 500x500 WebP @ 80% pipeline and Supabase upload completes
+  const handleRepositionSuccess = async (newAvatarUrl: string) => {
+    setAvatarImgError(false);
+    setEditAvatar(newAvatarUrl);
+    try {
+      await syncSaveAvatar(newAvatarUrl);
+      showNotification('Profile photo cropped (500×500 WebP @ 80%) and saved to Supabase!');
+    } catch (err: any) {
+      console.error('[Avatar Sync Error]:', err);
+      showNotification('Photo uploaded to storage, but profile sync failed: ' + (err?.message || 'Database error'), 'error');
     }
   };
 
@@ -973,98 +995,95 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       {/* ======================================================== */}
       {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
       {/* ======================================================== */}
+      {/* ======================================================== */}
+      {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
+      {/* Reduced by 35%+ and formatted row by row per user specification */}
+      {/* ======================================================== */}
       {isOwnerAuthenticated && (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="p-3.5 sm:p-4 rounded-2xl bg-white border-2 border-cyan-800 shadow-md flex flex-col md:flex-row items-center justify-between gap-3 font-sans animate-fade-in">
-            {/* Left: Icon + Title + Email Tag + UID */}
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2.5 w-full md:w-auto">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0 shadow-xs">
-                  <Unlock className="w-4 h-4 text-emerald-800" />
+          <div className="p-2.5 sm:p-3 rounded-xl bg-white border border-cyan-800/40 shadow-xs flex flex-col gap-2 font-sans animate-fade-in">
+            {/* ROW 1: Header - Status, Title, Supabase Auth Badge, and auth.uid() */}
+            <div className="flex flex-wrap items-center justify-between gap-1.5 pb-1.5 border-b border-slate-200/80">
+              <div className="flex items-center gap-1.5">
+                <div className="w-5 h-5 rounded-md bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0">
+                  <Unlock className="w-3 h-3 text-emerald-800" />
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif">
-                      Owner Admin Mode
-                    </h2>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10.5px] font-semibold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                      Supabase Auth
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                    <span className="text-[11px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                      auth.uid(): {authenticatedUid || 'owner'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(authenticatedUid || 'owner');
-                        setCopiedUid(true);
-                        setTimeout(() => setCopiedUid(false), 2000);
-                      }}
-                      className="text-slate-400 hover:text-slate-700 p-0.5"
-                      title="Copy owner UID"
-                    >
-                      {copiedUid ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                    </button>
-                    <span className="text-[11px] text-cyan-800 font-medium hidden sm:inline">
-                      · Buckets: <span className="font-mono font-bold">avatars</span> (public) &amp; <span className="font-mono font-bold">materials</span>
-                    </span>
-                  </div>
-                </div>
+                <h2 className="text-xs sm:text-[13px] font-bold text-slate-950 font-serif leading-none">
+                  Owner Admin Mode
+                </h2>
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-semibold">
+                  <span className="w-1 h-1 rounded-full bg-emerald-600 animate-pulse" />
+                  Supabase Auth
+                </span>
+              </div>
+
+              {/* auth.uid badge */}
+              <div className="flex items-center gap-1">
+                <span className="text-[9.5px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 truncate max-w-[200px] sm:max-w-none">
+                  auth.uid(): {authenticatedUid || 'owner'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(authenticatedUid || 'owner');
+                    setCopiedUid(true);
+                    setTimeout(() => setCopiedUid(false), 2000);
+                  }}
+                  className="text-slate-400 hover:text-slate-700 p-0.5 cursor-pointer"
+                  title="Copy owner UID"
+                >
+                  {copiedUid ? <Check className="w-2.5 h-2.5 text-emerald-600" /> : <Copy className="w-2.5 h-2.5" />}
+                </button>
               </div>
             </div>
 
-            {/* Right: Actions Group */}
-            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
-              {/* Supabase Database Settings */}
+            {/* ROW 2: Database, Storage & Policies Controls */}
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setShowSupabaseSettingsModal(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[10px] font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
                 title="Configure Supabase Database, Buckets, and Storage Settings"
               >
-                <Database className="w-3.5 h-3.5 text-emerald-700" />
+                <Database className="w-3 h-3 text-emerald-700" />
                 <span>Supabase Settings</span>
               </button>
 
-              {/* RLS Schema Viewer */}
               <button
                 type="button"
                 onClick={() => setShowRlsModal(true)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-300 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer"
                 title="View Supabase Row Level Security (RLS) SQL policies"
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-cyan-700" />
+                <ShieldCheck className="w-3 h-3 text-cyan-700" />
                 <span>RLS Policies</span>
               </button>
+            </div>
 
-              {/* Upload to avatars bucket button */}
+            {/* ROW 3: Profile & Media Management Actions */}
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => fileInputAvatarRef.current?.click()}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-900 text-xs font-semibold border border-cyan-200 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-50 hover:bg-cyan-100 text-cyan-900 text-[10px] font-semibold border border-cyan-200 transition-colors cursor-pointer"
                 title="Upload new profile picture to avatars bucket"
               >
-                <Camera className="w-3.5 h-3.5 text-cyan-700" />
+                <Camera className="w-3 h-3 text-cyan-700" />
                 <span>Change Photo</span>
               </button>
 
-              {/* Add Document Button */}
               <button
                 onClick={handleOpenAddDocument}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-xs"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[10px] font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
                 title="Upload a new engineering document to materials bucket"
               >
-                <Plus className="w-3.5 h-3.5 text-emerald-700" />
+                <Plus className="w-3 h-3 text-emerald-700" />
                 <span>+ Upload Material</span>
               </button>
 
-              {/* Edit Profile Button */}
               <button
                 onClick={() => (isEditingBio ? setIsEditingBio(false) : handleOpenEditBio())}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer ${
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold shadow-2xs transition-colors cursor-pointer ${
                   isEditingBio
                     ? 'bg-slate-800 text-white hover:bg-slate-900'
                     : 'bg-cyan-800 text-white hover:bg-cyan-900'
@@ -1072,24 +1091,24 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               >
                 {isEditingBio ? (
                   <>
-                    <X className="w-3.5 h-3.5" />
+                    <X className="w-3 h-3" />
                     <span>Close Editor</span>
                   </>
                 ) : (
                   <>
-                    <Edit3 className="w-3.5 h-3.5" />
+                    <Edit3 className="w-3 h-3" />
                     <span>Edit Bio</span>
                   </>
                 )}
               </button>
 
-              {/* Lock / Sign Out Button */}
+              {/* Sign Out Button placed neatly at the end of the action row */}
               <button
                 onClick={handleOwnerLogout}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold border border-rose-200 transition-colors cursor-pointer shadow-xs"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 text-[10px] font-semibold border border-rose-200 transition-colors cursor-pointer shadow-2xs ml-auto"
                 title="Sign out of Supabase owner session"
               >
-                <Lock className="w-3 h-3 text-rose-700" />
+                <Lock className="w-2.5 h-2.5 text-rose-700" />
                 <span>Sign Out</span>
               </button>
             </div>
@@ -1543,29 +1562,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs relative">
           
-          {/* Discreet Owner Login trigger (Subtle lock icon on the top right for Festus) */}
-          <div className="absolute top-4 right-4 sm:top-5 sm:right-5">
-            {!isOwnerAuthenticated ? (
-              <button
-                onClick={() => {
-                  setAuthError(null);
-                  setAuthPin('');
-                  setIsAuthModalOpen(true);
-                }}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-200/70 transition-colors cursor-pointer"
-                title="Owner Login (Festus Johnson only)"
-                aria-label="Owner Login"
-              >
-                <Lock className="w-3.5 h-3.5" />
-              </button>
-            ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-sans font-bold">
-                <Unlock className="w-3 h-3 text-emerald-700" />
-                <span>Owner Unlocked</span>
-              </span>
-            )}
-          </div>
-
           <div className="flex flex-col lg:flex-row items-center lg:items-start gap-6 lg:gap-8">
             
             {/* Profile Picture Frame & Controls */}
@@ -1632,20 +1628,14 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   )}
                 </div>
 
-                {/* Verified Badge Overlay (Clicking opens owner login if locked) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!isOwnerAuthenticated) {
-                      setIsAuthModalOpen(true);
-                    }
-                  }}
-                  className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-900 text-white text-[11px] font-sans font-bold px-3 py-0.5 rounded-full border border-slate-700 shadow-sm flex items-center gap-1.5 cursor-pointer hover:border-cyan-400 transition-colors"
-                  title={isOwnerAuthenticated ? 'Verified Owner' : 'Verified Engineer (Click for Owner Login)'}
+                {/* Verified Badge Overlay */}
+                <div
+                  className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-900 text-white text-[11px] font-sans font-bold px-3 py-0.5 rounded-full border border-slate-700 shadow-sm flex items-center gap-1.5 select-none"
+                  title="Verified Lead Mechanical Engineer"
                 >
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Verified Engineer</span>
-                </button>
+                </div>
               </div>
 
               {/* Quick Owner Photo Actions */}
@@ -2492,6 +2482,46 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       </section>
 
       {/* ======================================================== */}
+      {/* 5. FOOTER & OWNER AUTHENTICATION ACCESS                   */}
+      {/* ======================================================== */}
+      <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-4">
+        <div className="py-4 border-t border-[#b8c6d4]/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 font-sans">
+          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-center sm:text-left">
+            <span className="font-semibold text-slate-800">Festus, Olorunsogo Johnson</span>
+            <span>&middot;</span>
+            <span>Lead Mechanical &amp; Automation Engineer</span>
+            <span className="hidden sm:inline">&middot;</span>
+            <span className="text-[11px] text-slate-500">Verified Professional Profile</span>
+          </div>
+
+          {/* Discreet Owner Login trigger placed properly at the footer */}
+          <div className="flex items-center gap-2">
+            {!isOwnerAuthenticated ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthPin('');
+                  setIsAuthModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-slate-600 hover:text-cyan-900 bg-white hover:bg-slate-100 border border-[#b8c6d4] transition-colors cursor-pointer text-xs font-semibold shadow-2xs"
+                title="Owner Login (Festus Johnson only)"
+                aria-label="Owner Portal Login"
+              >
+                <Lock className="w-3.5 h-3.5 text-slate-500" />
+                <span>Owner Portal</span>
+              </button>
+            ) : (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-900 border border-emerald-300 text-xs font-sans font-semibold">
+                <Unlock className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Owner Session Active</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </footer>
+
+      {/* ======================================================== */}
       {/* MODAL: LIGHTBOX FULL PREVIEW OF DOCUMENT IMAGE           */}
       {/* ======================================================== */}
       {selectedPreviewDoc && (
@@ -3244,6 +3274,19 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       )}
+
+      {/* ======================================================== */}
+      {/* PROFILE PICTURE POSITIONING & FRAMING WORKSPACE MODAL    */}
+      {/* ======================================================== */}
+      <ProfilePictureRepositionModal
+        isOpen={repositionModalOpen}
+        imageDetails={loadedImageForReposition}
+        onClose={() => {
+          setRepositionModalOpen(false);
+          setLoadedImageForReposition(null);
+        }}
+        onSuccess={handleRepositionSuccess}
+      />
     </div>
   );
 };

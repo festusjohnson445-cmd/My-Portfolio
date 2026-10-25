@@ -641,6 +641,53 @@ export async function deleteConversationFromDb(id: string) {
   return true;
 }
 
+export async function updateMessageInDb(convId: string, msgId: string, newText: string) {
+  const memConv = memoryConversations.get(convId);
+  if (memConv) {
+    const existingMsgs = Array.isArray(memConv.messages) ? memConv.messages : [];
+    const updatedMsgs = existingMsgs.map((m: any) => {
+      if (m.id === msgId) {
+        return { ...m, text: newText, content: newText, is_edited: true, edited_at: new Date().toISOString() };
+      }
+      return m;
+    });
+    memConv.messages = updatedMsgs;
+    const lastMsg = updatedMsgs[updatedMsgs.length - 1];
+    memConv.lastMessage = lastMsg ? (lastMsg.text || 'Message sent') : '';
+    memConv.updatedAt = new Date();
+  }
+
+  try {
+    await withDbRetry(async () => {
+      const rows = await db.select().from(conversations).where(eq(conversations.id, convId)).limit(1);
+      if (rows.length > 0) {
+        const conv = rows[0];
+        const existingMsgs = Array.isArray(conv.messages) ? (conv.messages as any[]) : [];
+        const updatedMsgs = existingMsgs.map((m: any) => {
+          if (m.id === msgId) {
+            return { ...m, text: newText, content: newText, is_edited: true, edited_at: new Date().toISOString() };
+          }
+          return m;
+        });
+        const lastMsg = updatedMsgs[updatedMsgs.length - 1];
+        const lastSnippet = lastMsg
+          ? (lastMsg.text || (lastMsg.voiceNote ? '🎤 Voice note' : 'File sent'))
+          : '';
+
+        await db
+          .update(conversations)
+          .set({
+            messages: updatedMsgs,
+            lastMessage: lastSnippet,
+            updatedAt: new Date(),
+          })
+          .where(eq(conversations.id, convId));
+      }
+    }, 2);
+  } catch {}
+  return true;
+}
+
 export async function deleteMessageFromDb(convId: string, msgId: string) {
   const memConv = memoryConversations.get(convId);
   if (memConv) {

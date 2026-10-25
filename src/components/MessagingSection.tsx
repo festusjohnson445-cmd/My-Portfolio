@@ -56,6 +56,7 @@ import {
   ensureValidUuid,
   supabase,
   uploadChatFileToMaterialsBucket,
+  updateMessageInSupabase,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -83,6 +84,8 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   voiceNote?: VoiceNoteData;
   created_at?: string;
+  is_edited?: boolean;
+  edited_at?: string;
 }
 
 export interface Conversation {
@@ -280,9 +283,10 @@ const generateMessageId = (): string => {
 
 interface MessagingSectionProps {
   onBack?: () => void;
+  isActive?: boolean;
 }
 
-export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) => {
+export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isActive = true }) => {
   const { avatar: profileAvatar, bio, isOwner, setOwner, ownerUid } = useProfileSync();
   const profileName = bio.fullName || 'Festus, Olorunsogo Johnson';
   const profileEmail = bio.email || 'festusjohnson028@gmail.com';
@@ -538,6 +542,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     } catch {}
     return [];
   });
+
+  // Clean inline message editing state (strictly for messages sent by the active user)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState<string>('');
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
   // Sidebar filter for Owner: 'all' | 'important' | 'unread'
   const [sidebarFilter, setSidebarFilter] = useState<'all' | 'important' | 'unread'>('all');
@@ -796,24 +805,30 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
       };
     } catch {}
 
-    // 3-second live sync interval for Vercel and multi-tab sync
-    const syncInterval = setInterval(() => {
-      fetchChatsFromServer();
-    }, 3000);
+    // Data-saver live sync interval:
+    // Only runs background polling when the messaging page is actively visible.
+    // Suspended when navigating or scrolling other pages (Home, Profile, Hub, EaseStudy) to prevent high data consumption.
+    let syncInterval: any = null;
+    if (isActive) {
+      syncInterval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        fetchChatsFromServer();
+      }, 25000);
+    }
 
     window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', fetchChatsFromServer);
     window.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      clearInterval(syncInterval);
+      if (syncInterval) clearInterval(syncInterval);
       unsubSupabaseDbStream();
       if (sseSource) sseSource.close();
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', fetchChatsFromServer);
       window.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, []);
+  }, [isActive]);
 
   // 3. Dedicated Realtime Messaging & Inbox Subscription Effect:
   // Re-subscribes whenever isOwner, conversationId, or visitorId changes to guarantee cross-browser delivery
@@ -1675,31 +1690,118 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
     }
   };
 
-  // Delete a specific message within the active conversation
-  const handleDeleteMessage = (convId: string, msgId: string) => {
-    setMessages((prev) => prev.filter((m) => m.id !== msgId));
-    setConversations((prev) => {
-      const updated = prev.map((c) => {
-        if (c.id === convId) {
-          const remainingMsgs = c.messages.filter((m) => m.id !== msgId);
-          return {
-            ...c,
-            messages: remainingMsgs,
-            lastMessage: remainingMsgs[remainingMsgs.length - 1]?.text || (remainingMsgs.length > 0 ? 'Message sent' : ''),
-          };
-        }
-        return c;
+  // Clean Inline Message Editing handlers (strictly for messages sent by the active user; no delete)
+  const handleStartEdit = (msg: ChatMessage) => {
+    setEditingMessageId(msg.id);
+    setEditingText(msg.text || '');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleSaveEdit = async (messageId: string) => {
+    const trimmed = editingText.trim();
+    if (!trimmed) {
+      return; // Do not allow empty message text
+    }
+
+    const targetMsg = messages.find((m) => m.id === messageId);
+    if (!targetMsg) {
+      setEditingMessageId(null);
+      return;
+    }
+
+    if (trimmed === (targetMsg.text || '').trim()) {
+      setEditingMessageId(null);
+      return;
+    }
+
+    setIsSavingEdit(true);
+    const editedAtIso = new Date().toISOString();
+
+    try {
+      // 1. Instantly update messages state in memory
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === messageId) {
+            return {
+              ...m,
+              text: trimmed,
+              is_edited: true,
+              edited_at: editedAtIso,
+            };
+          }
+          return m;
+        })
+      );
+
+      // 2. Update active conversation and conversations list
+      setConversations((prev) => {
+        const updated = prev.map((c) => {
+          if (c.id === activeConversation.id) {
+            const updatedMsgs = c.messages.map((m) => {
+              if (m.id === messageId) {
+                return {
+                  ...m,
+                  text: trimmed,
+                  is_edited: true,
+                  edited_at: editedAtIso,
+                };
+              }
+              return m;
+            });
+            const lastMsg = updatedMsgs[updatedMsgs.length - 1];
+            return {
+              ...c,
+              messages: updatedMsgs,
+              lastMessage: lastMsg?.id === messageId ? trimmed : c.lastMessage,
+            };
+          }
+          return c;
+        });
+
+        try {
+          localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+          const currVId = visitorIdRef.current || getStoredVisitorId();
+          if (!isOwner && currVId) {
+            localStorage.setItem(`fesline_visitor_chat_${currVId}`, JSON.stringify(updated));
+          }
+        } catch {}
+
+        return updated;
       });
-      try {
-        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-    fetch(`/api/chats/${convId}/messages/${msgId}`, { method: 'DELETE' }).catch((err) => {
-      console.warn('Failed to delete message on backend:', err);
-    });
-    window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
-    setShowMailNotice('Message deleted.');
+
+      // 3. Serialize and save to Supabase cloud database
+      const serialized = (targetMsg.attachments?.length || targetMsg.voiceNote)
+        ? serializeMessagePayload({
+            text: trimmed,
+            attachments: targetMsg.attachments,
+            voiceNote: targetMsg.voiceNote,
+          })
+        : trimmed;
+
+      await updateMessageInSupabase(messageId, serialized, activeConversation.id).catch((dbErr) => {
+        console.warn('[Supabase edit message error]:', dbErr);
+      });
+
+      // 4. Update local server API endpoint if active
+      fetch(`/api/chats/${activeConversation.id}/messages/${messageId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: trimmed, content: serialized }),
+      }).catch(() => {});
+
+      window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
+      setShowMailNotice('Message edited.');
+    } catch (err) {
+      console.warn('Error saving inline message edit:', err);
+    } finally {
+      setIsSavingEdit(false);
+      setEditingMessageId(null);
+      setEditingText('');
+    }
   };
 
   // Owner creates a new conversation manually
@@ -3388,9 +3490,62 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                             : 'bg-white text-slate-900 rounded-bl-xs border border-slate-200'
                         }`}
                       >
-                        {/* Text Content */}
-                        {msg.text && (
-                          <p className="whitespace-pre-wrap font-sans">{msg.text}</p>
+                        {/* Inline Message Edit Interface (Active user only) */}
+                        {editingMessageId === msg.id ? (
+                          <div className="py-1 min-w-[210px] sm:min-w-[280px] space-y-2">
+                            <textarea
+                              autoFocus
+                              value={editingText}
+                              onChange={(e) => setEditingText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleSaveEdit(msg.id);
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault();
+                                  handleCancelEdit();
+                                }
+                              }}
+                              rows={Math.max(2, Math.min(6, editingText.split('\n').length))}
+                              placeholder="Edit message..."
+                              className="w-full p-2 text-[11.5px] sm:text-[12.5px] bg-white text-slate-900 border border-[#9fd883] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#128c7e] resize-none leading-relaxed font-sans shadow-inner"
+                            />
+                            <div className="flex items-center justify-between gap-2 pt-0.5">
+                              <span className="text-[9px] text-slate-500 font-mono">
+                                Enter to save • Esc to cancel
+                              </span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={handleCancelEdit}
+                                  disabled={isSavingEdit}
+                                  className="px-2 py-0.5 rounded text-[10px] font-sans font-medium text-slate-600 hover:text-slate-900 hover:bg-black/5 transition-colors cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveEdit(msg.id)}
+                                  disabled={isSavingEdit || !editingText.trim() || editingText.trim() === (msg.text || '').trim()}
+                                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-sans font-bold bg-[#128c7e] hover:bg-[#075e54] text-white transition-colors cursor-pointer disabled:opacity-50 shadow-2xs"
+                                >
+                                  {isSavingEdit ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Check className="w-3 h-3" />
+                                  )}
+                                  <span>Save</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {/* Text Content */}
+                            {msg.text && (
+                              <p className="whitespace-pre-wrap font-sans">{msg.text}</p>
+                            )}
+                          </>
                         )}
 
                         {/* Voice Note Player */}
@@ -3479,8 +3634,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                           </div>
                         )}
 
-                        {/* Timestamp, Seen/Unseen Checkmark Indicators, and Delete Message action */}
+                        {/* Timestamp, Edited Tag, Seen Indicators, and Clean Inline Edit Trigger */}
                         <div className="mt-1 flex items-center justify-end gap-1.5 text-[10px] text-slate-500 font-mono">
+                          {msg.is_edited && (
+                            <span className="text-[9px] italic text-slate-500 font-sans">
+                              (edited)
+                            </span>
+                          )}
+
                           <span>{msg.timestamp}</span>
 
                           {msg.status === 'seen' ? (
@@ -3499,15 +3660,18 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack }) =>
                             </span>
                           )}
 
-                          {/* Quick Message Delete Button */}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteMessage(activeConversation.id, msg.id)}
-                            className="opacity-0 group-hover/msg:opacity-100 p-0.5 hover:bg-black/10 rounded text-slate-400 hover:text-red-600 transition-opacity cursor-pointer"
-                            title="Delete this message"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
+                          {/* Clean Inline Edit Button (Strictly for messages sent by the active user; NO delete feature) */}
+                          {isRight && editingMessageId !== msg.id && (
+                            <button
+                              type="button"
+                              onClick={() => handleStartEdit(msg)}
+                              className="opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 p-0.5 hover:bg-black/10 rounded text-slate-500 hover:text-slate-900 transition-opacity cursor-pointer inline-flex items-center justify-center"
+                              title="Edit message"
+                              aria-label="Edit message"
+                            >
+                              <Edit2 className="w-2.8 h-2.8" />
+                            </button>
+                          )}
                         </div>
                       </div>
 

@@ -709,10 +709,18 @@ export async function saveProfileToSupabaseTable(profileData: {
   }
 }
 
+let cachedProfileData: any | null = null;
+let lastProfileFetchTime = 0;
+const PROFILE_CACHE_TTL_MS = 3 * 60 * 1000;
+
 /**
  * Fetch owner profile from Supabase "profiles" table (public read for visitors)
  */
-export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
+export async function fetchProfileFromSupabaseTable(force = false): Promise<any | null> {
+  if (!force && cachedProfileData && Date.now() - lastProfileFetchTime < PROFILE_CACHE_TTL_MS) {
+    return cachedProfileData;
+  }
+
   try {
     const { data, error } = await supabase
       .from('profiles')
@@ -745,7 +753,7 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
       } catch {}
     }
 
-    return {
+    const profileResult = {
       id: data.id,
       fullName: data.full_name || data.fullName,
       header: data.header,
@@ -754,8 +762,11 @@ export async function fetchProfileFromSupabaseTable(): Promise<any | null> {
       documents: Array.isArray(parsedDocs) ? parsedDocs : [],
       updated_at: data.updated_at,
     };
+    cachedProfileData = profileResult;
+    lastProfileFetchTime = Date.now();
+    return profileResult;
   } catch {
-    return null;
+    return cachedProfileData || null;
   }
 }
 
@@ -1486,6 +1497,53 @@ export async function saveMessageAndConversationToSupabase(params: {
  * Direct alias for saving message with parent conversation upsert
  */
 export const sendAndPersistMessageToSupabase = saveMessageAndConversationToSupabase;
+
+/**
+ * Cleanly updates an existing message in Supabase public.messages
+ * Updates content and broadcasts the edited message to realtime subscribers.
+ */
+export async function updateMessageInSupabase(
+  messageId: string,
+  newContent: string,
+  conversationId?: string
+): Promise<boolean> {
+  try {
+    const safeId = ensureValidUuid(messageId);
+    let { error } = await supabase
+      .from('messages')
+      .update({ content: newContent })
+      .or(`id.eq.${messageId},id.eq.${safeId}`);
+
+    if (error) {
+      console.warn('[Supabase update message notice]:', error.message || error);
+      try {
+        await supabase
+          .from('messages')
+          .update({ text: newContent })
+          .or(`id.eq.${messageId},id.eq.${safeId}`);
+      } catch {}
+    }
+
+    if (conversationId) {
+      try {
+        broadcastSupabaseChatMessage({
+          conversationId,
+          message: {
+            id: messageId,
+            content: newContent,
+            text: newContent,
+            is_edited: true,
+          },
+        });
+      } catch {}
+    }
+
+    return true;
+  } catch (err: any) {
+    console.warn('[Supabase updateMessage exception]:', err?.message || err);
+    return false;
+  }
+}
 
 /**
  * Fetch all conversations joined with visitor_profiles strictly aggregated by visitor conversation thread (WhatsApp-style)

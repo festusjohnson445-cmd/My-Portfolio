@@ -115,12 +115,12 @@ export function notifyProfileUpdated() {
 }
 
 /**
- * Resize and compress profile avatar to max 400x400 WebP format at 80% quality (0.80)
+ * Resize and crop profile avatar to 500x500 WebP format at 80% quality (0.80)
  * prior to calling Supabase Storage or backend server.
  */
 export async function compressAvatarToWebP(
   fileOrBlobOrDataUrl: File | Blob | string,
-  maxDimension = 400,
+  maxDimension = 500,
   quality = 0.80
 ): Promise<{ dataUrl: string; blob: Blob; mimeType: string }> {
   return new Promise((resolve, reject) => {
@@ -484,19 +484,46 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
   const { user } = await getValidatedSession();
   const ownerUid = user.id;
 
-  // 2. Client-side WebP compression: resize to max 400x400px WebP at 80% quality
+  const nowIso = new Date().toISOString();
+
+  // If avatarUrlOrFile is already a final public URL (e.g. uploaded via imagePipeline), update caches and DB directly
+  if (typeof avatarUrlOrFile === 'string' && avatarUrlOrFile.startsWith('http')) {
+    const finalUrl = avatarUrlOrFile;
+    memoryAvatar = finalUrl;
+    memoryUpdatedAt = nowIso;
+    try {
+      localStorage.setItem(STORAGE_KEY_AVATAR, finalUrl);
+    } catch {}
+    try {
+      await saveAvatarToIndexedDB({
+        id: 'current_profile_avatar',
+        dataUrl: finalUrl,
+        updatedAt: nowIso,
+        dimensions: '500 x 500 px',
+      });
+    } catch {}
+    notifyProfileUpdated();
+
+    try {
+      await saveProfileToFirestore({ avatar: finalUrl });
+      pushProfileToServer({ avatar: finalUrl }).catch(() => {});
+    } catch {}
+
+    return finalUrl;
+  }
+
+  // 2. Client-side WebP automated pipeline: resize to 500x500px WebP at 80% quality
   let compressedDataUrl = '';
   let uploadPayload: Blob | File | string = avatarUrlOrFile;
   try {
-    const compressed = await compressAvatarToWebP(avatarUrlOrFile, 400, 0.80);
+    const compressed = await compressAvatarToWebP(avatarUrlOrFile, 500, 0.80);
     compressedDataUrl = compressed.dataUrl;
     uploadPayload = compressed.blob;
   } catch (compErr) {
-    console.warn('Avatar compression note:', compErr);
+    console.warn('Avatar processing note:', compErr);
   }
 
   // 3. OPTIMISTIC UI UPDATE: update memory & local caches immediately for 0ms visual delay
-  const nowIso = new Date().toISOString();
   if (compressedDataUrl) {
     memoryAvatar = compressedDataUrl;
     memoryUpdatedAt = nowIso;
@@ -506,7 +533,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     notifyProfileUpdated();
   }
 
-  // 4. Upload compressed WebP to Supabase Storage bucket 'avatars'
+  // 4. Upload 500x500 WebP to Supabase Storage bucket 'avatars'
   let finalUrl = '';
   try {
     const supaRes = await uploadAvatarToSupabaseBucket(uploadPayload, ownerUid);
@@ -533,7 +560,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
       id: 'current_profile_avatar',
       dataUrl: finalUrl,
       updatedAt: nowIso,
-      dimensions: '400 x 400 px',
+      dimensions: '500 x 500 px',
     });
   } catch {}
 
