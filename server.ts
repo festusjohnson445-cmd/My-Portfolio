@@ -616,29 +616,37 @@ app.get('/api/documents/files/:id', async (req, res) => {
 
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName || 'document')}"`);
     res.setHeader('Content-Type', mimeType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
 
-    // 1. Serve binary data from database (fileBinary or dataUrl)
+    // 1. Serve binary data from database (fileBinary or dataUrl) with streaming support
     const rawData = (doc as any).fileBinary || doc.dataUrl;
     if (rawData && typeof rawData === 'string') {
       if (rawData.startsWith('data:')) {
         const parts = rawData.split(',');
         if (parts.length > 1) {
           const buffer = Buffer.from(parts[1], 'base64');
+          res.setHeader('Content-Length', buffer.length);
           return res.send(buffer);
         }
       } else if (rawData.length > 50) {
         const buffer = Buffer.from(rawData, 'base64');
+        res.setHeader('Content-Length', buffer.length);
         return res.send(buffer);
       }
     }
 
-    // 2. Fallback: check uploads disk cache if present
+    // 2. Fallback: stream from uploads disk cache if present
     const filePath = path.join(UPLOADS_DIR, `${id}.${ext}`);
     const binPath = path.join(UPLOADS_DIR, `${id}.bin`);
     if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.setHeader('Content-Length', stat.size);
       return fs.createReadStream(filePath).pipe(res);
     }
     if (fs.existsSync(binPath)) {
+      const stat = fs.statSync(binPath);
+      res.setHeader('Content-Length', stat.size);
       return fs.createReadStream(binPath).pipe(res);
     }
 
@@ -1079,7 +1087,7 @@ app.post('/api/easestudy/analyze', async (req, res) => {
       extractedDocxText ? `Uploaded Document Content (${fileData?.fileName || 'Document'}):\n${extractedDocxText}` : '',
     ].filter(Boolean).join('\n\n');
 
-    const targetQCount = Math.max(20, Number(questionCount) || 20);
+    const targetQCount = Math.min(50, Math.max(5, Number(questionCount) || 15));
 
     const promptText = `You are EaseStudy AI, a world-class academic educator, university professor, and senior pedagogical examiner.
 Thoroughly analyze the provided study material, textbook content, engineering diagram, or lecture notes, and generate an exceptionally thorough, high-precision academic study package:

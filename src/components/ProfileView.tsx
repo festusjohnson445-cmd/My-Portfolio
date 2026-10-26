@@ -50,6 +50,7 @@ import {
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
 import { SkillSelector } from './SkillSelector';
+import { ResumeDownloadModal } from './ResumeDownloadModal';
 import { categorizeSkills, SkillCategoryName } from '../data/skillsData';
 import {
   saveStoredAvatar,
@@ -271,6 +272,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isAtsPreviewModalOpen, setIsAtsPreviewModalOpen] = useState(false);
 
   useEffect(() => {
     setIsOwnerAuthenticated(syncIsOwner);
@@ -286,6 +288,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         setIsAuthModalOpen(true);
       }
     }
+  }, []);
+
+  // Listen for double-click event from the base footer on the profile page
+  useEffect(() => {
+    const handleOpenAuth = () => {
+      setAuthError(null);
+      setAuthPin('');
+      setIsAuthModalOpen(true);
+    };
+    window.addEventListener('open-owner-auth-modal', handleOpenAuth);
+    return () => window.removeEventListener('open-owner-auth-modal', handleOpenAuth);
   }, []);
 
   // Resume Download count tracker
@@ -1742,14 +1755,15 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   )}
                 </button>
 
-                {/* Secondary Actions */}
+                {/* Converted completely from "Copy ATS Plaintext" to "ATS Preview" */}
                 <button
-                  onClick={handleCopyAtsResume}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold border border-slate-300 shadow-2xs transition-colors cursor-pointer"
-                  title="Copy Plaintext / Markdown format for ATS"
+                  type="button"
+                  onClick={() => setIsAtsPreviewModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold border border-slate-300 shadow-2xs transition-colors cursor-pointer"
+                  title="Display full ATS Resume Preview with all credentials and downloadable PDF"
                 >
-                  {copiedAts ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
-                  <span>{copiedAts ? 'ATS Copied!' : 'Copy ATS Plaintext'}</span>
+                  <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                  <span>ATS Preview</span>
                 </button>
 
                 <a
@@ -1796,56 +1810,71 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               <p className="text-justify leading-relaxed">{bioData.description}</p>
             </div>
 
-            {/* Academic & Professional Snapshot Box with ONLY Degree, Honors, Leadership, Skills */}
-            <div className="space-y-3 p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs w-full overflow-hidden font-['Times_New_Roman',_Times,_serif] font-serif">
-              <h3 className="text-[13.3px] sm:text-[15.2px] font-bold text-slate-950 flex items-center gap-1.5 font-['Times_New_Roman',_Times,_serif]">
-                <GraduationCap className="w-4 h-4 text-cyan-800 shrink-0" />
-                <span>Academic &amp; Core Specs</span>
-              </h3>
+            {/* Academic & Professional Snapshot Box - Modern Responsive Structure */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200/90 shadow-xs space-y-4 font-sans w-full overflow-hidden">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-800 shrink-0">
+                    <GraduationCap className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 font-serif tracking-tight">
+                    Academic &amp; Core Specs
+                  </h3>
+                </div>
+                <span className="text-[9.5px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 shrink-0">
+                  Verified
+                </span>
+              </div>
 
-              <div className="space-y-2.5 text-[11.4px] sm:text-[13.3px] font-['Times_New_Roman',_Times,_serif]">
-                <div>
-                  <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif]">Degree:</span>
-                  <strong className="text-slate-900 font-bold block text-[11.4px] sm:text-[13.3px] break-words font-['Times_New_Roman',_Times,_serif]">
+              <div className="space-y-3.5 text-xs text-slate-700">
+                {/* Degree & Academic Honors Card */}
+                <div className="p-3 rounded-xl bg-slate-50/80 border border-slate-200/80 space-y-1">
+                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Degree Credential:
+                  </span>
+                  <div className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-snug">
                     {bioData.degree}
-                  </strong>
+                  </div>
                   {bioData.academicHonors && (
-                    <span className="text-slate-600 text-[10.5px] block mt-0.5 break-words font-['Times_New_Roman',_Times,_serif]">
-                      {bioData.academicHonors}
-                    </span>
+                    <div className="text-[10.5px] text-cyan-800 font-medium flex items-center gap-1.5 pt-0.5">
+                      <Award className="w-3 h-3 text-cyan-600 shrink-0" />
+                      <span>{bioData.academicHonors}</span>
+                    </div>
                   )}
                 </div>
 
+                {/* Leadership & Key Appointments */}
                 {bioData.leadership && (
-                  <div className="pt-2.5 border-t border-[#e2e8f0]">
-                    <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif] font-semibold mb-1.5 uppercase tracking-wide">
+                  <div className="pt-2 border-t border-slate-100 space-y-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                       Leadership &amp; Key Appointments:
                     </span>
-                    <ul className="space-y-1 text-[11.4px] text-slate-800 font-['Times_New_Roman',_Times,_serif] list-disc list-inside">
+                    <div className="space-y-1.5">
                       {bioData.leadership
                         .split(/\n|•|;|·/)
                         .map((item) => item.trim())
                         .filter(Boolean)
                         .map((leadItem, lIdx) => (
-                          <li key={lIdx} className="leading-relaxed text-justify">
-                            <span className="font-semibold text-slate-900 font-['Times_New_Roman',_Times,_serif]">{leadItem}</span>
-                          </li>
+                          <div
+                            key={lIdx}
+                            className="p-2 rounded-lg bg-slate-50/60 border border-slate-200/60 text-[11px] text-slate-800 flex items-start gap-2 leading-relaxed"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-700 shrink-0 mt-1.5" />
+                            <span className="font-medium text-slate-800">{leadItem}</span>
+                          </div>
                         ))}
-                    </ul>
+                    </div>
                   </div>
                 )}
 
-                {/* Categorized Skills Template (Generate, Educational, Handful, Personal, IT) */}
+                {/* Categorized Skills Template */}
                 {bioData.skills && (
-                  <div className="pt-3 border-t border-[#e2e8f0] space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500 block text-[10.5px] font-['Times_New_Roman',_Times,_serif] font-semibold uppercase tracking-wide">
-                        Categorized Skills &amp; Competencies:
-                      </span>
-                    </div>
+                  <div className="pt-2 border-t border-slate-100 space-y-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Categorized Skills &amp; Competencies:
+                    </span>
 
-                    {/* Properly arranged category template */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {(() => {
                         const categorized = categorizeSkills(bioData.skills);
                         const categoryMeta: Array<{
@@ -1860,41 +1889,41 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                             name: 'Generate Skills',
                             label: 'Generate Skills',
                             subLabel: 'CAD, FEA & Mechanisms',
-                            icon: <Sparkles className="w-3.5 h-3.5 text-cyan-700" />,
-                            badgeClass: 'bg-cyan-100 text-cyan-900 border-cyan-300',
-                            borderClass: 'border-cyan-200 bg-cyan-50/50',
+                            icon: <Sparkles className="w-3 h-3 text-cyan-700" />,
+                            badgeClass: 'bg-cyan-100 text-cyan-900 border-cyan-200',
+                            borderClass: 'border-cyan-200/80 bg-cyan-50/40',
                           },
                           {
                             name: 'Educational Skills',
                             label: 'Educational Skills',
                             subLabel: 'Academic & Theory',
-                            icon: <GraduationCap className="w-3.5 h-3.5 text-blue-700" />,
-                            badgeClass: 'bg-blue-100 text-blue-900 border-blue-300',
-                            borderClass: 'border-blue-200 bg-blue-50/50',
+                            icon: <GraduationCap className="w-3 h-3 text-blue-700" />,
+                            badgeClass: 'bg-blue-100 text-blue-900 border-blue-200',
+                            borderClass: 'border-blue-200/80 bg-blue-50/40',
                           },
                           {
                             name: 'Handful Skills',
                             label: 'Handful Skills',
                             subLabel: '5-Axis CNC & Shop',
-                            icon: <Wrench className="w-3.5 h-3.5 text-amber-700" />,
-                            badgeClass: 'bg-amber-100 text-amber-900 border-amber-300',
-                            borderClass: 'border-amber-200 bg-amber-50/50',
+                            icon: <Wrench className="w-3 h-3 text-amber-700" />,
+                            badgeClass: 'bg-amber-100 text-amber-900 border-amber-200',
+                            borderClass: 'border-amber-200/80 bg-amber-50/40',
                           },
                           {
                             name: 'Personal Skills',
                             label: 'Personal Skills',
                             subLabel: 'Leadership & DFM',
-                            icon: <Users className="w-3.5 h-3.5 text-purple-700" />,
-                            badgeClass: 'bg-purple-100 text-purple-900 border-purple-300',
-                            borderClass: 'border-purple-200 bg-purple-50/50',
+                            icon: <Users className="w-3 h-3 text-purple-700" />,
+                            badgeClass: 'bg-purple-100 text-purple-900 border-purple-200',
+                            borderClass: 'border-purple-200/80 bg-purple-50/40',
                           },
                           {
                             name: 'IT Skills',
                             label: 'IT Skills',
                             subLabel: 'Code & Software',
-                            icon: <Code className="w-3.5 h-3.5 text-emerald-700" />,
-                            badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-                            borderClass: 'border-emerald-200 bg-emerald-50/50',
+                            icon: <Code className="w-3 h-3 text-emerald-700" />,
+                            badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+                            borderClass: 'border-emerald-200/80 bg-emerald-50/40',
                           },
                         ];
 
@@ -1907,16 +1936,16 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         return toRender.map((cat, cIdx) => (
                           <div
                             key={cat.name}
-                            className={`p-2.5 rounded-xl border ${cat.borderClass} flex flex-col justify-between space-y-1.5 shadow-2xs font-['Times_New_Roman',_Times,_serif] ${
+                            className={`p-2 rounded-xl border ${cat.borderClass} space-y-1.5 shadow-2xs ${
                               toRender.length % 2 !== 0 && cIdx === toRender.length - 1 ? 'sm:col-span-2' : ''
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-1.5 border-b border-black/5 pb-1">
+                            <div className="flex items-center justify-between gap-1 border-b border-black/5 pb-1">
                               <div className="flex items-center gap-1.5">
                                 {cat.icon}
-                                <span className="text-[11.4px] font-bold text-slate-900 font-['Times_New_Roman',_Times,_serif]">{cat.label}</span>
+                                <span className="text-[10.5px] font-bold text-slate-800">{cat.label}</span>
                               </div>
-                              <span className={`text-[9.5px] font-['Times_New_Roman',_Times,_serif] font-bold px-1.5 py-0.5 rounded border ${cat.badgeClass}`}>
+                              <span className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border ${cat.badgeClass}`}>
                                 {cat.subLabel}
                               </span>
                             </div>
@@ -1926,13 +1955,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                 categorized[cat.name].map((skill, sIdx) => (
                                   <span
                                     key={`${skill}-${sIdx}`}
-                                    className="inline-flex items-center px-2 py-0.5 rounded text-[10.5px] font-medium bg-white text-slate-800 border border-slate-300 font-['Times_New_Roman',_Times,_serif] shadow-2xs"
+                                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-medium bg-white text-slate-700 border border-slate-200 shadow-2xs hover:border-cyan-300 transition-colors"
                                   >
                                     {skill}
                                   </span>
                                 ))
                               ) : (
-                                <span className="text-[9.5px] text-slate-400 italic font-['Times_New_Roman',_Times,_serif]">No skills added in this group</span>
+                                <span className="text-[9px] text-slate-400 italic">No skills listed</span>
                               )}
                             </div>
                           </div>
@@ -2151,12 +2180,12 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 </div>
               )}
 
-              {/* Uploaded Documents Template Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full">
+              {/* Uploaded Documents Template Grid - Modern Card Structure with 30% Reduced Text */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 w-full">
                 {documents.map((doc) => (
                   <div 
                     key={doc.id}
-                    className="rounded-2xl bg-white border border-[#cbd5e1] shadow-xs hover:shadow-md transition-all overflow-hidden flex flex-col justify-between group"
+                    className="rounded-2xl bg-white border border-slate-200/90 shadow-2xs hover:shadow-md hover:border-cyan-500/40 transition-all duration-200 overflow-hidden flex flex-col justify-between group font-sans"
                   >
                     {/* TOP: DISPLAY FILE OR IMAGE OF THE DOCUMENT ON DARK COLORED TOP */}
                     <DocumentTopMedia
@@ -2169,135 +2198,135 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       onDirectAttachFile={handleDirectAttachFile}
                     />
 
-                  {/* BELOW THE FILE/IMAGE: TYPE OF DOCUMENT & DESCRIPTION */}
-                  <div className="p-4 sm:p-5 space-y-3.5 flex-1 flex flex-col justify-between">
-                    <div className="space-y-2.5">
-                      {/* 1. Type of Document Badge */}
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-100 border border-cyan-300 text-cyan-950 font-sans text-xs font-bold shadow-2xs">
-                          <Layers className="w-3.5 h-3.5 text-cyan-800" />
-                          <span>Type: {doc.category}</span>
+                    {/* BELOW THE FILE/IMAGE: TYPE OF DOCUMENT & DESCRIPTION (30% Reduced Text) */}
+                    <div className="p-3.5 sm:p-4 space-y-3 flex-1 flex flex-col justify-between">
+                      <div className="space-y-2">
+                        {/* 1. Type of Document Badge & Date */}
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-50 border border-cyan-200 text-cyan-900 text-[9.5px] font-bold shadow-2xs">
+                            <Layers className="w-3 h-3 text-cyan-700" />
+                            <span>Type: {doc.category}</span>
+                          </div>
+
+                          {doc.date && (
+                            <span className="text-[9px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              {doc.date}
+                            </span>
+                          )}
                         </div>
 
-                        {doc.date && (
-                          <span className="text-[11px] font-sans font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-300">
-                            {doc.date}
+                        {/* 2. Document Title & Issuer */}
+                        <div>
+                          <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-snug group-hover:text-cyan-900 transition-colors text-justify">
+                            {doc.title}
+                          </h3>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5 text-[10px] text-slate-500 text-justify">
+                            <span className="font-semibold text-slate-700">{doc.issuer}</span>
+                          </div>
+                        </div>
+
+                        {/* 3. Description */}
+                        <div className="pt-0.5">
+                          <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
+                            Description:
                           </span>
-                        )}
-                      </div>
-
-                      {/* 2. Document Title & Issuer */}
-                      <div>
-                        <h3 className="text-base sm:text-lg font-bold text-slate-950 font-serif leading-snug group-hover:text-cyan-950 transition-colors text-justify">
-                          {doc.title}
-                        </h3>
-                        <div className="flex flex-wrap items-center gap-2 mt-1 font-sans text-xs text-slate-600 text-justify">
-                          <span className="font-semibold text-slate-800">{doc.issuer}</span>
+                          <p className="text-[10px] sm:text-[11px] text-slate-600 leading-relaxed font-serif whitespace-pre-line text-justify">
+                            {doc.description}
+                          </p>
                         </div>
-                      </div>
 
-                      {/* 3. Description below it */}
-                      <div className="pt-1">
-                        <span className="text-[11px] font-sans font-bold text-slate-600 uppercase tracking-wider block mb-1">
-                          Description:
-                        </span>
-                        <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-serif whitespace-pre-line text-justify">
-                          {doc.description}
-                        </p>
-                      </div>
-
-                      {/* Optional Competencies */}
-                      {doc.competencies && doc.competencies.length > 0 && doc.competencies[0] !== 'Technical competence verified' && (
-                        <div className="pt-2 border-t border-[#e2e8f0] space-y-1 font-sans">
-                          <span className="text-[11px] font-bold text-slate-600 uppercase block">
-                            Key Competencies:
-                          </span>
-                          <ul className="space-y-1 text-xs text-slate-700">
-                            {doc.competencies.map((comp, cIdx) => (
-                              <li key={cIdx} className="flex items-start gap-1.5 text-justify leading-relaxed">
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                                <span className="text-justify">{comp}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Footer Actions */}
-                    <div className="pt-3 border-t border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-xs font-sans">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {/* Download Button (Only visible to owner; hidden from all visitors) */}
-                        {isOwnerAuthenticated && doc.attachmentDataUrl && (
-                          <a
-                            href={doc.attachmentDataUrl}
-                            download={doc.attachmentName || doc.title}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
-                            title="Download document attachment (Owner Only)"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            <span>Download</span>
-                          </a>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() => setSelectedPreviewDoc(doc)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
-                          title="Preview document details"
-                        >
-                          <Eye className="w-3.5 h-3.5 text-cyan-800" />
-                          <span>Preview</span>
-                        </button>
-
-                        {doc.verifiedLink && (
-                          <a
-                            href={doc.verifiedLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-cyan-800 hover:text-cyan-950 hover:underline font-semibold text-xs"
-                          >
-                            <span>Verify Credential</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
+                        {/* Optional Competencies */}
+                        {doc.competencies && doc.competencies.length > 0 && doc.competencies[0] !== 'Technical competence verified' && (
+                          <div className="pt-1.5 border-t border-slate-100 space-y-1">
+                            <span className="text-[8.5px] font-bold text-slate-400 uppercase block">
+                              Key Competencies:
+                            </span>
+                            <ul className="space-y-0.5 text-[9.5px] text-slate-600">
+                              {doc.competencies.map((comp, cIdx) => (
+                                <li key={cIdx} className="flex items-start gap-1 text-justify leading-relaxed">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0 mt-0.5" />
+                                  <span className="text-justify">{comp}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
                         )}
                       </div>
 
-                      {/* Owner Delete & Edit Controls VS Visitor Verified Badge */}
-                      {isOwnerAuthenticated ? (
-                        <div className="flex items-center gap-1.5 shrink-0 animate-fade-in">
+                      {/* Footer Actions */}
+                      <div className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {/* Download Button (Only visible to owner; hidden from visitors) */}
+                          {isOwnerAuthenticated && doc.attachmentDataUrl && (
+                            <a
+                              href={doc.attachmentDataUrl}
+                              download={doc.attachmentName || doc.title}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
+                              title="Download document attachment (Owner Only)"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Download</span>
+                            </a>
+                          )}
+
                           <button
                             type="button"
-                            onClick={() => handleOpenEditDocument(doc)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors cursor-pointer text-xs font-semibold"
-                            title="Edit document details"
+                            onClick={() => setSelectedPreviewDoc(doc)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
+                            title="Preview document details"
                           >
-                            <Edit3 className="w-3.5 h-3.5 text-cyan-800" />
-                            <span>Edit</span>
+                            <Eye className="w-3 h-3 text-cyan-800" />
+                            <span>Preview</span>
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
-                            title="Delete this document permanently"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Delete</span>
-                          </button>
+
+                          {doc.verifiedLink && (
+                            <a
+                              href={doc.verifiedLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-cyan-800 hover:text-cyan-950 hover:underline font-semibold text-[10px]"
+                            >
+                              <span>Verify Credential</span>
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
                         </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-sans">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          <span className="font-medium">ASME / Verified</span>
-                        </div>
-                      )}
+
+                        {/* Owner Delete & Edit Controls VS Visitor Verified Badge */}
+                        {isOwnerAuthenticated ? (
+                          <div className="flex items-center gap-1 shrink-0 animate-fade-in">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditDocument(doc)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors cursor-pointer text-[10px] font-semibold"
+                              title="Edit document details"
+                            >
+                              <Edit3 className="w-3 h-3 text-cyan-800" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] shadow-2xs transition-colors cursor-pointer"
+                              title="Delete this document permanently"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="inline-flex items-center gap-1 text-[9.5px] text-slate-500 font-sans">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                            <span className="font-medium">ASME / Verified</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
           </>
         )}
         </div>
@@ -2482,44 +2511,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       </section>
 
       {/* ======================================================== */}
-      {/* 5. FOOTER & OWNER AUTHENTICATION ACCESS                   */}
+      {/* MODAL: FULL ATS RESUME PREVIEW & DOWNLOAD                */}
       {/* ======================================================== */}
-      <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-4">
-        <div className="py-4 border-t border-[#b8c6d4]/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 font-sans">
-          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-center sm:text-left">
-            <span className="font-semibold text-slate-800">Festus, Olorunsogo Johnson</span>
-            <span>&middot;</span>
-            <span>Lead Mechanical &amp; Automation Engineer</span>
-            <span className="hidden sm:inline">&middot;</span>
-            <span className="text-[11px] text-slate-500">Verified Professional Profile</span>
-          </div>
-
-          {/* Discreet Owner Login trigger placed properly at the footer */}
-          <div className="flex items-center gap-2">
-            {!isOwnerAuthenticated ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthError(null);
-                  setAuthPin('');
-                  setIsAuthModalOpen(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-slate-600 hover:text-cyan-900 bg-white hover:bg-slate-100 border border-[#b8c6d4] transition-colors cursor-pointer text-xs font-semibold shadow-2xs"
-                title="Owner Login (Festus Johnson only)"
-                aria-label="Owner Portal Login"
-              >
-                <Lock className="w-3.5 h-3.5 text-slate-500" />
-                <span>Owner Portal</span>
-              </button>
-            ) : (
-              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-900 border border-emerald-300 text-xs font-sans font-semibold">
-                <Unlock className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Owner Session Active</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </footer>
+      <ResumeDownloadModal
+        isOpen={isAtsPreviewModalOpen}
+        onClose={() => setIsAtsPreviewModalOpen(false)}
+        onDownloaded={handleDirectDownloadResume}
+      />
 
       {/* ======================================================== */}
       {/* MODAL: LIGHTBOX FULL PREVIEW OF DOCUMENT IMAGE           */}

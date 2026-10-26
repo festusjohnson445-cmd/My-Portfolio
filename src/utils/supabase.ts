@@ -70,6 +70,7 @@ export function updateCustomSupabaseConfig(url: string, anonKey: string): void {
 export const SUPABASE_BUCKETS = {
   AVATARS: 'avatars',
   MATERIALS: 'materials',
+  MODE_EASE_STUDY: 'ModeEaseStudy',
 } as const;
 
 // Cache active owner user ID
