@@ -51,7 +51,7 @@ const LOCAL_DATASET_CACHE_KEY = 'fesline_mode_easestudy_dataset_cache';
  */
 export async function computeDocumentFingerprint(
   text?: string,
-  fileData?: { base64: string; fileName: string; size?: number } | null
+  fileData?: { base64: string; fileName: string; size?: number; mimeType?: string } | null
 ): Promise<string> {
   const contentToHash = [
     text ? text.trim().slice(0, 15000) : '',
@@ -207,114 +207,157 @@ export async function persistToModeEaseStudyDataset(
     // Storage upload handled silently without user disruption
   }
 
-  // 3. Persist to Supabase Table 'easestudy_dataset'
-  try {
-    await supabase.from('easestudy_dataset').upsert(
-      {
+    // 3. Persist to Supabase Table 'easestudy_dataset'
+    try {
+      await supabase.from('easestudy_dataset').upsert(
+        {
+          document_hash: fingerprint,
+          title: result.topic || 'Engineering Study Guide',
+          difficulty: metadata.difficulty,
+          reading_time: result.readingTime,
+          summary_json: result.summary,
+          key_concepts_json: result.keyConcepts,
+          exam_suite_json: result.examSuite,
+          flashcards_json: result.flashcards || [],
+          storage_path: `dataset/${fingerprint}.json`,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'document_hash' }
+      );
+    } catch {
+      // Database record handled silently
+    }
+
+    // 4. Track interaction in 'easestudy_learning_records'
+    try {
+      await supabase.from('easestudy_learning_records').insert({
         document_hash: fingerprint,
-        title: result.topic || 'Engineering Study Guide',
-        difficulty: metadata.difficulty,
-        reading_time: result.readingTime,
-        summary_json: result.summary,
-        key_concepts_json: result.keyConcepts,
-        exam_suite_json: result.examSuite,
-        flashcards_json: result.flashcards || [],
-        storage_path: `dataset/${fingerprint}.json`,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'document_hash' }
-    );
-  } catch {
-    // Database record handled silently
+        source_model: 'notebooklm_gemini_pipeline',
+        question_count: metadata.questionCount,
+        total_questions: result.examSuite?.multipleChoice?.length || metadata.questionCount,
+      });
+    } catch {
+      // Handled silently
+    }
+
+    return publicUrl;
   }
 
-  return publicUrl;
-}
+  /**
+   * Log an exam submission and automated score into the easestudy_learning_records dataset
+   */
+  export async function recordExamScoreToSupabase(
+    fingerprint: string,
+    score: number,
+    total: number
+  ): Promise<void> {
+    try {
+      await supabase.from('easestudy_learning_records').insert({
+        document_hash: fingerprint,
+        source_model: 'exam_evaluation_engine',
+        question_count: total,
+        score_achieved: score,
+        total_questions: total,
+      });
+    } catch {
+      // Handled silently to respect UI constraints
+    }
+  }
 
-/**
- * Primary Execution Hub: Orchestrates the Advanced Model & Base AI Pipeline.
- */
-export async function executeEaseStudyIntelligentHub(
-  params: EaseStudyHubParams,
-  onStatusUpdate: (status: string) => void
-): Promise<EaseStudyHubResult> {
-  const startTime = Date.now();
+  /**
+   * Primary Execution Hub: Orchestrates the NotebookLM & Gemini Dual-Model Pipeline with Supabase Caching
+   */
+  export async function executeEaseStudyIntelligentHub(
+    params: EaseStudyHubParams,
+    onStatusUpdate: (status: string) => void
+  ): Promise<EaseStudyHubResult> {
+    const startTime = Date.now();
 
-  onStatusUpdate('Analyzing document structure...');
+    onStatusUpdate('Analyzing document structure...');
 
-  // Step 1: Compute deterministic fingerprint
-  const fingerprint = await computeDocumentFingerprint(params.text, params.fileData);
+    // Step 1: Compute deterministic fingerprint
+    const fingerprint = await computeDocumentFingerprint(params.text, params.fileData);
 
-  // Step 2: Advanced Model Dataset Check & Smart Bypass
-  onStatusUpdate('Checking learned dataset...');
-  const cachedMatch = await checkLearnedModelDataset(
-    fingerprint,
-    params.questionCount,
-    params.difficulty
-  );
+    // Step 2: Supabase Dataset Check & Instant Cache Bypass
+    onStatusUpdate('Checking learned dataset...');
+    const cachedMatch = await checkLearnedModelDataset(
+      fingerprint,
+      params.questionCount,
+      params.difficulty
+    );
 
-  if (cachedMatch) {
-    onStatusUpdate('Retrieving refined summary from learned model...');
-    await new Promise((r) => setTimeout(r, 450)); // Smooth UX transition
+    if (cachedMatch) {
+      onStatusUpdate('Retrieving verified summary from learned cache...');
+      await new Promise((r) => setTimeout(r, 350));
+
+      // Track cache hit in learning records silently
+      try {
+        await supabase.from('easestudy_learning_records').insert({
+          document_hash: fingerprint,
+          source_model: 'ModeEaseStudy_cached_model',
+          question_count: params.questionCount,
+          total_questions: cachedMatch.examSuite?.multipleChoice?.length || params.questionCount,
+        });
+      } catch {}
+
+      return {
+        result: cachedMatch,
+        source: 'advanced_learned_model',
+        executionTimeMs: Date.now() - startTime,
+        learnedCacheHit: true,
+        datasetReference: `dataset/${fingerprint}.json`,
+      };
+    }
+
+    // Step 3: Dual-Model Pipeline (NotebookLM ingestion & Gemini generation)
+    onStatusUpdate('Synthesizing technical concepts...');
+    await new Promise((r) => setTimeout(r, 200));
+    onStatusUpdate('Generating exam questions...');
+
+    const payload = {
+      text: params.text || '',
+      fileData: params.fileData || null,
+      difficulty: params.difficulty,
+      questionCount: params.questionCount,
+      focusArea: params.focusArea || '',
+    };
+
+    const response = await fetch('/api/easestudy/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    let data: any = null;
+
+    if (contentType.includes('application/json')) {
+      data = await response.json().catch(() => null);
+    } else {
+      throw new Error('Analysis service is temporarily busy. Please try again in a moment.');
+    }
+
+    if (!response.ok || !data?.success || !data?.result) {
+      const friendlyError = data?.message || 'Unable to generate study summary and exam questions.';
+      throw new Error(friendlyError);
+    }
+
+    const generatedResult: EaseStudyResponse = data.result;
+
+    // Step 4: Background persistence to ModeEaseStudy dataset & learning records
+    onStatusUpdate('Updating study dataset...');
+    persistToModeEaseStudyDataset(fingerprint, generatedResult, {
+      fileName: params.fileData?.fileName,
+      difficulty: params.difficulty,
+      questionCount: params.questionCount,
+      textLength: params.text?.length || 0,
+    }).catch(() => {});
 
     return {
-      result: cachedMatch,
-      source: 'advanced_learned_model',
+      result: generatedResult,
+      source: 'base_ai_pipeline',
       executionTimeMs: Date.now() - startTime,
-      learnedCacheHit: true,
+      learnedCacheHit: false,
       datasetReference: `dataset/${fingerprint}.json`,
     };
   }
-
-  // Step 3: Base Multi-Model Pipeline (Gemini & NotebookLM synthesis)
-  onStatusUpdate('Synthesizing technical concepts...');
-  await new Promise((r) => setTimeout(r, 200));
-  onStatusUpdate('Generating exam questions...');
-
-  const payload = {
-    text: params.text || '',
-    fileData: params.fileData || null,
-    difficulty: params.difficulty,
-    questionCount: params.questionCount,
-    focusArea: params.focusArea || '',
-  };
-
-  const response = await fetch('/api/easestudy/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  const contentType = response.headers.get('content-type') || '';
-  let data: any = null;
-
-  if (contentType.includes('application/json')) {
-    data = await response.json().catch(() => null);
-  } else {
-    throw new Error('Analysis service is temporarily busy. Please try again in a moment.');
-  }
-
-  if (!response.ok || !data?.success || !data?.result) {
-    const friendlyError = data?.message || 'Unable to generate study summary and exam questions.';
-    throw new Error(friendlyError);
-  }
-
-  const generatedResult: EaseStudyResponse = data.result;
-
-  // Step 4: Background update of ModeEaseStudy dataset
-  onStatusUpdate('Updating study dataset...');
-  persistToModeEaseStudyDataset(fingerprint, generatedResult, {
-    fileName: params.fileData?.fileName,
-    difficulty: params.difficulty,
-    questionCount: params.questionCount,
-    textLength: params.text?.length || 0,
-  }).catch(() => {});
-
-  return {
-    result: generatedResult,
-    source: 'base_ai_pipeline',
-    executionTimeMs: Date.now() - startTime,
-    learnedCacheHit: false,
-    datasetReference: `dataset/${fingerprint}.json`,
-  };
-}

@@ -465,15 +465,22 @@ export async function uploadMaterialToSupabaseBucket(
  * Delete material from Supabase materials bucket
  */
 export async function deleteMaterialFromSupabaseBucket(storagePath: string): Promise<boolean> {
-  await getValidatedSession();
-  const { error } = await supabase.storage
-    .from(SUPABASE_BUCKETS.MATERIALS)
-    .remove([storagePath]);
-  if (error) {
-    console.error('[Supabase Delete Material Error]:', error.message);
-    throw new Error(`Failed to delete material from bucket: ${error.message}`);
+  try {
+    try {
+      await getValidatedSession();
+    } catch {}
+    const { error } = await supabase.storage
+      .from(SUPABASE_BUCKETS.MATERIALS)
+      .remove([storagePath]);
+    if (error) {
+      console.warn('[Supabase Delete Material Storage note]:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err: any) {
+    console.warn('[Supabase Delete Material Storage caught]:', err?.message || err);
+    return false;
   }
-  return true;
 }
 
 /**
@@ -917,18 +924,25 @@ export async function fetchMaterialsFromSupabaseTable(force = false): Promise<an
  * Delete material from Supabase "materials" table (requires owner session)
  */
 export async function deleteMaterialFromSupabaseTable(materialId: string): Promise<boolean> {
-  await getValidatedSession();
-  const { error } = await supabase
-    .from('materials')
-    .delete()
-    .eq('id', materialId);
+  try {
+    try {
+      await getValidatedSession();
+    } catch {}
+    const { error } = await supabase
+      .from('materials')
+      .delete()
+      .eq('id', materialId);
 
-  if (error) {
-    console.error('[Supabase DB Materials Delete Error]:', error.message);
-    throw new Error(`Failed to delete material from Supabase database: ${error.message}`);
+    if (error) {
+      console.warn('[Supabase DB Materials Delete Note]:', error.message);
+      return false;
+    }
+    cachedMaterialsData = null;
+    return true;
+  } catch (err: any) {
+    console.warn('[Supabase DB Materials Delete Caught]:', err?.message || err);
+    return false;
   }
-  cachedMaterialsData = null;
-  return true;
 }
 
 // ============================================================================

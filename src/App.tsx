@@ -254,7 +254,7 @@ export default function App() {
         <footer className="shrink-0 w-full py-4 border-t border-[#b8c6d4] bg-[#d2d8e1] text-xs text-slate-700 font-sans text-center mt-auto">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-center">
             <p className="text-xs text-slate-700 inline-flex items-center justify-center gap-1.5 flex-wrap">
-              <span>© 2026 Festus, Olorunsogo Johnson · Fesline Mechanical Engineering</span>
+              <span className="italic text-[10.8px] sm:text-[11px] text-slate-600">© 2026 Festus, Olorunsogo Johnson · Fesline Mechanical Engineering</span>
               {/* Only put the lock icon which will pop out the form after a double click on it. The lock login form should only be on the footer section of the profile page and not others. */}
               {activePart === 'profile' && (
                 <button

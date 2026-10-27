@@ -3665,11 +3665,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                             <button
                               type="button"
                               onClick={() => handleStartEdit(msg)}
-                              className="opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 p-0.5 hover:bg-black/10 rounded text-slate-500 hover:text-slate-900 transition-opacity cursor-pointer inline-flex items-center justify-center"
+                              className="opacity-70 sm:opacity-0 sm:group-hover/msg:opacity-100 p-0.5 hover:bg-black/10 rounded text-slate-400 hover:text-slate-700 transition-opacity cursor-pointer inline-flex items-center justify-center"
                               title="Edit message"
                               aria-label="Edit message"
                             >
-                              <Edit2 className="w-2.8 h-2.8" />
+                              <Edit2 className="w-2.5 h-2.5 stroke-[1.25]" />
                             </button>
                           )}
                         </div>

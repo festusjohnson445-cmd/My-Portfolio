@@ -178,6 +178,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isEditingBio, setIsEditingBio] = useState(false);
   const [editBioForm, setEditBioForm] = useState<ProfileBioData>(bioData);
   const [editAvatar, setEditAvatar] = useState<string>(profileAvatar);
+  const [optimisticAvatarUrl, setOptimisticAvatarUrl] = useState<string | null>(null);
   const [avatarImgError, setAvatarImgError] = useState(false);
   const [bioSaveNotice, setBioSaveNotice] = useState<{ text: string; isError?: boolean } | null>(null);
 
@@ -193,6 +194,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const handleConfirmDeleteAvatar = async () => {
     try {
       setIsDeletingAvatar(true);
+      setOptimisticAvatarUrl(null);
       await syncResetAvatar();
       setEditAvatar('');
       setAvatarImgError(false);
@@ -420,9 +422,18 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   // Callback triggered after automated 500x500 WebP @ 80% pipeline and Supabase upload completes
-  const handleRepositionSuccess = async (newAvatarUrl: string) => {
+  const handleRepositionSuccess = async (newAvatarUrl: string, previewDataUrl?: string) => {
     setAvatarImgError(false);
+    const immediateDataUrl = previewDataUrl || newAvatarUrl;
+    setOptimisticAvatarUrl(immediateDataUrl);
     setEditAvatar(newAvatarUrl);
+
+    // Preload image in memory immediately to prevent any visual glance or delay of previous photo
+    try {
+      const preload = new Image();
+      preload.src = immediateDataUrl;
+    } catch {}
+
     try {
       await syncSaveAvatar(newAvatarUrl);
       showNotification('Profile photo cropped (500×500 WebP @ 80%) and saved to Supabase!');
@@ -1166,14 +1177,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               <div className="flex flex-col sm:flex-row items-center gap-4">
                 {/* Live Preview Avatar */}
                 <div className="w-24 h-24 rounded-2xl overflow-hidden border-2 border-cyan-800/40 bg-slate-900 shrink-0 relative flex items-center justify-center shadow-md">
-                  {editAvatar ? (
+                  {(optimisticAvatarUrl || editAvatar) ? (
                     <img
-                      src={withRecordVersion(editAvatar, profileUpdatedAt)}
+                      key={optimisticAvatarUrl || editAvatar}
+                      src={optimisticAvatarUrl || withRecordVersion(editAvatar, profileUpdatedAt)}
                       alt="Avatar preview"
-                      loading="lazy"
-                      decoding="async"
+                      loading="eager"
+                      decoding="sync"
                       className="w-full h-full object-cover object-center"
-                      onError={() => setEditAvatar('')}
+                      onError={() => {
+                        if (optimisticAvatarUrl) setOptimisticAvatarUrl(null);
+                        setEditAvatar('');
+                      }}
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
@@ -1581,14 +1596,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             <div className="flex flex-col items-center shrink-0 gap-3">
               <div className="relative group">
                 <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-2xl overflow-hidden border-2 border-white/90 shadow-lg bg-slate-900 relative flex items-center justify-center">
-                  {profileAvatar && !avatarImgError ? (
+                  {(optimisticAvatarUrl || (profileAvatar && !avatarImgError)) ? (
                     <img
-                      src={withRecordVersion(profileAvatar, profileUpdatedAt)}
+                      key={optimisticAvatarUrl || profileAvatar}
+                      src={optimisticAvatarUrl || withRecordVersion(profileAvatar, profileUpdatedAt)}
                       alt="Festus, Olorunsogo Johnson - Profile Photo"
                       className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
-                      loading="lazy"
-                      decoding="async"
-                      onError={() => setAvatarImgError(true)}
+                      loading="eager"
+                      decoding="sync"
+                      onError={() => {
+                        if (optimisticAvatarUrl) setOptimisticAvatarUrl(null);
+                        setAvatarImgError(true);
+                      }}
                     />
                   ) : (
                     <div 

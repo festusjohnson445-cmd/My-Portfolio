@@ -24,7 +24,7 @@ interface ProfilePictureRepositionModalProps {
   isOpen: boolean;
   imageDetails: LoadedImageDetails | null;
   onClose: () => void;
-  onSuccess: (newAvatarUrl: string) => void;
+  onSuccess: (newAvatarUrl: string, previewDataUrl?: string) => void;
 }
 
 export const ProfilePictureRepositionModal: React.FC<ProfilePictureRepositionModalProps> = ({
@@ -178,8 +178,8 @@ export const ProfilePictureRepositionModal: React.FC<ProfilePictureRepositionMod
         throw new Error('Supabase Storage: Did not receive valid public avatar URL.');
       }
 
-      // Step 3: Trigger callback with final Supabase public URL
-      onSuccess(uploadRes.publicUrl);
+      // Step 3: Trigger callback with final Supabase public URL and instant local preview data URL
+      onSuccess(uploadRes.publicUrl, processed.previewDataUrl);
       onClose();
     } catch (err: any) {
       console.error('[Avatar Pipeline Error]:', err);

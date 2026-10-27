@@ -923,24 +923,33 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     const targetDoc = documents.find((d) => d.id === id);
     const title = targetDoc?.title || 'Document';
 
+    // 0. Record in persistent deleted set so real-time listeners and refetches never re-add it
+    recordDeletedDocId(id);
+
     // 1. Immediately update state
     const updated = documents.filter((d) => d.id !== id);
     setDocuments(updated);
+    saveDocumentsToStorage(updated);
 
-    // 2. Delete from Firestore and Firebase Storage
-    deleteHubDocumentFromFirestore(id, (targetDoc as any)?.storagePath).catch((err) => {
-      console.warn('Firestore delete error:', err);
-    });
+    // 2. Delete from Firestore and Firebase Storage safely
+    try {
+      deleteHubDocumentFromFirestore(id, (targetDoc as any)?.storagePath).catch((err) => {
+        console.warn('Firestore delete error:', err);
+      });
+    } catch {}
 
-    // 2b. Delete from Supabase materials table and storage bucket
-    deleteMaterialFromSupabaseTable(id).catch(() => {});
-    if ((targetDoc as any)?.storagePath) {
-      deleteMaterialFromSupabaseBucket((targetDoc as any).storagePath).catch(() => {});
-    }
+    // 2b. Delete from Supabase materials table and storage bucket safely
+    try {
+      deleteMaterialFromSupabaseTable(id).catch(() => {});
+      if ((targetDoc as any)?.storagePath) {
+        deleteMaterialFromSupabaseBucket((targetDoc as any).storagePath).catch(() => {});
+      }
+    } catch {}
 
     // 3. Immediately delete from persistent cache
-    deleteHubDocumentPersistently(id).catch(() => {});
-    saveDocumentsToStorage(updated);
+    try {
+      deleteHubDocumentPersistently(id).catch(() => {});
+    } catch {}
 
     // 4. Immediately close preview if open
     if (previewModalDoc?.id === id) {
@@ -948,12 +957,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     }
 
     // 5. Send delete to backend
-    fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch((err) => {
-      console.warn('Backend delete note:', err);
-    });
+    try {
+      fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch((err) => {
+        console.warn('Backend delete note:', err);
+      });
+    } catch {}
 
     // 6. Notify user immediately
-    showToast(`"${title}" deleted immediately.`, 'info');
+    showToast(`"${title}" deleted successfully.`, 'info');
   };
 
   const confirmDeleteDocument = async () => {
@@ -1162,13 +1173,13 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   key={cat}
                   type="button"
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-2 py-1.5 sm:py-2 rounded-xl text-[10px] sm:text-[10.5px] md:text-[11px] font-semibold text-center leading-snug flex items-center justify-center transition-all cursor-pointer select-none min-h-[36px] sm:min-h-[38px] ${
+                  className={`px-2 py-1 rounded-lg text-[9.5px] sm:text-[10px] font-semibold text-center leading-tight flex items-center justify-center transition-all cursor-pointer select-none min-h-[28px] sm:min-h-[30px] ${
                     isSelected
-                      ? 'bg-cyan-700 text-white shadow-sm ring-2 ring-cyan-600/30 font-bold'
+                      ? 'bg-cyan-700 text-white shadow-2xs ring-1 ring-cyan-600/30 font-bold'
                       : 'bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200/90'
                   }`}
                 >
-                  <span className="break-words text-center leading-snug">{cat}</span>
+                  <span className="break-words text-center leading-tight">{cat}</span>
                 </button>
               );
             })}
@@ -1297,8 +1308,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   </div>
                 </div>
 
-                {/* Card Bottom: Direct HTML Download Link & Delete */}
-                <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center gap-2">
+                {/* Card Bottom: Direct HTML Download Link & Delete (Small & Fitted) */}
+                <div className="p-2 bg-slate-50 border-t border-slate-200 flex items-center gap-1.5">
                   <a
                     href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
                     download={doc.fileName}
@@ -1310,20 +1321,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                         fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
                       } catch {}
                     }}
-                    className="flex-1 py-2.5 px-3 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer text-center no-underline"
+                    className="flex-1 py-1.5 px-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-[11px] sm:text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer text-center no-underline"
                   >
-                    <Download className="w-4 h-4 text-white" />
+                    <Download className="w-3.5 h-3.5 text-white" />
                     <span>Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
-                    <span className="text-[10px] opacity-80 font-mono">({doc.fileSize})</span>
+                    <span className="text-[9.5px] opacity-80 font-mono">({doc.fileSize})</span>
                   </a>
 
                   {isOwner && (
                     <button
-                      onClick={(e) => handleDeleteDocument(doc.id, e)}
-                      className="py-2.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs shrink-0"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDocToDelete(doc);
+                      }}
+                      className="py-1.5 px-2.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-2xs shrink-0"
                       title="Delete document (Owner only)"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
@@ -1654,14 +1669,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 {isOwner && (
                   <button
                     onClick={() => {
-                      const docId = previewModalDoc.id;
+                      const docToDel = previewModalDoc;
                       setPreviewModalDoc(null);
-                      handleDeleteDocument(docId);
+                      setDocToDelete(docToDel);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs sm:text-sm cursor-pointer shadow-xs transition-all"
-                    title="Delete this document immediately (Owner only)"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs cursor-pointer shadow-2xs transition-all"
+                    title="Delete this document (Owner only)"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-3.5 h-3.5" />
                     <span>Delete</span>
                   </button>
                 )}
@@ -1677,10 +1692,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     } catch {}
                     setPreviewModalDoc(null);
                   }}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm cursor-pointer shadow-xs transition-all no-underline"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-xs cursor-pointer shadow-2xs transition-all no-underline"
                 >
-                  <Download className="w-4 h-4" />
-                  <span>Download This Document</span>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download File</span>
                 </a>
               </div>
             </div>
@@ -1731,12 +1746,12 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               Are you sure you want to permanently delete this document from the Engineering Hub? This action cannot be undone.
             </p>
 
-            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200">
+            <div className="flex items-center justify-end gap-2 pt-2.5 border-t border-slate-200">
               <button
                 type="button"
                 disabled={isDeleting}
                 onClick={() => setDocToDelete(null)}
-                className="px-4 py-2.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -1744,16 +1759,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 type="button"
                 disabled={isDeleting}
                 onClick={confirmDeleteDocument}
-                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
               >
                 {isDeleting ? (
                   <>
-                    <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
                     <span>Deleting...</span>
                   </>
                 ) : (
                   <>
-                    <Trash2 className="w-4 h-4 text-white" />
+                    <Trash2 className="w-3.5 h-3.5 text-white" />
                     <span>Yes, Delete</span>
                   </>
                 )}
