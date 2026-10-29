@@ -163,12 +163,6 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     const mime = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     setFileMimeType(mime);
 
-    // Auto-detect engineering from filename if clearly technical
-    const lowerName = file.name.toLowerCase();
-    if (lowerName.includes('cad') || lowerName.includes('eng') || lowerName.includes('mech') || lowerName.includes('thermo') || lowerName.includes('circuits')) {
-      setIsEngineeringDoc(true);
-    }
-
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
@@ -192,6 +186,14 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     setExamScore(null);
     setExamFilterMode('all');
 
+    if (forceRegenerate) {
+      setStudyResult(null);
+      setGeneratedDiagrams({});
+      try {
+        localStorage.removeItem('fesline_easestudy_last_result');
+      } catch {}
+    }
+
     // Validate input
     if (activeInputTab === 'upload' && !uploadedFile && !fileBase64) {
       setAnalysisError('Please choose a document or image file to analyze.');
@@ -203,7 +205,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     }
 
     setIsAnalyzing(true);
-    setProcessingStatus('Analyzing document structure...');
+    setProcessingStatus(forceRegenerate ? 'Reprocessing freshly from source document...' : 'Analyzing document structure...');
 
     try {
       let activeFilePayload = null;
@@ -261,6 +263,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   };
 
   const handleRegenerate = () => {
+    setStudyResult(null);
+    setGeneratedDiagrams({});
     handleRunAnalysis(true);
   };
 
@@ -503,8 +507,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const totalAnswered = Object.keys(userAnswers).length;
   const currentMCQ = allMCQs[activeQuestionIndex] || allMCQs[0];
 
-  // Core concepts only visible if user specified engineering doc
-  const showCoreConceptsTab = isEngineeringDoc && studyResult?.keyConcepts && studyResult.keyConcepts.length > 0;
+  // Core concepts breakdown available for any document with keyConcepts
+  const showCoreConceptsTab = Boolean(studyResult?.keyConcepts && studyResult.keyConcepts.length > 0);
 
   // Split narrative into paragraphs
   const narrativeParagraphs = studyResult?.summary.executiveSummary
@@ -608,7 +612,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                   </div>
                   <span className="text-[10.5px] font-bold text-slate-900">{uploadedFile.name}</span>
                   <span className="text-[9px] text-slate-500">
-                    {(uploadedFile.size / 1024).toFixed(1)} KB &middot; Ready for 1st class study
+                    {(uploadedFile.size / 1024).toFixed(1)} KB &middot; Ready to generate study summary &amp; exam
                   </span>
                 </div>
               ) : (
@@ -728,7 +732,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
           </div>
         )}
 
-        {/* Action Button: 1st Class Study */}
+        {/* Action Button: Generate Study Package */}
         <div className="pt-1 flex flex-col sm:flex-row items-center justify-between gap-2">
           {isAnalyzing ? (
             <div className="flex items-center gap-2 text-xs text-cyan-900 font-medium">
@@ -750,12 +754,12 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
             {isAnalyzing ? (
               <>
                 <RefreshCw className="w-3 h-3 animate-spin" />
-                <span>Processing 1st Class Study...</span>
+                <span>Generating Study Package...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-3 h-3 text-cyan-200" />
-                <span>1st Class Study</span>
+                <span>Generate Study Package</span>
               </>
             )}
           </button>
@@ -998,7 +1002,9 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
                   {concept.formulaOrExample && (
                     <div className="p-2 rounded-lg bg-slate-900 text-cyan-200 text-[10.5px] font-mono overflow-x-auto">
-                      <span className="text-slate-400 text-[9px] block">Formula / Equation:</span>
+                      <span className="text-slate-400 text-[9px] block">
+                        {isEngineeringDoc ? 'Formula / Governing Equation:' : 'Core Definition / Contextual Example:'}
+                      </span>
                       {concept.formulaOrExample}
                     </div>
                   )}

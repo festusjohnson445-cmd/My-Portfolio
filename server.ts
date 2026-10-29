@@ -1180,37 +1180,70 @@ function generateFallbackStudyPackage(
         'Comprehensive review ensures long-term retention and high-scoring exam readiness.',
       ];
 
-  const coreThemes = [
-    topic.split('—')[0].trim(),
-    isEngineeringDoc ? 'Engineering Analysis' : 'Foundational Principles',
-    'Applied Methodology',
-    'Analytical Evaluation',
-    'Core Syllabus Framework',
-  ];
-
-  // Core Concepts (Formulas provided only if isEngineeringDoc is true)
-  const keyConcepts = isEngineeringDoc
+  const coreThemes = isEngineeringDoc
     ? [
-        {
-          title: 'Governing Equations & Equilibrium Relations',
-          explanation: `System equilibrium and balance equations establish the governing boundary conditions for ${topic}. External actions and internal resistance are balanced along primary coordinate axes.`,
-          formulaOrExample: 'ΣF = 0,  ΣM = 0;  ∇ · σ + b = 0',
-          importance: 'Essential for static, dynamic, and thermal stability in physical and engineering systems.',
-        },
-        {
-          title: 'Constitutive Laws & Material Response',
-          explanation: 'Constitutive formulations relate imposed loads or field excitations to observable material and structural deformations across elastic and plastic thresholds.',
-          formulaOrExample: 'σ = E · ε,  τ = G · γ,  q = -k · ∇T',
-          importance: 'Governs material selection, safety factors, and deflection thresholds under operational demands.',
-        },
-        {
-          title: 'Failure Inception & Energy Dissipation Criteria',
-          explanation: 'Multi-axial state evaluations determine safe operating envelopes, comparing equivalent effective stress against allowable yield and endurance strengths.',
-          formulaOrExample: 'σ_equiv <= [σ_allowable] / FoS',
-          importance: 'Prevents catastrophic yielding, fatigue degradation, or localized thermal breakdown.',
-        },
+        topic.split('—')[0].trim(),
+        'Engineering Analysis',
+        'Physical Principles',
+        'System Dynamics',
+        'Technical Specifications',
       ]
     : [
+        topic.split('—')[0].trim(),
+        'Core Principles',
+        'Contextual Interpretation',
+        'Analytical Synthesis',
+        'Subject Framework',
+      ];
+
+  // Core Concepts: Dynamically grounded in text for general docs, formulas only for engineering docs
+  let keyConcepts: any[] = [];
+  if (isEngineeringDoc) {
+    keyConcepts = [
+      {
+        title: 'Governing Relations & Balance Criteria',
+        explanation: `Governing physical balance and equilibrium relationships establish the operational constraints for ${topic}.`,
+        formulaOrExample: 'ΣF = 0,  ΣM = 0;  ∇ · σ + b = 0',
+        importance: 'Critical for operational stability, load margins, and structural integrity.',
+      },
+      {
+        title: 'Constitutive Laws & Material Response',
+        explanation: 'Constitutive equations relate applied excitations to resultant physical deformations.',
+        formulaOrExample: 'σ = E · ε,  τ = G · γ',
+        importance: 'Governs material selection and mechanical response under operational loads.',
+      },
+      {
+        title: 'Safety Envelope & Performance Thresholds',
+        explanation: 'Multi-axial evaluation determines safe operating margins against allowable thresholds.',
+        formulaOrExample: 'Operating Load <= Allowable Limit / Safety Factor',
+        importance: 'Ensures reliable long-term performance and prevents structural degradation.',
+      },
+    ];
+  } else {
+    // Derive concepts directly from real document sentences or paragraphs
+    if (rawSentences.length >= 3) {
+      keyConcepts = [
+        {
+          title: `Core Principle: ${rawSentences[0].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `The source material establishes that "${rawSentences[0]}", serving as a foundational pillar for ${topic}.`,
+          formulaOrExample: rawSentences[0].slice(0, 110),
+          importance: 'Underpins the primary thesis and provides the factual baseline for contextual understanding.',
+        },
+        {
+          title: `Analytical Focus: ${rawSentences[1].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `A central deduction highlighted in the document notes that "${rawSentences[1]}", providing critical contextual support.`,
+          formulaOrExample: rawSentences[1].slice(0, 110),
+          importance: 'Essential for addressing analytical questions and understanding relational dynamics in the text.',
+        },
+        {
+          title: `Synthesis & Interpretation: ${rawSentences[2].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `The text further articulates that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.`,
+          formulaOrExample: rawSentences[2].slice(0, 110),
+          importance: 'Vital for comprehensive recall, synthesis, and examination readiness.',
+        },
+      ];
+    } else {
+      keyConcepts = [
         {
           title: `Foundational Paradigm of ${topic}`,
           explanation: `The foundational architecture of ${topic} structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
@@ -1218,8 +1251,8 @@ function generateFallbackStudyPackage(
         },
         {
           title: 'Core Methodological Framework',
-          explanation: 'Structured methodologies and analytical criteria enable systematic evaluation of claims, case studies, or operational parameters without bias.',
-          importance: 'Critical for evaluating evidence and articulating well-substantiated solutions in exam assessments.',
+          explanation: 'Structured methodologies and analytical criteria enable systematic evaluation of claims and case studies without bias.',
+          importance: 'Critical for evaluating evidence and articulating well-substantiated solutions in assessments.',
         },
         {
           title: 'Synthesis & Practical Application',
@@ -1227,6 +1260,8 @@ function generateFallbackStudyPackage(
           importance: 'Essential for addressing high-level case study and scenario-based questions.',
         },
       ];
+    }
+  }
 
   // Generate requested MCQ count grounded in sentences or structured themes
   const targetCount = Math.min(50, Math.max(5, requestedQCount));
@@ -1583,24 +1618,52 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
     // ModeEaseStudy FACT-CHECKING, VALIDATION & REFINEMENT LAYER:
     // Check that generated result conforms strictly to requirements and ground rules
     // =========================================================================
-    if (parsed && parsed.examSuite?.multipleChoice) {
-      // Ensure MCQ IDs are sequential and answers are clean
-      parsed.examSuite.multipleChoice = parsed.examSuite.multipleChoice.map((mcq: any, idx: number) => ({
-        ...mcq,
-        id: idx + 1,
-        correctAnswer: (mcq.correctAnswer || 'A').trim().toUpperCase().charAt(0),
-      }));
-    }
-
-    // Domain Purity Check: If user did NOT specify engineering, strip any stray mechanical keywords from concepts
-    if (!isEngineeringDoc && parsed.keyConcepts) {
-      parsed.keyConcepts = parsed.keyConcepts.map((c: any) => {
-        if (!c.formulaOrExample || c.formulaOrExample.includes('von Mises') || c.formulaOrExample.includes('Hooke')) {
-          const { formulaOrExample, ...rest } = c;
-          return rest;
+    if (parsed) {
+      // Strip any accidental '1st Class' phrases from all fields
+      const sanitizeText = (txt: any): any => {
+        if (typeof txt === 'string') {
+          return txt.replace(/1st\s*Class\s*(Study)?/gi, 'Academic Study').trim();
         }
-        return c;
-      });
+        return txt;
+      };
+
+      if (parsed.summary) {
+        parsed.summary.executiveSummary = sanitizeText(parsed.summary.executiveSummary);
+        if (Array.isArray(parsed.summary.keyTakeaways)) {
+          parsed.summary.keyTakeaways = parsed.summary.keyTakeaways.map(sanitizeText);
+        }
+      }
+
+      if (parsed.examSuite?.multipleChoice) {
+        // Ensure MCQ IDs are sequential and answers are clean
+        parsed.examSuite.multipleChoice = parsed.examSuite.multipleChoice.map((mcq: any, idx: number) => ({
+          ...mcq,
+          id: idx + 1,
+          question: sanitizeText(mcq.question),
+          options: Array.isArray(mcq.options) ? mcq.options.map(sanitizeText) : mcq.options,
+          correctAnswer: (mcq.correctAnswer || 'A').trim().toUpperCase().charAt(0),
+          explanation: sanitizeText(mcq.explanation),
+        }));
+      }
+
+      // Domain Purity Check: If user did NOT specify engineering, strip any stray engineering formulas/keywords
+      if (!isEngineeringDoc && parsed.keyConcepts) {
+        parsed.keyConcepts = parsed.keyConcepts.map((c: any) => {
+          const formula = c.formulaOrExample || '';
+          if (
+            formula.includes('von Mises') ||
+            formula.includes('Hooke') ||
+            formula.includes('ΣF') ||
+            formula.includes('σ =') ||
+            formula.includes('τ =') ||
+            formula.includes('∇ · σ')
+          ) {
+            const { formulaOrExample, ...rest } = c;
+            return rest;
+          }
+          return c;
+        });
+      }
     }
 
     res.json({ success: true, result: parsed });
