@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import compression from 'compression';
@@ -65,15 +64,19 @@ const DATA_DIR = path.resolve(process.cwd(), 'data');
 const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
-// Ensure local cache directories exist
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!fs.existsSync(RECORDINGS_DIR)) {
-  fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
-}
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Ensure local cache directories exist (guarded for read-only serverless environments like Vercel)
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(RECORDINGS_DIR)) {
+    fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+} catch {
+  // Silent fallback on read-only serverless filesystems
 }
 
 // Clean error message helper to parse stringified JSON error objects from Gemini SDK
@@ -1320,7 +1323,7 @@ function generateFallbackStudyPackage(
 }
 
 // 10. EaseStudy Multi-Modal Analysis & Exam Generator
-app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/'], async (req, res) => {
+app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analyze', '/easestudy/analyze/'], async (req, res) => {
   try {
     const {
       text,
@@ -1616,7 +1619,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
 });
 
 // 11. EaseStudy Intelligent Visual Diagram & Concept Illustration Generator
-app.post(['/api/easestudy/generate-image', '/api/easestudy/generate-image/'], async (req, res) => {
+app.post(['/api/easestudy/generate-image', '/api/easestudy/generate-image/', '/easestudy/generate-image', '/easestudy/generate-image/'], async (req, res) => {
   try {
     const { topic = 'Core Study Concept', conceptTitle = 'Technical Diagram', description = '', isEngineeringDoc = false } = req.body;
 
@@ -1784,6 +1787,7 @@ async function startServer() {
       res.sendFile(path.resolve('dist/index.html'));
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, host: '0.0.0.0', port: 3000 },
       appType: 'spa',
