@@ -206,16 +206,13 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                   <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
                     <BrainCircuit className="w-5 h-5 text-cyan-800" />
                   </div>
-                  <span className="text-[10px] font-sans font-bold text-cyan-900 bg-cyan-50 px-2.5 py-0.5 rounded-md border border-cyan-200">
-                    AI STUDIO
-                  </span>
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
                   EaseStudy - Studio
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Upload handouts, PDF papers, engineering drawings, or lecture notes to generate instant executive summaries, key concept breakdowns, and practice exams.
+                  Upload course materials, articles, or notes to generate instant step-by-step summaries, interactive exam suites, and visual concept diagrams.
                 </p>
               </div>
 

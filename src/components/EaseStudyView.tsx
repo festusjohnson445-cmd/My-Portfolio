@@ -39,6 +39,7 @@ import {
   generateConceptVisualDiagram,
   VisualDiagramResult,
 } from '../utils/easeStudyModelHub';
+import { extractCleanTextFromFile } from '../utils/documentTextExtractor';
 
 export interface EaseStudyResponse {
   topic: string;
@@ -94,6 +95,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [fileBase64, setFileBase64] = useState<string | null>(null);
   const [fileMimeType, setFileMimeType] = useState<string | null>(null);
+  const [fileExtractedText, setFileExtractedText] = useState<string>('');
 
   // Configuration options
   const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
@@ -163,6 +165,13 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     const mime = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     setFileMimeType(mime);
 
+    // Clean text extraction directly from file
+    extractCleanTextFromFile(file)
+      .then((txt) => {
+        setFileExtractedText(txt);
+      })
+      .catch((e) => console.warn('Clean text extract notice:', e));
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
@@ -220,11 +229,17 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
           setFileBase64(b64);
           setFileMimeType(mime);
         }
+        let cleanExtracted = fileExtractedText;
+        if (!cleanExtracted && uploadedFile) {
+          cleanExtracted = await extractCleanTextFromFile(uploadedFile);
+          setFileExtractedText(cleanExtracted);
+        }
         activeFilePayload = {
           base64: b64,
           mimeType: mime,
           fileName: uploadedFile.name,
           size: uploadedFile.size,
+          extractedText: cleanExtracted || undefined,
         };
       }
 
@@ -612,7 +627,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                   </div>
                   <span className="text-[10.5px] font-bold text-slate-900">{uploadedFile.name}</span>
                   <span className="text-[9px] text-slate-500">
-                    {(uploadedFile.size / 1024).toFixed(1)} KB &middot; Ready to generate study summary &amp; exam
+                    {(uploadedFile.size / 1024).toFixed(1)} KB &middot; Document ready for analysis
                   </span>
                 </div>
               ) : (
@@ -663,8 +678,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
           />
         </div>
 
-        {/* Parameters: Level, Question Count, and Engineering Toggle */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+        {/* Parameters: Level and Question Count */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
           {/* Difficulty */}
           <div className="space-y-1">
             <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
@@ -674,7 +689,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
             <select
               value={difficulty}
               onChange={(e: any) => setDifficulty(e.target.value)}
-              className="w-full px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-[10.5px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
             >
               <option value="beginner">Foundational / Introductory</option>
               <option value="intermediate">Undergraduate / Intermediate</option>
@@ -692,29 +707,13 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
             <select
               value={questionCount}
               onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="w-full px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-[10.5px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
             >
               <option value={10}>10 Questions (Quick Review)</option>
               <option value={15}>15 Questions (Standard Suite)</option>
               <option value={20}>20 Questions (In-Depth Exam)</option>
               <option value={30}>30 Questions (Master Suite)</option>
             </select>
-          </div>
-
-          {/* Engineering / Technical Document Toggle */}
-          <div className="flex items-center sm:items-end pb-1">
-            <label className="flex items-center gap-1.5 cursor-pointer select-none bg-slate-50 hover:bg-slate-100 p-1.5 rounded-lg border border-slate-200 w-full transition-colors">
-              <input
-                type="checkbox"
-                checked={isEngineeringDoc}
-                onChange={(e) => setIsEngineeringDoc(e.target.checked)}
-                className="w-3.5 h-3.5 text-cyan-700 rounded border-slate-300 focus:ring-cyan-600 cursor-pointer"
-              />
-              <div className="text-[9.5px] leading-tight">
-                <span className="font-bold text-slate-800 block">Engineering Document</span>
-                <span className="text-[8.5px] text-slate-500 block">Include formulas &amp; calculations</span>
-              </div>
-            </label>
           </div>
         </div>
 
@@ -779,11 +778,6 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
                 <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[9px] font-mono border border-slate-200">
                   {studyResult.readingTime}
                 </span>
-                {isEngineeringDoc && (
-                  <span className="px-1.5 py-0.5 rounded-md bg-cyan-50 text-cyan-800 text-[9px] font-mono border border-cyan-200">
-                    ENGINEERING
-                  </span>
-                )}
               </div>
 
               <h2 className="text-xs sm:text-sm font-bold text-slate-900 font-serif leading-tight">

@@ -20,6 +20,7 @@
 
 import { supabase } from './supabase';
 import { EaseStudyResponse } from '../components/EaseStudyView';
+import { extractCleanTextFromBase64, cleanExtractedString } from './documentTextExtractor';
 
 export interface EaseStudyHubParams {
   text?: string;
@@ -28,6 +29,7 @@ export interface EaseStudyHubParams {
     mimeType: string;
     fileName: string;
     size?: number;
+    extractedText?: string;
   } | null;
   difficulty: 'beginner' | 'intermediate' | 'advanced' | 'exam_prep';
   questionCount: number;
@@ -395,34 +397,33 @@ export async function generateConceptVisualDiagram(
  */
 function extractReadableTextFromPayload(text?: string, fileData?: any): string {
   if (text && text.trim().length > 0) {
-    return text.trim();
+    return cleanExtractedString(text.trim());
   }
-  if (!fileData || !fileData.base64) {
+  if (!fileData) {
+    return '';
+  }
+  if (fileData.extractedText && typeof fileData.extractedText === 'string' && fileData.extractedText.trim().length > 0) {
+    return cleanExtractedString(fileData.extractedText.trim());
+  }
+  if (!fileData.base64) {
     return '';
   }
   try {
     const rawBase64 = String(fileData.base64).replace(/^data:[^;]+;base64,/, '').trim();
-    const binary = atob(rawBase64);
+    const fileName = (fileData.fileName || '').toLowerCase();
+    const mimeType = (fileData.mimeType || '').toLowerCase();
 
-    // Extract text from Word XML tags if available
-    const xmlMatches = binary.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
-    if (xmlMatches && xmlMatches.length > 0) {
-      return xmlMatches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
+    // Plain text decoding
+    if (fileName.endsWith('.txt') || fileName.endsWith('.md') || mimeType.startsWith('text/')) {
+      return cleanExtractedString(atob(rawBase64));
     }
 
-    // Extract printable sequences of readable text
-    const textMatches = binary.match(/[A-Za-z0-9][A-Za-z0-9\s,.;:'"!?\-–—()]{4,}[A-Za-z0-9.]/g);
-    if (textMatches && textMatches.length > 0) {
-      const filtered = textMatches.filter(
-        (s) =>
-          !s.includes('.xml') &&
-          !s.includes('[Content_Types]') &&
-          !s.includes('schemas.openxmlformats') &&
-          !s.includes('word/')
-      );
-      if (filtered.length > 0) {
-        return filtered.join(' ');
-      }
+    // Word docx decoding: if it has XML tags inside
+    const binary = atob(rawBase64);
+    const xmlMatches = binary.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+    if (xmlMatches && xmlMatches.length > 0) {
+      const extracted = xmlMatches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
+      return cleanExtractedString(extracted);
     }
   } catch (err) {
     console.warn('[EaseStudy] Text extraction notice:', err);
@@ -846,7 +847,19 @@ export async function executeEaseStudyIntelligentHub(
   await new Promise((r) => setTimeout(r, 120));
   onStatusUpdate(params.forceRegenerate ? 'Reprocessing fresh output from raw document...' : 'Generating step-by-step summary and questions...');
 
-  const rawExtractedText = extractReadableTextFromPayload(params.text, params.fileData);
+  let rawExtractedText = extractReadableTextFromPayload(params.text, params.fileData);
+  if (!rawExtractedText && params.fileData?.base64) {
+    try {
+      rawExtractedText = await extractCleanTextFromBase64(
+        params.fileData.base64,
+        params.fileData.mimeType,
+        params.fileData.fileName
+      );
+    } catch {}
+  }
+  if (rawExtractedText && params.fileData) {
+    params.fileData.extractedText = rawExtractedText;
+  }
 
   const payload = {
     text: params.text || '',

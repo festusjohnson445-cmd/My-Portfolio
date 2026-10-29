@@ -1134,14 +1134,21 @@ function generateFallbackStudyPackage(
   specialFocus: string = '',
   isEngineeringDoc: boolean = false
 ) {
-  const cleanText = (textContent || '').trim();
+  let cleanText = (textContent || '').trim();
+  cleanText = cleanText
+    .replace(/^User Provided Text\/Notes:\s*/i, '')
+    .replace(/^Uploaded Document Content \([^)]*\):\s*/i, '')
+    .trim();
   const cleanName = (fileName || '').replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').trim();
 
   let topic = isEngineeringDoc ? 'Engineering Analysis' : 'Subject Overview';
   if (cleanName && cleanName.length > 2 && !cleanName.toLowerCase().startsWith('screenshot')) {
     topic = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
   } else if (cleanText.length > 0) {
-    const lines = cleanText.split('\n').map((l) => l.replace(/[#*_-]/g, '').trim()).filter(Boolean);
+    const lines = cleanText
+      .split('\n')
+      .map((l) => l.replace(/[#*_-]/g, '').trim())
+      .filter((l) => l.length > 3 && !l.toLowerCase().startsWith('user provided text') && !l.toLowerCase().startsWith('uploaded document'));
     if (lines.length > 0 && lines[0].length > 3 && lines[0].length < 90) {
       topic = lines[0];
     }
@@ -1381,50 +1388,69 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
     const parts: any[] = [];
     let extractedDocxText = '';
 
-    if (fileData && fileData.base64) {
-      const fileName = (fileData.fileName || '').toLowerCase();
-      let mimeType = (fileData.mimeType || '').toLowerCase();
-      const rawBase64 = String(fileData.base64).replace(/^data:[^;]+;base64,/, '').trim();
+    const cleanDocNoise = (raw: string): string => {
+      if (!raw) return '';
+      return raw
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
+        .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
+        .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
+        .replace(/word\/(?:document|fontTable|styles|settings)\.xml[^\s]*/gi, '')
+        .replace(/_rels\/\.rels[^\s]*/gi, '')
+        .replace(/\r\n|\r/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+    };
 
-      if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || mimeType.includes('wordprocessingml') || mimeType.includes('officedocument')) {
-        try {
-          const fileBuffer = Buffer.from(rawBase64, 'base64');
-          const mammothResult = await mammoth.extractRawText({ buffer: fileBuffer });
-          if (mammothResult && mammothResult.value) {
-            extractedDocxText = mammothResult.value;
+    if (fileData) {
+      if (fileData.extractedText && typeof fileData.extractedText === 'string' && fileData.extractedText.trim().length > 0) {
+        extractedDocxText = cleanDocNoise(fileData.extractedText);
+      } else if (fileData.base64) {
+        const fileName = (fileData.fileName || '').toLowerCase();
+        let mimeType = (fileData.mimeType || '').toLowerCase();
+        const rawBase64 = String(fileData.base64).replace(/^data:[^;]+;base64,/, '').trim();
+
+        if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || mimeType.includes('wordprocessingml') || mimeType.includes('officedocument')) {
+          try {
+            const fileBuffer = Buffer.from(rawBase64, 'base64');
+            const mammothResult = await mammoth.extractRawText({ buffer: fileBuffer });
+            if (mammothResult && mammothResult.value) {
+              extractedDocxText = cleanDocNoise(mammothResult.value);
+            }
+          } catch (docxErr) {
+            console.warn('Docx extraction fallback:', docxErr);
           }
-        } catch (docxErr) {
-          console.warn('Docx extraction fallback:', docxErr);
-        }
-      } else if (fileName.endsWith('.txt') || mimeType.startsWith('text/')) {
-        try {
-          extractedDocxText = Buffer.from(rawBase64, 'base64').toString('utf-8');
-        } catch (txtErr) {
-          console.warn('Text decoding fallback:', txtErr);
-        }
-      } else {
-        // PDF or Images (PNG, JPG, WEBP, etc.)
-        let resolvedMime = mimeType;
-        if (!resolvedMime || resolvedMime === 'application/octet-stream') {
-          if (fileName.endsWith('.pdf')) resolvedMime = 'application/pdf';
-          else if (fileName.endsWith('.png')) resolvedMime = 'image/png';
-          else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) resolvedMime = 'image/jpeg';
-          else if (fileName.endsWith('.webp')) resolvedMime = 'image/webp';
-          else resolvedMime = 'application/pdf';
-        }
-        if (resolvedMime === 'image/jpg') resolvedMime = 'image/jpeg';
+        } else if (fileName.endsWith('.txt') || mimeType.startsWith('text/')) {
+          try {
+            extractedDocxText = cleanDocNoise(Buffer.from(rawBase64, 'base64').toString('utf-8'));
+          } catch (txtErr) {
+            console.warn('Text decoding fallback:', txtErr);
+          }
+        } else {
+          // PDF or Images (PNG, JPG, WEBP, etc.)
+          let resolvedMime = mimeType;
+          if (!resolvedMime || resolvedMime === 'application/octet-stream') {
+            if (fileName.endsWith('.pdf')) resolvedMime = 'application/pdf';
+            else if (fileName.endsWith('.png')) resolvedMime = 'image/png';
+            else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) resolvedMime = 'image/jpeg';
+            else if (fileName.endsWith('.webp')) resolvedMime = 'image/webp';
+            else resolvedMime = 'application/pdf';
+          }
+          if (resolvedMime === 'image/jpg') resolvedMime = 'image/jpeg';
 
-        parts.push({
-          inlineData: {
-            mimeType: resolvedMime,
-            data: rawBase64,
-          },
-        });
+          parts.push({
+            inlineData: {
+              mimeType: resolvedMime,
+              data: rawBase64,
+            },
+          });
+        }
       }
     }
 
     const combinedTextContent = [
-      text ? `User Provided Text/Notes:\n${text}` : '',
+      text ? `User Provided Text/Notes:\n${cleanDocNoise(text)}` : '',
       extractedDocxText ? `Uploaded Document Content (${fileData?.fileName || 'Document'}):\n${extractedDocxText}` : '',
     ].filter(Boolean).join('\n\n');
 
