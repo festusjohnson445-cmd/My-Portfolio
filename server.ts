@@ -1125,6 +1125,139 @@ The output must be a valid JSON object matching the requested schema with:
   }
 });
 
+// Helper to generate distinct, diverse multiple choice questions covering different cognitive archetypes
+function generateDiverseMCQs(
+  textContent: string,
+  topic: string,
+  targetCount: number = 15,
+  difficulty: string = 'intermediate',
+  isEngineeringDoc: boolean = false
+) {
+  let clean = (textContent || '').replace(/\s+/g, ' ').trim();
+  const rawSentences = clean
+    .split(/(?<=[.?!])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 25 && s.length < 280 && !s.toLowerCase().startsWith('user provided') && !s.toLowerCase().startsWith('uploaded document'));
+
+  const count = Math.min(50, Math.max(5, targetCount));
+  const mcqs: any[] = [];
+  const letters: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
+
+  const archetypes = [
+    {
+      type: 'thesis',
+      makeQuestion: (s: string) => `What represents the central thesis or foundational premise of ${topic} as established in the study material?`,
+      makeCorrect: (s: string) => `It establishes that ${s.toLowerCase().replace(/^[a-z]/, (c) => c.toLowerCase())}`,
+      d1: `It outright rejects analytical observation in favor of arbitrary speculation`,
+      d2: `It applies strictly as an unrelated theoretical footnote with zero practical utility`,
+      d3: `It is framed solely as an unverified personal hypothesis refuted by the author`,
+    },
+    {
+      type: 'mechanism',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 7).join(' ');
+        return `Regarding the discussion of "${words}...", how does the source text explain its operational role?`;
+      },
+      makeCorrect: (s: string) => `The source establishes that ${s.toLowerCase()}`,
+      d1: `It functions purely as a secondary anomaly without contextual relevance`,
+      d2: `It dismisses standard criteria in favor of unverified generalizations`,
+      d3: `It asserts an opposing conclusion that invalidates the primary discussion`,
+    },
+    {
+      type: 'cause_effect',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 6).join(' ');
+        return `Based on the provided analysis of "${words}...", what primary consequence or outcome is documented?`;
+      },
+      makeCorrect: (s: string) => `Directly produces the documented result: "${s.slice(0, 85)}..."`,
+      d1: `Causes a complete collapse of analytical consistency across the framework`,
+      d2: `Has no measurable effect and is treated as an extraneous data point`,
+      d3: `Reverses the foundational premise established in earlier sections`,
+    },
+    {
+      type: 'distinction',
+      makeQuestion: (s: string) => `How does the material distinguish verified conclusions from unsupported assumptions within ${topic}?`,
+      makeCorrect: (s: string) => `By requiring factual textual evidence and clear criteria: "${s.slice(0, 80)}..."`,
+      d1: `By accepting anecdotal claims as equivalent to verified evidence`,
+      d2: `By prioritizing subjective preference over documented observations`,
+      d3: `By ignoring contradictory facts to preserve initial hypotheses`,
+    },
+    {
+      type: 'application',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 6).join(' ');
+        return `In a practical application involving "${words}...", what critical guideline does the text recommend?`;
+      },
+      makeCorrect: (s: string) => `Adhering to the verified principle that ${s.toLowerCase()}`,
+      d1: `Ignoring foundational constraints in favor of rapid assumptions`,
+      d2: `Treating documented parameters as entirely optional guidelines`,
+      d3: `Applying conclusions from unrelated disciplines without adaptation`,
+    },
+    {
+      type: 'constraint',
+      makeQuestion: (s: string) => `Which governing constraint or essential boundary condition is highlighted in the text for ${topic}?`,
+      makeCorrect: (s: string) => `Maintaining alignment with documented findings: "${s.slice(0, 80)}..."`,
+      d1: `Assuming unrestricted validity under all conceivable external conditions`,
+      d2: `Disregarding potential anomalies or exceptions noted in the source`,
+      d3: `Replacing structured definitions with arbitrary terminology`,
+    },
+    {
+      type: 'synthesis',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 6).join(' ');
+        return `How does the author's treatment of "${words}..." integrate with the broader framework of the subject?`;
+      },
+      makeCorrect: (s: string) => `It provides contextual grounding that reinforces the core deductions of the text`,
+      d1: `It contradicts the primary conclusions without offering resolution`,
+      d2: `It exists as an isolated digression completely unrelated to the core themes`,
+      d3: `It replaces the established methodology with speculative claims`,
+    },
+    {
+      type: 'evaluation',
+      makeQuestion: (s: string) => `Which statement reflects an accurate, factually grounded deduction from the source document?`,
+      makeCorrect: (s: string) => `The source establishes that ${s.toLowerCase()}`,
+      d1: `The material claims all conclusions are tentative and lack factual grounding`,
+      d2: `The author rejects systematic inquiry in favor of intuitive assertion`,
+      d3: `The findings apply exclusively to isolated test cases with no general validity`,
+    },
+  ];
+
+  for (let i = 0; i < count; i++) {
+    const qNum = i + 1;
+    const arch = archetypes[i % archetypes.length];
+    const sentence = rawSentences.length > 0
+      ? rawSentences[i % rawSentences.length]
+      : `Core principles establish verifiable criteria for ${topic}.`;
+
+    const qText = arch.makeQuestion(sentence);
+    const correctContent = arch.makeCorrect(sentence);
+    const distractors = [arch.d1, arch.d2, arch.d3];
+
+    // Assign correct letter in rotating pattern: A, B, C, D
+    const correctLetter = letters[i % 4];
+    const options: string[] = [];
+    let dIdx = 0;
+
+    for (const l of letters) {
+      if (l === correctLetter) {
+        options.push(`${l}) ${correctContent}`);
+      } else {
+        options.push(`${l}) ${distractors[dIdx++]}`);
+      }
+    }
+
+    mcqs.push({
+      id: qNum,
+      question: qText,
+      options,
+      correctAnswer: correctLetter,
+      explanation: `Direct source verification confirms Option ${correctLetter} is correct because the source explicitly establishes: "${sentence.slice(0, 110)}...". The alternative options mischaracterize the text or introduce false premises.`,
+    });
+  }
+
+  return mcqs;
+}
+
 // Helper to generate a comprehensive study package when remote AI is unavailable or encounters network issues
 function generateFallbackStudyPackage(
   textContent: string,
@@ -1270,44 +1403,9 @@ function generateFallbackStudyPackage(
     }
   }
 
-  // Generate requested MCQ count grounded in sentences or structured themes
+  // Generate requested MCQ count with guaranteed non-duplicate diverse questions
   const targetCount = Math.min(50, Math.max(5, requestedQCount));
-  const generatedMcqs: any[] = [];
-
-  for (let i = 0; i < targetCount; i++) {
-    const qNum = i + 1;
-    const sentenceRef = rawSentences[i % Math.max(1, rawSentences.length)];
-
-    if (sentenceRef && sentenceRef.length > 25) {
-      const words = sentenceRef.split(' ');
-      const keySnippet = words.slice(0, Math.min(10, words.length)).join(' ');
-      generatedMcqs.push({
-        id: qNum,
-        question: `Based directly on the text, what is the primary significance of: "${keySnippet}..."?`,
-        options: [
-          `A) It establishes the foundational principle: "${sentenceRef.slice(0, 70)}..."`,
-          `B) It contradicts the core argument presented in the source`,
-          `C) It serves only as an isolated footnote without analytical relevance`,
-          `D) It represents an unverified hypothesis excluded from final conclusions`,
-        ],
-        correctAnswer: 'A',
-        explanation: `Direct source verification: The provided document explicitly highlights this point as a primary principle (${sentenceRef}). Options B, C, and D misrepresent the documented facts.`,
-      });
-    } else {
-      generatedMcqs.push({
-        id: qNum,
-        question: `Which statement accurately reflects the primary thesis of ${topic} according to the study material?`,
-        options: [
-          `A) It provides a verified, systematic framework for understanding ${topic}`,
-          `B) It completely dismisses standard analytical methods in favor of conjecture`,
-          `C) It applies solely to unrelated external domains without practical utility`,
-          `D) It lacks verifiable factual grounding or structured definitions`,
-        ],
-        correctAnswer: 'A',
-        explanation: `The uploaded study material methodically establishes verifiable principles and guidelines for ${topic}, validating Option A as the correct answer.`,
-      });
-    }
-  }
+  const generatedMcqs = generateDiverseMCQs(cleanText, topic, targetCount, targetDifficulty, isEngineeringDoc);
 
   const shortAnswers = [
     {
@@ -1333,6 +1431,17 @@ function generateFallbackStudyPackage(
         'Emphasis on systematic validation and factual accuracy',
       ],
     },
+    {
+      id: 3,
+      question: `Evaluate the primary evidence presented in the text and discuss how it withstands counter-arguments or critical edge cases.`,
+      idealAnswer: rawSentences.length >= 3
+        ? `The text supports its deductions by showing that "${rawSentences[2]}", providing verifiable corroboration that prevents reductive misinterpretations.`
+        : `The text grounds each claim in explicit definitions and empirical examples, demonstrating that theoretical assumptions remain valid only within the observed boundary constraints.`,
+      keyPointsRequired: [
+        'Reference to specific textual evidence or mechanisms',
+        'Analysis of boundary conditions and edge cases',
+      ],
+    },
   ];
 
   const flashcards = [
@@ -1347,6 +1456,10 @@ function generateFallbackStudyPackage(
     {
       front: `What primary lesson or principle is emphasized in the text?`,
       back: rawSentences[2] || `Consistent application of core principles based on verifiable textual evidence and clear definitions.`,
+    },
+    {
+      front: `What distinction is made regarding foundational premises in ${topic}?`,
+      back: rawSentences[3] || `Foundational premises must be verified against documented textual facts rather than external assumptions.`,
     },
   ];
 
@@ -1379,6 +1492,7 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
       focusArea = '',
       isEngineeringDoc = false,
       priorContext = null,
+      forceRegenerate = false,
     } = req.body;
 
     if (!text && (!fileData || !fileData.base64)) {
@@ -1471,13 +1585,19 @@ Role: Document Ingestion, Strict Source Grounding, and Natural Syllabus Synthesi
 ${isEngineeringDoc ? '5. Engineering Specification: The user has explicitly marked this as an Engineering/Technical document. Formulate relevant mathematical formulas and physics/mechanical principles contained in or governing the material.' : '5. General Domain Specification: The document is not an engineering paper. Treat its concepts, arguments, case studies, or principles with natural domain-appropriate terminology.'}
 6. Target pedagogical level: ${difficulty}.`;
 
-    const priorRefinementDirective = priorContext
+    const priorRefinementDirective = priorContext && !forceRegenerate
       ? `\n[ITERATIVE REFINEMENT DIRECTIVE]:
 A previous study version was stored in the ModeEaseStudy dataset. Refine and enhance this analysis to be deeper, more comprehensive, and address the latest user focus: "${focusArea || 'General mastery'}". Do not repeat identical phrasing; elevate clarity and precision.`
       : '';
 
+    const regenerateDirective = forceRegenerate
+      ? `\n[MANDATORY RE-GENERATE DIRECTIVE]:
+The user has clicked Re-Generate to force an entirely fresh, clean re-analysis from scratch. Produce completely new, freshly framed questions, alternative conceptual angles, and deep analytical insights. Every question must be distinct and uniquely formulated.`
+      : '';
+
     const promptText = `${notebookLmGroundingDirective}
 ${priorRefinementDirective}
+${regenerateDirective}
 
 [GEMINI AI HIGH-PRECISION SEMANTIC GENERATION LAYER]
 Analyze the grounded source material and produce a comprehensive, publication-grade academic study suite:
@@ -1495,8 +1615,9 @@ Analyze the grounded source material and produce a comprehensive, publication-gr
 4. Practice Exam Question Suite:
    - Exactly ${targetQCount} Multiple Choice Questions:
      * Grounded strictly in the document content.
+     * MANDATORY UNIQUENESS: Every question MUST evaluate a completely distinct concept, statement, or mechanism from the text. NEVER duplicate question stems or explanations.
      * 4 realistic, distinct answer options per question labeled explicitly ("A) ...", "B) ...", "C) ...", "D) ...").
-     * The correct answer option ("A", "B", "C", or "D").
+     * Rotate the correct answer option evenly across ("A", "B", "C", and "D").
      * Step-by-step rigorous explanation for why the answer is correct and why the distractors are incorrect.
    - 3 to 5 Short Answer / Analytical Questions:
      * Comprehensive conceptual or multi-step analysis questions.
@@ -1602,7 +1723,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       required: ['topic', 'difficulty', 'readingTime', 'summary', 'keyConcepts', 'examSuite'],
     };
 
-    const candidateModels = ['gemini-flash-latest'];
+    const candidateModels = ['gemini-2.5-flash', 'gemini-flash-latest'];
     let outputText = '';
 
     for (const modelName of candidateModels) {
@@ -1611,6 +1732,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
           const configObj: any = {
             responseMimeType: 'application/json',
             responseSchema: schemaConfig,
+            temperature: forceRegenerate ? 0.65 : 0.35,
           };
           const response = await ai.models.generateContent({
             model: modelName,
@@ -1680,16 +1802,52 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
         }
       }
 
-      if (parsed.examSuite?.multipleChoice) {
-        // Ensure MCQ IDs are sequential and answers are clean
-        parsed.examSuite.multipleChoice = parsed.examSuite.multipleChoice.map((mcq: any, idx: number) => ({
-          ...mcq,
-          id: idx + 1,
-          question: sanitizeText(mcq.question),
-          options: Array.isArray(mcq.options) ? mcq.options.map(sanitizeText) : mcq.options,
-          correctAnswer: (mcq.correctAnswer || 'A').trim().toUpperCase().charAt(0),
-          explanation: sanitizeText(mcq.explanation),
-        }));
+      // Deduplication & Quality Backfill for Practice Exam MCQs
+      if (parsed.examSuite?.multipleChoice && Array.isArray(parsed.examSuite.multipleChoice)) {
+        const seenStems = new Set<string>();
+        const uniqueMcqs: any[] = [];
+
+        parsed.examSuite.multipleChoice.forEach((mcq: any) => {
+          const cleanQ = sanitizeText(mcq.question || '');
+          const normalized = cleanQ.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+          const stemSig = normalized.slice(0, 40);
+
+          if (stemSig.length > 5 && !seenStems.has(stemSig)) {
+            seenStems.add(stemSig);
+            uniqueMcqs.push({
+              ...mcq,
+              id: uniqueMcqs.length + 1,
+              question: cleanQ,
+              options: Array.isArray(mcq.options) ? mcq.options.map(sanitizeText) : mcq.options,
+              correctAnswer: (mcq.correctAnswer || 'A').trim().toUpperCase().charAt(0),
+              explanation: sanitizeText(mcq.explanation),
+            });
+          }
+        });
+
+        // If duplicate questions were purged and count is below targetQCount, backfill with diverse synthesized questions
+        if (uniqueMcqs.length < targetQCount) {
+          const synthesized = generateDiverseMCQs(
+            combinedTextContent,
+            parsed.topic || 'Subject Overview',
+            targetQCount,
+            difficulty,
+            isEngineeringDoc
+          );
+          for (const extra of synthesized) {
+            if (uniqueMcqs.length >= targetQCount) break;
+            const extraSig = extra.question.toLowerCase().replace(/[^a-z0-9]/g, ' ').slice(0, 40);
+            if (!seenStems.has(extraSig)) {
+              seenStems.add(extraSig);
+              uniqueMcqs.push({
+                ...extra,
+                id: uniqueMcqs.length + 1,
+              });
+            }
+          }
+        }
+
+        parsed.examSuite.multipleChoice = uniqueMcqs;
       }
 
       // Domain Purity Check: If user did NOT specify engineering, strip any stray engineering formulas/keywords

@@ -38,6 +38,8 @@ import {
   computeDocumentFingerprint,
   generateConceptVisualDiagram,
   VisualDiagramResult,
+  STANDARD_EASESTUDY_BENCHMARKS,
+  seedModeEaseStudyDataset,
 } from '../utils/easeStudyModelHub';
 import { extractCleanTextFromFile } from '../utils/documentTextExtractor';
 
@@ -119,6 +121,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   const [examFilterMode, setExamFilterMode] = useState<'all' | 'incorrect' | 'flagged'>('all');
   const [isQuizSubmitted, setIsQuizSubmitted] = useState(false);
   const [examScore, setExamScore] = useState<{ score: number; total: number; percentage: number } | null>(null);
+  const [examSectionMode, setExamSectionMode] = useState<'mcq' | 'analytical'>('mcq');
+  const [revealedShortAnswers, setRevealedShortAnswers] = useState<Set<number>>(new Set());
 
   // Visual Diagrams & Concept Illustrations
   const [generatedDiagrams, setGeneratedDiagrams] = useState<Record<string, VisualDiagramResult>>({});
@@ -132,8 +136,9 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Restore previous study session from local cache on mount
+  // Restore previous study session from local cache on mount and seed standard datasets
   useEffect(() => {
+    seedModeEaseStudyDataset().catch(() => {});
     try {
       const cached = localStorage.getItem('fesline_easestudy_last_result');
       if (cached) {
@@ -144,6 +149,25 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
       }
     } catch {}
   }, []);
+
+  const handleLoadBenchmark = (benchmarkId: string) => {
+    const benchmark = STANDARD_EASESTUDY_BENCHMARKS.find((b) => b.id === benchmarkId) || STANDARD_EASESTUDY_BENCHMARKS[0];
+    setActiveInputTab('text');
+    setInputText(benchmark.sampleText);
+    setStudyResult(benchmark.precomputedPackage);
+    setActiveDocumentHash(`benchmark_${benchmark.id}`);
+    setActiveOutputTab('summary');
+    setUserAnswers({});
+    setFlaggedQuestions(new Set());
+    setActiveQuestionIndex(0);
+    setIsQuizSubmitted(false);
+    setExamScore(null);
+    setExamFilterMode('all');
+    setIsEngineeringDoc(benchmark.isEngineeringDoc);
+    try {
+      localStorage.setItem('fesline_easestudy_last_result', JSON.stringify(benchmark.precomputedPackage));
+    } catch {}
+  };
 
   const readFileAsync = (file: File): Promise<{ base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
@@ -278,8 +302,28 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
   };
 
   const handleRegenerate = () => {
+    if (activeDocumentHash) {
+      try {
+        const localRaw = localStorage.getItem('fesline_mode_easestudy_dataset_cache');
+        if (localRaw) {
+          const cacheMap = JSON.parse(localRaw);
+          delete cacheMap[activeDocumentHash];
+          localStorage.setItem('fesline_mode_easestudy_dataset_cache', JSON.stringify(cacheMap));
+        }
+      } catch {}
+    }
+    try {
+      localStorage.removeItem('fesline_easestudy_last_result');
+    } catch {}
     setStudyResult(null);
     setGeneratedDiagrams({});
+    setUserAnswers({});
+    setFlaggedQuestions(new Set());
+    setActiveQuestionIndex(0);
+    setIsQuizSubmitted(false);
+    setExamScore(null);
+    setExamFilterMode('all');
+    setActiveOutputTab('summary');
     handleRunAnalysis(true);
   };
 
@@ -577,9 +621,25 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
             </button>
           </div>
 
-          <span className="text-[9px] font-mono text-slate-400">
-            PDF, DOCX, TXT, PNG, JPG, WEBP
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5 text-[9.5px]">
+            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Standard Datasets:</span>
+            <button
+              type="button"
+              onClick={() => handleLoadBenchmark('benchmark_human_relations')}
+              className="px-2 py-0.5 rounded-md bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 font-semibold cursor-pointer transition-colors shadow-2xs"
+              title="Load Dale Carnegie Human Relations verified study benchmark"
+            >
+              Human Relations &amp; Influence
+            </button>
+            <button
+              type="button"
+              onClick={() => handleLoadBenchmark('benchmark_hermeneutics')}
+              className="px-2 py-0.5 rounded-md bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 font-semibold cursor-pointer transition-colors shadow-2xs"
+              title="Load Theological & Historical Hermeneutics verified study benchmark"
+            >
+              Theological Hermeneutics
+            </button>
+          </div>
         </div>
 
         {/* Upload Dropzone */}
@@ -1083,388 +1143,494 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
           {/* TAB 4: INTERACTIVE PRACTICE EXAMS MODULE */}
           {activeOutputTab === 'exam' && (
             <div className="space-y-3">
-              {/* Automated Scoring Summary Banner (when submitted) */}
-              {isQuizSubmitted && examScore && (
-                <div className="p-3 sm:p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-2.5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center font-bold text-base font-mono ${
-                        examScore.percentage >= 75
-                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                          : examScore.percentage >= 50
-                          ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                          : 'bg-rose-100 text-rose-800 border border-rose-200'
-                      }`}>
-                        {examScore.percentage}%
-                      </div>
-                      <div>
-                        <div className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                          <span>Exam Score: {examScore.score} / {examScore.total} Correct</span>
-                          <span className={`px-2 py-0.5 rounded-md text-[9px] font-semibold ${
-                            examScore.percentage >= 75
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : examScore.percentage >= 50
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}>
-                            {examScore.percentage >= 75
-                              ? 'Distinction'
-                              : examScore.percentage >= 50
-                              ? 'Proficient'
-                              : 'Review Recommended'}
-                          </span>
-                        </div>
-                        <p className="text-[9.5px] text-slate-500">
-                          {examScore.score === examScore.total
-                            ? 'Mastery across all examination objectives!'
-                            : `Review explanations below for ${examScore.total - examScore.score} incorrect answers.`}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={handleRetakeExam}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                        <span>Retake Exam</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Filter Mode Tabs after submission */}
-                  <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 text-[9.5px]">
-                    <span className="text-slate-500 font-medium">Filter View:</span>
-                    <button
-                      onClick={() => setExamFilterMode('all')}
-                      className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                        examFilterMode === 'all'
-                          ? 'bg-cyan-700 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      All ({allMCQs.length})
-                    </button>
-                    <button
-                      onClick={() => setExamFilterMode('incorrect')}
-                      className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                        examFilterMode === 'incorrect'
-                          ? 'bg-rose-600 text-white'
-                          : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
-                      }`}
-                    >
-                      Incorrect ({examScore.total - examScore.score})
-                    </button>
-                    {flaggedQuestions.size > 0 && (
-                      <button
-                        onClick={() => setExamFilterMode('flagged')}
-                        className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                          examFilterMode === 'flagged'
-                            ? 'bg-amber-600 text-white'
-                            : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
-                        }`}
-                      >
-                        Flagged ({flaggedQuestions.size})
-                      </button>
-                    )}
-                  </div>
+              {/* Exam Section Mode Toggle: Multiple Choice vs Analytical Questions */}
+              {studyResult.examSuite?.shortAnswer && studyResult.examSuite.shortAnswer.length > 0 && (
+                <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setExamSectionMode('mcq')}
+                    className={`flex-1 py-1 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      examSectionMode === 'mcq'
+                        ? 'bg-cyan-700 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Multiple Choice Questions ({allMCQs.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExamSectionMode('analytical')}
+                    className={`flex-1 py-1 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      examSectionMode === 'analytical'
+                        ? 'bg-cyan-700 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Analytical &amp; Short Answer ({studyResult.examSuite.shortAnswer.length})
+                  </button>
                 </div>
               )}
 
-              {/* Question Navigation Bar & Quick-Jump Palette */}
-              <div className="p-3 sm:p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2">
-                    <Target className="w-3.5 h-3.5 text-cyan-700" />
-                    <span className="font-bold text-slate-800 text-[11px]">
-                      Navigation ({totalAnswered} / {allMCQs.length} Answered)
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setExamViewMode('focused')}
-                        className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
-                          examViewMode === 'focused'
-                            ? 'bg-white text-slate-900 shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Focused View
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setExamViewMode('list')}
-                        className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
-                          examViewMode === 'list'
-                            ? 'bg-white text-slate-900 shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Full List View
-                      </button>
-                    </div>
-
-                    {!isQuizSubmitted && (
-                      <button
-                        type="button"
-                        onClick={handleGradeExam}
-                        className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[10px] font-bold shadow-2xs transition-colors cursor-pointer"
-                      >
-                        Grade Exam
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Question Numbers Strip */}
-                <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  {allMCQs.map((mcq, idx) => {
-                    const isAnswered = Boolean(userAnswers[mcq.id]);
-                    const isCurrent = activeQuestionIndex === idx;
-                    const isFlagged = flaggedQuestions.has(mcq.id);
-
-                    let pillClass = 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100';
-
-                    if (isQuizSubmitted) {
-                      const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
-                      const correctAns = mcq.correctAnswer.trim().toUpperCase();
-                      const isCorrect =
-                        userChoice &&
-                        (userChoice === correctAns ||
-                          userChoice.startsWith(correctAns) ||
-                          correctAns.startsWith(userChoice));
-                      if (isCorrect) {
-                        pillClass = 'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold';
-                      } else {
-                        pillClass = 'bg-rose-100 text-rose-900 border-rose-300 font-bold';
-                      }
-                    } else if (isAnswered) {
-                      pillClass = 'bg-cyan-700 text-white border-cyan-800 font-bold shadow-2xs';
-                    }
-
-                    return (
-                      <button
-                        key={mcq.id}
-                        type="button"
-                        onClick={() => {
-                          setActiveQuestionIndex(idx);
-                          if (examViewMode === 'list') {
-                            const el = document.getElementById(`mcq-card-${mcq.id}`);
-                            el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                          }
-                        }}
-                        className={`relative w-6.5 h-6.5 rounded-lg border text-[10.5px] font-mono flex items-center justify-center cursor-pointer transition-all ${pillClass} ${
-                          isCurrent ? 'ring-2 ring-cyan-500 ring-offset-1 font-extrabold' : ''
-                        }`}
-                        title={`Question ${mcq.id}${isFlagged ? ' (Flagged)' : ''}`}
-                      >
-                        {mcq.id}
-                        {isFlagged && (
-                          <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 border border-white" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* VIEW MODE A: FOCUSED SINGLE QUESTION VIEW */}
-              {examViewMode === 'focused' && currentMCQ && (
-                <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-md bg-cyan-100 text-cyan-900 text-[11px] font-mono font-bold">
-                        Question {currentMCQ.id} of {allMCQs.length}
-                      </span>
-                      {userAnswers[currentMCQ.id] && (
-                        <span className="text-[9.5px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-semibold flex items-center gap-1">
-                          <Check className="w-2.5 h-2.5" /> Answered
-                        </span>
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleToggleFlag(currentMCQ.id)}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] font-medium transition-colors cursor-pointer ${
-                        flaggedQuestions.has(currentMCQ.id)
-                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                      }`}
-                    >
-                      <Flag className={`w-3 h-3 ${flaggedQuestions.has(currentMCQ.id) ? 'fill-amber-600 text-amber-600' : ''}`} />
-                      <span>{flaggedQuestions.has(currentMCQ.id) ? 'Flagged' : 'Flag'}</span>
-                    </button>
-                  </div>
-
-                  <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-relaxed">
-                    {currentMCQ.question}
-                  </h3>
-
-                  {/* Options */}
-                  <div className="space-y-1.5">
-                    {currentMCQ.options.map((opt, optIdx) => {
-                      const optKey = opt.trim().slice(0, 1).toUpperCase();
-                      const selectedOption = userAnswers[currentMCQ.id];
-                      const isOptionSelected = selectedOption === optKey || selectedOption === opt;
-
-                      let btnStyle = 'border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100 hover:border-slate-300';
-
-                      if (isQuizSubmitted) {
-                        const correctAns = currentMCQ.correctAnswer.trim().toUpperCase();
-                        if (optKey === correctAns || opt === currentMCQ.correctAnswer) {
-                          btnStyle = 'border-emerald-500 bg-emerald-50 text-emerald-950 font-semibold ring-1 ring-emerald-400';
-                        } else if (isOptionSelected) {
-                          btnStyle = 'border-rose-400 bg-rose-50 text-rose-950 font-semibold';
-                        } else {
-                          btnStyle = 'border-slate-200 bg-slate-50 text-slate-400 opacity-60';
-                        }
-                      } else if (isOptionSelected) {
-                        btnStyle = 'border-cyan-700 bg-cyan-50/80 text-cyan-950 font-semibold ring-1 ring-cyan-700';
-                      }
-
-                      return (
-                        <button
-                          key={optIdx}
-                          type="button"
-                          disabled={isQuizSubmitted}
-                          onClick={() => {
-                            setUserAnswers((prev) => ({
-                              ...prev,
-                              [currentMCQ.id]: optKey,
-                            }));
-                          }}
-                          className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-start gap-2.5 cursor-pointer ${btnStyle}`}
-                        >
-                          <span className={`w-5 h-5 rounded-md font-mono text-[10px] font-bold flex items-center justify-center shrink-0 ${
-                            isOptionSelected ? 'bg-cyan-700 text-white' : 'bg-slate-200 text-slate-700'
-                          }`}>
-                            {optKey}
-                          </span>
-                          <span className="flex-1 leading-snug pt-0.5">{opt}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Explanation after submission */}
-                  {isQuizSubmitted && (
-                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs">
-                      <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
-                        <span>Correct Answer: {currentMCQ.correctAnswer}</span>
-                      </div>
-                      <p className="text-slate-600 text-[11px] leading-relaxed">
-                        {currentMCQ.explanation}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Previous / Next Controls */}
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                    <button
-                      type="button"
-                      disabled={activeQuestionIndex === 0}
-                      onClick={() => setActiveQuestionIndex((prev) => Math.max(0, prev - 1))}
-                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold disabled:opacity-40 cursor-pointer"
-                    >
-                      <ChevronLeft className="w-3.5 h-3.5" />
-                      <span>Previous</span>
-                    </button>
-
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      {activeQuestionIndex + 1} / {allMCQs.length}
-                    </span>
-
-                    <button
-                      type="button"
-                      disabled={activeQuestionIndex === allMCQs.length - 1}
-                      onClick={() => setActiveQuestionIndex((prev) => Math.min(allMCQs.length - 1, prev + 1))}
-                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
-                    >
-                      <span>Next</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* VIEW MODE B: FULL LIST VIEW */}
-              {examViewMode === 'list' && (
+              {/* SECTION A: ANALYTICAL QUESTIONS */}
+              {examSectionMode === 'analytical' ? (
                 <div className="space-y-3">
-                  {filteredMCQs.map((mcq) => {
-                    const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
-                    const correctAns = mcq.correctAnswer.trim().toUpperCase();
-                    const isCorrect = userChoice && (userChoice === correctAns || userChoice.startsWith(correctAns));
-
+                  {studyResult.examSuite.shortAnswer?.map((sa, sIdx) => {
+                    const isRevealed = revealedShortAnswers.has(sa.id);
                     return (
                       <div
-                        key={mcq.id}
-                        id={`mcq-card-${mcq.id}`}
-                        className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2.5"
+                        key={sa.id}
+                        className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3"
                       >
-                        <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                           <span className="text-xs font-mono font-bold text-cyan-900">
-                            Question {mcq.id}
+                            Analytical Question {sIdx + 1}
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleToggleFlag(mcq.id)}
-                            className="text-slate-400 hover:text-amber-500 cursor-pointer"
+                            onClick={() => {
+                              setRevealedShortAnswers((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(sa.id)) next.delete(sa.id);
+                                else next.add(sa.id);
+                                return next;
+                              });
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
+                              isRevealed
+                                ? 'bg-cyan-100 text-cyan-900 border border-cyan-300'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300'
+                            }`}
                           >
-                            <Flag className={`w-3.5 h-3.5 ${flaggedQuestions.has(mcq.id) ? 'fill-amber-500 text-amber-500' : ''}`} />
+                            {isRevealed ? 'Hide Model Answer' : 'Reveal Model Answer & Rubric'}
                           </button>
                         </div>
 
-                        <h4 className="text-xs sm:text-[12.5px] font-bold text-slate-900 font-serif">
-                          {mcq.question}
+                        <h4 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-relaxed">
+                          {sa.question}
                         </h4>
 
-                        <div className="space-y-1">
-                          {mcq.options.map((opt, oIdx) => {
-                            const optKey = opt.trim().slice(0, 1).toUpperCase();
-                            const isSelected = userChoice === optKey;
+                        {isRevealed && (
+                          <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
+                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 space-y-1">
+                              <span className="font-bold text-slate-900 text-[11px] block">
+                                Model Ideal Answer:
+                              </span>
+                              <p className="font-serif leading-relaxed text-justify">
+                                {sa.idealAnswer}
+                              </p>
+                            </div>
 
-                            let optClass = 'bg-slate-50 text-slate-800 border-slate-200';
-                            if (isQuizSubmitted) {
-                              if (optKey === correctAns) {
-                                optClass = 'bg-emerald-50 text-emerald-900 border-emerald-400 font-semibold';
-                              } else if (isSelected) {
-                                optClass = 'bg-rose-50 text-rose-900 border-rose-300';
-                              }
-                            } else if (isSelected) {
-                              optClass = 'bg-cyan-50 text-cyan-900 border-cyan-600 font-semibold';
-                            }
-
-                            return (
-                              <button
-                                key={oIdx}
-                                type="button"
-                                disabled={isQuizSubmitted}
-                                onClick={() => setUserAnswers((prev) => ({ ...prev, [mcq.id]: optKey }))}
-                                className={`w-full text-left p-2 rounded-lg border text-[11px] flex items-start gap-2 cursor-pointer ${optClass}`}
-                              >
-                                <span className="font-mono font-bold text-[10px] w-4">{optKey})</span>
-                                <span className="flex-1">{opt.replace(/^[A-D]\)\s*/, '')}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {isQuizSubmitted && (
-                          <div className="p-2 rounded bg-slate-50 border border-slate-200 text-[10.5px] text-slate-600 space-y-0.5">
-                            <span className="font-bold text-slate-800 block">Explanation:</span>
-                            <p>{mcq.explanation}</p>
+                            {sa.keyPointsRequired && sa.keyPointsRequired.length > 0 && (
+                              <div className="space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                  Essential Criteria for Full Credit:
+                                </span>
+                                <div className="space-y-1">
+                                  {sa.keyPointsRequired.map((pt, pIdx) => (
+                                    <div
+                                      key={pIdx}
+                                      className="flex items-center gap-1.5 text-[11px] text-slate-700"
+                                    >
+                                      <CheckCircle2 className="w-3 h-3 text-cyan-700 shrink-0" />
+                                      <span>{pt}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
                     );
                   })}
                 </div>
+              ) : (
+                /* SECTION B: MULTIPLE CHOICE QUESTIONS */
+                <>
+                  {/* Automated Scoring Summary Banner (when submitted) */}
+                  {isQuizSubmitted && examScore && (
+                    <div className="p-3 sm:p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-2.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-11 h-11 rounded-xl flex items-center justify-center font-bold text-base font-mono ${
+                            examScore.percentage >= 75
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                              : examScore.percentage >= 50
+                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                              : 'bg-rose-100 text-rose-800 border border-rose-200'
+                          }`}>
+                            {examScore.percentage}%
+                          </div>
+                          <div>
+                            <div className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                              <span>Exam Score: {examScore.score} / {examScore.total} Correct</span>
+                              <span className={`px-2 py-0.5 rounded-md text-[9px] font-semibold ${
+                                examScore.percentage >= 75
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : examScore.percentage >= 50
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-rose-100 text-rose-800'
+                              }`}>
+                                {examScore.percentage >= 75
+                                  ? 'Distinction'
+                                  : examScore.percentage >= 50
+                                  ? 'Proficient'
+                                  : 'Review Recommended'}
+                              </span>
+                            </div>
+                            <p className="text-[9.5px] text-slate-500">
+                              {examScore.score === examScore.total
+                                ? 'Mastery across all examination objectives!'
+                                : `Review explanations below for ${examScore.total - examScore.score} incorrect answers.`}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={handleRetakeExam}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Retake Exam</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Filter Mode Tabs after submission */}
+                      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 text-[9.5px]">
+                        <span className="text-slate-500 font-medium">Filter View:</span>
+                        <button
+                          onClick={() => setExamFilterMode('all')}
+                          className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
+                            examFilterMode === 'all'
+                              ? 'bg-cyan-700 text-white'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          All ({allMCQs.length})
+                        </button>
+                        <button
+                          onClick={() => setExamFilterMode('incorrect')}
+                          className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
+                            examFilterMode === 'incorrect'
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                          }`}
+                        >
+                          Incorrect ({examScore.total - examScore.score})
+                        </button>
+                        {flaggedQuestions.size > 0 && (
+                          <button
+                            onClick={() => setExamFilterMode('flagged')}
+                            className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
+                              examFilterMode === 'flagged'
+                                ? 'bg-amber-600 text-white'
+                                : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
+                            }`}
+                          >
+                            Flagged ({flaggedQuestions.size})
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Question Navigation Bar & Quick-Jump Palette */}
+                  <div className="p-3 sm:p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <Target className="w-3.5 h-3.5 text-cyan-700" />
+                        <span className="font-bold text-slate-800 text-[11px]">
+                          Navigation ({totalAnswered} / {allMCQs.length} Answered)
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                          <button
+                            type="button"
+                            onClick={() => setExamViewMode('focused')}
+                            className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
+                              examViewMode === 'focused'
+                                ? 'bg-white text-slate-900 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            Focused View
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExamViewMode('list')}
+                            className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
+                              examViewMode === 'list'
+                                ? 'bg-white text-slate-900 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            Full List View
+                          </button>
+                        </div>
+
+                        {!isQuizSubmitted && (
+                          <button
+                            type="button"
+                            onClick={handleGradeExam}
+                            className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[10px] font-bold shadow-2xs transition-colors cursor-pointer"
+                          >
+                            Grade Exam
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Question Numbers Strip */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      {allMCQs.map((mcq, idx) => {
+                        const isAnswered = Boolean(userAnswers[mcq.id]);
+                        const isCurrent = activeQuestionIndex === idx;
+                        const isFlagged = flaggedQuestions.has(mcq.id);
+
+                        let pillClass = 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100';
+
+                        if (isQuizSubmitted) {
+                          const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
+                          const correctAns = mcq.correctAnswer.trim().toUpperCase();
+                          const isCorrect =
+                            userChoice &&
+                            (userChoice === correctAns ||
+                              userChoice.startsWith(correctAns) ||
+                              correctAns.startsWith(userChoice));
+                          if (isCorrect) {
+                            pillClass = 'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold';
+                          } else {
+                            pillClass = 'bg-rose-100 text-rose-900 border-rose-300 font-bold';
+                          }
+                        } else if (isAnswered) {
+                          pillClass = 'bg-cyan-700 text-white border-cyan-800 font-bold shadow-2xs';
+                        }
+
+                        return (
+                          <button
+                            key={mcq.id}
+                            type="button"
+                            onClick={() => {
+                              setActiveQuestionIndex(idx);
+                              if (examViewMode === 'list') {
+                                const el = document.getElementById(`mcq-card-${mcq.id}`);
+                                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }
+                            }}
+                            className={`relative w-6.5 h-6.5 rounded-lg border text-[10.5px] font-mono flex items-center justify-center cursor-pointer transition-all ${pillClass} ${
+                              isCurrent ? 'ring-2 ring-cyan-500 ring-offset-1 font-extrabold' : ''
+                            }`}
+                            title={`Question ${mcq.id}${isFlagged ? ' (Flagged)' : ''}`}
+                          >
+                            {mcq.id}
+                            {isFlagged && (
+                              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 border border-white" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* VIEW MODE A: FOCUSED SINGLE QUESTION VIEW */}
+                  {examViewMode === 'focused' && currentMCQ && (
+                    <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-cyan-100 text-cyan-900 text-[11px] font-mono font-bold">
+                            Question {currentMCQ.id} of {allMCQs.length}
+                          </span>
+                          {userAnswers[currentMCQ.id] && (
+                            <span className="text-[9.5px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-semibold flex items-center gap-1">
+                              <Check className="w-2.5 h-2.5" /> Answered
+                            </span>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleToggleFlag(currentMCQ.id)}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] font-medium transition-colors cursor-pointer ${
+                            flaggedQuestions.has(currentMCQ.id)
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          <Flag className={`w-3 h-3 ${flaggedQuestions.has(currentMCQ.id) ? 'fill-amber-600 text-amber-600' : ''}`} />
+                          <span>{flaggedQuestions.has(currentMCQ.id) ? 'Flagged' : 'Flag'}</span>
+                        </button>
+                      </div>
+
+                      <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-relaxed">
+                        {currentMCQ.question}
+                      </h3>
+
+                      {/* Options */}
+                      <div className="space-y-1.5">
+                        {currentMCQ.options.map((opt, optIdx) => {
+                          const optKey = opt.trim().slice(0, 1).toUpperCase();
+                          const selectedOption = userAnswers[currentMCQ.id];
+                          const isOptionSelected = selectedOption === optKey || selectedOption === opt;
+
+                          let btnStyle = 'border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100 hover:border-slate-300';
+
+                          if (isQuizSubmitted) {
+                            const correctAns = currentMCQ.correctAnswer.trim().toUpperCase();
+                            if (optKey === correctAns || opt === currentMCQ.correctAnswer) {
+                              btnStyle = 'border-emerald-500 bg-emerald-50 text-emerald-950 font-semibold ring-1 ring-emerald-400';
+                            } else if (isOptionSelected) {
+                              btnStyle = 'border-rose-400 bg-rose-50 text-rose-950 font-semibold';
+                            } else {
+                              btnStyle = 'border-slate-200 bg-slate-50 text-slate-400 opacity-60';
+                            }
+                          } else if (isOptionSelected) {
+                            btnStyle = 'border-cyan-700 bg-cyan-50/80 text-cyan-950 font-semibold ring-1 ring-cyan-700';
+                          }
+
+                          return (
+                            <button
+                              key={optIdx}
+                              type="button"
+                              disabled={isQuizSubmitted}
+                              onClick={() => {
+                                setUserAnswers((prev) => ({
+                                  ...prev,
+                                  [currentMCQ.id]: optKey,
+                                }));
+                              }}
+                              className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-start gap-2.5 cursor-pointer ${btnStyle}`}
+                            >
+                              <span className={`w-5 h-5 rounded-md font-mono text-[10px] font-bold flex items-center justify-center shrink-0 ${
+                                isOptionSelected ? 'bg-cyan-700 text-white' : 'bg-slate-200 text-slate-700'
+                              }`}>
+                                {optKey}
+                              </span>
+                              <span className="flex-1 leading-snug pt-0.5">{opt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Explanation after submission */}
+                      {isQuizSubmitted && (
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs">
+                          <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
+                            <span>Correct Answer: {currentMCQ.correctAnswer}</span>
+                          </div>
+                          <p className="text-slate-600 text-[11px] leading-relaxed">
+                            {currentMCQ.explanation}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Previous / Next Controls */}
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          disabled={activeQuestionIndex === 0}
+                          onClick={() => setActiveQuestionIndex((prev) => Math.max(0, prev - 1))}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                          <span>Previous</span>
+                        </button>
+
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {activeQuestionIndex + 1} / {allMCQs.length}
+                        </span>
+
+                        <button
+                          type="button"
+                          disabled={activeQuestionIndex === allMCQs.length - 1}
+                          onClick={() => setActiveQuestionIndex((prev) => Math.min(allMCQs.length - 1, prev + 1))}
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                        >
+                          <span>Next</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* VIEW MODE B: FULL LIST VIEW */}
+                  {examViewMode === 'list' && (
+                    <div className="space-y-3">
+                      {filteredMCQs.map((mcq) => {
+                        const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
+                        const correctAns = mcq.correctAnswer.trim().toUpperCase();
+                        const isCorrect = userChoice && (userChoice === correctAns || userChoice.startsWith(correctAns));
+
+                        return (
+                          <div
+                            key={mcq.id}
+                            id={`mcq-card-${mcq.id}`}
+                            className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2.5"
+                          >
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                              <span className="text-xs font-mono font-bold text-cyan-900">
+                                Question {mcq.id}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleFlag(mcq.id)}
+                                className="text-slate-400 hover:text-amber-500 cursor-pointer"
+                              >
+                                <Flag className={`w-3.5 h-3.5 ${flaggedQuestions.has(mcq.id) ? 'fill-amber-500 text-amber-500' : ''}`} />
+                              </button>
+                            </div>
+
+                            <h4 className="text-xs sm:text-[12.5px] font-bold text-slate-900 font-serif">
+                              {mcq.question}
+                            </h4>
+
+                            <div className="space-y-1">
+                              {mcq.options.map((opt, oIdx) => {
+                                const optKey = opt.trim().slice(0, 1).toUpperCase();
+                                const isSelected = userChoice === optKey;
+
+                                let optClass = 'bg-slate-50 text-slate-800 border-slate-200';
+                                if (isQuizSubmitted) {
+                                  if (optKey === correctAns) {
+                                    optClass = 'bg-emerald-50 text-emerald-900 border-emerald-400 font-semibold';
+                                  } else if (isSelected) {
+                                    optClass = 'bg-rose-50 text-rose-900 border-rose-300';
+                                  }
+                                } else if (isSelected) {
+                                  optClass = 'bg-cyan-50 text-cyan-900 border-cyan-600 font-semibold';
+                                }
+
+                                return (
+                                  <button
+                                    key={oIdx}
+                                    type="button"
+                                    disabled={isQuizSubmitted}
+                                    onClick={() => setUserAnswers((prev) => ({ ...prev, [mcq.id]: optKey }))}
+                                    className={`w-full text-left p-2 rounded-lg border text-[11px] flex items-start gap-2 cursor-pointer ${optClass}`}
+                                  >
+                                    <span className="font-mono font-bold text-[10px] w-4">{optKey})</span>
+                                    <span className="flex-1">{opt.replace(/^[A-D]\)\s*/, '')}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {isQuizSubmitted && (
+                              <div className="p-2 rounded bg-slate-50 border border-slate-200 text-[10.5px] text-slate-600 space-y-0.5">
+                                <span className="font-bold text-slate-800 block">Explanation:</span>
+                                <p>{mcq.explanation}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

@@ -2108,4 +2108,81 @@ USING (auth.uid() = owner_id);
 -- 4. Real-time Publications
 ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+
+-- ============================================================================
+-- 5. EASESTUDY PERSISTENT DATASET & CONTINUOUS LEARNING RECORDS
+-- ============================================================================
+
+-- Create public 'ModeEaseStudy' storage bucket
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('ModeEaseStudy', 'ModeEaseStudy', true, 52428800, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+DROP POLICY IF EXISTS "Public Read ModeEaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Read ModeEaseStudy Bucket"
+ON storage.objects FOR SELECT TO public
+USING (bucket_id = 'ModeEaseStudy');
+
+DROP POLICY IF EXISTS "Public Upload ModeEaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Upload ModeEaseStudy Bucket"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (bucket_id = 'ModeEaseStudy');
+
+DROP POLICY IF EXISTS "Public Update ModeEaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Update ModeEaseStudy Bucket"
+ON storage.objects FOR UPDATE TO public
+USING (bucket_id = 'ModeEaseStudy');
+
+-- Persistent Dataset Table: Stores verified, high-yield study packages
+CREATE TABLE IF NOT EXISTS public.easestudy_dataset (
+  id BIGSERIAL PRIMARY KEY,
+  document_hash TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL DEFAULT 'Study Guide',
+  difficulty TEXT DEFAULT 'intermediate',
+  reading_time TEXT DEFAULT '6 min read',
+  summary_json JSONB DEFAULT '{}'::jsonb,
+  key_concepts_json JSONB DEFAULT '[]'::jsonb,
+  exam_suite_json JSONB DEFAULT '{}'::jsonb,
+  flashcards_json JSONB DEFAULT '[]'::jsonb,
+  storage_path TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.easestudy_dataset ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read EaseStudy Dataset" ON public.easestudy_dataset;
+CREATE POLICY "Public Read EaseStudy Dataset"
+ON public.easestudy_dataset FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Write EaseStudy Dataset" ON public.easestudy_dataset;
+CREATE POLICY "Public Write EaseStudy Dataset"
+ON public.easestudy_dataset FOR ALL TO public
+USING (true) WITH CHECK (true);
+
+-- Learning Interaction Records: Tracks model iterations, test evaluations, and scores
+CREATE TABLE IF NOT EXISTS public.easestudy_learning_records (
+  id BIGSERIAL PRIMARY KEY,
+  document_hash TEXT NOT NULL,
+  source_model TEXT DEFAULT 'notebooklm_gemini_pipeline',
+  question_count INTEGER DEFAULT 15,
+  score_achieved INTEGER,
+  total_questions INTEGER DEFAULT 15,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.easestudy_learning_records ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read EaseStudy Records" ON public.easestudy_learning_records;
+CREATE POLICY "Public Read EaseStudy Records"
+ON public.easestudy_learning_records FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Write EaseStudy Records" ON public.easestudy_learning_records;
+CREATE POLICY "Public Write EaseStudy Records"
+ON public.easestudy_learning_records FOR INSERT TO public
+WITH CHECK (true);
+
+ALTER PUBLICATION supabase_realtime ADD TABLE public.easestudy_dataset;
 `;
