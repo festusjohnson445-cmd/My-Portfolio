@@ -456,7 +456,7 @@ function deriveTopicFromInput(fileName?: string, text?: string, focusArea?: stri
 }
 
 /**
- * Intelligent client-side synthesis engine that constructs a verified academic study package
+ * Intelligent client-side synthesis engine that constructs a study package
  * directly from document content when the remote server is busy or unavailable.
  */
 function generateClientSideStudyPackage(
@@ -478,25 +478,26 @@ function generateClientSideStudyPackage(
 
   const readingTime = `${Math.max(4, Math.ceil(Math.min(cleanText.length, 6000) / 400) + 3)} min read`;
 
-  const paragraph1 = cleanText.length > 50
-    ? `This verified academic study guide investigates the essential tenets, core themes, and foundational principles set forth in ${topic}. Formulated directly from the source document, this synthesis establishes the thematic framework and primary principles required for comprehensive mastery.`
-    : `This study guide provides a systematic, step-by-step breakdown of the foundational concepts and essential principles governing ${topic}.`;
+  // Step-by-step narrative in natural, domain-authentic voice
+  const paragraph1 = rawSentences.length > 0
+    ? `The central focus of ${topic} centers on the core perspectives and assertions outlined in the text. In particular, the discussion emphasizes: "${rawSentences[0]}"`
+    : `The material examines the primary themes, central assertions, and core perspectives of ${topic}, establishing the context necessary for clear understanding.`;
 
   const paragraph2 = rawSentences.length >= 2
-    ? `Key textual affirmations drawn directly from the material emphasize that "${rawSentences[0]}" Furthermore, the document highlights that "${rawSentences[1]}", providing critical structural reinforcement.`
-    : `The material methodically analyzes primary definitions, functional criteria, and analytical relationships designed to prepare the learner for deep conceptual understanding and rigorous assessment.`;
+    ? `Expanding on this foundation, the text highlights that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Furthermore, the discussion emphasizes that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.` : ''}`
+    : `The discussion methodically explores the essential relationships, comparative viewpoints, and practical lessons conveyed throughout the source.`;
 
   const paragraph3 = focusArea && focusArea.trim().length > 0
     ? `Special study focus is dedicated to: "${focusArea.trim()}", addressing all associated definitions, contextual relationships, and core takeaways.`
-    : `Tailored to the target difficulty level (${difficulty}), this module emphasizes active recall, systematic critical reasoning, and structured examination readiness.`;
+    : `Overall, these findings establish a cohesive understanding of ${topic}, bridging foundational ideas with practical, real-world application.`;
 
   const keyTakeaways = rawSentences.length >= 4
     ? rawSentences.slice(0, 5).map((s) => s.replace(/^[•\-\d.]\s*/, ''))
     : [
-        `Grounded conceptual clarity forms the bedrock of understanding ${topic}.`,
-        'Fundamental principles and definitions establish the primary criteria for analysis.',
-        'Structured systematic reasoning enables clear, verifiable deductions.',
-        'Thorough review of core themes reinforces long-term retention and exam confidence.',
+        `Clear conceptual understanding serves as the foundation for ${topic}.`,
+        'Core principles establish the primary criteria for analysis and interpretation.',
+        'Direct textual insights provide verifiable context for informed reasoning.',
+        'Systematic review reinforces long-term retention and practical mastery.',
       ];
 
   const coreThemes = isEngineeringDoc
@@ -563,9 +564,9 @@ function generateClientSideStudyPackage(
     } else {
       keyConcepts = [
         {
-          title: `Foundational Paradigm of ${topic}`,
-          explanation: `The foundational architecture of ${topic} structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
-          importance: 'Underpins the entire discipline and provides the baseline for subsequent analytical arguments.',
+          title: `Foundational Premise of ${topic}`,
+          explanation: `The material structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
+          importance: 'Provides the baseline for subsequent analytical arguments.',
         },
         {
           title: 'Core Methodological Framework',
@@ -614,7 +615,7 @@ function generateClientSideStudyPackage(
           `D) It lacks verifiable factual grounding or structured definitions`,
         ],
         correctAnswer: 'A',
-        explanation: `The uploaded study material methodically establishes verifiable principles and operational guidelines for ${topic}, validating Option A as the correct answer.`,
+        explanation: `The uploaded study material methodically establishes verifiable principles and guidelines for ${topic}, validating Option A as the correct answer.`,
       });
     }
   }
@@ -623,7 +624,9 @@ function generateClientSideStudyPackage(
     {
       id: 1,
       question: `Synthesize the primary thesis of ${topic} and explain how it is structured according to the source document.`,
-      idealAnswer: `According to the source material, ${topic} is structured around clearly defined operational principles, systematic evaluation steps, and verifiable conclusions. The text methodically builds from foundational truths to practical application, establishing verifiable criteria for evaluation.`,
+      idealAnswer: rawSentences.length > 0
+        ? `The primary thesis of ${topic} emphasizes that "${rawSentences[0]}". The text develops this through contextual arguments and practical observations, demonstrating how fundamental ideas lead to actionable understanding.`
+        : `According to the source material, ${topic} is structured around clearly defined principles, systematic evaluation steps, and verifiable conclusions. The text methodically builds from core insights to practical application.`,
       keyPointsRequired: [
         'Identification of foundational definitions and scope',
         'Explanation of analytical evaluation methodologies',
@@ -633,7 +636,9 @@ function generateClientSideStudyPackage(
     {
       id: 2,
       question: `Identify two critical takeaways or governing constraints emphasized in the material for ${topic}.`,
-      idealAnswer: `The material highlights that core principles and rigorous definition boundaries dictate reliable understanding. Second, systematic validation and adherence to verified truths prevent misinterpretation and ensure clarity across varying contexts.`,
+      idealAnswer: rawSentences.length >= 2
+        ? `The material highlights that "${rawSentences[0]}". Second, it demonstrates that "${rawSentences[1]}", ensuring consistent results across varying scenarios.`
+        : `The material highlights that contextual constraints and rigorous definition boundaries dictate reliable outcomes. Second, systematic validation and adherence to verified principles prevent errors.`,
       keyPointsRequired: [
         'Articulation of primary constraints or boundaries',
         'Emphasis on systematic validation and factual accuracy',
@@ -644,15 +649,15 @@ function generateClientSideStudyPackage(
   const flashcards = [
     {
       front: `What is the central focus of ${topic}?`,
-      back: `A systematic study of core principles, factual criteria, and practical methodologies grounded in the source text.`,
+      back: rawSentences[0] || `A systematic study of core principles, factual criteria, and practical methodologies grounded in the source text.`,
     },
     {
       front: `How does the source material define validation for ${topic}?`,
-      back: `Through adherence to verified textual evidence, factual consistency, and rigorous reasoning.`,
+      back: rawSentences[1] || `Through adherence to verified textual evidence, factual consistency, and rigorous reasoning.`,
     },
     {
-      front: `What primary pitfall or error is addressed in the study guide?`,
-      back: `Unsubstantiated speculation or failure to maintain consistent contextual boundaries and definitions.`,
+      front: `What primary lesson or principle is emphasized in the text?`,
+      back: rawSentences[2] || `Consistent application of core principles based on verifiable textual evidence and clear definitions.`,
     },
   ];
 
@@ -688,16 +693,26 @@ export function modeEaseStudyValidateAndRefine(
   const sanitize = (txt: any): any => {
     if (typeof txt === 'string') {
       return txt
-        .replace(/1st\s*Class\s*(Study)?/gi, 'Academic Study')
-        .replace(/\b1st\s*Class\b/gi, 'Comprehensive')
+        .replace(/1st\s*Class\s*(Study)?/gi, '')
+        .replace(/\b1st\s*Class\b/gi, '')
+        .replace(/verified\s*academic\s*study\s*guide/gi, 'overview')
+        .replace(/verified\s*study\s*guide/gi, 'overview')
+        .replace(/This\s+verified\s+academic\s+study\s+guide\s+investigates\s+the\s+essential\s+tenets[^\n.]*\./gi, '')
+        .replace(/This\s+verified\s+study\s+guide\s+examines[^\n.]*\./gi, '')
+        .replace(/\s{2,}/g, ' ')
         .trim();
     }
     return txt;
   };
 
   // 1. Refine narrative summary
+  let execSummary = sanitize(candidate.summary?.executiveSummary || '');
+  if (!execSummary || execSummary.length < 20) {
+    execSummary = `The material examines the primary themes, central assertions, and core perspectives of ${candidate.topic || 'the subject'}, establishing the context necessary for clear understanding.`;
+  }
+
   const refinedSummary = {
-    executiveSummary: sanitize(candidate.summary?.executiveSummary || ''),
+    executiveSummary: execSummary,
     keyTakeaways: Array.isArray(candidate.summary?.keyTakeaways)
       ? candidate.summary.keyTakeaways.map(sanitize).filter(Boolean)
       : [],
@@ -873,7 +888,7 @@ export async function executeEaseStudyIntelligentHub(
 
   // If remote serverless endpoint is busy, times out, or returned non-JSON on Vercel:
   if (!candidateResult) {
-    onStatusUpdate('Synthesizing verified study package from document...');
+    onStatusUpdate('Synthesizing study package from document content...');
     candidateResult = generateClientSideStudyPackage(
       params.text,
       params.fileData,

@@ -1125,7 +1125,7 @@ The output must be a valid JSON object matching the requested schema with:
   }
 });
 
-// Helper to generate a comprehensive academic study package when remote AI is unavailable or encounters network issues
+// Helper to generate a comprehensive study package when remote AI is unavailable or encounters network issues
 function generateFallbackStudyPackage(
   textContent: string,
   fileName: string = '',
@@ -1137,7 +1137,7 @@ function generateFallbackStudyPackage(
   const cleanText = (textContent || '').trim();
   const cleanName = (fileName || '').replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').trim();
 
-  let topic = isEngineeringDoc ? 'Applied Engineering & Systems Analysis' : 'Comprehensive Academic Study Guide';
+  let topic = isEngineeringDoc ? 'Engineering Analysis' : 'Subject Overview';
   if (cleanName && cleanName.length > 2 && !cleanName.toLowerCase().startsWith('screenshot')) {
     topic = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
   } else if (cleanText.length > 0) {
@@ -1158,26 +1158,26 @@ function generateFallbackStudyPackage(
 
   const readingTime = `${Math.max(4, Math.ceil(Math.min(cleanText.length, 6000) / 400) + 3)} min read`;
 
-  // Step-by-step narrative in 2-3 structured paragraphs
-  const paragraph1 = cleanText.length > 100
-    ? `This verified study guide examines the core principles and analytical substance presented in ${topic}. Grounded exclusively in the provided document material, this synthesis establishes the thematic framework, primary definitions, and operational relationships necessary for deep academic mastery.`
-    : `This study guide provides an in-depth breakdown of the foundational concepts, analytical structures, and practical insights related to ${topic}.`;
+  // Step-by-step narrative in natural, domain-authentic voice
+  const paragraph1 = rawSentences.length > 0
+    ? `The central focus of ${topic} centers on the core perspectives and assertions outlined in the text. In particular, the discussion emphasizes: "${rawSentences[0]}"`
+    : `The material examines the primary themes, central assertions, and core perspectives of ${topic}, establishing the context necessary for clear understanding.`;
 
   const paragraph2 = rawSentences.length >= 2
-    ? `Key contextual observations drawn directly from the text highlight: "${rawSentences[0]}" Furthermore, the material demonstrates that "${rawSentences[1]}", reinforcing the overarching theoretical structure.`
-    : `The material methodically explores functional methodologies, comparative evaluations, and targeted analytical paradigms designed to prepare the learner for rigorous examination and practical application.`;
+    ? `Expanding on this foundation, the text highlights that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Furthermore, the discussion emphasizes that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.` : ''}`
+    : `The discussion methodically explores the essential relationships, comparative viewpoints, and practical lessons conveyed throughout the source.`;
 
   const paragraph3 = specialFocus
-    ? `Targeted examination focus is concentrated on ${specialFocus}, reviewing all related operational definitions, governing conditions, and procedural steps.`
-    : `In accordance with the target difficulty (${targetDifficulty}), the review emphasizes active recall, systematic problem-solving steps, and critical reasoning across all covered subject milestones.`;
+    ? `Special attention is concentrated on ${specialFocus}, detailing how its principles connect directly with the broader themes of the text.`
+    : `Overall, these findings establish a cohesive understanding of ${topic}, bridging foundational ideas with practical, real-world application.`;
 
   const keyTakeaways = rawSentences.length >= 4
     ? rawSentences.slice(0, 5).map((s) => s.replace(/^[•\-\d.]\s*/, ''))
     : [
-        `Systematic conceptual clarity establishes the foundation for understanding ${topic}.`,
-        'Critical principles and definitions govern performance criteria and analytical interpretations.',
-        'Structured analytical steps enable verifiable conclusions and robust evaluations.',
-        'Comprehensive review ensures long-term retention and high-scoring exam readiness.',
+        `Clear conceptual understanding serves as the foundation for ${topic}.`,
+        'Core principles establish the primary criteria for analysis and interpretation.',
+        'Direct textual insights provide verifiable context for informed reasoning.',
+        'Systematic review reinforces long-term retention and practical mastery.',
       ];
 
   const coreThemes = isEngineeringDoc
@@ -1245,9 +1245,9 @@ function generateFallbackStudyPackage(
     } else {
       keyConcepts = [
         {
-          title: `Foundational Paradigm of ${topic}`,
-          explanation: `The foundational architecture of ${topic} structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
-          importance: 'Underpins the entire discipline and provides the baseline for subsequent analytical arguments.',
+          title: `Foundational Premise of ${topic}`,
+          explanation: `The material structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
+          importance: 'Provides the baseline for subsequent analytical arguments.',
         },
         {
           title: 'Core Methodological Framework',
@@ -1279,8 +1279,8 @@ function generateFallbackStudyPackage(
         question: `Based directly on the text, what is the primary significance of: "${keySnippet}..."?`,
         options: [
           `A) It establishes the foundational principle: "${sentenceRef.slice(0, 70)}..."`,
-          `B) It contradicts the core analytical model presented in the source`,
-          `C) It serves only as an isolated historical footnote without analytical relevance`,
+          `B) It contradicts the core argument presented in the source`,
+          `C) It serves only as an isolated footnote without analytical relevance`,
           `D) It represents an unverified hypothesis excluded from final conclusions`,
         ],
         correctAnswer: 'A',
@@ -1291,13 +1291,13 @@ function generateFallbackStudyPackage(
         id: qNum,
         question: `Which statement accurately reflects the primary thesis of ${topic} according to the study material?`,
         options: [
-          `A) It provides a verified, systematic framework for analyzing ${topic}`,
+          `A) It provides a verified, systematic framework for understanding ${topic}`,
           `B) It completely dismisses standard analytical methods in favor of conjecture`,
           `C) It applies solely to unrelated external domains without practical utility`,
           `D) It lacks verifiable factual grounding or structured definitions`,
         ],
         correctAnswer: 'A',
-        explanation: `The uploaded study material methodically establishes verifiable principles and operational guidelines for ${topic}, validating Option A as the correct answer.`,
+        explanation: `The uploaded study material methodically establishes verifiable principles and guidelines for ${topic}, validating Option A as the correct answer.`,
       });
     }
   }
@@ -1306,7 +1306,9 @@ function generateFallbackStudyPackage(
     {
       id: 1,
       question: `Synthesize the primary thesis of ${topic} and explain how it is structured according to the source document.`,
-      idealAnswer: `According to the source material, ${topic} is structured around clearly defined operational principles, systematic evaluation steps, and verifiable conclusions. The text methodically builds from first principles to practical application, establishing verifiable criteria for evaluating performance and outcomes.`,
+      idealAnswer: rawSentences.length > 0
+        ? `The primary thesis of ${topic} emphasizes that "${rawSentences[0]}". The text develops this through contextual arguments and practical observations, demonstrating how fundamental ideas lead to actionable understanding.`
+        : `According to the source material, ${topic} is structured around clearly defined principles, systematic evaluation steps, and verifiable conclusions. The text methodically builds from core insights to practical application.`,
       keyPointsRequired: [
         'Identification of foundational definitions and scope',
         'Explanation of analytical evaluation methodologies',
@@ -1316,7 +1318,9 @@ function generateFallbackStudyPackage(
     {
       id: 2,
       question: `Identify two key critical takeaways or governing constraints emphasized in the material for ${topic}.`,
-      idealAnswer: `The material highlights that operational constraints and rigorous definition boundaries dictate reliable outcomes. Second, systematic validation and adherence to verified principles prevent errors and ensure consistent results across varying scenarios.`,
+      idealAnswer: rawSentences.length >= 2
+        ? `The material highlights that "${rawSentences[0]}". Second, it demonstrates that "${rawSentences[1]}", ensuring consistent results across varying scenarios.`
+        : `The material highlights that contextual constraints and rigorous definition boundaries dictate reliable outcomes. Second, systematic validation and adherence to verified principles prevent errors.`,
       keyPointsRequired: [
         'Articulation of primary constraints or boundaries',
         'Emphasis on systematic validation and factual accuracy',
@@ -1327,15 +1331,15 @@ function generateFallbackStudyPackage(
   const flashcards = [
     {
       front: `What is the central focus of ${topic}?`,
-      back: `A systematic investigation of core principles, factual criteria, and practical methodologies grounded in the source text.`,
+      back: rawSentences[0] || `A systematic investigation of core principles, factual criteria, and practical methodologies grounded in the source text.`,
     },
     {
       front: `How does the source material define success or validation for ${topic}?`,
-      back: `Through adherence to verified analytical steps, factual consistency, and rigorous evidence-based reasoning.`,
+      back: rawSentences[1] || `Through adherence to verified analytical steps, factual consistency, and rigorous evidence-based reasoning.`,
     },
     {
-      front: `What primary pitfall or error is addressed in the study guide?`,
-      back: `Unsubstantiated speculation or failure to maintain consistent operational boundaries and definitions.`,
+      front: `What primary lesson or principle is emphasized in the text?`,
+      back: rawSentences[2] || `Consistent application of core principles based on verifiable textual evidence and clear definitions.`,
     },
   ];
 
@@ -1433,12 +1437,13 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
     // =========================================================================
 
     const notebookLmGroundingDirective = `[NOTEBOOKLM SOURCE INGESTION & GROUNDING LAYER]
-Role: Document Ingestion, Strict Source Grounding, and Syllabus Synthesis.
-1. Grounding Rule (100% Strictness): Ground ALL summaries, takeaways, concepts, and questions strictly in the provided source material.
-2. Domain Authenticity: Treat the document in its native field (e.g. History, Biology, Law, Medicine, Economics, Physics, Engineering, Computer Science, Literature).
-3. Do NOT force engineering formulas or technical terms if the document is not an engineering document.
-${isEngineeringDoc ? '4. Engineering Specification: The user has marked this as an Engineering/Technical document. Explicitly include relevant mathematical formulas, physical derivations, and mechanical/electrical principles contained in or governing the material.' : '4. General Academic Specification: Extract natural concepts, definitions, historical facts, or principles without imposing engineering jargon.'}
-5. Target pedagogical level: ${difficulty}.`;
+Role: Document Ingestion, Strict Source Grounding, and Natural Syllabus Synthesis.
+1. Grounding Rule (100% Strictness): Ground ALL summaries, takeaways, concepts, and questions strictly in the provided source material without extrapolation or unrelated external claims.
+2. Domain Authenticity & Zero Jargon: Treat the document exclusively in its authentic subject domain (e.g. Self-Help, Literature, Psychology, Theology, Philosophy, History, Law, Medicine, Economics, Social Sciences, or Engineering).
+3. Anti-Generalization Constraint: Absolutely NEVER invent or impose technical, physical, or mechanical engineering formulas, boundary conditions, stress-strain formulations, equilibrium relations, or CAD/FEA concepts on non-engineering texts.
+4. Natural Fluent Narrative: Completely avoid canned academic boilerplate phrasing (such as "1st Class Study", "This verified study guide examines...", "This verified academic study guide...", or robotic meta-announcements). Write fluent, insightful prose directly discussing the author's ideas and evidence.
+${isEngineeringDoc ? '5. Engineering Specification: The user has explicitly marked this as an Engineering/Technical document. Formulate relevant mathematical formulas and physics/mechanical principles contained in or governing the material.' : '5. General Domain Specification: The document is not an engineering paper. Treat its concepts, arguments, case studies, or principles with natural domain-appropriate terminology.'}
+6. Target pedagogical level: ${difficulty}.`;
 
     const priorRefinementDirective = priorContext
       ? `\n[ITERATIVE REFINEMENT DIRECTIVE]:
@@ -1619,18 +1624,33 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
     // Check that generated result conforms strictly to requirements and ground rules
     // =========================================================================
     if (parsed) {
-      // Strip any accidental '1st Class' phrases from all fields
+      // Strip any accidental boilerplate phrases from all fields
       const sanitizeText = (txt: any): any => {
         if (typeof txt === 'string') {
-          return txt.replace(/1st\s*Class\s*(Study)?/gi, 'Academic Study').trim();
+          return txt
+            .replace(/1st\s*Class\s*(Study)?/gi, '')
+            .replace(/\b1st\s*Class\b/gi, '')
+            .replace(/verified\s*academic\s*study\s*guide/gi, 'overview')
+            .replace(/verified\s*study\s*guide/gi, 'overview')
+            .replace(/This\s+verified\s+academic\s+study\s+guide\s+investigates\s+the\s+essential\s+tenets[^\n.]*\./gi, '')
+            .replace(/This\s+verified\s+study\s+guide\s+examines[^\n.]*\./gi, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
         }
         return txt;
       };
 
       if (parsed.summary) {
-        parsed.summary.executiveSummary = sanitizeText(parsed.summary.executiveSummary);
+        let exec = sanitizeText(parsed.summary.executiveSummary);
+        if (!exec || exec.length < 20) {
+          exec = `The material examines the primary themes, central assertions, and core perspectives of ${parsed.topic || 'the subject'}, establishing the context necessary for clear understanding.`;
+        }
+        parsed.summary.executiveSummary = exec;
         if (Array.isArray(parsed.summary.keyTakeaways)) {
-          parsed.summary.keyTakeaways = parsed.summary.keyTakeaways.map(sanitizeText);
+          parsed.summary.keyTakeaways = parsed.summary.keyTakeaways.map(sanitizeText).filter(Boolean);
+        }
+        if (Array.isArray(parsed.summary.coreThemes)) {
+          parsed.summary.coreThemes = parsed.summary.coreThemes.map(sanitizeText).filter(Boolean);
         }
       }
 
@@ -1656,7 +1676,8 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
             formula.includes('ΣF') ||
             formula.includes('σ =') ||
             formula.includes('τ =') ||
-            formula.includes('∇ · σ')
+            formula.includes('∇ · σ') ||
+            formula.includes('equilibrium')
           ) {
             const { formulaOrExample, ...rest } = c;
             return rest;
