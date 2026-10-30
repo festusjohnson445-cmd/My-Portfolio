@@ -1723,33 +1723,32 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       required: ['topic', 'difficulty', 'readingTime', 'summary', 'keyConcepts', 'examSuite'],
     };
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    const EXCLUSIVE_GEMINI_MODEL = 'gemini-4-argon';
     let outputText = '';
 
-    for (const modelName of candidateModels) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const configObj: any = {
-            responseMimeType: 'application/json',
-            responseSchema: schemaConfig,
-            temperature: forceRegenerate ? 0.65 : 0.35,
-          };
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: { parts },
-            config: configObj,
-          });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const configObj: any = {
+          responseMimeType: 'application/json',
+          responseSchema: schemaConfig,
+          temperature: forceRegenerate ? 0.65 : 0.35,
+        };
+        const response = await ai.models.generateContent({
+          model: EXCLUSIVE_GEMINI_MODEL,
+          contents: { parts },
+          config: configObj,
+        });
 
-          if (response && response.text) {
-            outputText = response.text;
-            break;
-          }
-        } catch (callErr: any) {
-          console.warn(`[Dual-Model Pipeline] ${modelName} attempt ${attempt} notice:`, cleanErrorMessage(callErr));
-          await new Promise((resolve) => setTimeout(resolve, 500));
+        if (response && response.text) {
+          outputText = response.text;
+          break;
+        }
+      } catch (callErr: any) {
+        console.warn(`[Gemini 4 Argon Pipeline] ${EXCLUSIVE_GEMINI_MODEL} attempt ${attempt} notice:`, cleanErrorMessage(callErr));
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
         }
       }
-      if (outputText) break;
     }
 
     if (!outputText) {
@@ -1907,23 +1906,28 @@ STRICT REQUIREMENTS:
 
     let generatedSvg = '';
 
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-flash-latest',
-        contents: diagramPrompt,
-      });
+    const EXCLUSIVE_GEMINI_MODEL = 'gemini-4-argon';
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: EXCLUSIVE_GEMINI_MODEL,
+          contents: diagramPrompt,
+        });
 
-      if (response && response.text) {
-        let raw = response.text.trim();
-        raw = raw.replace(/```xml/gi, '').replace(/```svg/gi, '').replace(/```/g, '').trim();
-        const startIdx = raw.indexOf('<svg');
-        const endIdx = raw.lastIndexOf('</svg>');
-        if (startIdx !== -1 && endIdx !== -1) {
-          generatedSvg = raw.substring(startIdx, endIdx + 6);
+        if (response && response.text) {
+          let raw = response.text.trim();
+          raw = raw.replace(/```xml/gi, '').replace(/```svg/gi, '').replace(/```/g, '').trim();
+          const startIdx = raw.indexOf('<svg');
+          const endIdx = raw.lastIndexOf('</svg>');
+          if (startIdx !== -1 && endIdx !== -1) {
+            generatedSvg = raw.substring(startIdx, endIdx + 6);
+            break;
+          }
         }
+      } catch (aiErr) {
+        console.warn(`[EaseStudy Diagram] ${EXCLUSIVE_GEMINI_MODEL} SVG attempt ${attempt} notice:`, cleanErrorMessage(aiErr));
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
       }
-    } catch (aiErr) {
-      console.warn('[EaseStudy Diagram] AI SVG generation notice:', cleanErrorMessage(aiErr));
     }
 
     // High-quality fallback SVG generator if AI generation fails or hits timeout
@@ -2103,12 +2107,12 @@ GROUNDING & INTEGRITY RULES:
 USER QUESTION: "${message}"`;
 
     let reply = '';
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+    const EXCLUSIVE_GEMINI_MODEL = 'gemini-4-argon';
 
-    for (const model of candidateModels) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const response = await ai.models.generateContent({
-          model,
+          model: EXCLUSIVE_GEMINI_MODEL,
           contents: chatPrompt,
         });
         if (response && response.text) {
@@ -2116,7 +2120,8 @@ USER QUESTION: "${message}"`;
           break;
         }
       } catch (callErr) {
-        console.warn(`[EaseStudy Chat] ${model} attempt error:`, cleanErrorMessage(callErr));
+        console.warn(`[EaseStudy Chat] ${EXCLUSIVE_GEMINI_MODEL} attempt ${attempt} error:`, cleanErrorMessage(callErr));
+        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 800));
       }
     }
 

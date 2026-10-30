@@ -1152,10 +1152,8 @@ export async function executeEaseStudyIntelligentHub(
         params.difficulty
       );
 
-  // Step 3: Dual-Model Pipeline (NotebookLM ingestion & Gemini high-precision synthesis)
-  onStatusUpdate('Ingesting source material via NotebookLM...');
-  await new Promise((r) => setTimeout(r, 120));
-  onStatusUpdate(params.forceRegenerate ? 'Reprocessing fresh output from raw document...' : 'Generating step-by-step summary and questions...');
+  // Step 3: Synthesis & Generation Layer via Gemini 4 Argon (gemini-4-argon)
+  onStatusUpdate(params.forceRegenerate ? 'Gemini 4 Argon reprocessing fresh output from raw document...' : 'Gemini 4 Argon generating step-by-step summary and questions...');
 
   let rawExtractedText = extractReadableTextFromPayload(params.text, params.fileData);
   if (!rawExtractedText && params.fileData?.base64) {

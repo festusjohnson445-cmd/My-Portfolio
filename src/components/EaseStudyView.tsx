@@ -103,10 +103,11 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('');
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [difficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
-  const [questionCount] = useState<number>(15);
-  const [focusArea] = useState<string>('');
+  const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
+  const [questionCount, setQuestionCount] = useState<number>(15);
+  const [focusArea, setFocusArea] = useState<string>('');
   const [isEngineeringDoc, setIsEngineeringDoc] = useState(false);
+  const [isDocumentReady, setIsDocumentReady] = useState(false);
   const [studyResult, setStudyResult] = useState<EaseStudyResponse | null>(null);
 
   // Activities & Sessions
@@ -212,7 +213,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     setUploadedFile(file);
     setFileMimeType(file.type || 'application/octet-stream');
     setAnalysisError(null);
-    setProcessingStatus('Extracting document contents...');
+    setProcessingStatus('Extracting document text...');
 
     try {
       const reader = new FileReader();
@@ -225,12 +226,15 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
         const cleanExtracted = await extractCleanTextFromFile(file);
         setFileExtractedText(cleanExtracted);
 
-        // Run analysis automatically upon file drop / select
-        runAnalysisWithPayload(file, base64Clean, file.type, cleanExtracted, false);
+        // Do NOT automatically start generation!
+        // Allow the user to specify chapter or focus area first.
+        setIsDocumentReady(true);
+        setProcessingStatus('');
       };
       reader.readAsDataURL(file);
     } catch {
       setAnalysisError('Could not process this document. Please try a PDF, DOCX, or text file.');
+      setProcessingStatus('');
     }
   };
 
@@ -259,7 +263,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     }
 
     setIsAnalyzing(true);
-    setProcessingStatus(forceRegenerate ? 'Reprocessing fresh output from raw document...' : 'Analyzing document structure...');
+    setProcessingStatus(forceRegenerate ? 'Gemini 4 Argon reprocessing fresh output from raw document...' : 'Gemini 4 Argon analyzing document & specified focus area...');
 
     try {
       let activeFilePayload = null;
@@ -680,79 +684,239 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
             className="hidden"
           />
 
-          {/* Cloud Upload Icon: Small size */}
-          <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-[#1d68bd] mb-2.5">
-            <UploadCloud className="w-5 h-5 stroke-[1.75]" />
-          </div>
-
-          {/* Title & Subtext: Reduced by 20% */}
-          <h2 className="text-[13.5px] sm:text-[14.5px] font-bold text-slate-900 mb-0.5">
-            Upload your study material
-          </h2>
-          <p className="text-[10px] text-slate-500 max-w-sm mx-auto mb-3.5 leading-relaxed">
-            Drop your PDF, DOCX, PPTX or other supported document here.
-          </p>
-
-          {/* Browse Documents Primary Button: Small size */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isAnalyzing}
-            className="px-5 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
-          >
-            {isAnalyzing ? (
-              <>
-                <RefreshCw className="w-3 h-3 animate-spin" />
-                <span>Processing Document...</span>
-              </>
-            ) : (
-              <span>Browse Documents</span>
-            )}
-          </button>
-
-          {/* Or Paste Your Notes Toggle */}
-          <button
-            type="button"
-            onClick={() => setIsPastingNotes(!isPastingNotes)}
-            className="mt-3 text-[10px] font-normal text-slate-600 hover:text-cyan-800 transition-colors cursor-pointer underline underline-offset-2"
-          >
-            {isPastingNotes ? 'Hide notes input' : 'Or paste your notes'}
-          </button>
-
-          {/* Expandable Notes Input */}
-          {isPastingNotes && (
-            <div className="w-full mt-3.5 pt-3.5 border-t border-slate-100 space-y-2 text-left">
-              <label className="text-[10.5px] font-bold text-slate-700 block">
-                Paste lecture notes, article excerpts, or book text:
-              </label>
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Paste course notes, chapter paragraphs, or study material here..."
-                rows={4}
-                className="w-full rounded-lg border border-slate-200 p-2.5 text-[10.5px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd] transition-all font-mono"
-              />
-              <div className="flex items-center justify-between">
-                <span className="text-[9.5px] text-slate-400">
-                  {inputText.length} characters
-                </span>
+          {/* Upload Configuration & Focus Selection Stage */}
+          {isDocumentReady && uploadedFile ? (
+            <div className="w-full space-y-2.5 text-left">
+              {/* Document Info Pill */}
+              <div className="p-2.5 rounded-lg bg-sky-50/90 border border-sky-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 truncate">
+                  <div className="w-6 h-6 rounded-md bg-[#1d68bd] text-white flex items-center justify-center shrink-0">
+                    <FileText className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="truncate">
+                    <span className="font-bold text-[10.5px] text-slate-900 block truncate">
+                      {uploadedFile.name}
+                    </span>
+                    <span className="text-[9px] text-slate-500">
+                      {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {fileExtractedText.length.toLocaleString()} characters extracted
+                    </span>
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={handleRunTextAnalysis}
-                  disabled={!inputText.trim() || isAnalyzing}
-                  className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[10px] shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+                  onClick={() => {
+                    setUploadedFile(null);
+                    setFileBase64(null);
+                    setFileExtractedText('');
+                    setIsDocumentReady(false);
+                    setFocusArea('');
+                  }}
+                  className="text-[9.5px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer shrink-0"
                 >
-                  Analyze Notes
+                  Change
+                </button>
+              </div>
+
+              {/* Focus Area / Chapter Specification */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-800 flex items-center justify-between">
+                  <span>Chapter or Specific Focus Area:</span>
+                  <span className="text-[8.5px] text-slate-400 font-normal">Optional</span>
+                </label>
+                <input
+                  type="text"
+                  value={focusArea}
+                  onChange={(e) => setFocusArea(e.target.value)}
+                  placeholder="e.g., Chapter 3, Friction & Equilibrium, Pages 45-60, or leave blank for All"
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd]"
+                />
+                <p className="text-[8.5px] text-slate-500">
+                  Specify a particular chapter, section, or topic before generation, or leave blank to analyze the entire document.
+                </p>
+              </div>
+
+              {/* Study Parameters: Level & Questions */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5">
+                  <label className="text-[9px] font-bold text-slate-700 block">Target Level:</label>
+                  <select
+                    value={difficulty}
+                    onChange={(e: any) => setDifficulty(e.target.value)}
+                    className="w-full rounded-md border border-slate-200 px-2 py-1 text-[9.5px] bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                  >
+                    <option value="beginner">Beginner</option>
+                    <option value="intermediate">Intermediate</option>
+                    <option value="advanced">Advanced</option>
+                    <option value="exam_prep">Exam Prep</option>
+                  </select>
+                </div>
+
+                <div className="space-y-0.5">
+                  <label className="text-[9px] font-bold text-slate-700 block">Practice Questions:</label>
+                  <select
+                    value={questionCount}
+                    onChange={(e) => setQuestionCount(Number(e.target.value))}
+                    className="w-full rounded-md border border-slate-200 px-2 py-1 text-[9.5px] bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                  >
+                    <option value={5}>5 Questions</option>
+                    <option value={10}>10 Questions</option>
+                    <option value={15}>15 Questions</option>
+                    <option value={20}>20 Questions</option>
+                    <option value={30}>30 Questions</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Technical / Engineering Mode Toggle */}
+              <label className="flex items-center gap-1.5 cursor-pointer pt-0.5">
+                <input
+                  type="checkbox"
+                  checked={isEngineeringDoc}
+                  onChange={(e) => setIsEngineeringDoc(e.target.checked)}
+                  className="w-3 h-3 text-[#1d68bd] rounded border-slate-300"
+                />
+                <span className="text-[9.5px] text-slate-700">
+                  Technical or Engineering Document (extract governing formulas &amp; calculations)
+                </span>
+              </label>
+
+              {/* Generate Primary Button */}
+              <div className="pt-1.5 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => runAnalysisWithPayload(uploadedFile, fileBase64, fileMimeType, fileExtractedText, false)}
+                  disabled={isAnalyzing}
+                  className="flex-1 px-4 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[10.5px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generate Study Materials &amp; Exam Suite</span>
                 </button>
               </div>
             </div>
+          ) : (
+            <>
+              {/* Cloud Upload Icon: Small size */}
+              <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-[#1d68bd] mb-2.5">
+                <UploadCloud className="w-5 h-5 stroke-[1.75]" />
+              </div>
+
+              {/* Title & Subtext: Reduced by 20% */}
+              <h2 className="text-[13.5px] sm:text-[14.5px] font-bold text-slate-900 mb-0.5">
+                Upload your study material
+              </h2>
+              <p className="text-[10px] text-slate-500 max-w-sm mx-auto mb-3.5 leading-relaxed">
+                Drop your PDF, DOCX, PPTX or other supported document here.
+              </p>
+
+              {/* Browse Documents Primary Button: Small size */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isAnalyzing}
+                className="px-5 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    <span>Processing Document...</span>
+                  </>
+                ) : (
+                  <span>Browse Documents</span>
+                )}
+              </button>
+
+              {/* Or Paste Your Notes Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsPastingNotes(!isPastingNotes)}
+                className="mt-3 text-[10px] font-normal text-slate-600 hover:text-cyan-800 transition-colors cursor-pointer underline underline-offset-2"
+              >
+                {isPastingNotes ? 'Hide notes input' : 'Or paste your notes'}
+              </button>
+
+              {/* Expandable Notes Input */}
+              {isPastingNotes && (
+                <div className="w-full mt-3.5 pt-3.5 border-t border-slate-100 space-y-2 text-left">
+                  <label className="text-[10.5px] font-bold text-slate-700 block">
+                    Paste lecture notes, article excerpts, or book text:
+                  </label>
+                  <textarea
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Paste course notes, chapter paragraphs, or study material here..."
+                    rows={4}
+                    className="w-full rounded-lg border border-slate-200 p-2.5 text-[10.5px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd] transition-all font-mono"
+                  />
+
+                  {/* Focus Area for Pasted Notes */}
+                  <div className="space-y-1">
+                    <label className="text-[9.5px] font-bold text-slate-700 flex items-center justify-between">
+                      <span>Specific Focus / Chapter (Optional):</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={focusArea}
+                      onChange={(e) => setFocusArea(e.target.value)}
+                      placeholder="e.g., Section 2, Key Takeaways, Definitions"
+                      className="w-full rounded-lg border border-slate-200 px-2.5 py-1 text-[10px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div className="space-y-0.5">
+                      <label className="text-[9px] font-bold text-slate-700 block">Level:</label>
+                      <select
+                        value={difficulty}
+                        onChange={(e: any) => setDifficulty(e.target.value)}
+                        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[9.5px] bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                      >
+                        <option value="beginner">Beginner</option>
+                        <option value="intermediate">Intermediate</option>
+                        <option value="advanced">Advanced</option>
+                        <option value="exam_prep">Exam Prep</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <label className="text-[9px] font-bold text-slate-700 block">Questions:</label>
+                      <select
+                        value={questionCount}
+                        onChange={(e) => setQuestionCount(Number(e.target.value))}
+                        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[9.5px] bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                      >
+                        <option value={5}>5 Questions</option>
+                        <option value={10}>10 Questions</option>
+                        <option value={15}>15 Questions</option>
+                        <option value={20}>20 Questions</option>
+                        <option value={30}>30 Questions</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[9.5px] text-slate-400">
+                      {inputText.length} characters
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRunTextAnalysis}
+                      disabled={!inputText.trim() || isAnalyzing}
+                      className="px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[10px] shadow-2xs transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Analyze Notes</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Processing Loading Indicator */}
           {isAnalyzing && (
             <div className="mt-3.5 w-full max-w-sm p-2.5 rounded-lg bg-sky-50 border border-sky-200 text-sky-900 text-[10px] font-medium flex items-center justify-center gap-1.5 animate-pulse">
               <Sparkles className="w-3.5 h-3.5 text-sky-600 animate-spin shrink-0" />
-              <span>{processingStatus || 'Analyzing document structure...'}</span>
+              <span>{processingStatus || 'Gemini 4 Argon analyzing document & focus area...'}</span>
             </div>
           )}
 
@@ -979,6 +1143,11 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   {uploadedFile && (
                     <span className="text-[9.5px] text-slate-500 font-mono truncate max-w-[150px]">
                       • {uploadedFile.name}
+                    </span>
+                  )}
+                  {focusArea && (
+                    <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold bg-amber-50 text-amber-800 border border-amber-200 truncate max-w-[150px]">
+                      Focus: {focusArea}
                     </span>
                   )}
                 </div>
