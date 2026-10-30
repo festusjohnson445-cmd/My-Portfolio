@@ -1723,7 +1723,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       required: ['topic', 'difficulty', 'readingTime', 'summary', 'keyConcepts', 'examSuite'],
     };
 
-    const candidateModels = ['gemini-2.5-flash', 'gemini-flash-latest'];
+    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
     let outputText = '';
 
     for (const modelName of candidateModels) {
@@ -2018,6 +2018,191 @@ STRICT REQUIREMENTS:
   } catch (err: any) {
     console.error('Diagram generation error:', err);
     res.status(500).json({ success: false, message: 'Diagram generation failed.' });
+  }
+});
+
+// ============================================================================
+// EASESTUDY GUEST SESSIONS, DOCUMENT CHAT & LEARNING HISTORY
+// ============================================================================
+
+interface EaseStudyGuestActivity {
+  id: string;
+  documentId?: string;
+  topic: string;
+  fileName?: string;
+  score?: number;
+  totalQuestions?: number;
+  correctAnswers?: number;
+  activityType: 'document_analyzed' | 'exam_completed' | 'notes_pasted';
+  timestamp: string;
+}
+
+const memoryEaseStudySessions = new Map<string, { createdAt: string; lastActive: string }>();
+const memoryEaseStudyActivities = new Map<string, EaseStudyGuestActivity[]>();
+
+// 12. EaseStudy Guest Session Manager
+app.all(['/api/easestudy/session', '/api/easestudy/session/'], (req, res) => {
+  try {
+    const rawId = (req.headers['x-guest-session-id'] as string) || req.body?.sessionId || req.query?.sessionId;
+    let sessionId = typeof rawId === 'string' && rawId.trim().length > 6 ? rawId.trim() : null;
+
+    if (!sessionId) {
+      sessionId = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    }
+
+    const now = new Date().toISOString();
+    if (!memoryEaseStudySessions.has(sessionId)) {
+      memoryEaseStudySessions.set(sessionId, { createdAt: now, lastActive: now });
+    } else {
+      const sess = memoryEaseStudySessions.get(sessionId)!;
+      sess.lastActive = now;
+    }
+
+    const activities = memoryEaseStudyActivities.get(sessionId) || [];
+
+    res.json({
+      success: true,
+      sessionId,
+      token: `token_${sessionId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      activitiesCount: activities.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Session allocation error' });
+  }
+});
+
+// 13. "Ask Your Document" Grounded Chat Assistant
+app.post(['/api/easestudy/chat', '/api/easestudy/chat/'], async (req, res) => {
+  try {
+    const { message, documentText, topic = 'Study Document', history = [] } = req.body;
+
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ success: false, message: 'A user question or message is required.' });
+    }
+
+    const cleanContext = (documentText || '').slice(0, 50000);
+
+    const chatPrompt = `You are the EaseStudy Intelligent Document Assistant.
+Your primary role is to answer questions strictly grounded in the user's study document.
+
+DOCUMENT TOPIC: "${topic}"
+
+SOURCE DOCUMENT CONTENT:
+"""
+${cleanContext || 'No document text provided. Rely strictly on verified general study principles.'}
+"""
+
+GROUNDING & INTEGRITY RULES:
+1. Grounding Rule (100% Strictness): Answer strictly using facts, arguments, definitions, or equations explicitly stated in the document above.
+2. If the user asks about something not mentioned in the source material, state politely and clearly: "This topic is not addressed in your uploaded document." Then provide a brief, helpful hint where possible.
+3. Natural Domain Tone: Maintain the natural voice of the subject matter. Do NOT force engineering jargon or formulas onto non-engineering materials.
+4. Formatting: Keep responses structured, concise, and easy to read during study sessions. Use bullet points or numbered steps where appropriate.
+5. Provide a short quote or reference snippet from the text supporting your answer if applicable.
+
+USER QUESTION: "${message}"`;
+
+    let reply = '';
+    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+
+    for (const model of candidateModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: chatPrompt,
+        });
+        if (response && response.text) {
+          reply = response.text.trim();
+          break;
+        }
+      } catch (callErr) {
+        console.warn(`[EaseStudy Chat] ${model} attempt error:`, cleanErrorMessage(callErr));
+      }
+    }
+
+    if (!reply) {
+      reply = `Based on the provided material for "${topic}", please refer directly to the primary assertions and key takeaways highlighted in the executive summary. For specific inquiries, re-examine the core concepts section.`;
+    }
+
+    // Extract potential citation quotes
+    const citations: string[] = [];
+    const lines = cleanContext.split('\n').filter((l: string) => l.trim().length > 30);
+    if (lines.length > 0) {
+      citations.push(lines[0].trim().slice(0, 150));
+      if (lines.length > 1) {
+        citations.push(lines[1].trim().slice(0, 150));
+      }
+    }
+
+    res.json({
+      success: true,
+      reply,
+      citations: citations.slice(0, 2),
+    });
+  } catch (err: any) {
+    console.error('EaseStudy Chat error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Document chat service is temporarily unavailable.',
+      reply: 'An error occurred while analyzing the document text. Please try asking again.',
+    });
+  }
+});
+
+// 14. EaseStudy Learning History & Activities Endpoints
+app.get(['/api/easestudy/history', '/api/easestudy/history/'], (req, res) => {
+  try {
+    const sessionId = (req.headers['x-guest-session-id'] as string) || (req.query?.sessionId as string);
+    if (!sessionId) {
+      return res.json({ success: true, activities: [] });
+    }
+
+    const activities = memoryEaseStudyActivities.get(sessionId) || [];
+    res.json({
+      success: true,
+      activities: activities.slice(0, 30),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to fetch history' });
+  }
+});
+
+app.post(['/api/easestudy/history/record', '/api/easestudy/history/record/'], (req, res) => {
+  try {
+    const rawId = (req.headers['x-guest-session-id'] as string) || req.body?.sessionId;
+    const sessionId = rawId || 'anonymous_guest';
+    const {
+      topic = 'Study Material',
+      fileName,
+      score,
+      totalQuestions,
+      correctAnswers,
+      activityType = 'exam_completed',
+    } = req.body;
+
+    const activity: EaseStudyGuestActivity = {
+      id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      topic,
+      fileName,
+      score: typeof score === 'number' ? score : undefined,
+      totalQuestions: typeof totalQuestions === 'number' ? totalQuestions : undefined,
+      correctAnswers: typeof correctAnswers === 'number' ? correctAnswers : undefined,
+      activityType,
+      timestamp: new Date().toISOString(),
+    };
+
+    const existing = memoryEaseStudyActivities.get(sessionId) || [];
+    existing.unshift(activity);
+    if (existing.length > 50) existing.pop();
+    memoryEaseStudyActivities.set(sessionId, existing);
+
+    res.json({
+      success: true,
+      activity,
+      totalCount: existing.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to save record' });
   }
 });
 

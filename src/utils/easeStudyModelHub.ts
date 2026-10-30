@@ -53,8 +53,155 @@ export interface VisualDiagramResult {
   storageUrl?: string;
 }
 
-export const EASESTUDY_STORAGE_BUCKET = 'ModeEaseStudy';
+export const EASESTUDY_STORAGE_BUCKET = 'easestudy-documents';
 const LOCAL_DATASET_CACHE_KEY = 'fesline_mode_easestudy_dataset_cache';
+const GUEST_SESSION_STORAGE_KEY = 'easestudy_guest_session_id';
+
+/**
+ * Get or initialize persistent guest session ID stored in browser
+ */
+export function getOrCreateGuestSessionId(): string {
+  try {
+    const existing = localStorage.getItem(GUEST_SESSION_STORAGE_KEY);
+    if (existing && existing.length > 5) return existing;
+    const newId = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    localStorage.setItem(GUEST_SESSION_STORAGE_KEY, newId);
+    return newId;
+  } catch {
+    return `guest_${Date.now()}_temp`;
+  }
+}
+
+/**
+ * Sync guest session with server
+ */
+export async function syncGuestSession(): Promise<{ sessionId: string; token: string }> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    const res = await fetch('/api/easestudy/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': sessionId,
+      },
+      body: JSON.stringify({ sessionId }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.sessionId) {
+        localStorage.setItem(GUEST_SESSION_STORAGE_KEY, data.sessionId);
+        return { sessionId: data.sessionId, token: data.token || '' };
+      }
+    }
+  } catch {}
+  return { sessionId, token: `token_${sessionId.slice(0, 8)}` };
+}
+
+/**
+ * "Ask Your Document" grounded interactive chat assistant
+ */
+export async function askDocumentAssistant(
+  question: string,
+  documentText: string,
+  topic: string = 'Document Study'
+): Promise<{ reply: string; citations: string[] }> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    const res = await fetch('/api/easestudy/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        message: question,
+        documentText,
+        topic,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.reply) {
+        return {
+          reply: data.reply,
+          citations: Array.isArray(data.citations) ? data.citations : [],
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Ask document assistant error:', err);
+  }
+  return {
+    reply: `According to the source text for "${topic}", please consult the core assertions and definitions in the summary.`,
+    citations: [],
+  };
+}
+
+/**
+ * Fetch guest activities and learning history
+ */
+export async function fetchGuestActivities(): Promise<any[]> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    const res = await fetch(`/api/easestudy/history?sessionId=${encodeURIComponent(sessionId)}`, {
+      headers: { 'x-guest-session-id': sessionId },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.activities)) {
+        return data.activities;
+      }
+    }
+  } catch {}
+
+  // Fallback to local storage if offline or running client-side
+  try {
+    const local = localStorage.getItem('fesline_easestudy_activities');
+    return local ? JSON.parse(local) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record a new learning activity (e.g. analyzed document, exam completed)
+ */
+export async function recordGuestActivity(payload: {
+  topic: string;
+  fileName?: string;
+  score?: number;
+  totalQuestions?: number;
+  correctAnswers?: number;
+  activityType: 'document_analyzed' | 'exam_completed' | 'notes_pasted';
+}): Promise<void> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    await fetch('/api/easestudy/history/record', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        sessionId,
+        ...payload,
+      }),
+    });
+  } catch {}
+
+  // Also maintain local record for instant UI responsiveness
+  try {
+    const localRaw = localStorage.getItem('fesline_easestudy_activities');
+    const existing = localRaw ? JSON.parse(localRaw) : [];
+    existing.unshift({
+      id: `local_${Date.now()}`,
+      ...payload,
+      timestamp: new Date().toISOString(),
+    });
+    if (existing.length > 50) existing.pop();
+    localStorage.setItem('fesline_easestudy_activities', JSON.stringify(existing));
+  } catch {}
+}
 
 /**
  * Generate a deterministic hash/fingerprint of the input material to recognize
@@ -62,7 +209,7 @@ const LOCAL_DATASET_CACHE_KEY = 'fesline_mode_easestudy_dataset_cache';
  */
 export async function computeDocumentFingerprint(
   text?: string,
-  fileData?: { base64: string; fileName: string; size?: number; mimeType?: string } | null
+  fileData?: { base64: string; fileName: string; size?: number; mimeType?: string; extractedText?: string } | null
 ): Promise<string> {
   const contentToHash = [
     text ? text.trim().slice(0, 15000) : '',
@@ -1335,7 +1482,7 @@ export async function seedModeEaseStudyDataset(): Promise<void> {
             },
             { onConflict: 'document_hash' }
           )
-          .catch(() => {});
+          .then(null, () => {});
       }
     }
 

@@ -1,45 +1,37 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  BookOpen,
+  UploadCloud,
   FileText,
-  Upload,
+  BrainCircuit,
+  ClipboardCheck,
+  History,
   Sparkles,
   Download,
   Copy,
   Check,
-  CheckCircle2,
-  HelpCircle,
   Award,
   Clock,
   RefreshCw,
-  ArrowRight,
-  Layers,
-  RotateCcw,
-  Sliders,
-  AlertCircle,
+  FolderOpen,
   X,
-  FileCheck2,
-  Flag,
-  ChevronLeft,
-  ChevronRight,
-  Target,
-  BarChart3,
-  XCircle,
-  Image as ImageIcon,
-  Cpu,
-  Wand2,
+  MessageSquare,
+  Send,
+  AlertCircle,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { PortfolioPart } from './Navbar';
 import {
   executeEaseStudyIntelligentHub,
   EaseStudyHubResult,
-  recordExamScoreToSupabase,
   computeDocumentFingerprint,
   generateConceptVisualDiagram,
   VisualDiagramResult,
   STANDARD_EASESTUDY_BENCHMARKS,
   seedModeEaseStudyDataset,
+  syncGuestSession,
+  askDocumentAssistant,
+  fetchGuestActivities,
+  recordGuestActivity,
 } from '../utils/easeStudyModelHub';
 import { extractCleanTextFromFile } from '../utils/documentTextExtractor';
 
@@ -90,127 +82,166 @@ interface EaseStudyViewProps {
   onNavigatePart?: (part: PortfolioPart) => void;
 }
 
-export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) => {
-  const [activeInputTab, setActiveInputTab] = useState<'upload' | 'text'>('upload');
+type StudyOutputTab = 'summary' | 'concepts' | 'exam' | 'flashcards' | 'diagrams' | 'chat';
+
+export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
+  // Navigation & View States
+  const [activeOutputTab, setActiveOutputTab] = useState<StudyOutputTab>('summary');
+  const [showWorkspace, setShowWorkspace] = useState(false);
+  const [isPastingNotes, setIsPastingNotes] = useState(false);
+
+  // Document & Input States
   const [inputText, setInputText] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [fileBase64, setFileBase64] = useState<string | null>(null);
   const [fileMimeType, setFileMimeType] = useState<string | null>(null);
   const [fileExtractedText, setFileExtractedText] = useState<string>('');
-
-  // Configuration options
-  const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
-  const [questionCount, setQuestionCount] = useState<number>(15);
-  const [focusArea, setFocusArea] = useState<string>('');
-  const [isEngineeringDoc, setIsEngineeringDoc] = useState<boolean>(false);
-
-  // Processing & result state
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [processingStatus, setProcessingStatus] = useState<string>('Analyzing document...');
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [studyResult, setStudyResult] = useState<EaseStudyResponse | null>(null);
   const [activeDocumentHash, setActiveDocumentHash] = useState<string>('');
-  const [activeOutputTab, setActiveOutputTab] = useState<'summary' | 'concepts' | 'diagrams' | 'exam' | 'flashcards'>('summary');
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Interactive Practice Exam State
+  // Analysis & Processing States
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState('');
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [difficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
+  const [questionCount] = useState<number>(15);
+  const [focusArea] = useState<string>('');
+  const [isEngineeringDoc, setIsEngineeringDoc] = useState(false);
+  const [studyResult, setStudyResult] = useState<EaseStudyResponse | null>(null);
+
+  // Activities & Sessions
+  const [, setGuestSessionId] = useState<string>('');
+  const [recentActivities, setRecentActivities] = useState<any[]>([]);
+
+  // Examination Practice States
   const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
   const [flaggedQuestions, setFlaggedQuestions] = useState<Set<number>>(new Set());
-  const [activeQuestionIndex, setActiveQuestionIndex] = useState<number>(0);
-  const [examViewMode, setExamViewMode] = useState<'focused' | 'list'>('focused');
-  const [examFilterMode, setExamFilterMode] = useState<'all' | 'incorrect' | 'flagged'>('all');
+  const [, setActiveQuestionIndex] = useState(0);
   const [isQuizSubmitted, setIsQuizSubmitted] = useState(false);
-  const [examScore, setExamScore] = useState<{ score: number; total: number; percentage: number } | null>(null);
-  const [examSectionMode, setExamSectionMode] = useState<'mcq' | 'analytical'>('mcq');
-  const [revealedShortAnswers, setRevealedShortAnswers] = useState<Set<number>>(new Set());
+  const [examScore, setExamScore] = useState<{ score: number; percentage: number; total: number } | null>(null);
+  const [examFilterMode, setExamFilterMode] = useState<'all' | 'incorrect' | 'flagged'>('all');
 
-  // Visual Diagrams & Concept Illustrations
-  const [generatedDiagrams, setGeneratedDiagrams] = useState<Record<string, VisualDiagramResult>>({});
-  const [isGeneratingDiagram, setIsGeneratingDiagram] = useState(false);
-  const [activeDiagramKey, setActiveDiagramKey] = useState<string | null>(null);
-
-  // Flashcards state
+  // Flashcards States
   const [activeFlashcardIndex, setActiveFlashcardIndex] = useState(0);
   const [isFlashcardFlipped, setIsFlashcardFlipped] = useState(false);
+  const [masteredFlashcards, setMasteredFlashcards] = useState<Set<number>>(new Set());
+
+  // Visual Diagrams States
+  const [generatedDiagrams, setGeneratedDiagrams] = useState<Record<string, VisualDiagramResult>>({});
+  const [isGeneratingDiagram, setIsGeneratingDiagram] = useState(false);
+  const [activeDiagramKey, setActiveDiagramKey] = useState<string>('');
+
+  // "Ask Your Document" Chat States
+  const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; text: string; citations?: string[] }>>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(false);
+
+  // UI Notifications
   const [copiedNotification, setCopiedNotification] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropzoneRef = useRef<HTMLDivElement>(null);
+  const chatMessagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Restore previous study session from local cache on mount and seed standard datasets
+  // Initialize Guest Session and Data on mount
   useEffect(() => {
-    seedModeEaseStudyDataset().catch(() => {});
+    const initSession = async () => {
+      const sess = await syncGuestSession();
+      setGuestSessionId(sess.sessionId);
+      const acts = await fetchGuestActivities();
+      setRecentActivities(acts);
+    };
+    initSession();
+    seedModeEaseStudyDataset();
+
+    // Check if there is a previously saved active result
     try {
-      const cached = localStorage.getItem('fesline_easestudy_last_result');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed && parsed.topic && parsed.summary) {
+      const savedResult = localStorage.getItem('fesline_easestudy_last_result');
+      if (savedResult) {
+        const parsed = JSON.parse(savedResult);
+        if (parsed?.topic && parsed?.summary) {
           setStudyResult(parsed);
         }
       }
     } catch {}
   }, []);
 
-  const handleLoadBenchmark = (benchmarkId: string) => {
-    const benchmark = STANDARD_EASESTUDY_BENCHMARKS.find((b) => b.id === benchmarkId) || STANDARD_EASESTUDY_BENCHMARKS[0];
-    setActiveInputTab('text');
-    setInputText(benchmark.sampleText);
-    setStudyResult(benchmark.precomputedPackage);
-    setActiveDocumentHash(`benchmark_${benchmark.id}`);
-    setActiveOutputTab('summary');
-    setUserAnswers({});
-    setFlaggedQuestions(new Set());
-    setActiveQuestionIndex(0);
-    setIsQuizSubmitted(false);
-    setExamScore(null);
-    setExamFilterMode('all');
-    setIsEngineeringDoc(benchmark.isEngineeringDoc);
-    try {
-      localStorage.setItem('fesline_easestudy_last_result', JSON.stringify(benchmark.precomputedPackage));
-    } catch {}
+  // Scroll chat to bottom when messages update
+  useEffect(() => {
+    if (isChatDrawerOpen || activeOutputTab === 'chat') {
+      chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, isChatDrawerOpen, activeOutputTab]);
+
+  // File Handlers
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processSelectedFile(file);
+    }
   };
 
-  const readFileAsync = (file: File): Promise<{ base64: string; mimeType: string }> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = (e.target?.result as string) || '';
-        const base64Clean = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-        const mime = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
-        resolve({ base64: base64Clean, mimeType: mime });
-      };
-      reader.onerror = () => reject(new Error('Failed to read file contents.'));
-      reader.readAsDataURL(file);
-    });
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
   };
 
-  const handleFileChange = (file: File) => {
-    setAnalysisError(null);
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processSelectedFile(file);
+    }
+  };
+
+  const processSelectedFile = async (file: File) => {
+    if (file.size > 26214400) {
+      setAnalysisError('File exceeds the 25MB maximum size limit.');
+      return;
+    }
     setUploadedFile(file);
-    const mime = file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
-    setFileMimeType(mime);
+    setFileMimeType(file.type || 'application/octet-stream');
+    setAnalysisError(null);
+    setProcessingStatus('Extracting document contents...');
 
-    // Clean text extraction directly from file
-    extractCleanTextFromFile(file)
-      .then((txt) => {
-        setFileExtractedText(txt);
-      })
-      .catch((e) => console.warn('Clean text extract notice:', e));
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const dataUrl = e.target?.result as string;
+        const base64Clean = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        setFileBase64(base64Clean);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string;
-      if (file.type.startsWith('image/')) {
-        setFilePreviewUrl(dataUrl);
-      } else {
-        setFilePreviewUrl(null);
-      }
-      const base64Clean = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-      setFileBase64(base64Clean);
-    };
-    reader.readAsDataURL(file);
+        // Clean text extraction
+        const cleanExtracted = await extractCleanTextFromFile(file);
+        setFileExtractedText(cleanExtracted);
+
+        // Run analysis automatically upon file drop / select
+        runAnalysisWithPayload(file, base64Clean, file.type, cleanExtracted, false);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setAnalysisError('Could not process this document. Please try a PDF, DOCX, or text file.');
+    }
   };
 
-  const handleRunAnalysis = async (forceRegenerate: boolean = false) => {
+  // Run Document Analysis Pipeline
+  const runAnalysisWithPayload = async (
+    file: File | null,
+    b64: string | null,
+    mime: string | null,
+    extractedTxt: string,
+    forceRegenerate: boolean = false
+  ) => {
     setAnalysisError(null);
     setUserAnswers({});
     setFlaggedQuestions(new Set());
@@ -227,55 +258,30 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
       } catch {}
     }
 
-    // Validate input
-    if (activeInputTab === 'upload' && !uploadedFile && !fileBase64) {
-      setAnalysisError('Please choose a document or image file to analyze.');
-      return;
-    }
-    if (activeInputTab === 'text' && !inputText.trim()) {
-      setAnalysisError('Please enter or paste your study notes or text.');
-      return;
-    }
-
     setIsAnalyzing(true);
-    setProcessingStatus(forceRegenerate ? 'Reprocessing freshly from source document...' : 'Analyzing document structure...');
+    setProcessingStatus(forceRegenerate ? 'Reprocessing fresh output from raw document...' : 'Analyzing document structure...');
 
     try {
       let activeFilePayload = null;
-      if (activeInputTab === 'upload' && uploadedFile) {
-        let b64 = fileBase64;
-        let mime = fileMimeType;
-        if (!b64 || !mime) {
-          setProcessingStatus('Reading uploaded file...');
-          const readRes = await readFileAsync(uploadedFile);
-          b64 = readRes.base64;
-          mime = readRes.mimeType;
-          setFileBase64(b64);
-          setFileMimeType(mime);
-        }
-        let cleanExtracted = fileExtractedText;
-        if (!cleanExtracted && uploadedFile) {
-          cleanExtracted = await extractCleanTextFromFile(uploadedFile);
-          setFileExtractedText(cleanExtracted);
-        }
+      if (file && b64) {
         activeFilePayload = {
           base64: b64,
-          mimeType: mime,
-          fileName: uploadedFile.name,
-          size: uploadedFile.size,
-          extractedText: cleanExtracted || undefined,
+          mimeType: mime || file.type || 'application/pdf',
+          fileName: file.name,
+          size: file.size,
+          extractedText: extractedTxt || undefined,
         };
       }
 
       const docFingerprint = await computeDocumentFingerprint(
-        activeInputTab === 'text' ? inputText : undefined,
+        !file ? inputText : undefined,
         activeFilePayload
       );
       setActiveDocumentHash(docFingerprint);
 
       const hubResult: EaseStudyHubResult = await executeEaseStudyIntelligentHub(
         {
-          text: activeInputTab === 'text' ? inputText : undefined,
+          text: !file ? inputText : undefined,
           fileData: activeFilePayload,
           difficulty,
           questionCount,
@@ -287,18 +293,41 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
       );
 
       setStudyResult(hubResult.result);
+      setShowWorkspace(true);
       setActiveOutputTab('summary');
 
+      // Record activity
+      recordGuestActivity({
+        topic: hubResult.result.topic,
+        fileName: file?.name || 'Pasted Notes',
+        totalQuestions: hubResult.result.examSuite?.multipleChoice?.length || questionCount,
+        activityType: file ? 'document_analyzed' : 'notes_pasted',
+      });
+
+      // Refresh recent activities
+      const acts = await fetchGuestActivities();
+      setRecentActivities(acts);
+
+      // Cache locally
       try {
         localStorage.setItem('fesline_easestudy_last_result', JSON.stringify(hubResult.result));
       } catch {}
     } catch (err: any) {
-      setAnalysisError(
-        err?.message || 'Document analysis is temporarily unavailable. Please try again.'
-      );
+      setAnalysisError(err?.message || 'Document analysis is temporarily unavailable. Please try again.');
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleRunTextAnalysis = () => {
+    if (!inputText.trim()) {
+      setAnalysisError('Please enter or paste your study notes before analyzing.');
+      return;
+    }
+    setUploadedFile(null);
+    setFileBase64(null);
+    setFileExtractedText(inputText.trim());
+    runAnalysisWithPayload(null, null, null, inputText.trim(), false);
   };
 
   const handleRegenerate = () => {
@@ -312,22 +341,37 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
         }
       } catch {}
     }
-    try {
-      localStorage.removeItem('fesline_easestudy_last_result');
-    } catch {}
-    setStudyResult(null);
-    setGeneratedDiagrams({});
-    setUserAnswers({});
-    setFlaggedQuestions(new Set());
-    setActiveQuestionIndex(0);
-    setIsQuizSubmitted(false);
-    setExamScore(null);
-    setExamFilterMode('all');
-    setActiveOutputTab('summary');
-    handleRunAnalysis(true);
+    if (uploadedFile && fileBase64) {
+      runAnalysisWithPayload(uploadedFile, fileBase64, fileMimeType, fileExtractedText, true);
+    } else if (inputText.trim()) {
+      runAnalysisWithPayload(null, null, null, inputText.trim(), true);
+    }
   };
 
-  // Generate Visual Diagram for a specific concept or topic
+  // Standard Benchmark Loader
+  const handleLoadBenchmark = (benchmarkId: string) => {
+    const benchmark = STANDARD_EASESTUDY_BENCHMARKS.find((b) => b.id === benchmarkId);
+    if (!benchmark) return;
+
+    setUploadedFile(null);
+    setFileBase64(null);
+    setInputText(benchmark.sampleText);
+    setFileExtractedText(benchmark.sampleText);
+    setStudyResult(benchmark.precomputedPackage);
+    setActiveDocumentHash(`benchmark_${benchmark.id}`);
+    setIsEngineeringDoc(benchmark.isEngineeringDoc);
+    setShowWorkspace(true);
+    setActiveOutputTab('summary');
+
+    recordGuestActivity({
+      topic: benchmark.title,
+      fileName: `${benchmark.title}.txt`,
+      totalQuestions: benchmark.precomputedPackage.examSuite.multipleChoice.length,
+      activityType: 'document_analyzed',
+    });
+  };
+
+  // Visual Diagram Generator
   const handleGenerateDiagram = async (conceptTitle: string, description: string) => {
     if (!studyResult) return;
     setIsGeneratingDiagram(true);
@@ -341,36 +385,72 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
         isEngineeringDoc,
         activeDocumentHash
       );
-
       setGeneratedDiagrams((prev) => ({
         ...prev,
         [conceptTitle]: diagram,
       }));
       setActiveOutputTab('diagrams');
-    } catch (err: any) {
-      setAnalysisError(err?.message || 'Diagram generation failed. Please try again.');
+    } catch {
+      // Handled silently
     } finally {
       setIsGeneratingDiagram(false);
-      setActiveDiagramKey(null);
+      setActiveDiagramKey('');
     }
   };
 
-  const handleDownloadDiagram = (svgString: string, title: string) => {
+  // "Ask Your Document" Grounded Chat Handler
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const userQ = chatInput.trim();
+    setChatInput('');
+    setChatMessages((prev) => [...prev, { role: 'user', text: userQ }]);
+    setIsChatLoading(true);
+
     try {
-      const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_diagram.svg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch {}
+      const contextText = fileExtractedText || inputText || studyResult?.summary.executiveSummary || '';
+      const res = await askDocumentAssistant(userQ, contextText, studyResult?.topic || 'Uploaded Document');
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: res.reply,
+          citations: res.citations,
+        },
+      ]);
+    } catch {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: 'Unable to reach the document assistant right now. Please try asking again.',
+        },
+      ]);
+    } finally {
+      setIsChatLoading(false);
+    }
   };
 
-  // Automated Quiz Scoring
-  const handleGradeExam = () => {
+  // Examination Practice Handlers
+  const handleAnswerSelect = (questionId: number, answerLetter: string) => {
+    if (isQuizSubmitted) return;
+    setUserAnswers((prev) => ({
+      ...prev,
+      [questionId]: answerLetter,
+    }));
+  };
+
+  const handleToggleFlag = (questionId: number) => {
+    setFlaggedQuestions((prev) => {
+      const next = new Set(prev);
+      if (next.has(questionId)) next.delete(questionId);
+      else next.add(questionId);
+      return next;
+    });
+  };
+
+  const handleSubmitQuiz = () => {
     if (!studyResult?.examSuite?.multipleChoice) return;
     const mcqs = studyResult.examSuite.multipleChoice;
     let correctCount = 0;
@@ -378,39 +458,31 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     mcqs.forEach((mcq) => {
       const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
       const correctAns = mcq.correctAnswer.trim().toUpperCase();
-      if (
-        userChoice &&
-        (userChoice === correctAns ||
-          userChoice.startsWith(correctAns) ||
-          correctAns.startsWith(userChoice))
-      ) {
+      if (userChoice && (userChoice === correctAns || userChoice.startsWith(correctAns) || correctAns.startsWith(userChoice))) {
         correctCount++;
       }
     });
 
     const percentage = Math.round((correctCount / mcqs.length) * 100);
-    const scoreResult = { score: correctCount, total: mcqs.length, percentage };
-    setExamScore(scoreResult);
+    const scoreObj = { score: correctCount, percentage, total: mcqs.length };
+    setExamScore(scoreObj);
     setIsQuizSubmitted(true);
 
-    if (activeDocumentHash) {
-      recordExamScoreToSupabase(activeDocumentHash, correctCount, mcqs.length).catch(() => {});
-    }
-  };
-
-  const handleToggleFlag = (questionId: number) => {
-    setFlaggedQuestions((prev) => {
-      const next = new Set(prev);
-      if (next.has(questionId)) {
-        next.delete(questionId);
-      } else {
-        next.add(questionId);
-      }
-      return next;
+    // Record Exam completion to activities
+    recordGuestActivity({
+      topic: studyResult.topic,
+      fileName: uploadedFile?.name || 'Interactive Exam',
+      score: percentage,
+      totalQuestions: mcqs.length,
+      correctAnswers: correctCount,
+      activityType: 'exam_completed',
     });
+
+    // Refresh history
+    fetchGuestActivities().then(setRecentActivities);
   };
 
-  const handleRetakeExam = () => {
+  const handleRetakeQuiz = () => {
     setUserAnswers({});
     setFlaggedQuestions(new Set());
     setActiveQuestionIndex(0);
@@ -419,105 +491,106 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     setExamFilterMode('all');
   };
 
-  const handleExportPdf = () => {
+  // PDF Export
+  const handleExportPDF = () => {
     if (!studyResult) return;
     try {
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      let y = 18;
+      let y = 16;
 
-      pdf.setFillColor(15, 30, 54);
-      pdf.rect(0, 0, 210, 24, 'F');
-      pdf.setTextColor(255, 255, 255);
+      // Header
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(12);
-      pdf.text('EASESTUDY — COMPREHENSIVE STUDY GUIDE & PRACTICE EXAM', 14, 12);
-      pdf.setFontSize(8.5);
+      pdf.setFontSize(16);
+      pdf.setTextColor(15, 23, 42);
+      pdf.text('EaseStudy — Learning Summary & Examination Suite', 14, y);
+      y += 7;
+
       pdf.setFont('helvetica', 'normal');
-      pdf.setTextColor(148, 163, 184);
-      pdf.text(
-        `TOPIC: ${studyResult.topic}  |  DIFFICULTY: ${studyResult.difficulty.toUpperCase()}  |  DATE: ${
-          new Date().toISOString().split('T')[0]
-        }`,
-        14,
-        18
-      );
+      pdf.setFontSize(9);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text(`Topic: ${studyResult.topic} | Target: ${studyResult.difficulty} | Read Time: ${studyResult.readingTime}`, 14, y);
+      y += 9;
 
-      y = 32;
-
-      // 1. Step-by-step Narrative
-      pdf.setTextColor(14, 116, 144);
+      // Executive Summary
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(11);
-      pdf.text('1. STEP-BY-STEP NARRATIVE & CORE PRINCIPLES', 14, y);
-      y += 6;
-
-      pdf.setTextColor(30, 41, 59);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8.5);
-      const splitSummary = pdf.splitTextToSize(studyResult.summary.executiveSummary, 182);
-      pdf.text(splitSummary, 14, y);
-      y += splitSummary.length * 4.5 + 4;
-
-      // Key Takeaways
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9.5);
       pdf.setTextColor(14, 116, 144);
-      pdf.text('Key Takeaways:', 14, y);
-      y += 5;
+      pdf.text('Executive Summary', 14, y);
+      y += 5.5;
 
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(8.5);
       pdf.setTextColor(51, 65, 85);
-      studyResult.summary.keyTakeaways.forEach((point) => {
-        const splitPoint = pdf.splitTextToSize(`• ${point}`, 178);
-        pdf.text(splitPoint, 16, y);
-        y += splitPoint.length * 4.2;
-      });
+      const splitExec = pdf.splitTextToSize(studyResult.summary.executiveSummary, 180);
+      pdf.text(splitExec, 14, y);
+      y += splitExec.length * 4.5 + 5;
 
-      // 2. Practice Exam Questions
-      if (y > 240) {
+      // Key Takeaways
+      if (y > 250) {
         pdf.addPage();
-        y = 15;
-      } else {
-        y += 8;
+        y = 16;
       }
-
-      pdf.setTextColor(14, 116, 144);
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(11);
-      pdf.text('2. PRACTICE EXAM QUESTIONS', 14, y);
-      y += 7;
+      pdf.setTextColor(14, 116, 144);
+      pdf.text('Key Takeaways', 14, y);
+      y += 5.5;
 
-      studyResult.examSuite.multipleChoice.forEach((mcq) => {
-        if (y > 255) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.setTextColor(51, 65, 85);
+      studyResult.summary.keyTakeaways.forEach((takeaway) => {
+        if (y > 270) {
           pdf.addPage();
-          y = 15;
+          y = 16;
         }
-        pdf.setTextColor(15, 23, 42);
+        const splitTakeaway = pdf.splitTextToSize(`• ${takeaway}`, 175);
+        pdf.text(splitTakeaway, 16, y);
+        y += splitTakeaway.length * 4 + 2;
+      });
+
+      // MCQs
+      if (y > 240) {
+        pdf.addPage();
+        y = 16;
+      }
+      y += 5;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.setTextColor(14, 116, 144);
+      pdf.text('Practice Examination Questions', 14, y);
+      y += 6;
+
+      studyResult.examSuite.multipleChoice.forEach((mcq, idx) => {
+        if (y > 250) {
+          pdf.addPage();
+          y = 16;
+        }
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        const splitQ = pdf.splitTextToSize(`Q${mcq.id}: ${mcq.question}`, 180);
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(15, 23, 42);
+        const splitQ = pdf.splitTextToSize(`Q${idx + 1}: ${mcq.question}`, 180);
         pdf.text(splitQ, 14, y);
-        y += splitQ.length * 4.5;
+        y += splitQ.length * 4 + 2;
 
         pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(8);
-        pdf.setTextColor(51, 65, 85);
+        pdf.setFontSize(7.5);
+        pdf.setTextColor(71, 85, 105);
         mcq.options.forEach((opt) => {
           pdf.text(`   ${opt}`, 16, y);
-          y += 4;
+          y += 3.5;
         });
 
         pdf.setFont('helvetica', 'bold');
         pdf.setTextColor(14, 116, 144);
-        pdf.text(`   Correct Answer: ${mcq.correctAnswer}`, 16, y);
-        y += 4.5;
+        pdf.text(`   Correct: ${mcq.correctAnswer}`, 16, y);
+        y += 4;
 
         pdf.setFont('helvetica', 'italic');
         pdf.setTextColor(100, 116, 139);
         const splitExp = pdf.splitTextToSize(`   Explanation: ${mcq.explanation}`, 175);
         pdf.text(splitExp, 16, y);
-        y += splitExp.length * 4 + 3;
+        y += splitExp.length * 3.5 + 3.5;
       });
 
       pdf.save(`EaseStudy_${studyResult.topic.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30)}.pdf`);
@@ -548,969 +621,677 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
     if (!isQuizSubmitted || examFilterMode === 'all') return true;
     const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
     const correctAns = mcq.correctAnswer.trim().toUpperCase();
-    const isCorrect =
-      userChoice &&
-      (userChoice === correctAns ||
-        userChoice.startsWith(correctAns) ||
-        correctAns.startsWith(userChoice));
-
-    if (examFilterMode === 'incorrect') {
-      return !isCorrect;
-    }
-    if (examFilterMode === 'flagged') {
-      return flaggedQuestions.has(mcq.id);
-    }
+    const isCorrect = userChoice && (userChoice === correctAns || userChoice.startsWith(correctAns) || correctAns.startsWith(userChoice));
+    if (examFilterMode === 'incorrect') return !isCorrect;
+    if (examFilterMode === 'flagged') return flaggedQuestions.has(mcq.id);
     return true;
   });
 
-  const totalAnswered = Object.keys(userAnswers).length;
-  const currentMCQ = allMCQs[activeQuestionIndex] || allMCQs[0];
-
-  // Core concepts breakdown available for any document with keyConcepts
-  const showCoreConceptsTab = Boolean(studyResult?.keyConcepts && studyResult.keyConcepts.length > 0);
-
-  // Split narrative into paragraphs
-  const narrativeParagraphs = studyResult?.summary.executiveSummary
-    ? studyResult.summary.executiveSummary
-        .split('\n\n')
-        .map((p) => p.trim())
-        .filter(Boolean)
-    : [];
+  const currentFlashcard = studyResult?.flashcards?.[activeFlashcardIndex];
 
   return (
-    <div className="w-full space-y-3.5 font-sans">
-      {/* 1. HERO HEADER */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4.5 shadow-xs text-slate-800 text-center flex flex-col items-center justify-center mx-auto">
-        <div className="space-y-1 max-w-xl mx-auto flex flex-col items-center justify-center text-center">
-          <h1 className="text-sm sm:text-base font-bold font-serif tracking-tight text-slate-900 text-center">
-            EaseStudy Studio
+    <div
+      style={{ fontFamily: "'Times New Roman', Times, serif" }}
+      className="w-full max-w-[660px] mx-auto space-y-3.5 px-3 sm:px-3.5 py-3.5 sm:py-5 text-slate-800"
+    >
+      {/* ========================================================================= */}
+      {/* 1. TOP HEADER (CENTER JUSTIFIED)                                          */}
+      {/* ========================================================================= */}
+      <div className="space-y-1 text-center flex flex-col items-center justify-center mx-auto w-full">
+        <div className="flex items-center justify-center relative w-full">
+          <h1 className="text-2xl sm:text-[26px] font-bold text-slate-900 tracking-tight text-center">
+            EaseStudy
           </h1>
-          <p className="text-[10px] sm:text-[11px] text-slate-600 max-w-lg mx-auto leading-relaxed text-center">
-            Upload course materials, articles, technical documents, or paste notes to generate instant step-by-step narratives, interactive exam suites, and visual concept diagrams.
-          </p>
+          {showWorkspace && (
+            <button
+              onClick={() => setShowWorkspace(false)}
+              className="absolute right-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+            >
+              <FolderOpen className="w-3 h-3" />
+              <span>Hub</span>
+            </button>
+          )}
         </div>
+        <p className="text-[10px] sm:text-[11.5px] text-slate-600 font-normal max-w-md mx-auto leading-relaxed text-center">
+          Your intelligent workspace for studying, understanding documents and preparing for examinations.
+        </p>
       </div>
 
-      {/* 2. INPUT WORKSPACE CARD */}
-      <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-xs space-y-2.5">
-        {/* Input Switcher & Document Types */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200 w-full sm:w-auto sm:min-w-[200px]">
-            <button
-              onClick={() => setActiveInputTab('upload')}
-              className={`flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                activeInputTab === 'upload'
-                  ? 'bg-cyan-700 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Upload className="w-3 h-3 shrink-0" />
-              <span>Upload Document</span>
-            </button>
-
-            <button
-              onClick={() => setActiveInputTab('text')}
-              className={`flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                activeInputTab === 'text'
-                  ? 'bg-cyan-700 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <FileText className="w-3 h-3 shrink-0" />
-              <span>Paste Notes</span>
-            </button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5 text-[9.5px]">
-            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Standard Datasets:</span>
-            <button
-              type="button"
-              onClick={() => handleLoadBenchmark('benchmark_human_relations')}
-              className="px-2 py-0.5 rounded-md bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 font-semibold cursor-pointer transition-colors shadow-2xs"
-              title="Load Dale Carnegie Human Relations verified study benchmark"
-            >
-              Human Relations &amp; Influence
-            </button>
-            <button
-              type="button"
-              onClick={() => handleLoadBenchmark('benchmark_hermeneutics')}
-              className="px-2 py-0.5 rounded-md bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 font-semibold cursor-pointer transition-colors shadow-2xs"
-              title="Load Theological & Historical Hermeneutics verified study benchmark"
-            >
-              Theological Hermeneutics
-            </button>
-          </div>
-        </div>
-
-        {/* Upload Dropzone */}
-        {activeInputTab === 'upload' && (
-          <div className="space-y-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt"
-              onChange={(e) => {
-                if (e.target.files && e.target.files[0]) {
-                  handleFileChange(e.target.files[0]);
-                }
-              }}
-              className="hidden"
-            />
-
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                  handleFileChange(e.dataTransfer.files[0]);
-                }
-              }}
-              className={`border-2 border-dashed ${
-                uploadedFile ? 'border-cyan-600 bg-cyan-50/40' : 'border-slate-200 hover:border-cyan-600 bg-slate-50/60'
-              } rounded-xl p-3.5 sm:p-4.5 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-1.5`}
-            >
-              {filePreviewUrl ? (
-                <div className="flex flex-col items-center space-y-1">
-                  <img
-                    src={filePreviewUrl}
-                    alt="Uploaded Preview"
-                    className="max-h-24 rounded-lg border border-slate-200 object-contain shadow-2xs bg-white"
-                  />
-                  <span className="text-[10px] font-bold text-slate-800">{uploadedFile?.name}</span>
-                  <span className="text-[9px] text-slate-500">Click or drag to replace file</span>
-                </div>
-              ) : uploadedFile ? (
-                <div className="flex flex-col items-center space-y-1">
-                  <div className="w-8 h-8 rounded-xl bg-cyan-100 text-cyan-800 flex items-center justify-center">
-                    <FileCheck2 className="w-4 h-4" />
-                  </div>
-                  <span className="text-[10.5px] font-bold text-slate-900">{uploadedFile.name}</span>
-                  <span className="text-[9px] text-slate-500">
-                    {(uploadedFile.size / 1024).toFixed(1)} KB &middot; Document ready for analysis
-                  </span>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center mx-auto">
-                    <Upload className="w-3.5 h-3.5 text-cyan-700" />
-                  </div>
-                  <div className="text-[10.5px] font-bold text-slate-800">
-                    Click to select or drag and drop your study document
-                  </div>
-                  <div className="text-[9px] text-slate-500">
-                    Academic papers, lecture notes, textbook chapters, or diagrams
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Text Input */}
-        {activeInputTab === 'text' && (
-          <div className="space-y-1">
-            <textarea
-              rows={4}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Paste study material, lecture notes, or research text here..."
-              className="w-full p-2.5 rounded-xl border border-slate-200 focus:border-cyan-700 focus:ring-1 focus:ring-cyan-700 text-xs text-slate-800 placeholder-slate-400 font-mono transition-all resize-y"
-            />
-            <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono">
-              <span>{inputText.length} characters</span>
-              <span>Markdown supported</span>
-            </div>
-          </div>
-        )}
-
-        {/* Specific Focus / Section Input */}
-        <div className="space-y-1">
-          <label className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-            <span>Specify what you need summarized or section focus (Optional)</span>
-          </label>
+      {/* ========================================================================= */}
+      {/* 2. MAIN UPLOAD CONTAINER (REDUCED BY 15%, SMALL BUTTONS & ICONS)          */}
+      {/* ========================================================================= */}
+      {!showWorkspace && (
+        <div
+          ref={dropzoneRef}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`relative bg-white rounded-xl border-2 transition-all p-5 sm:p-6 text-center flex flex-col items-center justify-center shadow-2xs ${
+            isDragging
+              ? 'border-cyan-600 bg-cyan-50/50 scale-[1.005]'
+              : 'border-slate-200 hover:border-slate-300'
+          }`}
+        >
           <input
-            type="text"
-            value={focusArea}
-            onChange={(e) => setFocusArea(e.target.value)}
-            placeholder="e.g. Chapter 3, definitions, main arguments, or specific formulas..."
-            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs bg-slate-50 text-slate-800 placeholder-slate-400 focus:border-cyan-700"
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp"
+            onChange={handleFileSelect}
+            className="hidden"
           />
-        </div>
 
-        {/* Parameters: Level and Question Count */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-          {/* Difficulty */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-              <Sliders className="w-2.5 h-2.5 text-cyan-700" />
-              <span>Target Level</span>
-            </label>
-            <select
-              value={difficulty}
-              onChange={(e: any) => setDifficulty(e.target.value)}
-              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-[10.5px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
-            >
-              <option value="beginner">Foundational / Introductory</option>
-              <option value="intermediate">Undergraduate / Intermediate</option>
-              <option value="advanced">Advanced / Professional</option>
-              <option value="exam_prep">Rigorous Exam Preparation</option>
-            </select>
+          {/* Cloud Upload Icon: Small size */}
+          <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-[#1d68bd] mb-2.5">
+            <UploadCloud className="w-5 h-5 stroke-[1.75]" />
           </div>
 
-          {/* Question Count Selector */}
-          <div className="space-y-1">
-            <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-              <HelpCircle className="w-2.5 h-2.5 text-cyan-700" />
-              <span>Questions to Generate</span>
-            </label>
-            <select
-              value={questionCount}
-              onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-[10.5px] font-medium bg-slate-50 text-slate-800 focus:border-cyan-700 cursor-pointer"
-            >
-              <option value={10}>10 Questions (Quick Review)</option>
-              <option value={15}>15 Questions (Standard Suite)</option>
-              <option value={20}>20 Questions (In-Depth Exam)</option>
-              <option value={30}>30 Questions (Master Suite)</option>
-            </select>
-          </div>
-        </div>
+          {/* Title & Subtext: Reduced by 20% */}
+          <h2 className="text-[13.5px] sm:text-[14.5px] font-bold text-slate-900 mb-0.5">
+            Upload your study material
+          </h2>
+          <p className="text-[10px] text-slate-500 max-w-sm mx-auto mb-3.5 leading-relaxed">
+            Drop your PDF, DOCX, PPTX or other supported document here.
+          </p>
 
-        {/* Error Notification */}
-        {analysisError && (
-          <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-[10.5px] flex items-center gap-2">
-            <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-            <span className="flex-1">{analysisError}</span>
-            <button
-              onClick={() => setAnalysisError(null)}
-              className="text-rose-600 hover:text-rose-900 font-bold text-[10px] cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Action Button: Generate Study Package */}
-        <div className="pt-1 flex flex-col sm:flex-row items-center justify-between gap-2">
-          {isAnalyzing ? (
-            <div className="flex items-center gap-2 text-xs text-cyan-900 font-medium">
-              <div className="w-3 h-3 border-2 border-cyan-700 border-t-transparent rounded-full animate-spin" />
-              <span>{processingStatus}</span>
-            </div>
-          ) : (
-            <div className="text-[9px] text-slate-400">
-              Strict document grounding enabled
-            </div>
-          )}
-
+          {/* Browse Documents Primary Button: Small size */}
           <button
             type="button"
-            onClick={() => handleRunAnalysis(false)}
+            onClick={() => fileInputRef.current?.click()}
             disabled={isAnalyzing}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-bold shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+            className="px-5 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
           >
             {isAnalyzing ? (
               <>
                 <RefreshCw className="w-3 h-3 animate-spin" />
-                <span>Generating Study Package...</span>
+                <span>Processing Document...</span>
               </>
             ) : (
-              <>
-                <Sparkles className="w-3 h-3 text-cyan-200" />
-                <span>Generate Study Package</span>
-              </>
+              <span>Browse Documents</span>
             )}
           </button>
-        </div>
-      </div>
 
-      {/* 3. OUTPUT WORKSPACE & STUDY RESULTS DASHBOARD */}
-      {studyResult && (
-        <div className="space-y-3">
-          {/* Header Specs Card with Re-Generate */}
-          <div className="p-3 sm:p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <div>
-              <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[9px] font-mono border border-slate-200">
-                  {studyResult.difficulty.toUpperCase()}
+          {/* Or Paste Your Notes Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsPastingNotes(!isPastingNotes)}
+            className="mt-3 text-[10px] font-normal text-slate-600 hover:text-cyan-800 transition-colors cursor-pointer underline underline-offset-2"
+          >
+            {isPastingNotes ? 'Hide notes input' : 'Or paste your notes'}
+          </button>
+
+          {/* Expandable Notes Input */}
+          {isPastingNotes && (
+            <div className="w-full mt-3.5 pt-3.5 border-t border-slate-100 space-y-2 text-left">
+              <label className="text-[10.5px] font-bold text-slate-700 block">
+                Paste lecture notes, article excerpts, or book text:
+              </label>
+              <textarea
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Paste course notes, chapter paragraphs, or study material here..."
+                rows={4}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-[10.5px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd] transition-all font-mono"
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-[9.5px] text-slate-400">
+                  {inputText.length} characters
                 </span>
-                <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[9px] font-mono border border-slate-200">
-                  {studyResult.readingTime}
-                </span>
-              </div>
-
-              <h2 className="text-xs sm:text-sm font-bold text-slate-900 font-serif leading-tight">
-                {studyResult.topic}
-              </h2>
-            </div>
-
-            {/* Actions: Re-Generate, Export PDF, Copy Markdown */}
-            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-              <button
-                type="button"
-                onClick={handleRegenerate}
-                disabled={isAnalyzing}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer shadow-2xs"
-                title="Re-Generate results"
-              >
-                <RotateCcw className={`w-3 h-3 text-cyan-700 ${isAnalyzing ? 'animate-spin' : ''}`} />
-                <span>Re-Generate</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCopyMarkdown}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer shadow-2xs"
-                title="Copy markdown study notes"
-              >
-                {copiedNotification ? (
-                  <>
-                    <Check className="w-3 h-3 text-emerald-600" />
-                    <span>Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3 h-3" />
-                    <span>Copy</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportPdf}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[10px] font-semibold transition-colors cursor-pointer shadow-2xs"
-                title="Export complete study package to PDF"
-              >
-                <Download className="w-3 h-3" />
-                <span>PDF</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Navigation Output Tabs */}
-          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 overflow-x-auto text-[10px]">
-            {/* New Summary Button */}
-            <button
-              onClick={() => setActiveOutputTab('summary')}
-              className={`flex-1 min-w-[90px] py-1 px-2 rounded-lg font-bold transition-all text-center cursor-pointer ${
-                activeOutputTab === 'summary'
-                  ? 'bg-cyan-700 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              New Summary
-            </button>
-
-            {/* Core Concepts (only shown if isEngineeringDoc is true) */}
-            {showCoreConceptsTab && (
-              <button
-                onClick={() => setActiveOutputTab('concepts')}
-                className={`flex-1 min-w-[95px] py-1 px-2 rounded-lg font-bold transition-all text-center cursor-pointer ${
-                  activeOutputTab === 'concepts'
-                    ? 'bg-cyan-700 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Core Concepts ({studyResult.keyConcepts?.length || 0})
-              </button>
-            )}
-
-            {/* Visual Diagrams */}
-            <button
-              onClick={() => setActiveOutputTab('diagrams')}
-              className={`flex-1 min-w-[95px] py-1 px-2 rounded-lg font-bold transition-all text-center cursor-pointer ${
-                activeOutputTab === 'diagrams'
-                  ? 'bg-cyan-700 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Visual Diagrams {Object.keys(generatedDiagrams).length > 0 ? `(${Object.keys(generatedDiagrams).length})` : ''}
-            </button>
-
-            {/* Practice Exam Suite */}
-            <button
-              onClick={() => setActiveOutputTab('exam')}
-              className={`flex-1 min-w-[95px] py-1 px-2 rounded-lg font-bold transition-all text-center cursor-pointer ${
-                activeOutputTab === 'exam'
-                  ? 'bg-cyan-700 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Practice Exam ({studyResult.examSuite?.multipleChoice?.length || 0})
-            </button>
-
-            {studyResult.flashcards && studyResult.flashcards.length > 0 && (
-              <button
-                onClick={() => setActiveOutputTab('flashcards')}
-                className={`flex-1 min-w-[90px] py-1 px-2 rounded-lg font-bold transition-all text-center cursor-pointer ${
-                  activeOutputTab === 'flashcards'
-                    ? 'bg-cyan-700 text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Flashcards ({studyResult.flashcards.length})
-              </button>
-            )}
-          </div>
-
-          {/* TAB 1: NEW SUMMARY PANEL */}
-          {activeOutputTab === 'summary' && (
-            <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
-              {/* Step-by-step Narrative */}
-              <div className="space-y-1.5">
-                <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500 block">
-                  Step-by-step Narrative
-                </span>
-                <div className="space-y-2 text-xs sm:text-[11.5px] text-slate-700 font-serif leading-relaxed text-justify">
-                  {narrativeParagraphs.map((para, pIdx) => (
-                    <p key={pIdx}>{para}</p>
-                  ))}
-                </div>
-              </div>
-
-              {/* Key Takeaways & List of Necessary Parts */}
-              <div className="pt-2.5 border-t border-slate-100 space-y-2">
-                <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500 block">
-                  Key Takeaways &amp; Critical Framework
-                </span>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {studyResult.summary.keyTakeaways.map((takeaway, idx) => (
-                    <div
-                      key={idx}
-                      className="p-2 rounded-xl bg-slate-50/90 border border-slate-200/80 flex items-start gap-2 text-[11px] text-slate-800 leading-relaxed"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5 text-cyan-700 shrink-0 mt-0.5" />
-                      <span>{takeaway}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Quick Action: Generate Visual Diagram from Topic */}
-              <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase text-slate-400">Themes:</span>
-                  {studyResult.summary.coreThemes.map((theme, tIdx) => (
-                    <span
-                      key={tIdx}
-                      className="px-1.5 py-0.5 rounded-md bg-cyan-50 border border-cyan-200 text-cyan-900 text-[9.5px] font-medium"
-                    >
-                      #{theme}
-                    </span>
-                  ))}
-                </div>
-
                 <button
                   type="button"
-                  onClick={() => handleGenerateDiagram(studyResult.topic, studyResult.summary.keyTakeaways.slice(0, 2).join(' '))}
-                  disabled={isGeneratingDiagram}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-[10px] font-bold border border-cyan-200 transition-colors cursor-pointer"
+                  onClick={handleRunTextAnalysis}
+                  disabled={!inputText.trim() || isAnalyzing}
+                  className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[10px] shadow-2xs transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <Wand2 className="w-3 h-3 text-cyan-700" />
-                  <span>Generate Topic Diagram</span>
+                  Analyze Notes
                 </button>
               </div>
             </div>
           )}
 
-          {/* TAB 2: CORE CONCEPTS BREAKDOWN (ENGINEERING ONLY) */}
-          {activeOutputTab === 'concepts' && showCoreConceptsTab && (
-            <div className="space-y-2">
-              {studyResult.keyConcepts.map((concept, idx) => (
+          {/* Processing Loading Indicator */}
+          {isAnalyzing && (
+            <div className="mt-3.5 w-full max-w-sm p-2.5 rounded-lg bg-sky-50 border border-sky-200 text-sky-900 text-[10px] font-medium flex items-center justify-center gap-1.5 animate-pulse">
+              <Sparkles className="w-3.5 h-3.5 text-sky-600 animate-spin shrink-0" />
+              <span>{processingStatus || 'Analyzing document structure...'}</span>
+            </div>
+          )}
+
+          {/* Error Message */}
+          {analysisError && (
+            <div className="mt-3 w-full max-w-sm p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[10px] font-medium flex items-center gap-1.5 text-left">
+              <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+              <span>{analysisError}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 3. 2x2 HUB CARDS GRID (REDUCED BY 15%, COMPACT FITTING)                  */}
+      {/* ========================================================================= */}
+      {!showWorkspace && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+          {/* Card 1: My Documents */}
+          <div
+            onClick={() => {
+              if (studyResult) {
+                setShowWorkspace(true);
+                setActiveOutputTab('summary');
+              } else {
+                fileInputRef.current?.click();
+              }
+            }}
+            className="p-3.5 sm:p-4 rounded-xl bg-white border border-slate-200 hover:border-cyan-600 hover:shadow-xs transition-all cursor-pointer group flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700 group-hover:bg-cyan-50 group-hover:text-cyan-800 transition-colors mb-2">
+                <FileText className="w-3.5 h-3.5 stroke-[1.75]" />
+              </div>
+              <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 leading-snug">
+                My Documents
+              </h3>
+              <p className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                Manage uploaded files
+              </p>
+            </div>
+          </div>
+
+          {/* Card 2: AI Study Materials */}
+          <div
+            onClick={() => {
+              if (studyResult) {
+                setShowWorkspace(true);
+                setActiveOutputTab('summary');
+              } else {
+                fileInputRef.current?.click();
+              }
+            }}
+            className="p-3.5 sm:p-4 rounded-xl bg-white border border-slate-200 hover:border-cyan-600 hover:shadow-xs transition-all cursor-pointer group flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700 group-hover:bg-cyan-50 group-hover:text-cyan-800 transition-colors mb-2">
+                <BrainCircuit className="w-3.5 h-3.5 stroke-[1.75]" />
+              </div>
+              <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 leading-snug">
+                AI Study Materials
+              </h3>
+              <p className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                Summaries and revision notes
+              </p>
+            </div>
+          </div>
+
+          {/* Card 3: Examination Practice */}
+          <div
+            onClick={() => {
+              if (studyResult) {
+                setShowWorkspace(true);
+                setActiveOutputTab('exam');
+              } else {
+                fileInputRef.current?.click();
+              }
+            }}
+            className="p-3.5 sm:p-4 rounded-xl bg-white border border-slate-200 hover:border-cyan-600 hover:shadow-xs transition-all cursor-pointer group flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700 group-hover:bg-cyan-50 group-hover:text-cyan-800 transition-colors mb-2">
+                <ClipboardCheck className="w-3.5 h-3.5 stroke-[1.75]" />
+              </div>
+              <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 leading-snug">
+                Examination Practice
+              </h3>
+              <p className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                Test your understanding
+              </p>
+            </div>
+          </div>
+
+          {/* Card 4: Learning History */}
+          <div
+            onClick={() => {
+              if (recentActivities.length > 0 && studyResult) {
+                setShowWorkspace(true);
+                setActiveOutputTab('summary');
+              } else {
+                fileInputRef.current?.click();
+              }
+            }}
+            className="p-3.5 sm:p-4 rounded-xl bg-white border border-slate-200 hover:border-cyan-600 hover:shadow-xs transition-all cursor-pointer group flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700 group-hover:bg-cyan-50 group-hover:text-cyan-800 transition-colors mb-2">
+                <History className="w-3.5 h-3.5 stroke-[1.75]" />
+              </div>
+              <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 leading-snug">
+                Learning History
+              </h3>
+              <p className="text-[10px] text-slate-500 mt-0.5 leading-normal">
+                Continue previous sessions
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 4. RECENT LEARNING ACTIVITIES CONTAINER (FIT & COMPACT)                    */}
+      {/* ========================================================================= */}
+      {!showWorkspace && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs sm:text-[13.5px] font-bold text-slate-900">
+              Recent learning activities
+            </h3>
+            {recentActivities.length > 0 && (
+              <span className="text-[9.5px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                {recentActivities.length} session{recentActivities.length > 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+
+          {recentActivities.length === 0 ? (
+            <p className="text-[10px] sm:text-[11px] text-slate-500 leading-relaxed">
+              Your uploaded documents and previous study sessions will appear here.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {recentActivities.slice(0, 5).map((act, idx) => (
                 <div
-                  key={idx}
-                  className="bg-white p-3 sm:p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-2"
+                  key={act.id || idx}
+                  className="py-2 flex items-center justify-between gap-2.5 text-[10px] hover:bg-slate-50/80 px-1.5 rounded-lg transition-colors"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 pb-1.5">
-                    <div className="flex items-center gap-2">
-                      <span className="w-4.5 h-4.5 rounded-md bg-cyan-100 text-cyan-800 text-[10px] font-bold font-mono flex items-center justify-center shrink-0">
-                        {idx + 1}
-                      </span>
-                      <h3 className="text-xs sm:text-[12.5px] font-bold text-slate-900 font-serif">
-                        {concept.title}
-                      </h3>
+                  <div className="flex items-center gap-2 truncate">
+                    <div className="w-6 h-6 rounded-md bg-sky-50 text-sky-700 flex items-center justify-center shrink-0">
+                      {act.activityType === 'exam_completed' ? (
+                        <ClipboardCheck className="w-3 h-3" />
+                      ) : (
+                        <FileText className="w-3 h-3" />
+                      )}
                     </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleGenerateDiagram(concept.title, concept.explanation)}
-                        disabled={isGeneratingDiagram}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-[9px] font-semibold border border-cyan-200 transition-colors cursor-pointer"
-                      >
-                        <ImageIcon className="w-2.5 h-2.5" />
-                        <span>Visualize</span>
-                      </button>
-
-                      <span className="text-[8.5px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
-                        Importance: {concept.importance}
+                    <div className="truncate">
+                      <span className="font-bold text-slate-900 block truncate">
+                        {act.topic || act.fileName || 'Study Session'}
+                      </span>
+                      <span className="text-[9px] text-slate-400">
+                        {act.score !== undefined ? `Exam Score: ${act.score}%` : 'Study Guide Generated'} •{' '}
+                        {new Date(act.timestamp).toLocaleDateString()}
                       </span>
                     </div>
                   </div>
-
-                  <p className="text-[11.5px] text-slate-700 leading-relaxed font-serif text-justify">
-                    {concept.explanation}
-                  </p>
-
-                  {concept.formulaOrExample && (
-                    <div className="p-2 rounded-lg bg-slate-900 text-cyan-200 text-[10.5px] font-mono overflow-x-auto">
-                      <span className="text-slate-400 text-[9px] block">
-                        {isEngineeringDoc ? 'Formula / Governing Equation:' : 'Core Definition / Contextual Example:'}
-                      </span>
-                      {concept.formulaOrExample}
-                    </div>
+                  {studyResult && (
+                    <button
+                      onClick={() => {
+                        setShowWorkspace(true);
+                        setActiveOutputTab(act.activityType === 'exam_completed' ? 'exam' : 'summary');
+                      }}
+                      className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[9.5px] shrink-0 cursor-pointer"
+                    >
+                      Open
+                    </button>
                   )}
                 </div>
               ))}
             </div>
           )}
 
-          {/* TAB 3: VISUAL DIAGRAMS & ILLUSTRATIONS */}
-          {activeOutputTab === 'diagrams' && (
-            <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                <div>
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                    <ImageIcon className="w-3.5 h-3.5 text-cyan-700" />
-                    <span>Visual Concept Diagrams &amp; Illustrations</span>
-                  </h3>
+          {/* Standard Benchmark Quick-Starters */}
+          <div className="pt-2.5 border-t border-slate-100">
+            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
+              Verified Benchmark Study Starters:
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleLoadBenchmark('benchmark_human_relations')}
+                className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-semibold cursor-pointer transition-colors"
+              >
+                Human Relations &amp; Influence
+              </button>
+              <button
+                type="button"
+                onClick={() => handleLoadBenchmark('benchmark_hermeneutics')}
+                className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-semibold cursor-pointer transition-colors"
+              >
+                Historical &amp; Theological Hermeneutics
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 5. ACTIVE STUDY WORKSPACE (DELIVERY ENHANCEMENTS)                         */}
+      {/* ========================================================================= */}
+      {showWorkspace && studyResult && (
+        <div className="space-y-3">
+          {/* Workspace Header & Action Controls */}
+          <div className="bg-white rounded-xl border border-slate-200 p-3.5 sm:p-4 shadow-2xs space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold uppercase bg-sky-100 text-sky-800 tracking-wider">
+                    {studyResult.difficulty}
+                  </span>
+                  <span className="text-[9.5px] text-slate-400 flex items-center gap-0.5 font-medium">
+                    <Clock className="w-2.5 h-2.5" />
+                    {studyResult.readingTime}
+                  </span>
+                  {uploadedFile && (
+                    <span className="text-[9.5px] text-slate-500 font-mono truncate max-w-[150px]">
+                      • {uploadedFile.name}
+                    </span>
+                  )}
                 </div>
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 mt-0.5 leading-snug">
+                  {studyResult.topic}
+                </h2>
+              </div>
+
+              {/* Action Buttons: Small size */}
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleRegenerate}
+                  disabled={isAnalyzing}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold transition-all cursor-pointer disabled:opacity-50"
+                  title="Re-Generate fresh questions and analysis from scratch"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isAnalyzing ? 'animate-spin' : ''}`} />
+                  <span>Re-Generate</span>
+                </button>
 
                 <button
                   type="button"
-                  onClick={() => handleGenerateDiagram(studyResult.topic, studyResult.summary.keyTakeaways.join(' '))}
-                  disabled={isGeneratingDiagram}
-                  className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[10px] font-bold shadow-2xs transition-colors cursor-pointer self-start sm:self-auto"
+                  onClick={handleExportPDF}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold transition-all cursor-pointer"
+                  title="Download clean study guide as PDF"
                 >
-                  <Sparkles className="w-3 h-3 text-cyan-200" />
-                  <span>{isGeneratingDiagram ? 'Generating...' : 'Generate Main Topic Diagram'}</span>
+                  <Download className="w-3 h-3" />
+                  <span>PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyMarkdown}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold transition-all cursor-pointer"
+                  title="Copy markdown to clipboard"
+                >
+                  {copiedNotification ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedNotification ? 'Copied' : 'Markdown'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsChatDrawerOpen(!isChatDrawerOpen)}
+                  className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white text-[10px] font-bold transition-all cursor-pointer shadow-2xs"
+                >
+                  <MessageSquare className="w-3 h-3" />
+                  <span>Ask Document</span>
                 </button>
               </div>
+            </div>
 
-              {isGeneratingDiagram && (
-                <div className="p-4 rounded-xl bg-cyan-50/60 border border-cyan-200 text-center space-y-2">
-                  <div className="w-5 h-5 border-2 border-cyan-700 border-t-transparent rounded-full animate-spin mx-auto" />
-                  <p className="text-xs font-semibold text-cyan-900">
-                    Synthesizing visual diagram for "{activeDiagramKey || studyResult.topic}"...
-                  </p>
-                </div>
+            {/* Navigation Tabs */}
+            <div className="flex items-center gap-1 border-t border-slate-100 pt-2.5 overflow-x-auto scrollbar-none">
+              <button
+                onClick={() => setActiveOutputTab('summary')}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  activeOutputTab === 'summary'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Summary &amp; Notes
+              </button>
+              <button
+                onClick={() => setActiveOutputTab('concepts')}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  activeOutputTab === 'concepts'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Key Concepts ({studyResult.keyConcepts?.length || 0})
+              </button>
+              <button
+                onClick={() => setActiveOutputTab('exam')}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                  activeOutputTab === 'exam'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <ClipboardCheck className="w-3 h-3" />
+                <span>Practice Exam ({studyResult.examSuite.multipleChoice.length})</span>
+              </button>
+              {studyResult.flashcards && studyResult.flashcards.length > 0 && (
+                <button
+                  onClick={() => setActiveOutputTab('flashcards')}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap ${
+                    activeOutputTab === 'flashcards'
+                      ? 'bg-slate-900 text-white shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                  }`}
+                >
+                  Flashcards ({studyResult.flashcards.length})
+                </button>
               )}
+              <button
+                onClick={() => setActiveOutputTab('chat')}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                  activeOutputTab === 'chat'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <MessageSquare className="w-3 h-3" />
+                <span>Ask Document</span>
+              </button>
+            </div>
+          </div>
 
-              {Object.keys(generatedDiagrams).length === 0 && !isGeneratingDiagram ? (
-                <div className="p-6 text-center rounded-xl bg-slate-50 border border-dashed border-slate-200 space-y-2">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-100 text-cyan-700 flex items-center justify-center mx-auto">
-                    <Layers className="w-4 h-4" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800">No Diagrams Generated Yet</h4>
-                  <p className="text-[10px] text-slate-500 max-w-sm mx-auto">
-                    Click "Generate Main Topic Diagram" above or click "Visualize" on any concept to generate a clean, downloadable illustration.
-                  </p>
+          {/* TAB 1: SUMMARY & REVISION NOTES */}
+          {activeOutputTab === 'summary' && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
+              <div>
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                  Executive Narrative
+                </h3>
+                <div className="text-[10.5px] sm:text-[11.5px] text-slate-700 leading-relaxed space-y-2 font-normal">
+                  {studyResult.summary.executiveSummary.split('\n\n').map((paragraph, pIdx) => (
+                    <p key={pIdx} className="leading-relaxed">
+                      {paragraph}
+                    </p>
+                  ))}
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  {Object.entries(generatedDiagrams).map(([key, diagram]) => (
-                    <div key={key} className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
-                      <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-1.5">
-                        <span className="text-xs font-bold text-slate-800">{diagram.title}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadDiagram(diagram.svg, diagram.title)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-semibold border border-slate-300 shadow-2xs transition-colors cursor-pointer"
-                        >
-                          <Download className="w-3 h-3 text-cyan-700" />
-                          <span>Download Diagram</span>
-                        </button>
-                      </div>
+              </div>
 
-                      {/* SVG Canvas Container */}
-                      <div
-                        className="w-full rounded-lg overflow-hidden border border-slate-300 shadow-2xs bg-slate-900 flex items-center justify-center min-h-[220px] max-h-[460px] p-2"
-                        dangerouslySetInnerHTML={{ __html: diagram.svg }}
-                      />
-
-                      <p className="text-[10px] text-slate-500 italic">
-                        {diagram.description}
-                      </p>
+              <div>
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  Key Takeaways
+                </h3>
+                <div className="grid grid-cols-1 gap-2">
+                  {studyResult.summary.keyTakeaways.map((takeaway, tIdx) => (
+                    <div
+                      key={tIdx}
+                      className="p-2.5 rounded-lg bg-slate-50 border border-slate-100 text-[10px] sm:text-[10.5px] text-slate-800 flex items-start gap-2"
+                    >
+                      <span className="w-4 h-4 rounded-full bg-cyan-100 text-cyan-800 text-[9px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        {tIdx + 1}
+                      </span>
+                      <span className="leading-relaxed">{takeaway}</span>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {studyResult.summary.coreThemes && studyResult.summary.coreThemes.length > 0 && (
+                <div>
+                  <h3 className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                    Core Subject Taxonomy
+                  </h3>
+                  <div className="flex flex-wrap gap-1">
+                    {studyResult.summary.coreThemes.map((theme, thIdx) => (
+                      <span
+                        key={thIdx}
+                        className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[9.5px] font-medium"
+                      >
+                        #{theme}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* TAB 4: INTERACTIVE PRACTICE EXAMS MODULE */}
-          {activeOutputTab === 'exam' && (
-            <div className="space-y-3">
-              {/* Exam Section Mode Toggle: Multiple Choice vs Analytical Questions */}
-              {studyResult.examSuite?.shortAnswer && studyResult.examSuite.shortAnswer.length > 0 && (
-                <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
-                  <button
-                    type="button"
-                    onClick={() => setExamSectionMode('mcq')}
-                    className={`flex-1 py-1 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      examSectionMode === 'mcq'
-                        ? 'bg-cyan-700 text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Multiple Choice Questions ({allMCQs.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExamSectionMode('analytical')}
-                    className={`flex-1 py-1 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      examSectionMode === 'analytical'
-                        ? 'bg-cyan-700 text-white shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Analytical &amp; Short Answer ({studyResult.examSuite.shortAnswer.length})
-                  </button>
-                </div>
-              )}
+          {/* TAB 2: KEY CONCEPTS */}
+          {activeOutputTab === 'concepts' && (
+            <div className="space-y-2.5">
+              {studyResult.keyConcepts.map((concept, cIdx) => (
+                <div
+                  key={cIdx}
+                  className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-2.5">
+                    <h3 className="text-xs sm:text-[13px] font-bold text-slate-900">
+                      {concept.title}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => handleGenerateDiagram(concept.title, concept.explanation)}
+                      disabled={isGeneratingDiagram}
+                      className="px-2 py-0.5 rounded-md bg-sky-50 hover:bg-sky-100 text-sky-800 text-[9.5px] font-bold shrink-0 transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-sky-600" />
+                      <span>{isGeneratingDiagram && activeDiagramKey === concept.title ? 'Generating...' : 'View Diagram'}</span>
+                    </button>
+                  </div>
 
-              {/* SECTION A: ANALYTICAL QUESTIONS */}
-              {examSectionMode === 'analytical' ? (
-                <div className="space-y-3">
-                  {studyResult.examSuite.shortAnswer?.map((sa, sIdx) => {
-                    const isRevealed = revealedShortAnswers.has(sa.id);
-                    return (
-                      <div
-                        key={sa.id}
-                        className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3"
-                      >
-                        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                          <span className="text-xs font-mono font-bold text-cyan-900">
-                            Analytical Question {sIdx + 1}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRevealedShortAnswers((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(sa.id)) next.delete(sa.id);
-                                else next.add(sa.id);
-                                return next;
-                              });
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
-                              isRevealed
-                                ? 'bg-cyan-100 text-cyan-900 border border-cyan-300'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300'
-                            }`}
-                          >
-                            {isRevealed ? 'Hide Model Answer' : 'Reveal Model Answer & Rubric'}
-                          </button>
-                        </div>
+                  <p className="text-[10px] sm:text-[11px] text-slate-600 leading-relaxed">
+                    {concept.explanation}
+                  </p>
 
-                        <h4 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-relaxed">
-                          {sa.question}
-                        </h4>
-
-                        {isRevealed && (
-                          <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 space-y-1">
-                              <span className="font-bold text-slate-900 text-[11px] block">
-                                Model Ideal Answer:
-                              </span>
-                              <p className="font-serif leading-relaxed text-justify">
-                                {sa.idealAnswer}
-                              </p>
-                            </div>
-
-                            {sa.keyPointsRequired && sa.keyPointsRequired.length > 0 && (
-                              <div className="space-y-1">
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                  Essential Criteria for Full Credit:
-                                </span>
-                                <div className="space-y-1">
-                                  {sa.keyPointsRequired.map((pt, pIdx) => (
-                                    <div
-                                      key={pIdx}
-                                      className="flex items-center gap-1.5 text-[11px] text-slate-700"
-                                    >
-                                      <CheckCircle2 className="w-3 h-3 text-cyan-700 shrink-0" />
-                                      <span>{pt}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                /* SECTION B: MULTIPLE CHOICE QUESTIONS */
-                <>
-                  {/* Automated Scoring Summary Banner (when submitted) */}
-                  {isQuizSubmitted && examScore && (
-                    <div className="p-3 sm:p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-2.5">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-11 h-11 rounded-xl flex items-center justify-center font-bold text-base font-mono ${
-                            examScore.percentage >= 75
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                              : examScore.percentage >= 50
-                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                              : 'bg-rose-100 text-rose-800 border border-rose-200'
-                          }`}>
-                            {examScore.percentage}%
-                          </div>
-                          <div>
-                            <div className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                              <span>Exam Score: {examScore.score} / {examScore.total} Correct</span>
-                              <span className={`px-2 py-0.5 rounded-md text-[9px] font-semibold ${
-                                examScore.percentage >= 75
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : examScore.percentage >= 50
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-rose-100 text-rose-800'
-                              }`}>
-                                {examScore.percentage >= 75
-                                  ? 'Distinction'
-                                  : examScore.percentage >= 50
-                                  ? 'Proficient'
-                                  : 'Review Recommended'}
-                              </span>
-                            </div>
-                            <p className="text-[9.5px] text-slate-500">
-                              {examScore.score === examScore.total
-                                ? 'Mastery across all examination objectives!'
-                                : `Review explanations below for ${examScore.total - examScore.score} incorrect answers.`}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={handleRetakeExam}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            <span>Retake Exam</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Filter Mode Tabs after submission */}
-                      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 text-[9.5px]">
-                        <span className="text-slate-500 font-medium">Filter View:</span>
-                        <button
-                          onClick={() => setExamFilterMode('all')}
-                          className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                            examFilterMode === 'all'
-                              ? 'bg-cyan-700 text-white'
-                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                          }`}
-                        >
-                          All ({allMCQs.length})
-                        </button>
-                        <button
-                          onClick={() => setExamFilterMode('incorrect')}
-                          className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                            examFilterMode === 'incorrect'
-                              ? 'bg-rose-600 text-white'
-                              : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
-                          }`}
-                        >
-                          Incorrect ({examScore.total - examScore.score})
-                        </button>
-                        {flaggedQuestions.size > 0 && (
-                          <button
-                            onClick={() => setExamFilterMode('flagged')}
-                            className={`px-2 py-0.5 rounded-md font-semibold cursor-pointer transition-colors ${
-                              examFilterMode === 'flagged'
-                                ? 'bg-amber-600 text-white'
-                                : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
-                            }`}
-                          >
-                            Flagged ({flaggedQuestions.size})
-                          </button>
-                        )}
-                      </div>
+                  {concept.formulaOrExample && (
+                    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[10px] font-mono text-slate-800 overflow-x-auto">
+                      {concept.formulaOrExample}
                     </div>
                   )}
 
-                  {/* Question Navigation Bar & Quick-Jump Palette */}
-                  <div className="p-3 sm:p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <Target className="w-3.5 h-3.5 text-cyan-700" />
-                        <span className="font-bold text-slate-800 text-[11px]">
-                          Navigation ({totalAnswered} / {allMCQs.length} Answered)
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                          <button
-                            type="button"
-                            onClick={() => setExamViewMode('focused')}
-                            className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
-                              examViewMode === 'focused'
-                                ? 'bg-white text-slate-900 shadow-2xs'
-                                : 'text-slate-600 hover:text-slate-900'
-                            }`}
-                          >
-                            Focused View
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setExamViewMode('list')}
-                            className={`px-2 py-0.5 rounded text-[9px] font-semibold transition-all cursor-pointer ${
-                              examViewMode === 'list'
-                                ? 'bg-white text-slate-900 shadow-2xs'
-                                : 'text-slate-600 hover:text-slate-900'
-                            }`}
-                          >
-                            Full List View
-                          </button>
-                        </div>
-
-                        {!isQuizSubmitted && (
-                          <button
-                            type="button"
-                            onClick={handleGradeExam}
-                            className="px-2.5 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[10px] font-bold shadow-2xs transition-colors cursor-pointer"
-                          >
-                            Grade Exam
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Question Numbers Strip */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      {allMCQs.map((mcq, idx) => {
-                        const isAnswered = Boolean(userAnswers[mcq.id]);
-                        const isCurrent = activeQuestionIndex === idx;
-                        const isFlagged = flaggedQuestions.has(mcq.id);
-
-                        let pillClass = 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100';
-
-                        if (isQuizSubmitted) {
-                          const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
-                          const correctAns = mcq.correctAnswer.trim().toUpperCase();
-                          const isCorrect =
-                            userChoice &&
-                            (userChoice === correctAns ||
-                              userChoice.startsWith(correctAns) ||
-                              correctAns.startsWith(userChoice));
-                          if (isCorrect) {
-                            pillClass = 'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold';
-                          } else {
-                            pillClass = 'bg-rose-100 text-rose-900 border-rose-300 font-bold';
-                          }
-                        } else if (isAnswered) {
-                          pillClass = 'bg-cyan-700 text-white border-cyan-800 font-bold shadow-2xs';
-                        }
-
-                        return (
-                          <button
-                            key={mcq.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveQuestionIndex(idx);
-                              if (examViewMode === 'list') {
-                                const el = document.getElementById(`mcq-card-${mcq.id}`);
-                                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                              }
-                            }}
-                            className={`relative w-6.5 h-6.5 rounded-lg border text-[10.5px] font-mono flex items-center justify-center cursor-pointer transition-all ${pillClass} ${
-                              isCurrent ? 'ring-2 ring-cyan-500 ring-offset-1 font-extrabold' : ''
-                            }`}
-                            title={`Question ${mcq.id}${isFlagged ? ' (Flagged)' : ''}`}
-                          >
-                            {mcq.id}
-                            {isFlagged && (
-                              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 border border-white" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <div className="text-[9.5px] text-cyan-800 font-semibold bg-cyan-50/80 px-2.5 py-1 rounded-md border border-cyan-100">
+                    Exam Relevance: {concept.importance}
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
 
-                  {/* VIEW MODE A: FOCUSED SINGLE QUESTION VIEW */}
-                  {examViewMode === 'focused' && currentMCQ && (
-                    <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-md bg-cyan-100 text-cyan-900 text-[11px] font-mono font-bold">
-                            Question {currentMCQ.id} of {allMCQs.length}
-                          </span>
-                          {userAnswers[currentMCQ.id] && (
-                            <span className="text-[9.5px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-semibold flex items-center gap-1">
-                              <Check className="w-2.5 h-2.5" /> Answered
-                            </span>
-                          )}
-                        </div>
+          {/* TAB 3: PRACTICE EXAMINATION SUITE */}
+          {activeOutputTab === 'exam' && (
+            <div className="space-y-3">
+              {/* Exam Score Banner if submitted */}
+              {isQuizSubmitted && examScore && (
+                <div className="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-2xs space-y-1.5">
+                  <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 mb-0.5">
+                    <Award className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                    Exam Score: {examScore.percentage}% ({examScore.score} / {examScore.total})
+                  </h3>
+                  <p className="text-[10px] text-slate-600 max-w-xs mx-auto">
+                    {examScore.percentage >= 80
+                      ? 'Exceptional mastery of core document principles!'
+                      : examScore.percentage >= 60
+                      ? 'Solid foundation. Review the explanations below to master missed topics.'
+                      : 'Take some time to review the executive summary and retake the exam.'}
+                  </p>
+                  <div className="flex items-center justify-center gap-1.5 pt-1.5">
+                    <button
+                      onClick={handleRetakeQuiz}
+                      className="px-3 py-1 rounded-lg bg-[#1d68bd] text-white text-[10px] font-bold cursor-pointer hover:bg-[#1557a5]"
+                    >
+                      Retake Exam
+                    </button>
+                    <button
+                      onClick={() => setExamFilterMode(examFilterMode === 'incorrect' ? 'all' : 'incorrect')}
+                      className="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-bold cursor-pointer hover:bg-slate-200"
+                    >
+                      {examFilterMode === 'incorrect' ? 'Show All Questions' : 'Review Missed Questions'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
+              {/* MCQ Cards */}
+              <div className="space-y-2.5">
+                {filteredMCQs.map((mcq, mIdx) => {
+                  const userChoice = userAnswers[mcq.id] || '';
+                  const isCorrect = userChoice.toUpperCase().startsWith(mcq.correctAnswer.toUpperCase());
+                  const isFlagged = flaggedQuestions.has(mcq.id);
+
+                  return (
+                    <div
+                      key={mcq.id || mIdx}
+                      className={`bg-white rounded-xl border p-3.5 sm:p-4 shadow-2xs space-y-2.5 transition-all ${
+                        isQuizSubmitted
+                          ? isCorrect
+                            ? 'border-emerald-200 bg-emerald-50/20'
+                            : userChoice
+                            ? 'border-rose-200 bg-rose-50/20'
+                            : 'border-slate-200'
+                          : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <span className="text-[9.5px] font-bold text-slate-400">
+                          Question {mIdx + 1} of {filteredMCQs.length}
+                        </span>
                         <button
                           type="button"
-                          onClick={() => handleToggleFlag(currentMCQ.id)}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] font-medium transition-colors cursor-pointer ${
-                            flaggedQuestions.has(currentMCQ.id)
-                              ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                          onClick={() => handleToggleFlag(mcq.id)}
+                          className={`text-[9.5px] font-medium cursor-pointer ${
+                            isFlagged ? 'text-amber-600 font-bold' : 'text-slate-400 hover:text-slate-600'
                           }`}
                         >
-                          <Flag className={`w-3 h-3 ${flaggedQuestions.has(currentMCQ.id) ? 'fill-amber-600 text-amber-600' : ''}`} />
-                          <span>{flaggedQuestions.has(currentMCQ.id) ? 'Flagged' : 'Flag'}</span>
+                          {isFlagged ? '★ Flagged' : '☆ Flag for review'}
                         </button>
                       </div>
 
-                      <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-relaxed">
-                        {currentMCQ.question}
-                      </h3>
+                      <h4 className="text-xs sm:text-[13px] font-bold text-slate-900 leading-snug">
+                        {mcq.question}
+                      </h4>
 
                       {/* Options */}
                       <div className="space-y-1.5">
-                        {currentMCQ.options.map((opt, optIdx) => {
-                          const optKey = opt.trim().slice(0, 1).toUpperCase();
-                          const selectedOption = userAnswers[currentMCQ.id];
-                          const isOptionSelected = selectedOption === optKey || selectedOption === opt;
+                        {mcq.options.map((opt, oIdx) => {
+                          const letter = String.fromCharCode(65 + oIdx);
+                          const isSelected = userChoice.toUpperCase().startsWith(letter);
+                          const isOptionCorrect = mcq.correctAnswer.toUpperCase().startsWith(letter);
 
-                          let btnStyle = 'border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100 hover:border-slate-300';
-
+                          let optStyles = 'border-slate-200 hover:border-slate-300 bg-slate-50/50 text-slate-800';
+                          if (isSelected) {
+                            optStyles = 'border-[#1d68bd] bg-sky-50 text-sky-950 font-semibold ring-1 ring-[#1d68bd]';
+                          }
                           if (isQuizSubmitted) {
-                            const correctAns = currentMCQ.correctAnswer.trim().toUpperCase();
-                            if (optKey === correctAns || opt === currentMCQ.correctAnswer) {
-                              btnStyle = 'border-emerald-500 bg-emerald-50 text-emerald-950 font-semibold ring-1 ring-emerald-400';
-                            } else if (isOptionSelected) {
-                              btnStyle = 'border-rose-400 bg-rose-50 text-rose-950 font-semibold';
-                            } else {
-                              btnStyle = 'border-slate-200 bg-slate-50 text-slate-400 opacity-60';
+                            if (isOptionCorrect) {
+                              optStyles = 'border-emerald-500 bg-emerald-50 text-emerald-950 font-bold';
+                            } else if (isSelected) {
+                              optStyles = 'border-rose-500 bg-rose-50 text-rose-950 line-through';
                             }
-                          } else if (isOptionSelected) {
-                            btnStyle = 'border-cyan-700 bg-cyan-50/80 text-cyan-950 font-semibold ring-1 ring-cyan-700';
                           }
 
                           return (
                             <button
-                              key={optIdx}
+                              key={oIdx}
                               type="button"
+                              onClick={() => handleAnswerSelect(mcq.id, letter)}
                               disabled={isQuizSubmitted}
-                              onClick={() => {
-                                setUserAnswers((prev) => ({
-                                  ...prev,
-                                  [currentMCQ.id]: optKey,
-                                }));
-                              }}
-                              className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-start gap-2.5 cursor-pointer ${btnStyle}`}
+                              className={`w-full text-left p-2 rounded-lg border text-[10px] sm:text-[10.5px] transition-all cursor-pointer flex items-start gap-2 ${optStyles}`}
                             >
-                              <span className={`w-5 h-5 rounded-md font-mono text-[10px] font-bold flex items-center justify-center shrink-0 ${
-                                isOptionSelected ? 'bg-cyan-700 text-white' : 'bg-slate-200 text-slate-700'
-                              }`}>
-                                {optKey}
+                              <span className="w-4 h-4 rounded bg-white border border-slate-200 font-bold text-[9px] flex items-center justify-center shrink-0 mt-0.5">
+                                {letter}
                               </span>
-                              <span className="flex-1 leading-snug pt-0.5">{opt}</span>
+                              <span className="leading-relaxed">{opt.replace(/^[A-D][).:\s-]+/i, '')}</span>
                             </button>
                           );
                         })}
@@ -1518,183 +1299,290 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = ({ onNavigatePart }) 
 
                       {/* Explanation after submission */}
                       {isQuizSubmitted && (
-                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs">
-                          <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
-                            <span>Correct Answer: {currentMCQ.correctAnswer}</span>
-                          </div>
-                          <p className="text-slate-600 text-[11px] leading-relaxed">
-                            {currentMCQ.explanation}
-                          </p>
+                        <div className="mt-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[9.5px] text-slate-700 space-y-1">
+                          <span className="font-bold text-slate-900 block">
+                            Correct Answer: Option {mcq.correctAnswer}
+                          </span>
+                          <p className="leading-relaxed">{mcq.explanation}</p>
                         </div>
                       )}
-
-                      {/* Previous / Next Controls */}
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                        <button
-                          type="button"
-                          disabled={activeQuestionIndex === 0}
-                          onClick={() => setActiveQuestionIndex((prev) => Math.max(0, prev - 1))}
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold disabled:opacity-40 cursor-pointer"
-                        >
-                          <ChevronLeft className="w-3.5 h-3.5" />
-                          <span>Previous</span>
-                        </button>
-
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {activeQuestionIndex + 1} / {allMCQs.length}
-                        </span>
-
-                        <button
-                          type="button"
-                          disabled={activeQuestionIndex === allMCQs.length - 1}
-                          onClick={() => setActiveQuestionIndex((prev) => Math.min(allMCQs.length - 1, prev + 1))}
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
-                        >
-                          <span>Next</span>
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
                     </div>
-                  )}
+                  );
+                })}
+              </div>
 
-                  {/* VIEW MODE B: FULL LIST VIEW */}
-                  {examViewMode === 'list' && (
-                    <div className="space-y-3">
-                      {filteredMCQs.map((mcq) => {
-                        const userChoice = (userAnswers[mcq.id] || '').trim().toUpperCase();
-                        const correctAns = mcq.correctAnswer.trim().toUpperCase();
-                        const isCorrect = userChoice && (userChoice === correctAns || userChoice.startsWith(correctAns));
-
-                        return (
-                          <div
-                            key={mcq.id}
-                            id={`mcq-card-${mcq.id}`}
-                            className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-2xs space-y-2.5"
-                          >
-                            <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
-                              <span className="text-xs font-mono font-bold text-cyan-900">
-                                Question {mcq.id}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleToggleFlag(mcq.id)}
-                                className="text-slate-400 hover:text-amber-500 cursor-pointer"
-                              >
-                                <Flag className={`w-3.5 h-3.5 ${flaggedQuestions.has(mcq.id) ? 'fill-amber-500 text-amber-500' : ''}`} />
-                              </button>
-                            </div>
-
-                            <h4 className="text-xs sm:text-[12.5px] font-bold text-slate-900 font-serif">
-                              {mcq.question}
-                            </h4>
-
-                            <div className="space-y-1">
-                              {mcq.options.map((opt, oIdx) => {
-                                const optKey = opt.trim().slice(0, 1).toUpperCase();
-                                const isSelected = userChoice === optKey;
-
-                                let optClass = 'bg-slate-50 text-slate-800 border-slate-200';
-                                if (isQuizSubmitted) {
-                                  if (optKey === correctAns) {
-                                    optClass = 'bg-emerald-50 text-emerald-900 border-emerald-400 font-semibold';
-                                  } else if (isSelected) {
-                                    optClass = 'bg-rose-50 text-rose-900 border-rose-300';
-                                  }
-                                } else if (isSelected) {
-                                  optClass = 'bg-cyan-50 text-cyan-900 border-cyan-600 font-semibold';
-                                }
-
-                                return (
-                                  <button
-                                    key={oIdx}
-                                    type="button"
-                                    disabled={isQuizSubmitted}
-                                    onClick={() => setUserAnswers((prev) => ({ ...prev, [mcq.id]: optKey }))}
-                                    className={`w-full text-left p-2 rounded-lg border text-[11px] flex items-start gap-2 cursor-pointer ${optClass}`}
-                                  >
-                                    <span className="font-mono font-bold text-[10px] w-4">{optKey})</span>
-                                    <span className="flex-1">{opt.replace(/^[A-D]\)\s*/, '')}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {isQuizSubmitted && (
-                              <div className="p-2 rounded bg-slate-50 border border-slate-200 text-[10.5px] text-slate-600 space-y-0.5">
-                                <span className="font-bold text-slate-800 block">Explanation:</span>
-                                <p>{mcq.explanation}</p>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
+              {/* Submit Quiz CTA */}
+              {!isQuizSubmitted && filteredMCQs.length > 0 && (
+                <div className="sticky bottom-3 bg-white/95 backdrop-blur-md p-3 rounded-xl border border-slate-300 shadow-md flex items-center justify-between gap-3">
+                  <span className="text-[10px] text-slate-600 font-medium">
+                    Answered {Object.keys(userAnswers).length} of {allMCQs.length} questions
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleSubmitQuiz}
+                    disabled={Object.keys(userAnswers).length === 0}
+                    className="px-4 py-1.5 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[10px] shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Submit Exam &amp; Score
+                  </button>
+                </div>
               )}
             </div>
           )}
 
-          {/* TAB 5: ACTIVE RECALL FLASHCARDS */}
-          {activeOutputTab === 'flashcards' && studyResult.flashcards && studyResult.flashcards.length > 0 && (
-            <div className="p-4 sm:p-5 bg-white rounded-2xl border border-slate-200 shadow-xs flex flex-col items-center justify-center space-y-3.5">
-              <div className="flex items-center justify-between w-full text-[10px] text-slate-500 font-mono">
-                <span>Card {activeFlashcardIndex + 1} of {studyResult.flashcards.length}</span>
-                <span>Click card to flip</span>
+          {/* TAB 4: FLASHCARDS */}
+          {activeOutputTab === 'flashcards' && currentFlashcard && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 text-center shadow-2xs space-y-3.5">
+              <div className="flex items-center justify-between text-[9.5px] text-slate-400">
+                <span>
+                  Card {activeFlashcardIndex + 1} of {studyResult.flashcards?.length}
+                </span>
+                <span>
+                  {masteredFlashcards.has(activeFlashcardIndex) ? '✓ Mastered' : 'Needs Review'}
+                </span>
               </div>
 
+              {/* Flip Card Container */}
               <div
                 onClick={() => setIsFlashcardFlipped(!isFlashcardFlipped)}
-                className={`w-full max-w-lg min-h-[140px] p-5 rounded-2xl border-2 transition-all cursor-pointer flex flex-col items-center justify-center text-center select-none shadow-xs ${
-                  isFlashcardFlipped
-                    ? 'border-emerald-500 bg-emerald-50/50 text-slate-900'
-                    : 'border-cyan-600 bg-cyan-50/40 text-slate-900'
-                }`}
+                className="min-h-[160px] sm:min-h-[190px] p-5 rounded-xl border-2 border-slate-200 bg-slate-50/50 hover:bg-slate-50 flex flex-col items-center justify-center cursor-pointer transition-all shadow-2xs"
               >
-                <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                  {isFlashcardFlipped ? 'Answer & Explanation' : 'Concept / Challenge'}
+                <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">
+                  {isFlashcardFlipped ? 'Answer / Explanation' : 'Question / Concept'}
                 </span>
-                <p className="text-xs sm:text-sm font-bold font-serif leading-relaxed">
-                  {isFlashcardFlipped
-                    ? studyResult.flashcards[activeFlashcardIndex].back
-                    : studyResult.flashcards[activeFlashcardIndex].front}
+                <p className="text-xs sm:text-[13.5px] font-bold text-slate-900 max-w-sm mx-auto leading-relaxed">
+                  {isFlashcardFlipped ? currentFlashcard.back : currentFlashcard.front}
                 </p>
+                <span className="text-[9.5px] text-slate-400 mt-3">
+                  (Click to flip)
+                </span>
               </div>
 
-              {/* Navigator */}
-              <div className="flex items-center gap-2">
+              {/* Navigation & Mastery Controls */}
+              <div className="flex items-center justify-center gap-2">
                 <button
                   type="button"
-                  disabled={activeFlashcardIndex === 0}
                   onClick={() => {
                     setIsFlashcardFlipped(false);
                     setActiveFlashcardIndex((prev) => Math.max(0, prev - 1));
                   }}
-                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                  disabled={activeFlashcardIndex === 0}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold disabled:opacity-40 cursor-pointer"
                 >
                   Previous
                 </button>
+
                 <button
                   type="button"
-                  onClick={() => setIsFlashcardFlipped(!isFlashcardFlipped)}
-                  className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer"
+                  onClick={() => {
+                    setMasteredFlashcards((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(activeFlashcardIndex)) next.delete(activeFlashcardIndex);
+                      else next.add(activeFlashcardIndex);
+                      return next;
+                    });
+                  }}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
+                    masteredFlashcards.has(activeFlashcardIndex)
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
                 >
-                  Flip Card
+                  {masteredFlashcards.has(activeFlashcardIndex) ? '✓ Mastered' : 'Mark Mastered'}
                 </button>
+
                 <button
                   type="button"
-                  disabled={activeFlashcardIndex === studyResult.flashcards.length - 1}
                   onClick={() => {
                     setIsFlashcardFlipped(false);
-                    setActiveFlashcardIndex((prev) => Math.min(studyResult.flashcards!.length - 1, prev + 1));
+                    setActiveFlashcardIndex((prev) =>
+                      Math.min((studyResult.flashcards?.length || 1) - 1, prev + 1)
+                    );
                   }}
-                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                  disabled={activeFlashcardIndex === (studyResult.flashcards?.length || 1) - 1}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold disabled:opacity-40 cursor-pointer"
                 >
                   Next
                 </button>
               </div>
             </div>
           )}
+
+          {/* TAB 5: CONCEPT DIAGRAMS */}
+          {activeOutputTab === 'diagrams' && (
+            <div className="space-y-3">
+              {Object.keys(generatedDiagrams).length === 0 ? (
+                <div className="bg-white rounded-xl border border-slate-200 p-6 text-center space-y-2">
+                  <Sparkles className="w-6 h-6 text-sky-600 mx-auto" />
+                  <h3 className="text-xs sm:text-[13px] font-bold text-slate-900">
+                    No Concept Diagrams Generated Yet
+                  </h3>
+                  <p className="text-[10px] text-slate-500 max-w-xs mx-auto">
+                    Head to Key Concepts and click "View Diagram" to render a custom vector schematic.
+                  </p>
+                  <button
+                    onClick={() => setActiveOutputTab('concepts')}
+                    className="px-3 py-1 rounded-lg bg-[#1d68bd] text-white text-[10px] font-bold cursor-pointer"
+                  >
+                    Go to Key Concepts
+                  </button>
+                </div>
+              ) : (
+                Object.entries(generatedDiagrams).map(([key, diagram]) => (
+                  <div
+                    key={key}
+                    className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs sm:text-[13px] font-bold text-slate-900">
+                        {diagram.title}
+                      </h4>
+                      <span className="text-[9.5px] text-slate-400">Vector SVG Diagram</span>
+                    </div>
+                    <div
+                      className="w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-900"
+                      dangerouslySetInnerHTML={{ __html: diagram.svg }}
+                    />
+                    <p className="text-[10px] text-slate-600">{diagram.description}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* TAB 6: "ASK YOUR DOCUMENT" GROUNDED CHAT */}
+          {activeOutputTab === 'chat' && (
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3">
+              <div>
+                <h3 className="text-xs sm:text-[13px] font-bold text-slate-900">
+                  Ask Your Document
+                </h3>
+                <p className="text-[10px] text-slate-500">
+                  Interactive grounded conversational assistant. Every answer is strictly grounded in your uploaded text.
+                </p>
+              </div>
+
+              {/* Message List */}
+              <div className="min-h-[200px] max-h-[350px] overflow-y-auto space-y-2 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+                {chatMessages.length === 0 ? (
+                  <div className="text-center py-6 text-[10px] text-slate-400 space-y-1">
+                    <MessageSquare className="w-6 h-6 text-slate-300 mx-auto" />
+                    <p className="font-medium">No messages yet.</p>
+                    <p>Ask anything about definitions, claims, or takeaways from the text.</p>
+                  </div>
+                ) : (
+                  chatMessages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex flex-col ${
+                        msg.role === 'user' ? 'items-end' : 'items-start'
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[85%] rounded-xl p-2.5 text-[10px] sm:text-[10.5px] leading-relaxed ${
+                          msg.role === 'user'
+                            ? 'bg-[#1d68bd] text-white rounded-br-xs'
+                            : 'bg-white border border-slate-200 text-slate-800 rounded-bl-xs shadow-2xs'
+                        }`}
+                      >
+                        {msg.text}
+                        {msg.citations && msg.citations.length > 0 && (
+                          <div className="mt-1.5 pt-1.5 border-t border-slate-100 text-[9px] text-slate-500 font-mono">
+                            <span className="font-bold text-slate-700 block mb-0.5">Citation:</span>
+                            "{msg.citations[0]}"
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+                {isChatLoading && (
+                  <div className="flex items-center gap-1.5 text-[9.5px] text-slate-500 py-1.5">
+                    <RefreshCw className="w-3 h-3 animate-spin text-[#1d68bd]" />
+                    <span>Analyzing document citations...</span>
+                  </div>
+                )}
+                <div ref={chatMessagesEndRef} />
+              </div>
+
+              {/* Message Input */}
+              <form onSubmit={handleSendMessage} className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask a question about this document..."
+                  className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-[10.5px] focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd]"
+                />
+                <button
+                  type="submit"
+                  disabled={!chatInput.trim() || isChatLoading}
+                  className="px-3 py-1.5 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white text-[10px] font-bold transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                >
+                  <Send className="w-3 h-3" />
+                  <span>Send</span>
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Floating / Drawer Chat for quick access while reading any tab */}
+      {isChatDrawerOpen && showWorkspace && activeOutputTab !== 'chat' && (
+        <div className="fixed bottom-4 right-4 w-80 max-w-[calc(100vw-32px)] bg-white rounded-xl border border-slate-300 shadow-xl z-50 overflow-hidden flex flex-col">
+          <div className="p-2.5 bg-slate-900 text-white flex items-center justify-between">
+            <span className="text-[10.5px] font-bold flex items-center gap-1">
+              <MessageSquare className="w-3 h-3 text-sky-400" />
+              Ask Your Document
+            </span>
+            <button
+              onClick={() => setIsChatDrawerOpen(false)}
+              className="text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="p-2.5 max-h-60 overflow-y-auto space-y-1.5 text-[10px] bg-slate-50">
+            {chatMessages.length === 0 ? (
+              <p className="text-slate-400 text-center py-4">
+                Type any query to ground answers in this document.
+              </p>
+            ) : (
+              chatMessages.map((m, i) => (
+                <div
+                  key={i}
+                  className={`p-2 rounded-lg ${
+                    m.role === 'user' ? 'bg-[#1d68bd] text-white ml-5' : 'bg-white text-slate-800 mr-5 border border-slate-200'
+                  }`}
+                >
+                  {m.text}
+                </div>
+              ))
+            )}
+            {isChatLoading && (
+              <div className="text-[9.5px] text-slate-500 flex items-center gap-1">
+                <RefreshCw className="w-2.5 h-2.5 animate-spin text-[#1d68bd]" />
+                <span>Finding answers...</span>
+              </div>
+            )}
+          </div>
+          <form onSubmit={handleSendMessage} className="p-1.5 border-t border-slate-100 flex gap-1 bg-white">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Ask a question..."
+              className="flex-1 px-2.5 py-1 text-[10px] rounded-md border border-slate-200 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={!chatInput.trim() || isChatLoading}
+              className="px-2.5 py-1 rounded-md bg-[#1d68bd] text-white text-[10px] font-bold cursor-pointer"
+            >
+              Send
+            </button>
+          </form>
         </div>
       )}
     </div>
