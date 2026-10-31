@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Send,
   AlertCircle,
+  BookOpen,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { PortfolioPart } from './Navbar';
@@ -26,14 +27,14 @@ import {
   computeDocumentFingerprint,
   generateConceptVisualDiagram,
   VisualDiagramResult,
-  STANDARD_EASESTUDY_BENCHMARKS,
   seedModeEaseStudyDataset,
   syncGuestSession,
   askDocumentAssistant,
   fetchGuestActivities,
   recordGuestActivity,
 } from '../utils/easeStudyModelHub';
-import { extractCleanTextFromFile } from '../utils/documentTextExtractor';
+import { extractDocumentWithStructure } from '../utils/documentTextExtractor';
+import { DetectedSection } from '../utils/documentStructureDetector';
 
 export interface EaseStudyResponse {
   topic: string;
@@ -99,19 +100,25 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
   const [activeDocumentHash, setActiveDocumentHash] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
 
-  // Analysis & Processing States
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [processingStatus, setProcessingStatus] = useState('');
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  // Chapters & Focus States
+  const [detectedSections, setDetectedSections] = useState<DetectedSection[]>([]);
+  const [selectedChapters, setSelectedChapters] = useState<string[]>([]);
+  const [customInstructions, setCustomInstructions] = useState<string>('');
+  const [focusArea, setFocusArea] = useState<string>('');
   const [difficulty, setDifficulty] = useState<'beginner' | 'intermediate' | 'advanced' | 'exam_prep'>('intermediate');
   const [questionCount, setQuestionCount] = useState<number>(15);
-  const [focusArea, setFocusArea] = useState<string>('');
   const [isEngineeringDoc, setIsEngineeringDoc] = useState(false);
   const [isDocumentReady, setIsDocumentReady] = useState(false);
+
+  // Analysis & Processing States
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState('');
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [studyResult, setStudyResult] = useState<EaseStudyResponse | null>(null);
 
   // Activities & Sessions
-  const [, setGuestSessionId] = useState<string>('');
+  const [guestSessionId, setGuestSessionId] = useState<string>('');
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
 
   // Examination Practice States
@@ -140,6 +147,17 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
   // UI Notifications
   const [copiedNotification, setCopiedNotification] = useState(false);
+
+  // Multi-Version Generation Stack for Session History
+  interface StudyVersion {
+    id: string;
+    versionNumber: number;
+    timestamp: string;
+    label: string;
+    result: EaseStudyResponse;
+  }
+  const [generationVersions, setGenerationVersions] = useState<StudyVersion[]>([]);
+  const [activeVersionId, setActiveVersionId] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropzoneRef = useRef<HTMLDivElement>(null);
@@ -213,7 +231,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     setUploadedFile(file);
     setFileMimeType(file.type || 'application/octet-stream');
     setAnalysisError(null);
-    setProcessingStatus('Extracting document text...');
+    setProcessingStatus('Extracting document contents & identifying chapters...');
 
     try {
       const reader = new FileReader();
@@ -222,18 +240,27 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
         const base64Clean = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
         setFileBase64(base64Clean);
 
-        // Clean text extraction
-        const cleanExtracted = await extractCleanTextFromFile(file);
-        setFileExtractedText(cleanExtracted);
+        // Reliable text extraction and OCR
+        const extraction = await extractDocumentWithStructure(file);
+        if (extraction.error || extraction.characterCount < 50) {
+          setAnalysisError(
+            extraction.error ||
+            'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.'
+          );
+          setIsDocumentReady(false);
+          setProcessingStatus('');
+          return;
+        }
 
-        // Do NOT automatically start generation!
-        // Allow the user to specify chapter or focus area first.
+        setFileExtractedText(extraction.text);
+        setDetectedSections(extraction.sections);
+        setSelectedChapters([]); // default to all
         setIsDocumentReady(true);
         setProcessingStatus('');
       };
       reader.readAsDataURL(file);
     } catch {
-      setAnalysisError('Could not process this document. Please try a PDF, DOCX, or text file.');
+      setAnalysisError('Could not process this document. Please try a valid PDF, DOCX, spreadsheet, or text file.');
       setProcessingStatus('');
     }
   };
@@ -244,7 +271,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     b64: string | null,
     mime: string | null,
     extractedTxt: string,
-    forceRegenerate: boolean = false
+    forceRegenerate: boolean = false,
+    priorQuestions: string[] = []
   ) => {
     setAnalysisError(null);
     setUserAnswers({});
@@ -254,16 +282,23 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     setExamScore(null);
     setExamFilterMode('all');
 
-    if (forceRegenerate) {
-      setStudyResult(null);
-      setGeneratedDiagrams({});
-      try {
-        localStorage.removeItem('fesline_easestudy_last_result');
-      } catch {}
+    // STRICT GROUNDING RULE: Never start AI generation if extraction fails or produces < 50 chars
+    if (!extractedTxt || extractedTxt.trim().length < 50) {
+      setAnalysisError(
+        'The uploaded document contains no readable text or insufficient content (0 characters). AI generation requires valid extracted text and cannot use filenames or metadata as substitutes.'
+      );
+      setIsAnalyzing(false);
+      setIsRegenerating(false);
+      return;
     }
 
-    setIsAnalyzing(true);
-    setProcessingStatus(forceRegenerate ? 'Gemini 4 Argon reprocessing fresh output from raw document...' : 'Gemini 4 Argon analyzing document & specified focus area...');
+    if (forceRegenerate) {
+      setIsRegenerating(true);
+      setProcessingStatus('GPT-6 Astra & Gemini 4 Argon generating newly refined questions...');
+    } else {
+      setIsAnalyzing(true);
+      setProcessingStatus('GPT-6 Astra analyzing document & synthesizing study materials...');
+    }
 
     try {
       let activeFilePayload = null;
@@ -273,7 +308,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           mimeType: mime || file.type || 'application/pdf',
           fileName: file.name,
           size: file.size,
-          extractedText: extractedTxt || undefined,
+          extractedText: extractedTxt,
         };
       }
 
@@ -283,6 +318,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       );
       setActiveDocumentHash(docFingerprint);
 
+      const uniqueGenId = `gen_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
       const hubResult: EaseStudyHubResult = await executeEaseStudyIntelligentHub(
         {
           text: !file ? inputText : undefined,
@@ -290,15 +327,35 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           difficulty,
           questionCount,
           focusArea: focusArea.trim(),
+          selectedChapters,
+          customInstructions: customInstructions.trim(),
           isEngineeringDoc,
           forceRegenerate,
+          generationId: uniqueGenId,
+          guestSessionId,
+          priorQuestions,
         },
         (status) => setProcessingStatus(status)
       );
 
+      // Smoothly update result without jarring layout flashes
       setStudyResult(hubResult.result);
       setShowWorkspace(true);
-      setActiveOutputTab('summary');
+      if (!forceRegenerate) {
+        setActiveOutputTab('summary');
+      }
+
+      // Record in generation history versions
+      const newVerNum = (generationVersions[0]?.versionNumber || 0) + 1;
+      const newVersion: StudyVersion = {
+        id: hubResult.generationId || uniqueGenId,
+        versionNumber: newVerNum,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        label: forceRegenerate ? `Refinement v${newVerNum}` : `Initial Generation`,
+        result: hubResult.result,
+      };
+      setGenerationVersions((prev) => [newVersion, ...prev]);
+      setActiveVersionId(newVersion.id);
 
       // Record activity
       recordGuestActivity({
@@ -312,7 +369,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       const acts = await fetchGuestActivities();
       setRecentActivities(acts);
 
-      // Cache locally
+      // Cache locally for this session
       try {
         localStorage.setItem('fesline_easestudy_last_result', JSON.stringify(hubResult.result));
       } catch {}
@@ -320,59 +377,35 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       setAnalysisError(err?.message || 'Document analysis is temporarily unavailable. Please try again.');
     } finally {
       setIsAnalyzing(false);
+      setIsRegenerating(false);
     }
   };
 
   const handleRunTextAnalysis = () => {
-    if (!inputText.trim()) {
-      setAnalysisError('Please enter or paste your study notes before analyzing.');
+    if (!inputText.trim() || inputText.trim().length < 50) {
+      setAnalysisError('Please enter at least 50 characters of study notes before generating.');
       return;
     }
     setUploadedFile(null);
     setFileBase64(null);
     setFileExtractedText(inputText.trim());
-    runAnalysisWithPayload(null, null, null, inputText.trim(), false);
+    runAnalysisWithPayload(null, null, null, inputText.trim(), false, []);
   };
 
-  const handleRegenerate = () => {
-    if (activeDocumentHash) {
-      try {
-        const localRaw = localStorage.getItem('fesline_mode_easestudy_dataset_cache');
-        if (localRaw) {
-          const cacheMap = JSON.parse(localRaw);
-          delete cacheMap[activeDocumentHash];
-          localStorage.setItem('fesline_mode_easestudy_dataset_cache', JSON.stringify(cacheMap));
-        }
-      } catch {}
-    }
+  // Stable Re-Generate Handler with Non-Repetitive Generation Guarantee
+  const handleRegenerate = async () => {
+    if (isAnalyzing || isRegenerating) return;
+
+    // Collect questions generated in the current version to strictly avoid repeating them
+    const priorQuestions: string[] = studyResult?.examSuite?.multipleChoice
+      ? studyResult.examSuite.multipleChoice.map((q) => q.question)
+      : [];
+
     if (uploadedFile && fileBase64) {
-      runAnalysisWithPayload(uploadedFile, fileBase64, fileMimeType, fileExtractedText, true);
-    } else if (inputText.trim()) {
-      runAnalysisWithPayload(null, null, null, inputText.trim(), true);
+      await runAnalysisWithPayload(uploadedFile, fileBase64, fileMimeType, fileExtractedText, true, priorQuestions);
+    } else if (fileExtractedText || inputText.trim()) {
+      await runAnalysisWithPayload(null, null, null, fileExtractedText || inputText.trim(), true, priorQuestions);
     }
-  };
-
-  // Standard Benchmark Loader
-  const handleLoadBenchmark = (benchmarkId: string) => {
-    const benchmark = STANDARD_EASESTUDY_BENCHMARKS.find((b) => b.id === benchmarkId);
-    if (!benchmark) return;
-
-    setUploadedFile(null);
-    setFileBase64(null);
-    setInputText(benchmark.sampleText);
-    setFileExtractedText(benchmark.sampleText);
-    setStudyResult(benchmark.precomputedPackage);
-    setActiveDocumentHash(`benchmark_${benchmark.id}`);
-    setIsEngineeringDoc(benchmark.isEngineeringDoc);
-    setShowWorkspace(true);
-    setActiveOutputTab('summary');
-
-    recordGuestActivity({
-      topic: benchmark.title,
-      fileName: `${benchmark.title}.txt`,
-      totalQuestions: benchmark.precomputedPackage.examSuite.multipleChoice.length,
-      activityType: 'document_analyzed',
-    });
   };
 
   // Visual Diagram Generator
@@ -402,7 +435,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     }
   };
 
-  // "Ask Your Document" Grounded Chat Handler
+  // "Ask Your Document" Grounded Chat Handler - DIRECT ANSWERS
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!chatInput.trim() || isChatLoading) return;
@@ -482,7 +515,6 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       activityType: 'exam_completed',
     });
 
-    // Refresh history
     fetchGuestActivities().then(setRecentActivities);
   };
 
@@ -502,7 +534,6 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       let y = 16;
 
-      // Header
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(16);
       pdf.setTextColor(15, 23, 42);
@@ -662,7 +693,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       </div>
 
       {/* ========================================================================= */}
-      {/* 2. MAIN UPLOAD CONTAINER (REDUCED BY 15%, SMALL BUTTONS & ICONS)          */}
+      {/* 2. MAIN UPLOAD & FOCUS CONFIGURATION CONTAINER                            */}
       {/* ========================================================================= */}
       {!showWorkspace && (
         <div
@@ -679,12 +710,12 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp"
+            accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.tsv,.txt,.png,.jpg,.jpeg,.webp"
             onChange={handleFileSelect}
             className="hidden"
           />
 
-          {/* Upload Configuration & Focus Selection Stage */}
+          {/* Upload Configuration & Chapter Focus Selection Stage */}
           {isDocumentReady && uploadedFile ? (
             <div className="w-full space-y-2.5 text-left">
               {/* Document Info Pill */}
@@ -708,6 +739,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                     setUploadedFile(null);
                     setFileBase64(null);
                     setFileExtractedText('');
+                    setDetectedSections([]);
+                    setSelectedChapters([]);
                     setIsDocumentReady(false);
                     setFocusArea('');
                   }}
@@ -717,22 +750,94 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                 </button>
               </div>
 
-              {/* Focus Area / Chapter Specification */}
+              {/* Detected Chapters & Sections Selection Chips */}
+              {detectedSections.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-800 flex items-center gap-1">
+                      <BookOpen className="w-3 h-3 text-[#1d68bd]" />
+                      <span>Document Chapters &amp; Sections ({detectedSections.length}):</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedChapters.length === detectedSections.length) {
+                          setSelectedChapters([]);
+                        } else {
+                          setSelectedChapters(detectedSections.map((s) => s.title));
+                        }
+                      }}
+                      className="text-[9px] text-[#1d68bd] font-semibold hover:underline cursor-pointer"
+                    >
+                      {selectedChapters.length === detectedSections.length ? 'Clear Selection' : 'Select All'}
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto p-1.5 rounded-lg border border-slate-200 bg-slate-50/50">
+                    {detectedSections.map((sec) => {
+                      const isSelected = selectedChapters.includes(sec.title);
+                      return (
+                        <button
+                          key={sec.id}
+                          type="button"
+                          onClick={() => {
+                            if (isSelected) {
+                              setSelectedChapters((prev) => prev.filter((t) => t !== sec.title));
+                            } else {
+                              setSelectedChapters((prev) => [...prev, sec.title]);
+                            }
+                          }}
+                          className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors cursor-pointer border ${
+                            isSelected
+                              ? 'bg-[#1d68bd] text-white border-[#1d68bd]'
+                              : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          {isSelected ? '✓ ' : '+ '} {sec.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Focus Area / Page Ranges Specification */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-800 flex items-center justify-between">
-                  <span>Chapter or Specific Focus Area:</span>
+                  <span>Chapter, Section or Page Range:</span>
                   <span className="text-[8.5px] text-slate-400 font-normal">Optional</span>
                 </label>
                 <input
                   type="text"
                   value={focusArea}
                   onChange={(e) => setFocusArea(e.target.value)}
-                  placeholder="e.g., Chapter 3, Friction & Equilibrium, Pages 45-60, or leave blank for All"
+                  placeholder="e.g., Chapter 3, Pages 12-25, or leave blank to analyze whole document"
                   className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd]"
                 />
-                <p className="text-[8.5px] text-slate-500">
-                  Specify a particular chapter, section, or topic before generation, or leave blank to analyze the entire document.
-                </p>
+              </div>
+
+              {/* Custom Instructions / Emphasis */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-800 flex items-center justify-between">
+                  <span>What to Emphasize:</span>
+                  <span className="text-[8.5px] text-slate-400 font-normal">Optional</span>
+                </label>
+                <input
+                  type="text"
+                  value={customInstructions}
+                  onChange={(e) => setCustomInstructions(e.target.value)}
+                  placeholder="e.g., Emphasize principles, arguments, definitions, explanations, formulas, or practical applications"
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd]"
+                />
+              </div>
+
+              {/* Active Scope Summary Banner */}
+              <div className="p-2 rounded-lg bg-sky-50 border border-sky-100 text-[9.5px] text-sky-900 font-medium leading-relaxed">
+                <span className="font-bold">Active Analysis Scope: </span>
+                {selectedChapters.length > 0
+                  ? `${selectedChapters.length} Chapter${selectedChapters.length > 1 ? 's' : ''} Selected`
+                  : 'Complete Document (All Sections)'}
+                {customInstructions && ` • Emphasis: "${customInstructions}"`}
+                {focusArea && ` • Focus: "${focusArea}"`}
               </div>
 
               {/* Study Parameters: Level & Questions */}
@@ -805,7 +910,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                 Upload your study material
               </h2>
               <p className="text-[10px] text-slate-500 max-w-sm mx-auto mb-3.5 leading-relaxed">
-                Drop your PDF, DOCX, PPTX or other supported document here.
+                Drop your PDF, DOCX, PPTX, XLSX, CSV, or text document here.
               </p>
 
               {/* Browse Documents Primary Button: Small size */}
@@ -843,7 +948,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   <textarea
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
-                    placeholder="Paste course notes, chapter paragraphs, or study material here..."
+                    placeholder="Paste course notes, chapter paragraphs, or study material here (minimum 50 characters)..."
                     rows={4}
                     className="w-full rounded-lg border border-slate-200 p-2.5 text-[10.5px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd] transition-all font-mono"
                   />
@@ -916,7 +1021,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           {isAnalyzing && (
             <div className="mt-3.5 w-full max-w-sm p-2.5 rounded-lg bg-sky-50 border border-sky-200 text-sky-900 text-[10px] font-medium flex items-center justify-center gap-1.5 animate-pulse">
               <Sparkles className="w-3.5 h-3.5 text-sky-600 animate-spin shrink-0" />
-              <span>{processingStatus || 'Gemini 4 Argon analyzing document & focus area...'}</span>
+              <span>{processingStatus || 'Analyzing document structure & focus area...'}</span>
             </div>
           )}
 
@@ -931,7 +1036,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* 3. 2x2 HUB CARDS GRID (REDUCED BY 15%, COMPACT FITTING)                  */}
+      {/* 3. 2x2 HUB CARDS GRID                                                     */}
       {/* ========================================================================= */}
       {!showWorkspace && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
@@ -1038,7 +1143,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* 4. RECENT LEARNING ACTIVITIES CONTAINER (FIT & COMPACT)                    */}
+      {/* 4. RECENT LEARNING ACTIVITIES CONTAINER (BENCHMARKS COMPLETELY REMOVED)   */}
       {/* ========================================================================= */}
       {!showWorkspace && (
         <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-2.5">
@@ -1097,42 +1202,27 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
               ))}
             </div>
           )}
-
-          {/* Standard Benchmark Quick-Starters */}
-          <div className="pt-2.5 border-t border-slate-100">
-            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
-              Verified Benchmark Study Starters:
-            </span>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => handleLoadBenchmark('benchmark_human_relations')}
-                className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-semibold cursor-pointer transition-colors"
-              >
-                Human Relations &amp; Influence
-              </button>
-              <button
-                type="button"
-                onClick={() => handleLoadBenchmark('benchmark_hermeneutics')}
-                className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-[10px] font-semibold cursor-pointer transition-colors"
-              >
-                Historical &amp; Theological Hermeneutics
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* 5. ACTIVE STUDY WORKSPACE (DELIVERY ENHANCEMENTS)                         */}
+      {/* 5. ACTIVE STUDY WORKSPACE (STABLE LOADING & DIRECT RESULTS)               */}
       {/* ========================================================================= */}
       {showWorkspace && studyResult && (
         <div className="space-y-3">
+          {/* In-place Re-generating Progress Banner */}
+          {isRegenerating && (
+            <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-[10px] font-medium flex items-center justify-center gap-2 animate-pulse shadow-2xs">
+              <RefreshCw className="w-3 h-3 animate-spin text-[#1d68bd]" />
+              <span>{processingStatus || 'GPT-6 Astra & Gemini 4 Argon formulating newly refined questions...'}</span>
+            </div>
+          )}
+
           {/* Workspace Header & Action Controls */}
           <div className="bg-white rounded-xl border border-slate-200 p-3.5 sm:p-4 shadow-2xs space-y-2.5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               <div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold uppercase bg-sky-100 text-sky-800 tracking-wider">
                     {studyResult.difficulty}
                   </span>
@@ -1145,8 +1235,18 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                       • {uploadedFile.name}
                     </span>
                   )}
-                  {focusArea && (
+                  {selectedChapters.length > 0 && (
+                    <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold bg-sky-50 text-sky-800 border border-sky-200 truncate max-w-[150px]">
+                      Chapters: {selectedChapters.length} selected
+                    </span>
+                  )}
+                  {customInstructions && (
                     <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold bg-amber-50 text-amber-800 border border-amber-200 truncate max-w-[150px]">
+                      Emphasis: {customInstructions}
+                    </span>
+                  )}
+                  {focusArea && (
+                    <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200 truncate max-w-[150px]">
                       Focus: {focusArea}
                     </span>
                   )}
@@ -1158,15 +1258,38 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
               {/* Action Buttons: Small size */}
               <div className="flex flex-wrap items-center gap-1">
+                {generationVersions.length > 1 && (
+                  <div className="flex items-center gap-1 bg-sky-50/80 border border-sky-200/80 px-2 py-0.5 rounded-lg">
+                    <span className="text-[9px] font-bold text-sky-800">Version:</span>
+                    <select
+                      value={activeVersionId}
+                      onChange={(e) => {
+                        const found = generationVersions.find((v) => v.id === e.target.value);
+                        if (found) {
+                          setActiveVersionId(found.id);
+                          setStudyResult(found.result);
+                        }
+                      }}
+                      className="text-[9.5px] font-bold text-sky-900 bg-transparent focus:outline-none cursor-pointer"
+                    >
+                      {generationVersions.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.label} ({v.timestamp})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={handleRegenerate}
-                  disabled={isAnalyzing}
+                  disabled={isAnalyzing || isRegenerating}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold transition-all cursor-pointer disabled:opacity-50"
                   title="Re-Generate fresh questions and analysis from scratch"
                 >
-                  <RefreshCw className={`w-3 h-3 ${isAnalyzing ? 'animate-spin' : ''}`} />
-                  <span>Re-Generate</span>
+                  <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin text-[#1d68bd]' : ''}`} />
+                  <span>{isRegenerating ? 'Refining...' : 'Re-Generate'}</span>
                 </button>
 
                 <button
@@ -1619,7 +1742,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
             </div>
           )}
 
-          {/* TAB 6: "ASK YOUR DOCUMENT" GROUNDED CHAT */}
+          {/* TAB 6: "ASK YOUR DOCUMENT" GROUNDED CHAT (DIRECT ANSWERS) */}
           {activeOutputTab === 'chat' && (
             <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3">
               <div>
@@ -1627,7 +1750,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   Ask Your Document
                 </h3>
                 <p className="text-[10px] text-slate-500">
-                  Interactive grounded conversational assistant. Every answer is strictly grounded in your uploaded text.
+                  Direct, evidence-backed answers grounded strictly in your uploaded text with verbatim source citations.
                 </p>
               </div>
 
@@ -1637,7 +1760,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   <div className="text-center py-6 text-[10px] text-slate-400 space-y-1">
                     <MessageSquare className="w-6 h-6 text-slate-300 mx-auto" />
                     <p className="font-medium">No messages yet.</p>
-                    <p>Ask anything about definitions, claims, or takeaways from the text.</p>
+                    <p>Ask any direct question to receive immediate, evidence-grounded answers.</p>
                   </div>
                 ) : (
                   chatMessages.map((msg, idx) => (
@@ -1657,7 +1780,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                         {msg.text}
                         {msg.citations && msg.citations.length > 0 && (
                           <div className="mt-1.5 pt-1.5 border-t border-slate-100 text-[9px] text-slate-500 font-mono">
-                            <span className="font-bold text-slate-700 block mb-0.5">Citation:</span>
+                            <span className="font-bold text-slate-700 block mb-0.5">Source Evidence:</span>
                             "{msg.citations[0]}"
                           </div>
                         )}
@@ -1668,7 +1791,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                 {isChatLoading && (
                   <div className="flex items-center gap-1.5 text-[9.5px] text-slate-500 py-1.5">
                     <RefreshCw className="w-3 h-3 animate-spin text-[#1d68bd]" />
-                    <span>Analyzing document citations...</span>
+                    <span>Finding direct answer in document...</span>
                   </div>
                 )}
                 <div ref={chatMessagesEndRef} />
@@ -1680,7 +1803,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="Ask a question about this document..."
+                  placeholder="Ask a question to get an immediate direct answer..."
                   className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-[10.5px] focus:outline-none focus:ring-1 focus:ring-[#1d68bd] focus:border-[#1d68bd]"
                 />
                 <button
@@ -1703,7 +1826,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           <div className="p-2.5 bg-slate-900 text-white flex items-center justify-between">
             <span className="text-[10.5px] font-bold flex items-center gap-1">
               <MessageSquare className="w-3 h-3 text-sky-400" />
-              Ask Your Document
+              Ask Your Document (Direct Answers)
             </span>
             <button
               onClick={() => setIsChatDrawerOpen(false)}
@@ -1715,7 +1838,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           <div className="p-2.5 max-h-60 overflow-y-auto space-y-1.5 text-[10px] bg-slate-50">
             {chatMessages.length === 0 ? (
               <p className="text-slate-400 text-center py-4">
-                Type any query to ground answers in this document.
+                Type any query to receive immediate, direct answers grounded in this document.
               </p>
             ) : (
               chatMessages.map((m, i) => (
@@ -1732,7 +1855,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
             {isChatLoading && (
               <div className="text-[9.5px] text-slate-500 flex items-center gap-1">
                 <RefreshCw className="w-2.5 h-2.5 animate-spin text-[#1d68bd]" />
-                <span>Finding answers...</span>
+                <span>Finding direct answer...</span>
               </div>
             )}
           </div>
@@ -1741,7 +1864,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Ask a question..."
+              placeholder="Ask a direct question..."
               className="flex-1 px-2.5 py-1 text-[10px] rounded-md border border-slate-200 focus:outline-none"
             />
             <button

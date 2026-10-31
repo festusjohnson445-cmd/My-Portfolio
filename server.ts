@@ -3,8 +3,13 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import compression from 'compression';
+import crypto from 'crypto';
 import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import JSZip from 'jszip';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { detectDocumentSections } from './src/utils/documentStructureDetector.ts';
 import {
   getGlobalProfileFromDb,
   saveGlobalProfileToDb,
@@ -1131,7 +1136,9 @@ function generateDiverseMCQs(
   topic: string,
   targetCount: number = 15,
   difficulty: string = 'intermediate',
-  isEngineeringDoc: boolean = false
+  isEngineeringDoc: boolean = false,
+  salt: number = 0,
+  priorQuestions: string[] = []
 ) {
   let clean = (textContent || '').replace(/\s+/g, ' ').trim();
   const rawSentences = clean
@@ -1142,6 +1149,10 @@ function generateDiverseMCQs(
   const count = Math.min(50, Math.max(5, targetCount));
   const mcqs: any[] = [];
   const letters: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
+
+  const priorStems = new Set(
+    priorQuestions.map((q) => q.toLowerCase().replace(/[^a-z0-9]/g, ' ').slice(0, 35))
+  );
 
   const archetypes = [
     {
@@ -1222,19 +1233,31 @@ function generateDiverseMCQs(
     },
   ];
 
-  for (let i = 0; i < count; i++) {
-    const qNum = i + 1;
-    const arch = archetypes[i % archetypes.length];
+  // Shift sentence and archetype index based on salt to guarantee freshness on re-generation
+  const saltOffset = Math.abs(salt || 0);
+  const sentenceOffset = rawSentences.length > 0 ? saltOffset % rawSentences.length : 0;
+  const archOffset = (saltOffset + 3) % archetypes.length;
+
+  let attemptIdx = 0;
+  while (mcqs.length < count && attemptIdx < count * 4) {
+    const arch = archetypes[(attemptIdx + archOffset) % archetypes.length];
     const sentence = rawSentences.length > 0
-      ? rawSentences[i % rawSentences.length]
+      ? rawSentences[(attemptIdx + sentenceOffset) % rawSentences.length]
       : `Core principles establish verifiable criteria for ${topic}.`;
 
     const qText = arch.makeQuestion(sentence);
+    const stemSig = qText.toLowerCase().replace(/[^a-z0-9]/g, ' ').slice(0, 35);
+
+    attemptIdx++;
+    if (priorStems.has(stemSig)) {
+      continue; // Skip questions already asked in previous generation
+    }
+
     const correctContent = arch.makeCorrect(sentence);
     const distractors = [arch.d1, arch.d2, arch.d3];
 
     // Assign correct letter in rotating pattern: A, B, C, D
-    const correctLetter = letters[i % 4];
+    const correctLetter = letters[mcqs.length % 4];
     const options: string[] = [];
     let dIdx = 0;
 
@@ -1247,7 +1270,7 @@ function generateDiverseMCQs(
     }
 
     mcqs.push({
-      id: qNum,
+      id: mcqs.length + 1,
       question: qText,
       options,
       correctAnswer: correctLetter,
@@ -1265,7 +1288,9 @@ function generateFallbackStudyPackage(
   targetDifficulty: string = 'intermediate',
   requestedQCount: number = 15,
   specialFocus: string = '',
-  isEngineeringDoc: boolean = false
+  isEngineeringDoc: boolean = false,
+  salt: number = 0,
+  priorQuestions: string[] = []
 ) {
   let cleanText = (textContent || '').trim();
   cleanText = cleanText
@@ -1481,7 +1506,399 @@ function generateFallbackStudyPackage(
   };
 }
 
-// 10. EaseStudy Multi-Modal Analysis & Exam Generator
+const cleanDocNoise = (raw: string): string => {
+  if (!raw) return '';
+  return raw
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
+    .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
+    .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
+    .replace(/word\/(?:document|fontTable|styles|settings)\.xml[^\s]*/gi, '')
+    .replace(/_rels\/\.rels[^\s]*/gi, '')
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+};
+
+// In-memory Caches & Usage Tracking
+const extractionCache = new Map<string, { extractedText: string; sections: any[]; characterCount: number; timestamp: number }>();
+const userStudyCache = new Map<string, { result: any; generationId: string; version: number; timestamp: number }>();
+
+// Central AI Usage & Cost Manager
+interface UsageMetrics {
+  totalRequests: number;
+  gpt6Requests: number;
+  gpt6InputTokens: number;
+  gpt6OutputTokens: number;
+  gpt6CostEstimate: number;
+  gemini4Requests: number;
+  gemini4InputTokens: number;
+  gemini4OutputTokens: number;
+  gemini4CostEstimate: number;
+  cacheHits: number;
+  verificationPasses: number;
+  userBreakdown: Record<string, { requests: number; tokens: number; lastActive: string }>;
+  dailyQuotaTokens: number;
+  dailyTokensUsed: number;
+}
+
+const aiUsageTracker: UsageMetrics = {
+  totalRequests: 0,
+  gpt6Requests: 0,
+  gpt6InputTokens: 0,
+  gpt6OutputTokens: 0,
+  gpt6CostEstimate: 0,
+  gemini4Requests: 0,
+  gemini4InputTokens: 0,
+  gemini4OutputTokens: 0,
+  gemini4CostEstimate: 0,
+  cacheHits: 0,
+  verificationPasses: 0,
+  userBreakdown: {},
+  dailyQuotaTokens: Number(process.env.DAILY_TOKEN_QUOTA || 2000000),
+  dailyTokensUsed: 0,
+};
+
+function recordAiUsage(
+  model: 'gpt-6-astra' | 'gemini-4-argon',
+  inputChars: number,
+  outputChars: number,
+  userIdOrGuest: string
+) {
+  // Approximate tokens ~4 chars per token
+  const inTokens = Math.max(1, Math.round(inputChars / 4));
+  const outTokens = Math.max(1, Math.round(outputChars / 4));
+  const totalToks = inTokens + outTokens;
+
+  aiUsageTracker.totalRequests += 1;
+  aiUsageTracker.dailyTokensUsed += totalToks;
+
+  if (model === 'gpt-6-astra') {
+    aiUsageTracker.gpt6Requests += 1;
+    aiUsageTracker.gpt6InputTokens += inTokens;
+    aiUsageTracker.gpt6OutputTokens += outTokens;
+    aiUsageTracker.gpt6CostEstimate += (inTokens * 0.000005) + (outTokens * 0.000015);
+  } else {
+    aiUsageTracker.gemini4Requests += 1;
+    aiUsageTracker.gemini4InputTokens += inTokens;
+    aiUsageTracker.gemini4OutputTokens += outTokens;
+    aiUsageTracker.gemini4CostEstimate += (inTokens * 0.000003) + (outTokens * 0.000010);
+  }
+
+  const userKey = userIdOrGuest || 'guest_default';
+  if (!aiUsageTracker.userBreakdown[userKey]) {
+    aiUsageTracker.userBreakdown[userKey] = { requests: 0, tokens: 0, lastActive: new Date().toISOString() };
+  }
+  aiUsageTracker.userBreakdown[userKey].requests += 1;
+  aiUsageTracker.userBreakdown[userKey].tokens += totalToks;
+  aiUsageTracker.userBreakdown[userKey].lastActive = new Date().toISOString();
+}
+
+/**
+ * Extracts all text from a PDF Buffer using pdfjs-dist.
+ * Preserves page numbers ('--- Page X ---'), headings, and paragraphs.
+ */
+async function extractTextFromPdfBuffer(pdfBuffer: Buffer): Promise<{ text: string; pageCount: number }> {
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      useSystemFonts: true,
+      disableFontFace: true,
+    });
+    const pdfDoc = await loadingTask.promise;
+    const numPages = pdfDoc.numPages;
+    const pageTexts: string[] = [];
+
+    for (let i = 1; i <= numPages; i++) {
+      try {
+        const page = await pdfDoc.getPage(i);
+        const textContent = await page.getTextContent();
+        let lastY: number | null = null;
+        const pageLines: string[] = [];
+        let currentLine = '';
+
+        for (const item of textContent.items as any[]) {
+          if ('str' in item) {
+            const str = item.str || '';
+            const y = item.transform ? item.transform[5] : null;
+            if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
+              if (currentLine.trim()) pageLines.push(currentLine.trim());
+              currentLine = str;
+            } else {
+              currentLine += (currentLine && !currentLine.endsWith(' ') && !str.startsWith(' ') ? ' ' : '') + str;
+            }
+            if (y !== null) lastY = y;
+          }
+        }
+        if (currentLine.trim()) pageLines.push(currentLine.trim());
+        const pageStr = pageLines.join('\n').trim();
+
+        if (pageStr) {
+          pageTexts.push(`--- Page ${i} ---\n${pageStr}`);
+        }
+      } catch (pageErr) {
+        console.warn(`[PDF Extraction] Error on page ${i}:`, pageErr);
+      }
+    }
+
+    return {
+      text: pageTexts.join('\n\n'),
+      pageCount: numPages,
+    };
+  } catch (err: any) {
+    console.warn('[PDF Extraction] pdfjs error:', err?.message || err);
+    return { text: '', pageCount: 0 };
+  }
+}
+
+/**
+ * Extracts all text from a PPTX Buffer using JSZip.
+ * Extracts slide by slide with '--- Slide X ---'.
+ */
+async function extractTextFromPptxBuffer(pptxBuffer: Buffer): Promise<{ text: string; slideCount: number }> {
+  try {
+    const zip = await JSZip.loadAsync(pptxBuffer);
+    const slideFileNames = Object.keys(zip.files).filter((name) =>
+      /^ppt\/slides\/slide\d+\.xml$/i.test(name)
+    );
+
+    slideFileNames.sort((a, b) => {
+      const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
+      const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
+      return numA - numB;
+    });
+
+    const slideTexts: string[] = [];
+    for (let i = 0; i < slideFileNames.length; i++) {
+      const slideXml = await zip.files[slideFileNames[i]].async('text');
+      const matches = slideXml.match(/<a:t[^>]*>([^<]+)<\/a:t>/g);
+      if (matches && matches.length > 0) {
+        const slideText = matches
+          .map((m) => m.replace(/<[^>]+>/g, '').trim())
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (slideText) {
+          slideTexts.push(`--- Slide ${i + 1} ---\n${slideText}`);
+        }
+      }
+    }
+
+    return {
+      text: slideTexts.join('\n\n'),
+      slideCount: slideFileNames.length,
+    };
+  } catch (err: any) {
+    console.warn('[PPTX Extraction] jszip error:', err?.message || err);
+    return { text: '', slideCount: 0 };
+  }
+}
+
+// 9b. EaseStudy Server-Side Multi-Format Document Text Extraction & OCR
+app.post(['/api/easestudy/extract-text', '/api/easestudy/extract-text/'], async (req, res) => {
+  try {
+    const { base64, mimeType = '', fileName = '' } = req.body;
+    if (!base64) {
+      return res.status(400).json({ success: false, error: 'No base64 content provided' });
+    }
+
+    const cleanB64 = String(base64).replace(/^data:[^;]+;base64,/, '').trim();
+    const lowerName = String(fileName).toLowerCase();
+    const lowerMime = String(mimeType).toLowerCase();
+
+    // Check extraction cache by content hash
+    const contentHash = crypto.createHash('sha256').update(cleanB64).digest('hex');
+    const cached = extractionCache.get(contentHash);
+    if (cached) {
+      aiUsageTracker.cacheHits += 1;
+      return res.json({
+        success: true,
+        extractedText: cached.extractedText,
+        characterCount: cached.characterCount,
+        sections: cached.sections,
+        cached: true,
+      });
+    }
+
+    let textResult = '';
+    const fileBuffer = Buffer.from(cleanB64, 'base64');
+
+    // 1. Digital PDF Documents (.pdf) - Native local extraction via pdfjs-dist
+    if (lowerName.endsWith('.pdf') || lowerMime.includes('pdf')) {
+      const pdfExtraction = await extractTextFromPdfBuffer(fileBuffer);
+      if (pdfExtraction.text && pdfExtraction.text.length >= 50) {
+        textResult = pdfExtraction.text;
+      } else {
+        // Scanned image-only PDF: requires multimodal OCR
+        try {
+          const prompt = `Transcribe and extract ALL readable text verbatim from this scanned document.
+Requirements:
+1. Preserve all chapter titles, headings, sections, bullet points, and page numbers.
+2. Accurately transcribe tables, definitions, arguments, and formulas.
+3. Output the extracted text directly without conversational commentary.`;
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-4-argon',
+            contents: [
+              { inlineData: { mimeType: 'application/pdf', data: cleanB64 } },
+              { text: prompt },
+            ],
+          });
+
+          if (response && response.text) {
+            textResult = response.text.trim();
+            recordAiUsage('gemini-4-argon', cleanB64.length, textResult.length, 'guest_ocr');
+          }
+        } catch (ocrErr: any) {
+          console.warn('[EaseStudy PDF OCR] Gemini 4 Argon OCR notice:', ocrErr?.message);
+        }
+      }
+    }
+
+    // 2. Word documents (.docx, .doc)
+    else if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || lowerMime.includes('wordprocessingml') || lowerMime.includes('officedocument')) {
+      try {
+        const mammothResult = await mammoth.extractRawText({ buffer: fileBuffer });
+        textResult = mammothResult?.value || '';
+      } catch (e: any) {
+        console.warn('[EaseStudy Text Extraction] Docx error:', e?.message);
+      }
+    }
+
+    // 3. PowerPoint documents (.pptx, .ppt)
+    else if (lowerName.endsWith('.pptx') || lowerName.endsWith('.ppt') || lowerMime.includes('presentation') || lowerMime.includes('powerpoint')) {
+      const pptxExtraction = await extractTextFromPptxBuffer(fileBuffer);
+      textResult = pptxExtraction.text;
+    }
+
+    // 4. XLSX / XLS Spreadsheets
+    else if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') || lowerMime.includes('spreadsheet') || lowerMime.includes('excel')) {
+      try {
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+        const sheetTexts: string[] = [];
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName];
+          if (sheet) {
+            const csv = XLSX.utils.sheet_to_csv(sheet);
+            if (csv && csv.trim()) {
+              sheetTexts.push(`--- Sheet: ${sheetName} ---\n${csv.trim()}`);
+            }
+          }
+        }
+        textResult = sheetTexts.join('\n\n');
+      } catch (e: any) {
+        console.warn('[EaseStudy Text Extraction] Excel error:', e?.message);
+      }
+    }
+
+    // 5. Plain text / CSV / Markdown
+    else if (lowerName.endsWith('.txt') || lowerName.endsWith('.csv') || lowerName.endsWith('.md') || lowerName.endsWith('.tsv') || lowerMime.startsWith('text/')) {
+      try {
+        textResult = fileBuffer.toString('utf-8');
+      } catch (e: any) {
+        console.warn('[EaseStudy Text Extraction] Text decode error:', e?.message);
+      }
+    }
+
+    // 6. Raster Images (PNG, JPG, JPEG, WEBP)
+    else if (lowerName.endsWith('.png') || lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg') || lowerName.endsWith('.webp') || lowerMime.startsWith('image/')) {
+      let resolvedMime = lowerMime.startsWith('image/') ? lowerMime : 'image/jpeg';
+      try {
+        const prompt = `Transcribe and extract ALL text, diagrams, equations, and notes visible in this image accurately and verbatim.`;
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-argon',
+          contents: [
+            { inlineData: { mimeType: resolvedMime, data: cleanB64 } },
+            { text: prompt },
+          ],
+        });
+        if (response && response.text) {
+          textResult = response.text.trim();
+          recordAiUsage('gemini-4-argon', cleanB64.length, textResult.length, 'guest_ocr');
+        }
+      } catch (imgErr: any) {
+        console.warn('[EaseStudy Image OCR] Gemini 4 Argon notice:', imgErr?.message);
+      }
+    }
+
+    const cleaned = cleanDocNoise(textResult);
+
+    if (cleaned.length < 50) {
+      return res.status(400).json({
+        success: false,
+        characterCount: 0,
+        error: 'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.',
+      });
+    }
+
+    const detectedSections = detectDocumentSections(cleaned);
+
+    // Save to extraction cache
+    extractionCache.set(contentHash, {
+      extractedText: cleaned,
+      sections: detectedSections,
+      characterCount: cleaned.length,
+      timestamp: Date.now(),
+    });
+
+    return res.json({
+      success: true,
+      extractedText: cleaned,
+      characterCount: cleaned.length,
+      sections: detectedSections,
+    });
+  } catch (err: any) {
+    console.error('[EaseStudy Text Extraction Error]:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Document extraction failed: ' + (err?.message || 'Server extraction error'),
+    });
+  }
+});
+
+// 9c. EaseStudy AI Usage & Quotas Monitoring Endpoint
+app.get(['/api/easestudy/usage', '/api/easestudy/usage/'], (req, res) => {
+  const userKey = (req.headers['x-guest-session-id'] as string) || 'guest_default';
+  const userUsage = aiUsageTracker.userBreakdown[userKey] || { requests: 0, tokens: 0, lastActive: '' };
+
+  res.json({
+    success: true,
+    overall: {
+      totalRequests: aiUsageTracker.totalRequests,
+      cacheHits: aiUsageTracker.cacheHits,
+      verificationPasses: aiUsageTracker.verificationPasses,
+      dailyTokensUsed: aiUsageTracker.dailyTokensUsed,
+      dailyQuotaTokens: aiUsageTracker.dailyQuotaTokens,
+      quotaRemainingTokens: Math.max(0, aiUsageTracker.dailyQuotaTokens - aiUsageTracker.dailyTokensUsed),
+    },
+    models: {
+      gpt6Astra: {
+        modelId: 'gpt-6-astra',
+        requests: aiUsageTracker.gpt6Requests,
+        inputTokens: aiUsageTracker.gpt6InputTokens,
+        outputTokens: aiUsageTracker.gpt6OutputTokens,
+        estimatedCostUSD: Number(aiUsageTracker.gpt6CostEstimate.toFixed(4)),
+      },
+      gemini4Argon: {
+        modelId: 'gemini-4-argon',
+        requests: aiUsageTracker.gemini4Requests,
+        inputTokens: aiUsageTracker.gemini4InputTokens,
+        outputTokens: aiUsageTracker.gemini4OutputTokens,
+        estimatedCostUSD: Number(aiUsageTracker.gemini4CostEstimate.toFixed(4)),
+      },
+    },
+    currentUserSession: {
+      sessionKey: userKey,
+      requests: userUsage.requests,
+      tokens: userUsage.tokens,
+      lastActive: userUsage.lastActive,
+    },
+  });
+});
+
+// 10. EaseStudy Dual-AI Analysis & Examination Suite (GPT-6 Astra + Gemini 4 Argon)
 app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analyze', '/easestudy/analyze/'], async (req, res) => {
   try {
     const {
@@ -1490,32 +1907,26 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
       difficulty = 'intermediate',
       questionCount = 15,
       focusArea = '',
+      selectedChapters = [],
+      customInstructions = '',
       isEngineeringDoc = false,
       priorContext = null,
       forceRegenerate = false,
+      regenerateSalt = 0,
+      generationId,
+      nonce,
+      guestSessionId,
+      userId,
+      priorQuestions = [],
     } = req.body;
 
     if (!text && (!fileData || !fileData.base64)) {
       return res.status(400).json({ success: false, message: 'Please provide study text or an uploaded file/image.' });
     }
 
-    const parts: any[] = [];
-    let extractedDocxText = '';
+    const userScopeKey = String(userId || guestSessionId || 'guest_default');
 
-    const cleanDocNoise = (raw: string): string => {
-      if (!raw) return '';
-      return raw
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
-        .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
-        .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
-        .replace(/word\/(?:document|fontTable|styles|settings)\.xml[^\s]*/gi, '')
-        .replace(/_rels\/\.rels[^\s]*/gi, '')
-        .replace(/\r\n|\r/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/[ \t]{2,}/g, ' ')
-        .trim();
-    };
+    let extractedDocxText = '';
 
     if (fileData) {
       if (fileData.extractedText && typeof fileData.extractedText === 'string' && fileData.extractedText.trim().length > 0) {
@@ -1524,10 +1935,13 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
         const fileName = (fileData.fileName || '').toLowerCase();
         let mimeType = (fileData.mimeType || '').toLowerCase();
         const rawBase64 = String(fileData.base64).replace(/^data:[^;]+;base64,/, '').trim();
+        const fileBuffer = Buffer.from(rawBase64, 'base64');
 
-        if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || mimeType.includes('wordprocessingml') || mimeType.includes('officedocument')) {
+        if (fileName.endsWith('.pdf') || mimeType.includes('pdf')) {
+          const pdfRes = await extractTextFromPdfBuffer(fileBuffer);
+          extractedDocxText = cleanDocNoise(pdfRes.text);
+        } else if (fileName.endsWith('.docx') || fileName.endsWith('.doc') || mimeType.includes('wordprocessingml')) {
           try {
-            const fileBuffer = Buffer.from(rawBase64, 'base64');
             const mammothResult = await mammoth.extractRawText({ buffer: fileBuffer });
             if (mammothResult && mammothResult.value) {
               extractedDocxText = cleanDocNoise(mammothResult.value);
@@ -1535,30 +1949,32 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
           } catch (docxErr) {
             console.warn('Docx extraction fallback:', docxErr);
           }
-        } else if (fileName.endsWith('.txt') || mimeType.startsWith('text/')) {
+        } else if (fileName.endsWith('.pptx') || fileName.endsWith('.ppt') || mimeType.includes('presentation')) {
+          const pptxRes = await extractTextFromPptxBuffer(fileBuffer);
+          extractedDocxText = cleanDocNoise(pptxRes.text);
+        } else if (fileName.endsWith('.txt') || fileName.endsWith('.csv') || fileName.endsWith('.md') || mimeType.startsWith('text/')) {
           try {
-            extractedDocxText = cleanDocNoise(Buffer.from(rawBase64, 'base64').toString('utf-8'));
+            extractedDocxText = cleanDocNoise(fileBuffer.toString('utf-8'));
           } catch (txtErr) {
             console.warn('Text decoding fallback:', txtErr);
           }
-        } else {
-          // PDF or Images (PNG, JPG, WEBP, etc.)
-          let resolvedMime = mimeType;
-          if (!resolvedMime || resolvedMime === 'application/octet-stream') {
-            if (fileName.endsWith('.pdf')) resolvedMime = 'application/pdf';
-            else if (fileName.endsWith('.png')) resolvedMime = 'image/png';
-            else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) resolvedMime = 'image/jpeg';
-            else if (fileName.endsWith('.webp')) resolvedMime = 'image/webp';
-            else resolvedMime = 'application/pdf';
+        } else if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || mimeType.includes('spreadsheet')) {
+          try {
+            const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+            const sheetTexts: string[] = [];
+            for (const sheetName of workbook.SheetNames) {
+              const sheet = workbook.Sheets[sheetName];
+              if (sheet) {
+                const csv = XLSX.utils.sheet_to_csv(sheet);
+                if (csv && csv.trim()) {
+                  sheetTexts.push(`--- Sheet: ${sheetName} ---\n${csv.trim()}`);
+                }
+              }
+            }
+            extractedDocxText = cleanDocNoise(sheetTexts.join('\n\n'));
+          } catch (xlsErr) {
+            console.warn('Excel extraction fallback:', xlsErr);
           }
-          if (resolvedMime === 'image/jpg') resolvedMime = 'image/jpeg';
-
-          parts.push({
-            inlineData: {
-              mimeType: resolvedMime,
-              data: rawBase64,
-            },
-          });
         }
       }
     }
@@ -1568,70 +1984,120 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
       extractedDocxText ? `Uploaded Document Content (${fileData?.fileName || 'Document'}):\n${extractedDocxText}` : '',
     ].filter(Boolean).join('\n\n');
 
+    // STRICT GROUNDING RULE: Never start AI generation if extraction fails or produces < 50 characters
+    if (!combinedTextContent || combinedTextContent.trim().length < 50) {
+      return res.status(400).json({
+        success: false,
+        message: 'The uploaded document contains insufficient extracted text (less than 50 characters). AI generation requires valid extracted text and cannot use filenames or metadata as substitutes.',
+      });
+    }
+
     const targetQCount = Math.min(50, Math.max(5, Number(questionCount) || 15));
 
-    // =========================================================================
-    // DUAL-MODEL PIPELINE:
-    // Stage 1: NotebookLM Ingestion & Context Grounding Layer
-    // Stage 2: Gemini AI High-Precision Semantic Generation Layer
-    // =========================================================================
+    // Chapter filter and intelligent content selection
+    const chapterFilterText = Array.isArray(selectedChapters) && selectedChapters.length > 0
+      ? `Selected Chapters/Sections to Emphasize: ${selectedChapters.join(', ')}`
+      : 'Analyze Entire Document (All Chapters & Sections)';
 
-    const notebookLmGroundingDirective = `[NOTEBOOKLM SOURCE INGESTION & GROUNDING LAYER]
-Role: Document Ingestion, Strict Source Grounding, and Natural Syllabus Synthesis.
-1. Grounding Rule (100% Strictness): Ground ALL summaries, takeaways, concepts, and questions strictly in the provided source material without extrapolation or unrelated external claims.
-2. Domain Authenticity & Zero Jargon: Treat the document exclusively in its authentic subject domain (e.g. Self-Help, Literature, Psychology, Theology, Philosophy, History, Law, Medicine, Economics, Social Sciences, or Engineering).
-3. Anti-Generalization Constraint: Absolutely NEVER invent or impose technical, physical, or mechanical engineering formulas, boundary conditions, stress-strain formulations, equilibrium relations, or CAD/FEA concepts on non-engineering texts.
-4. Natural Fluent Narrative: Completely avoid canned academic boilerplate phrasing (such as "1st Class Study", "This verified study guide examines...", "This verified academic study guide...", or robotic meta-announcements). Write fluent, insightful prose directly discussing the author's ideas and evidence.
-${isEngineeringDoc ? '5. Engineering Specification: The user has explicitly marked this as an Engineering/Technical document. Formulate relevant mathematical formulas and physics/mechanical principles contained in or governing the material.' : '5. General Domain Specification: The document is not an engineering paper. Treat its concepts, arguments, case studies, or principles with natural domain-appropriate terminology.'}
-6. Target pedagogical level: ${difficulty}.`;
+    const customFocusText = customInstructions && customInstructions.trim().length > 0
+      ? `Custom Emphasis Instructions: "${customInstructions.trim()}"`
+      : '';
 
-    const priorRefinementDirective = priorContext && !forceRegenerate
-      ? `\n[ITERATIVE REFINEMENT DIRECTIVE]:
-A previous study version was stored in the ModeEaseStudy dataset. Refine and enhance this analysis to be deeper, more comprehensive, and address the latest user focus: "${focusArea || 'General mastery'}". Do not repeat identical phrasing; elevate clarity and precision.`
+    const directFocusText = focusArea && focusArea.trim().length > 0
+      ? `Direct Focus Area: "${focusArea.trim()}"`
+      : '';
+
+    // USER-ISOLATED CACHE LOOKUP:
+    // Only reuse cached results if NOT forceRegenerate and for the EXACT same user/guest session
+    const docHash = crypto.createHash('sha256').update(combinedTextContent.slice(0, 10000)).digest('hex').slice(0, 16);
+    const chapterKey = Array.isArray(selectedChapters) ? selectedChapters.sort().join('|') : '';
+    const userCacheKey = `${userScopeKey}:${docHash}:${difficulty}:${targetQCount}:${chapterKey}:${(customInstructions || '').slice(0, 30)}`;
+
+    if (!forceRegenerate && userStudyCache.has(userCacheKey)) {
+      const cachedEntry = userStudyCache.get(userCacheKey)!;
+      aiUsageTracker.cacheHits += 1;
+      return res.json({
+        success: true,
+        generationId: cachedEntry.generationId,
+        version: cachedEntry.version,
+        result: cachedEntry.result,
+        cached: true,
+      });
+    }
+
+    // Prior questions avoidance directive (avoids repeating questions on re-generate)
+    const priorQuestionsList = Array.isArray(priorQuestions) && priorQuestions.length > 0
+      ? priorQuestions.slice(0, 15).map((q: string, idx: number) => `${idx + 1}. ${q}`).join('\n')
       : '';
 
     const regenerateDirective = forceRegenerate
-      ? `\n[MANDATORY RE-GENERATE DIRECTIVE]:
-The user has clicked Re-Generate to force an entirely fresh, clean re-analysis from scratch. Produce completely new, freshly framed questions, alternative conceptual angles, and deep analytical insights. Every question must be distinct and uniquely formulated.`
+      ? `\n[MANDATORY RE-GENERATE DIRECTIVE - SALT ${regenerateSalt || Date.now()}]:
+The user has clicked Re-Generate to obtain an ENTIRELY FRESH, NEWLY REFINED set of learning materials and examination questions.
+MANDATORY RULES:
+1. Do NOT repeat the previous questions, summary phrasing, or explanations.
+${priorQuestionsList ? `PREVIOUS QUESTIONS TO STRICTLY AVOID:\n${priorQuestionsList}\n` : ''}
+2. Formulate COMPLETELY NEW, different practice questions covering alternative nuances, deep applications, and edge cases from the text.
+3. Provide a freshly synthesized executive summary emphasizing new conceptual perspectives and deep synthesis.
+4. Generate new, distinct flashcards and analytical problems.`
       : '';
 
-    const promptText = `${notebookLmGroundingDirective}
-${priorRefinementDirective}
+    // Intelligent content chunking: Focus on selected chapters if requested
+    let focusedContent = combinedTextContent;
+    if (Array.isArray(selectedChapters) && selectedChapters.length > 0) {
+      const sections = detectDocumentSections(combinedTextContent);
+      const matchedSections = sections.filter((s) =>
+        selectedChapters.some((c) => s.title.toLowerCase().includes(c.toLowerCase()) || c.toLowerCase().includes(s.title.toLowerCase()))
+      );
+      if (matchedSections.length > 0) {
+        // Extract relevant chunks
+        const chunks: string[] = [];
+        for (const sec of matchedSections) {
+          if (sec.snippet) chunks.push(sec.snippet);
+        }
+        if (chunks.length > 0) {
+          focusedContent = `--- EMPHASIZED SELECTED CHAPTERS ---\n${chunks.join('\n\n')}\n\n--- DOCUMENT BROADER CONTEXT ---\n${combinedTextContent.slice(0, 40000)}`;
+        }
+      }
+    }
+
+    const activeGenId = generationId || `gen_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    const primaryGenerationPrompt = `You are GPT-6 Astra ("gpt-6-astra"), the Primary AI Generation Engine for EaseStudy.
+Your role is to analyze the extracted document content and generate a comprehensive, publication-grade academic study suite.
+
+STRICT GROUNDING DIRECTIVES:
+1. Grounding Rule (100% Strictness): Ground ALL summaries, takeaways, concepts, and questions strictly in the provided source material without extrapolation or unrelated external claims.
+2. Domain Authenticity: Treat the document in its authentic subject domain. Do NOT impose engineering or physics formulas on non-engineering texts.
+3. Pedagogical Level: ${difficulty}.
+4. Chapter Focus: ${chapterFilterText}
+${customFocusText ? `5. ${customFocusText}` : ''}
+${directFocusText ? `6. ${directFocusText}` : ''}
+${isEngineeringDoc ? '7. Engineering Specification: Formulate governing mathematical formulas and derivations contained in or governing the material.' : '7. General Domain: Formulate concepts using natural qualitative terminology.'}
 ${regenerateDirective}
 
-[GEMINI AI HIGH-PRECISION SEMANTIC GENERATION LAYER]
-Analyze the grounded source material and produce a comprehensive, publication-grade academic study suite:
+REQUIRED OUTPUT STRUCTURE (JSON):
+- topic: Clear, concise subject title
+- difficulty: "${difficulty}"
+- readingTime: Estimated reading duration (e.g. "6 min read")
+- summary:
+  * executiveSummary: 1-3 well-structured paragraphs synthesizing the core arguments, evidence, and conclusions.
+  * keyTakeaways: 4 to 8 high-yield key takeaways as concise points.
+  * coreThemes: Main subject taxonomy tags.
+- keyConcepts: 4 to 8 deep concept breakdowns derived directly from the document with title, explanation, formulaOrExample (if technical), and exam importance.
+- examSuite:
+  * multipleChoice: Exactly ${targetQCount} questions strictly grounded in the document:
+    - 4 realistic, distinct answer options labeled explicitly ("A) ...", "B) ...", "C) ...", "D) ...").
+    - Exactly ONE correct answer.
+    - 3 plausible, relevant distractors.
+    - Rotate the correct answer option evenly across ("A", "B", "C", and "D").
+    - Step-by-step rigorous explanation for why the answer is correct and why the distractors are incorrect.
+  * shortAnswer: 3 to 5 conceptual or analytical questions with complete model solution / ideal answer.
+- flashcards: 6 to 12 active recall cards (front: question/concept, back: concise definition/explanation).
 
-1. Topic & Reading Time: Accurate subject title and realistic reading duration.
-2. Step-by-step Narrative Summary:
-   - Written in small, readable, high-yield text.
-   - Formatted in 1, 2, or 3 coherent paragraphs tailored to the depth of the document.
-   - Followed by 4 to 8 high-yield key takeaways formatted as concise bullet points.
-   - Core thematic keywords and subject taxonomy tags.
-3. Core Concepts Breakdown:
-   - 4 to 8 deep concept breakdowns derived directly from the document.
-   - If engineering is specified (${isEngineeringDoc ? 'TRUE' : 'FALSE'}), formulate exact governing mathematical formulas and derivations. Otherwise, formulate qualitative principles and definitions.
-   - Each concept must feature a clear explanation and its critical exam importance.
-4. Practice Exam Question Suite:
-   - Exactly ${targetQCount} Multiple Choice Questions:
-     * Grounded strictly in the document content.
-     * MANDATORY UNIQUENESS: Every question MUST evaluate a completely distinct concept, statement, or mechanism from the text. NEVER duplicate question stems or explanations.
-     * 4 realistic, distinct answer options per question labeled explicitly ("A) ...", "B) ...", "C) ...", "D) ...").
-     * Rotate the correct answer option evenly across ("A", "B", "C", and "D").
-     * Step-by-step rigorous explanation for why the answer is correct and why the distractors are incorrect.
-   - 3 to 5 Short Answer / Analytical Questions:
-     * Comprehensive conceptual or multi-step analysis questions.
-     * Complete model solution / ideal answer.
-     * Key criteria and essential points required for full credit.
-5. 6 to 12 High-Yield Active Recall Flashcards:
-   - Front: Essential definition or mechanism query.
-   - Back: Accurate, concise, high-yield explanation.
-
-Target Difficulty: ${difficulty}
-${focusArea ? `User Focus Request: "${focusArea}"` : ''}
-${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''}`;
-
-    parts.push({ text: promptText });
+Source Material Text:
+"""
+${focusedContent.slice(0, 100000)}
+"""`;
 
     const schemaConfig = {
       type: Type.OBJECT,
@@ -1723,55 +2189,143 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       required: ['topic', 'difficulty', 'readingTime', 'summary', 'keyConcepts', 'examSuite'],
     };
 
-    const EXCLUSIVE_GEMINI_MODEL = 'gemini-4-argon';
-    let outputText = '';
+    let candidateStudyPackage: any = null;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // STEP 1: Attempt primary generation via OpenAI GPT-6 Astra if OPENAI_API_KEY is configured
+    if (process.env.OPENAI_API_KEY) {
       try {
-        const configObj: any = {
-          responseMimeType: 'application/json',
-          responseSchema: schemaConfig,
-          temperature: forceRegenerate ? 0.65 : 0.35,
-        };
-        const response = await ai.models.generateContent({
-          model: EXCLUSIVE_GEMINI_MODEL,
-          contents: { parts },
-          config: configObj,
+        console.log('[Dual-AI Pipeline] Engaging Primary Engine: OpenAI GPT-6 Astra ("gpt-6-astra")...');
+        const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-6-astra',
+            messages: [
+              {
+                role: 'system',
+                content: 'You are GPT-6 Astra, the Primary AI Generation Engine for EaseStudy. Output strictly valid JSON matching the requested study schema.',
+              },
+              { role: 'user', content: primaryGenerationPrompt },
+            ],
+            response_format: { type: 'json_object' },
+            temperature: forceRegenerate ? 0.75 : 0.4,
+          }),
         });
 
-        if (response && response.text) {
-          outputText = response.text;
-          break;
+        if (openaiRes.ok) {
+          const gptData = await openaiRes.json();
+          const contentStr = gptData.choices?.[0]?.message?.content;
+          if (contentStr) {
+            candidateStudyPackage = JSON.parse(contentStr);
+            recordAiUsage('gpt-6-astra', primaryGenerationPrompt.length, contentStr.length, userScopeKey);
+            console.log('[Dual-AI Pipeline] GPT-6 Astra primary generation succeeded.');
+          }
         }
-      } catch (callErr: any) {
-        console.warn(`[Gemini 4 Argon Pipeline] ${EXCLUSIVE_GEMINI_MODEL} attempt ${attempt} notice:`, cleanErrorMessage(callErr));
-        if (attempt < 3) {
-          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      } catch (openaiErr: any) {
+        console.warn('[Dual-AI Pipeline] GPT-6 Astra primary generation notice:', openaiErr?.message);
+      }
+    }
+
+    // Primary generation via Gemini 4 Argon with GPT-6 Astra pedagogical framework
+    if (!candidateStudyPackage) {
+      console.log('[Dual-AI Pipeline] Primary Generation via Gemini 4 Argon with GPT-6 Astra pedagogical framework...');
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const configObj: any = {
+            responseMimeType: 'application/json',
+            responseSchema: schemaConfig,
+            temperature: forceRegenerate ? 0.75 : 0.4,
+          };
+          const response = await ai.models.generateContent({
+            model: 'gemini-4-argon',
+            contents: [{ text: primaryGenerationPrompt }],
+            config: configObj,
+          });
+
+          if (response && response.text) {
+            candidateStudyPackage = JSON.parse(response.text);
+            recordAiUsage('gemini-4-argon', primaryGenerationPrompt.length, response.text.length, userScopeKey);
+            break;
+          }
+        } catch (callErr: any) {
+          console.warn(`[Dual-AI Primary Engine] Attempt ${attempt} notice:`, cleanErrorMessage(callErr));
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 800));
         }
       }
     }
 
-    if (!outputText) {
-      console.info('[EaseStudy] Remote AI fetch notice: using synthesized study package from document content.');
-      const fallbackResult = generateFallbackStudyPackage(
-        combinedTextContent,
-        fileData?.fileName || '',
+    if (!candidateStudyPackage) {
+      console.log('[Dual-AI Pipeline] Activating safe document-grounded processing recovery...');
+      candidateStudyPackage = generateFallbackStudyPackage(
+        focusedContent,
+        fileData?.fileName || 'Document Study Guide',
         difficulty,
         targetQCount,
-        focusArea,
+        focusArea || customInstructions || '',
         isEngineeringDoc
       );
-      return res.json({ success: true, result: fallbackResult });
     }
 
-    const parsed = JSON.parse(outputText);
+    // STEP 2: INDEPENDENT VERIFICATION ENGINE — GEMINI 4 ARGON ("gemini-4-argon")
+    // Selective verification: Reviews GPT-6 Astra candidate package once against source text.
+    // Approves valid items, corrects only failed items. Maximum 3 refinement attempts.
+    console.log('[Dual-AI Pipeline] Engaging Independent Verification Engine: Gemini 4 Argon ("gemini-4-argon")...');
+    aiUsageTracker.verificationPasses += 1;
 
-    // =========================================================================
-    // ModeEaseStudy FACT-CHECKING, VALIDATION & REFINEMENT LAYER:
-    // Check that generated result conforms strictly to requirements and ground rules
-    // =========================================================================
+    const verificationPrompt = `You are Gemini 4 Argon, the Independent Verification Engine for EaseStudy.
+Your role is to rigorously inspect and verify the candidate learning materials generated by GPT-6 Astra against the actual source text below.
+
+VERIFICATION RULES:
+1. Strict Fact-Grounding: Verify that all summary claims, concept explanations, and questions are derived directly from the source text. Discard or correct any unsupported claims or invented facts.
+2. MCQ Validation: Verify that each multiple choice question has EXACTLY ONE unambiguously correct answer based on the text, and THREE plausible distractors. Validate that the marked correctAnswer matches the explanation. If not, correct it immediately.
+3. Distractor Quality: Ensure distractors are relevant to the topic but demonstrably incorrect according to the source text.
+4. Domain Authenticity: Verify that non-technical documents do NOT contain forced mechanical or physics formulas. If engineering is marked false, remove any misplaced formulas.
+5. Chapter Alignment: Confirm the materials align with the user's selected chapters: '${chapterFilterText}' and custom instructions: '${customFocusText || 'None'}'.
+6. Return the final verified, corrected, and hardened study package in the required JSON schema.
+
+ORIGINAL SOURCE TEXT:
+"""
+${focusedContent.slice(0, 80000)}
+"""
+
+CANDIDATE STUDY PACKAGE FOR VERIFICATION:
+"""
+${JSON.stringify(candidateStudyPackage).slice(0, 80000)}
+"""`;
+
+    let finalVerifiedOutput = candidateStudyPackage;
+
+    for (let verifyAttempt = 1; verifyAttempt <= 2; verifyAttempt++) {
+      try {
+        const verifyResponse = await ai.models.generateContent({
+          model: 'gemini-4-argon',
+          contents: [{ text: verificationPrompt }],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: schemaConfig,
+            temperature: 0.2, // Low temperature for strict verification accuracy
+          },
+        });
+
+        if (verifyResponse && verifyResponse.text) {
+          finalVerifiedOutput = JSON.parse(verifyResponse.text);
+          recordAiUsage('gemini-4-argon', verificationPrompt.length, verifyResponse.text.length, userScopeKey);
+          console.log('[Dual-AI Pipeline] Gemini 4 Argon independent verification pass completed.');
+          break;
+        }
+      } catch (verifyErr: any) {
+        console.warn(`[Dual-AI Verification] Attempt ${verifyAttempt} notice:`, cleanErrorMessage(verifyErr));
+        if (verifyAttempt < 2) await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+
+    const parsed = finalVerifiedOutput;
+
+    // ModeEaseStudy Post-Verification Sanitization & Domain Integrity Check
     if (parsed) {
-      // Strip any accidental boilerplate phrases from all fields
       const sanitizeText = (txt: any): any => {
         if (typeof txt === 'string') {
           return txt
@@ -1827,7 +2381,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
         // If duplicate questions were purged and count is below targetQCount, backfill with diverse synthesized questions
         if (uniqueMcqs.length < targetQCount) {
           const synthesized = generateDiverseMCQs(
-            combinedTextContent,
+            focusedContent,
             parsed.topic || 'Subject Overview',
             targetQCount,
             difficulty,
@@ -1849,7 +2403,7 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
         parsed.examSuite.multipleChoice = uniqueMcqs;
       }
 
-      // Domain Purity Check: If user did NOT specify engineering, strip any stray engineering formulas/keywords
+      // Domain Purity Check: If user did NOT specify engineering, strip any stray engineering formulas
       if (!isEngineeringDoc && parsed.keyConcepts) {
         parsed.keyConcepts = parsed.keyConcepts.map((c: any) => {
           const formula = c.formulaOrExample || '';
@@ -1870,7 +2424,21 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       }
     }
 
-    res.json({ success: true, result: parsed });
+    // Cache the unique result exclusively for THIS user/session
+    const generationVersion = Date.now();
+    userStudyCache.set(userCacheKey, {
+      result: parsed,
+      generationId: activeGenId,
+      version: generationVersion,
+      timestamp: Date.now(),
+    });
+
+    res.json({
+      success: true,
+      generationId: activeGenId,
+      version: generationVersion,
+      result: parsed,
+    });
   } catch (err: any) {
     console.error('EaseStudy analyze error:', err);
     const fallbackResult = generateFallbackStudyPackage(
@@ -1881,7 +2449,12 @@ ${combinedTextContent ? `\n\nSource Material Text:\n${combinedTextContent}` : ''
       req.body?.focusArea || '',
       req.body?.isEngineeringDoc || false
     );
-    res.json({ success: true, result: fallbackResult });
+    res.json({
+      success: true,
+      generationId: `fallback_${Date.now()}`,
+      version: Date.now(),
+      result: fallbackResult,
+    });
   }
 });
 
@@ -2088,21 +2661,27 @@ app.post(['/api/easestudy/chat', '/api/easestudy/chat/'], async (req, res) => {
     const cleanContext = (documentText || '').slice(0, 50000);
 
     const chatPrompt = `You are the EaseStudy Intelligent Document Assistant.
-Your primary role is to answer questions strictly grounded in the user's study document.
+Your primary directive is to provide a DIRECT, IMMEDIATE, AUTHORITATIVE answer strictly grounded in the document below.
 
 DOCUMENT TOPIC: "${topic}"
 
 SOURCE DOCUMENT CONTENT:
 """
-${cleanContext || 'No document text provided. Rely strictly on verified general study principles.'}
+${cleanContext || 'No document text provided.'}
 """
 
-GROUNDING & INTEGRITY RULES:
-1. Grounding Rule (100% Strictness): Answer strictly using facts, arguments, definitions, or equations explicitly stated in the document above.
-2. If the user asks about something not mentioned in the source material, state politely and clearly: "This topic is not addressed in your uploaded document." Then provide a brief, helpful hint where possible.
-3. Natural Domain Tone: Maintain the natural voice of the subject matter. Do NOT force engineering jargon or formulas onto non-engineering materials.
-4. Formatting: Keep responses structured, concise, and easy to read during study sessions. Use bullet points or numbered steps where appropriate.
-5. Provide a short quote or reference snippet from the text supporting your answer if applicable.
+CRITICAL DIRECT-ANSWER DIRECTIVES:
+1. GIVE A DIRECT ANSWER IMMEDIATELY IN THE VERY FIRST SENTENCE. State the answer clearly without hesitation.
+2. NEVER start with conversational meta-preamble, introductory filler, or disclaimers such as:
+   - "Based on the provided document..."
+   - "According to the uploaded material..."
+   - "In the source text provided..."
+   - "As an AI assistant..."
+   - "The document states that..."
+3. State the exact definition, principle, formula, conclusion, or fact directly.
+4. If explaining steps, mechanisms, or multi-point answers, use clean, concise bullet points immediately following the direct answer.
+5. If the requested information is absent from the document, state concisely: "This information is not addressed in your uploaded document."
+6. Provide an exact supporting quote from the text at the end.
 
 USER QUESTION: "${message}"`;
 
@@ -2125,8 +2704,25 @@ USER QUESTION: "${message}"`;
       }
     }
 
-    if (!reply) {
-      reply = `Based on the provided material for "${topic}", please refer directly to the primary assertions and key takeaways highlighted in the executive summary. For specific inquiries, re-examine the core concepts section.`;
+    if (!reply && cleanContext) {
+      // Find the most relevant sentences in cleanContext that match words from user question
+      const queryWords = message.toLowerCase().split(/\W+/).filter((w: string) => w.length > 2);
+      const sentences = cleanContext.split(/(?<=[.?!])\s+/);
+      const matches = sentences
+        .map((s: string) => ({
+          sentence: s.trim(),
+          score: queryWords.filter((w: string) => s.toLowerCase().includes(w)).length,
+        }))
+        .filter((m: { sentence: string; score: number }) => m.score > 0)
+        .sort((a: { sentence: string; score: number }, b: { sentence: string; score: number }) => b.score - a.score);
+
+      if (matches.length > 0) {
+        reply = `${matches[0].sentence}${matches[1] ? ' ' + matches[1].sentence : ''}`;
+      } else {
+        reply = cleanContext.slice(0, 300);
+      }
+    } else if (!reply) {
+      reply = `Refer directly to the core concepts and key takeaways extracted from "${topic}".`;
     }
 
     // Extract potential citation quotes

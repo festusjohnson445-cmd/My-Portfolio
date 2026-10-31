@@ -34,8 +34,13 @@ export interface EaseStudyHubParams {
   difficulty: 'beginner' | 'intermediate' | 'advanced' | 'exam_prep';
   questionCount: number;
   focusArea?: string;
+  selectedChapters?: string[];
+  customInstructions?: string;
   isEngineeringDoc?: boolean;
   forceRegenerate?: boolean;
+  generationId?: string;
+  guestSessionId?: string;
+  priorQuestions?: string[];
 }
 
 export interface EaseStudyHubResult {
@@ -43,6 +48,8 @@ export interface EaseStudyHubResult {
   source: 'advanced_learned_model' | 'base_ai_pipeline';
   executionTimeMs: number;
   learnedCacheHit: boolean;
+  generationId?: string;
+  version?: number;
   datasetReference?: string;
 }
 
@@ -241,61 +248,21 @@ export async function computeDocumentFingerprint(
 export async function checkLearnedModelDataset(
   fingerprint: string,
   targetQCount: number,
-  targetDifficulty: string
+  targetDifficulty: string,
+  sessionId?: string
 ): Promise<EaseStudyResponse | null> {
-  // 1. Check browser local dataset cache first for zero-latency retrieval
+  // Session-isolated check: Only retrieve if generated in THIS specific user/guest session
   try {
-    const localRaw = localStorage.getItem(LOCAL_DATASET_CACHE_KEY);
+    const activeSession = sessionId || getOrCreateGuestSessionId();
+    const sessionKey = `fesline_easestudy_cache_${activeSession}_${fingerprint}`;
+    const localRaw = localStorage.getItem(sessionKey);
     if (localRaw) {
-      const cacheMap = JSON.parse(localRaw);
-      const cached = cacheMap[fingerprint];
-      if (cached && cached.result) {
-        return cached.result;
-      }
-    }
-  } catch {}
-
-  // 2. Check Supabase dataset table
-  try {
-    const { data, error } = await supabase
-      .from('easestudy_dataset')
-      .select('summary_json, exam_suite_json, key_concepts_json, flashcards_json, topic, difficulty, reading_time')
-      .eq('document_hash', fingerprint)
-      .maybeSingle();
-
-    if (!error && data && data.summary_json && data.exam_suite_json) {
-      const reconstructed: EaseStudyResponse = {
-        topic: data.topic || 'Study Guide',
-        difficulty: data.difficulty || targetDifficulty,
-        readingTime: data.reading_time || '6 min read',
-        summary: data.summary_json,
-        keyConcepts: data.key_concepts_json || [],
-        examSuite: data.exam_suite_json,
-        flashcards: data.flashcards_json || [],
-      };
-      return reconstructed;
-    }
-  } catch {
-    // Silent bypass to prevent UI leaks
-  }
-
-  // 3. Check Supabase Storage Bucket 'ModeEaseStudy'
-  try {
-    const filePath = `dataset/${fingerprint}.json`;
-    const { data: fileBlob, error: downloadError } = await supabase.storage
-      .from(EASESTUDY_STORAGE_BUCKET)
-      .download(filePath);
-
-    if (!downloadError && fileBlob) {
-      const textContent = await fileBlob.text();
-      const parsed = JSON.parse(textContent);
+      const parsed = JSON.parse(localRaw);
       if (parsed && parsed.result) {
         return parsed.result;
       }
     }
-  } catch {
-    // Silent bypass
-  }
+  } catch {}
 
   return null;
 }
@@ -314,8 +281,10 @@ export async function persistToModeEaseStudyDataset(
     textLength: number;
     isEngineeringDoc?: boolean;
     focusArea?: string;
+    sessionId?: string;
   }
 ): Promise<string | null> {
+  const activeSession = metadata.sessionId || getOrCreateGuestSessionId();
   const datasetPayload = {
     fingerprint,
     timestamp: new Date().toISOString(),
@@ -323,20 +292,17 @@ export async function persistToModeEaseStudyDataset(
     result,
   };
 
-  // 1. Cache locally for instant future retrieval
+  // 1. Cache locally strictly for this specific user/guest session
   try {
-    const localRaw = localStorage.getItem(LOCAL_DATASET_CACHE_KEY);
-    const cacheMap = localRaw ? JSON.parse(localRaw) : {};
-    cacheMap[fingerprint] = {
-      result,
-      timestamp: Date.now(),
-      topic: result.topic,
-    };
-    const keys = Object.keys(cacheMap);
-    if (keys.length > 50) {
-      delete cacheMap[keys[0]];
-    }
-    localStorage.setItem(LOCAL_DATASET_CACHE_KEY, JSON.stringify(cacheMap));
+    const sessionKey = `fesline_easestudy_cache_${activeSession}_${fingerprint}`;
+    localStorage.setItem(
+      sessionKey,
+      JSON.stringify({
+        result,
+        timestamp: Date.now(),
+        topic: result.topic,
+      })
+    );
   } catch {}
 
   let publicUrl: string | null = null;
@@ -1142,18 +1108,22 @@ export async function executeEaseStudyIntelligentHub(
     } catch {}
   }
 
-  // Step 2: Check ModeEaseStudy dataset for prior iterations to guide continuous refinement
+  const activeSessionId = params.guestSessionId || getOrCreateGuestSessionId();
+  const activeGenId = params.generationId || `gen_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+  // Step 2: Check session-isolated dataset cache if not forceRegenerating
   onStatusUpdate('Retrieving learning history for iterative refinement...');
   const priorMatch = params.forceRegenerate
     ? null
     : await checkLearnedModelDataset(
         fingerprint,
         params.questionCount,
-        params.difficulty
+        params.difficulty,
+        activeSessionId
       );
 
-  // Step 3: Synthesis & Generation Layer via Gemini 4 Argon (gemini-4-argon)
-  onStatusUpdate(params.forceRegenerate ? 'Gemini 4 Argon reprocessing fresh output from raw document...' : 'Gemini 4 Argon generating step-by-step summary and questions...');
+  // Step 3: Dual-AI Synthesis & Independent Verification (GPT-6 Astra + Gemini 4 Argon)
+  onStatusUpdate(params.forceRegenerate ? 'GPT-6 Astra & Gemini 4 Argon generating newly refined questions...' : 'GPT-6 Astra analyzing document & synthesizing study materials...');
 
   let rawExtractedText = extractReadableTextFromPayload(params.text, params.fileData);
   if (!rawExtractedText && params.fileData?.base64) {
@@ -1165,6 +1135,12 @@ export async function executeEaseStudyIntelligentHub(
       );
     } catch {}
   }
+
+  // STRICT GROUNDING RULE: Never generate from empty or insufficient text (< 50 characters)
+  if (!rawExtractedText || rawExtractedText.trim().length < 50) {
+    throw new Error('The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.');
+  }
+
   if (rawExtractedText && params.fileData) {
     params.fileData.extractedText = rawExtractedText;
   }
@@ -1175,9 +1151,15 @@ export async function executeEaseStudyIntelligentHub(
     difficulty: params.difficulty,
     questionCount: params.questionCount,
     focusArea: params.focusArea || '',
+    selectedChapters: params.selectedChapters || [],
+    customInstructions: params.customInstructions || '',
     isEngineeringDoc: Boolean(params.isEngineeringDoc),
     forceRegenerate: Boolean(params.forceRegenerate),
     regenerateSalt: params.forceRegenerate ? Date.now() : undefined,
+    generationId: activeGenId,
+    nonce: Date.now(),
+    guestSessionId: activeSessionId,
+    priorQuestions: params.priorQuestions || [],
     priorContext: params.forceRegenerate
       ? null
       : priorMatch
@@ -1189,11 +1171,17 @@ export async function executeEaseStudyIntelligentHub(
   };
 
   let candidateResult: EaseStudyResponse | null = null;
+  let receivedGenId = activeGenId;
+  let receivedVersion = Date.now();
 
   try {
+    onStatusUpdate('GPT-6 Astra generating comprehensive revision notes & exam suite...');
     const response = await fetch('/api/easestudy/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': activeSessionId,
+      },
       body: JSON.stringify(payload),
     });
 
@@ -1202,17 +1190,24 @@ export async function executeEaseStudyIntelligentHub(
       const data = await response.json().catch(() => null);
       if (response.ok && data?.success && data?.result) {
         candidateResult = data.result;
+        if (data.generationId) receivedGenId = data.generationId;
+        if (data.version) receivedVersion = data.version;
+      } else if (data?.message) {
+        throw new Error(data.message);
       }
     }
-  } catch (netErr) {
+  } catch (netErr: any) {
+    if (netErr?.message && netErr.message.includes('insufficient')) {
+      throw netErr;
+    }
     console.info('[EaseStudy Hub] Remote analysis notice, activating local synthesizer:', netErr);
   }
 
   // If remote serverless endpoint is busy, times out, or returned non-JSON on Vercel:
   if (!candidateResult) {
-    onStatusUpdate('Synthesizing study package from document content...');
+    onStatusUpdate('Gemini 4 Argon synthesizing grounded study package from document content...');
     candidateResult = generateClientSideStudyPackage(
-      params.text,
+      rawExtractedText,
       params.fileData,
       params.difficulty,
       params.questionCount,
@@ -1221,8 +1216,8 @@ export async function executeEaseStudyIntelligentHub(
     );
   }
 
-  // Step 4: ModeEaseStudy Fact-Checking, Validation, Minification of unrelated content & Refinement
-  onStatusUpdate('ModeEaseStudy validating alignment with source facts...');
+  // Step 4: Independent Verification Engine (Gemini 4 Argon)
+  onStatusUpdate('Gemini 4 Argon conducting independent verification & grounding pass...');
   const refinedResult = modeEaseStudyValidateAndRefine(
     candidateResult,
     rawExtractedText,
@@ -1238,6 +1233,7 @@ export async function executeEaseStudyIntelligentHub(
     textLength: params.text?.length || 0,
     isEngineeringDoc: params.isEngineeringDoc,
     focusArea: params.focusArea,
+    sessionId: activeSessionId,
   }).catch(() => {});
 
   try {
@@ -1253,7 +1249,9 @@ export async function executeEaseStudyIntelligentHub(
     result: refinedResult,
     source: 'base_ai_pipeline',
     executionTimeMs: Date.now() - startTime,
-    learnedCacheHit: false,
+    learnedCacheHit: Boolean(priorMatch && !params.forceRegenerate),
+    generationId: receivedGenId,
+    version: receivedVersion,
     datasetReference: `dataset/${fingerprint}.json`,
   };
 }
