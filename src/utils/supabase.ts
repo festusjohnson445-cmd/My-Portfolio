@@ -71,7 +71,80 @@ export const SUPABASE_BUCKETS = {
   AVATARS: 'avatars',
   MATERIALS: 'materials',
   MODE_EASE_STUDY: 'ModeEaseStudy',
+  EASESTUDY_DOCUMENTS: 'easestudy-documents',
 } as const;
+
+// Project-Specific Table Constants
+export const EASESTUDY_TABLES = {
+  DOCUMENTS: 'easestudy_documents',
+  CHUNKS: 'easestudy_document_chunks',
+  MATERIALS: 'easestudy_learning_materials',
+  JOBS: 'easestudy_processing_jobs',
+} as const;
+
+// ============================================================================
+// EASESTUDY SUPABASE TYPES & INTERFACES
+// ============================================================================
+
+export interface EaseStudyDocumentRecord {
+  id: string;
+  user_id: string;
+  title: string;
+  file_name: string;
+  file_size: number;
+  file_type: string;
+  storage_path: string;
+  storage_bucket: string;
+  public_url?: string;
+  status: 'stored_and_verified' | 'processing' | 'completed' | 'error';
+  document_hash?: string;
+  metadata?: Record<string, any>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EaseStudyChunkRecord {
+  id?: number | string;
+  document_id: string;
+  chunk_index: number;
+  total_chunks: number;
+  section_title?: string;
+  page_number?: number;
+  content: string;
+  character_count: number;
+  token_estimate?: number;
+  created_at?: string;
+}
+
+export interface EaseStudyMaterialsRecord {
+  id: string;
+  document_id?: string;
+  document_hash?: string;
+  topic: string;
+  difficulty: string;
+  reading_time: string;
+  summary_json: any;
+  key_concepts_json: any;
+  exam_suite_json: any;
+  flashcards_json?: any;
+  page_analysis_json?: any;
+  version?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EaseStudyJobRecord {
+  id: string;
+  document_id: string;
+  job_type: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  stage: string;
+  error_message?: string | null;
+  result_summary?: any;
+  created_at?: string;
+  updated_at?: string;
+}
 
 // Cache active owner user ID
 let cachedOwnerUid: string | null = null;
@@ -2110,79 +2183,155 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
 
 -- ============================================================================
--- 5. EASESTUDY PERSISTENT DATASET & CONTINUOUS LEARNING RECORDS
+-- 5. EASESTUDY PROJECT STORAGE & DATABASE TABLES DDL
 -- ============================================================================
 
--- Create public 'ModeEaseStudy' storage bucket
+-- Create public 'easestudy-documents' storage bucket
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('ModeEaseStudy', 'ModeEaseStudy', true, 52428800, NULL)
-ON CONFLICT (id) DO UPDATE SET public = true;
+VALUES ('easestudy-documents', 'easestudy-documents', true, 26214400, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 26214400;
 
-DROP POLICY IF EXISTS "Public Read ModeEaseStudy Bucket" ON storage.objects;
-CREATE POLICY "Public Read ModeEaseStudy Bucket"
+-- Storage RLS Policies for easestudy-documents
+DROP POLICY IF EXISTS "Public Read easestudy-documents Bucket" ON storage.objects;
+CREATE POLICY "Public Read easestudy-documents Bucket"
 ON storage.objects FOR SELECT TO public
-USING (bucket_id = 'ModeEaseStudy');
+USING (bucket_id = 'easestudy-documents');
 
-DROP POLICY IF EXISTS "Public Upload ModeEaseStudy Bucket" ON storage.objects;
-CREATE POLICY "Public Upload ModeEaseStudy Bucket"
+DROP POLICY IF EXISTS "Public Upload easestudy-documents Bucket" ON storage.objects;
+CREATE POLICY "Public Upload easestudy-documents Bucket"
 ON storage.objects FOR INSERT TO public
-WITH CHECK (bucket_id = 'ModeEaseStudy');
+WITH CHECK (bucket_id = 'easestudy-documents');
 
-DROP POLICY IF EXISTS "Public Update ModeEaseStudy Bucket" ON storage.objects;
-CREATE POLICY "Public Update ModeEaseStudy Bucket"
+DROP POLICY IF EXISTS "Public Update easestudy-documents Bucket" ON storage.objects;
+CREATE POLICY "Public Update easestudy-documents Bucket"
 ON storage.objects FOR UPDATE TO public
-USING (bucket_id = 'ModeEaseStudy');
+USING (bucket_id = 'easestudy-documents');
 
--- Persistent Dataset Table: Stores verified, high-yield study packages
-CREATE TABLE IF NOT EXISTS public.easestudy_dataset (
+DROP POLICY IF EXISTS "Public Delete easestudy-documents Bucket" ON storage.objects;
+CREATE POLICY "Public Delete easestudy-documents Bucket"
+ON storage.objects FOR DELETE TO public
+USING (bucket_id = 'easestudy-documents');
+
+-- 1. File Metadata Table: easestudy_documents
+CREATE TABLE IF NOT EXISTS public.easestudy_documents (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'guest',
+  title TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_size BIGINT NOT NULL,
+  file_type TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  storage_bucket TEXT NOT NULL DEFAULT 'easestudy-documents',
+  public_url TEXT,
+  status TEXT DEFAULT 'stored_and_verified',
+  document_hash TEXT,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.easestudy_documents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read easestudy_documents" ON public.easestudy_documents;
+CREATE POLICY "Public Read easestudy_documents"
+ON public.easestudy_documents FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Write easestudy_documents" ON public.easestudy_documents;
+CREATE POLICY "Public Write easestudy_documents"
+ON public.easestudy_documents FOR ALL TO public
+USING (true) WITH CHECK (true);
+
+-- 2. Text Segments Table: easestudy_document_chunks
+CREATE TABLE IF NOT EXISTS public.easestudy_document_chunks (
   id BIGSERIAL PRIMARY KEY,
-  document_hash TEXT UNIQUE NOT NULL,
-  title TEXT NOT NULL DEFAULT 'Study Guide',
+  document_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  total_chunks INTEGER NOT NULL DEFAULT 1,
+  section_title TEXT,
+  page_number INTEGER,
+  content TEXT NOT NULL,
+  character_count INTEGER,
+  token_estimate INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_easestudy_chunks_doc_id ON public.easestudy_document_chunks(document_id);
+
+ALTER TABLE public.easestudy_document_chunks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read easestudy_document_chunks" ON public.easestudy_document_chunks;
+CREATE POLICY "Public Read easestudy_document_chunks"
+ON public.easestudy_document_chunks FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Write easestudy_document_chunks" ON public.easestudy_document_chunks;
+CREATE POLICY "Public Write easestudy_document_chunks"
+ON public.easestudy_document_chunks FOR ALL TO public
+USING (true) WITH CHECK (true);
+
+-- 3. Summaries & Exams Table: easestudy_learning_materials
+CREATE TABLE IF NOT EXISTS public.easestudy_learning_materials (
+  id TEXT PRIMARY KEY,
+  document_id TEXT,
+  document_hash TEXT,
+  topic TEXT NOT NULL,
   difficulty TEXT DEFAULT 'intermediate',
   reading_time TEXT DEFAULT '6 min read',
   summary_json JSONB DEFAULT '{}'::jsonb,
   key_concepts_json JSONB DEFAULT '[]'::jsonb,
   exam_suite_json JSONB DEFAULT '{}'::jsonb,
   flashcards_json JSONB DEFAULT '[]'::jsonb,
-  storage_path TEXT,
+  page_analysis_json JSONB DEFAULT '[]'::jsonb,
+  version INTEGER DEFAULT 1,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE public.easestudy_dataset ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_easestudy_materials_doc_id ON public.easestudy_learning_materials(document_id);
 
-DROP POLICY IF EXISTS "Public Read EaseStudy Dataset" ON public.easestudy_dataset;
-CREATE POLICY "Public Read EaseStudy Dataset"
-ON public.easestudy_dataset FOR SELECT TO public
+ALTER TABLE public.easestudy_learning_materials ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read easestudy_learning_materials" ON public.easestudy_learning_materials;
+CREATE POLICY "Public Read easestudy_learning_materials"
+ON public.easestudy_learning_materials FOR SELECT TO public
 USING (true);
 
-DROP POLICY IF EXISTS "Public Write EaseStudy Dataset" ON public.easestudy_dataset;
-CREATE POLICY "Public Write EaseStudy Dataset"
-ON public.easestudy_dataset FOR ALL TO public
+DROP POLICY IF EXISTS "Public Write easestudy_learning_materials" ON public.easestudy_learning_materials;
+CREATE POLICY "Public Write easestudy_learning_materials"
+ON public.easestudy_learning_materials FOR ALL TO public
 USING (true) WITH CHECK (true);
 
--- Learning Interaction Records: Tracks model iterations, test evaluations, and scores
-CREATE TABLE IF NOT EXISTS public.easestudy_learning_records (
-  id BIGSERIAL PRIMARY KEY,
-  document_hash TEXT NOT NULL,
-  source_model TEXT DEFAULT 'notebooklm_gemini_pipeline',
-  question_count INTEGER DEFAULT 15,
-  score_achieved INTEGER,
-  total_questions INTEGER DEFAULT 15,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 4. Status Tracking Table: easestudy_processing_jobs
+CREATE TABLE IF NOT EXISTS public.easestudy_processing_jobs (
+  id TEXT PRIMARY KEY,
+  document_id TEXT,
+  job_type TEXT DEFAULT 'document_analysis',
+  status TEXT DEFAULT 'pending',
+  progress INTEGER DEFAULT 0,
+  stage TEXT,
+  error_message TEXT,
+  result_summary JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE public.easestudy_learning_records ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_easestudy_jobs_doc_id ON public.easestudy_processing_jobs(document_id);
 
-DROP POLICY IF EXISTS "Public Read EaseStudy Records" ON public.easestudy_learning_records;
-CREATE POLICY "Public Read EaseStudy Records"
-ON public.easestudy_learning_records FOR SELECT TO public
+ALTER TABLE public.easestudy_processing_jobs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read easestudy_processing_jobs" ON public.easestudy_processing_jobs;
+CREATE POLICY "Public Read easestudy_processing_jobs"
+ON public.easestudy_processing_jobs FOR SELECT TO public
 USING (true);
 
-DROP POLICY IF EXISTS "Public Write EaseStudy Records" ON public.easestudy_learning_records;
-CREATE POLICY "Public Write EaseStudy Records"
-ON public.easestudy_learning_records FOR INSERT TO public
-WITH CHECK (true);
+DROP POLICY IF EXISTS "Public Write easestudy_processing_jobs" ON public.easestudy_processing_jobs;
+CREATE POLICY "Public Write easestudy_processing_jobs"
+ON public.easestudy_processing_jobs FOR ALL TO public
+USING (true) WITH CHECK (true);
 
-ALTER PUBLICATION supabase_realtime ADD TABLE public.easestudy_dataset;
+-- Realtime Publications
+ALTER PUBLICATION supabase_realtime ADD TABLE public.easestudy_documents;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.easestudy_processing_jobs;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.easestudy_learning_materials;
 `;

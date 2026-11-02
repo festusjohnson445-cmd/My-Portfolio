@@ -1444,6 +1444,9 @@ function generateFallbackStudyPackage(
         'Explanation of analytical evaluation methodologies',
         'Connection between theoretical principles and practical application',
       ],
+      markingGuidance: 'Award 2 marks for clear identification of foundational definitions, 2 marks for explanation of analytical methodologies, and 1 mark for connecting principles to practical application (Total: 5 marks).',
+      questionType: 'discussion',
+      practicalApplication: 'Applies to synthesizing multi-source findings into an executive briefing or thesis review.',
     },
     {
       id: 2,
@@ -1455,6 +1458,9 @@ function generateFallbackStudyPackage(
         'Articulation of primary constraints or boundaries',
         'Emphasis on systematic validation and factual accuracy',
       ],
+      markingGuidance: 'Award 2.5 marks for each correctly identified constraint with accurate textual citation (Total: 5 marks).',
+      questionType: 'practical',
+      practicalApplication: 'Directly informs risk mitigation strategies and operational constraint analysis.',
     },
     {
       id: 3,
@@ -1466,7 +1472,28 @@ function generateFallbackStudyPackage(
         'Reference to specific textual evidence or mechanisms',
         'Analysis of boundary conditions and edge cases',
       ],
+      markingGuidance: 'Award 3 marks for textual corroboration analysis and 2 marks for edge-case boundary reasoning (Total: 5 marks).',
+      questionType: 'discussion',
+      practicalApplication: 'Essential for evaluating competitive assertions, evidence rigor, and audit defenses.',
     },
+  ];
+
+  const pageAnalysisList = [
+    {
+      sectionOrPage: 'Section 1 / Overview',
+      coreSubject: topic,
+      keyInsight: rawSentences[0] || 'Foundational principles and operational definitions as structured in the source material.',
+    },
+    ...(rawSentences.length > 1 ? [{
+      sectionOrPage: 'Section 2 / Core Arguments',
+      coreSubject: 'Core Mechanics & Principles',
+      keyInsight: rawSentences[1] || 'Systematic progression of arguments and evidence evaluation.',
+    }] : []),
+    ...(rawSentences.length > 2 ? [{
+      sectionOrPage: 'Section 3 / Synthesis & Application',
+      coreSubject: 'Synthesis & Implications',
+      keyInsight: rawSentences[2] || 'Practical translation of conclusions, boundary constraints, and practical takeaways.',
+    }] : []),
   ];
 
   const flashcards = [
@@ -1495,6 +1522,7 @@ function generateFallbackStudyPackage(
     summary: {
       executiveSummary: `${paragraph1}\n\n${paragraph2}\n\n${paragraph3}`,
       keyTakeaways,
+      pageAnalysis: pageAnalysisList,
       coreThemes,
     },
     keyConcepts,
@@ -1601,10 +1629,17 @@ function recordAiUsage(
  */
 async function extractTextFromPdfBuffer(pdfBuffer: Buffer): Promise<{ text: string; pageCount: number }> {
   try {
+    let standardFontsPath: string | undefined;
+    try {
+      standardFontsPath = path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts/');
+    } catch {}
+
     const loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(pdfBuffer),
+      standardFontDataUrl: standardFontsPath,
       useSystemFonts: true,
       disableFontFace: true,
+      verbosity: 0,
     });
     const pdfDoc = await loadingTask.promise;
     const numPages = pdfDoc.numPages;
@@ -1642,12 +1677,43 @@ async function extractTextFromPdfBuffer(pdfBuffer: Buffer): Promise<{ text: stri
       }
     }
 
+    let combined = pageTexts.join('\n\n');
+    // If text extraction yielded fewer than 50 characters, scan uncompressed PDF streams
+    if (combined.length < 50) {
+      const rawBufStr = pdfBuffer.toString('latin1');
+      const textMatches: string[] = [];
+      const regex = /\(([^)]+)\)\s*Tj|\[([^\]]+)\]\s*TJ/g;
+      let match;
+      while ((match = regex.exec(rawBufStr)) !== null) {
+        const str = match[1] || match[2] || '';
+        const cleaned = str.replace(/\\([()\\])/g, '$1').replace(/\\[0-7]{1,3}/g, ' ').trim();
+        if (cleaned.length > 2) textMatches.push(cleaned);
+      }
+      if (textMatches.length > 3) {
+        combined = textMatches.join(' ');
+      }
+    }
+
     return {
-      text: pageTexts.join('\n\n'),
+      text: combined,
       pageCount: numPages,
     };
   } catch (err: any) {
     console.warn('[PDF Extraction] pdfjs error:', err?.message || err);
+    try {
+      const rawBufStr = pdfBuffer.toString('latin1');
+      const textMatches: string[] = [];
+      const regex = /\(([^)]+)\)\s*Tj|\[([^\]]+)\]\s*TJ/g;
+      let match;
+      while ((match = regex.exec(rawBufStr)) !== null) {
+        const str = match[1] || match[2] || '';
+        const cleaned = str.replace(/\\([()\\])/g, '$1').replace(/\\[0-7]{1,3}/g, ' ').trim();
+        if (cleaned.length > 2) textMatches.push(cleaned);
+      }
+      if (textMatches.length > 3) {
+        return { text: textMatches.join(' '), pageCount: 1 };
+      }
+    } catch {}
     return { text: '', pageCount: 0 };
   }
 }
@@ -1704,7 +1770,14 @@ app.post(['/api/easestudy/extract-text', '/api/easestudy/extract-text/'], async 
       return res.status(400).json({ success: false, error: 'No base64 content provided' });
     }
 
-    const cleanB64 = String(base64).replace(/^data:[^;]+;base64,/, '').trim();
+    let cleanB64 = String(base64).replace(/^data:[^;]+;base64,/, '').trim();
+    if (cleanB64.includes('%')) {
+      try {
+        cleanB64 = decodeURIComponent(cleanB64);
+      } catch {}
+    }
+    cleanB64 = cleanB64.replace(/\s+/g, '');
+
     const lowerName = String(fileName).toLowerCase();
     const lowerMime = String(mimeType).toLowerCase();
 
@@ -1723,6 +1796,7 @@ app.post(['/api/easestudy/extract-text', '/api/easestudy/extract-text/'], async 
     }
 
     let textResult = '';
+    let ocrRateLimitNotice = '';
     const fileBuffer = Buffer.from(cleanB64, 'base64');
 
     // 1. Digital PDF Documents (.pdf) - Native local extraction via pdfjs-dist
@@ -1752,7 +1826,11 @@ Requirements:
             recordAiUsage('gemini-4-argon', cleanB64.length, textResult.length, 'guest_ocr');
           }
         } catch (ocrErr: any) {
-          console.warn('[EaseStudy PDF OCR] Gemini 4 Argon OCR notice:', ocrErr?.message);
+          const errMsg = cleanErrorMessage(ocrErr);
+          console.warn('[EaseStudy PDF OCR] Gemini 4 Argon OCR notice:', errMsg);
+          if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+            ocrRateLimitNotice = 'Gemini 4 Argon OCR rate limit reached. The system is operating under rate control.';
+          }
         }
       }
     }
@@ -1819,17 +1897,24 @@ Requirements:
           recordAiUsage('gemini-4-argon', cleanB64.length, textResult.length, 'guest_ocr');
         }
       } catch (imgErr: any) {
-        console.warn('[EaseStudy Image OCR] Gemini 4 Argon notice:', imgErr?.message);
+        const errMsg = cleanErrorMessage(imgErr);
+        console.warn('[EaseStudy Image OCR] Gemini 4 Argon notice:', errMsg);
+        if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+          ocrRateLimitNotice = 'Gemini 4 Argon OCR rate limit reached.';
+        }
       }
     }
 
     const cleaned = cleanDocNoise(textResult);
 
     if (cleaned.length < 50) {
+      const errorMsg = ocrRateLimitNotice
+        ? `${ocrRateLimitNotice} Please upload a digital PDF, DOCX, spreadsheet, or text file with selectable text.`
+        : 'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.';
       return res.status(400).json({
         success: false,
         characterCount: 0,
-        error: 'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.',
+        error: errorMsg,
       });
     }
 
@@ -2062,17 +2147,46 @@ ${priorQuestionsList ? `PREVIOUS QUESTIONS TO STRICTLY AVOID:\n${priorQuestionsL
 
     const activeGenId = generationId || `gen_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
+    // Formulate segmented chunks for rigid prompt delimiting
+    const rawSegments = focusedContent.split(/\n\s*\n/).filter((s: string) => s.trim().length > 0);
+    const chunkBlocks: string[] = [];
+    let curChunk = '';
+    let cIdx = 1;
+    for (const seg of rawSegments) {
+      if ((curChunk + '\n\n' + seg).length > 1600 && curChunk.length > 50) {
+        chunkBlocks.push(`[AUTHORITATIVE_CHUNK_${cIdx}]:\n${curChunk.trim()}`);
+        curChunk = seg;
+        cIdx++;
+      } else {
+        curChunk = curChunk ? `${curChunk}\n\n${seg}` : seg;
+      }
+    }
+    if (curChunk.trim().length > 0) {
+      chunkBlocks.push(`[AUTHORITATIVE_CHUNK_${cIdx}]:\n${curChunk.trim()}`);
+    }
+    const chunkedAuthoritativeText = chunkBlocks.join('\n\n');
+
     const primaryGenerationPrompt = `You are GPT-6 Astra ("gpt-6-astra"), the Primary AI Generation Engine for EaseStudy.
 Your role is to analyze the extracted document content and generate a comprehensive, publication-grade academic study suite.
 
-STRICT GROUNDING DIRECTIVES:
-1. Grounding Rule (100% Strictness): Ground ALL summaries, takeaways, concepts, and questions strictly in the provided source material without extrapolation or unrelated external claims.
-2. Domain Authenticity: Treat the document in its authentic subject domain. Do NOT impose engineering or physics formulas on non-engineering texts.
-3. Pedagogical Level: ${difficulty}.
-4. Chapter Focus: ${chapterFilterText}
-${customFocusText ? `5. ${customFocusText}` : ''}
-${directFocusText ? `6. ${directFocusText}` : ''}
-${isEngineeringDoc ? '7. Engineering Specification: Formulate governing mathematical formulas and derivations contained in or governing the material.' : '7. General Domain: Formulate concepts using natural qualitative terminology.'}
+STRICT GROUNDING & STRUCTURAL DIRECTIVES:
+1. Summary Section:
+   - Write in coherent, well-developed, fluent paragraphs.
+   - Systematically explain the main ideas, arguments, and principles in a clear, logical sequence.
+   - AVOID fragmented sentences, unnecessary repetition, and generic introductory filler (e.g. do NOT write "This document explores...", "The text examines...", or "Based on the material..."). Start directly with the core subject dynamics.
+   - Provide proper page analysis identifying key sections or pages from the document with their central insights.
+2. Examination Suite:
+   - Multiple Choice: Exactly ${targetQCount} questions strictly grounded in the document. 4 realistic distinct options ("A) ...", "B) ...", "C) ...", "D) ..."), exactly 1 correct answer, 3 plausible distractors, and thorough step-by-step explanations.
+   - Discussion & Practical Questions: Meaningful discussion questions with expected answer points and explicit marking guidance (e.g. "[2 marks] for identifying X, [3 marks] for explaining Y"). Include practical scenario/calculation questions where appropriate to the document.
+3. Content Authenticity (No Hardcoding):
+   - Never hardcode sample content or force every document into identical headings.
+   - Formulate sections according to the actual content available in the source material.
+   - If non-engineering, use natural conceptual principles without artificial formulas.
+4. Pedagogical Level: ${difficulty}.
+5. Chapter Focus: ${chapterFilterText}
+${customFocusText ? `6. ${customFocusText}` : ''}
+${directFocusText ? `7. ${directFocusText}` : ''}
+${isEngineeringDoc ? '8. Technical Context: Include governing formulas, calculations, and boundary conditions.' : '8. General Domain: Formulate concepts using rigorous qualitative terminology.'}
 ${regenerateDirective}
 
 REQUIRED OUTPUT STRUCTURE (JSON):
@@ -2080,24 +2194,35 @@ REQUIRED OUTPUT STRUCTURE (JSON):
 - difficulty: "${difficulty}"
 - readingTime: Estimated reading duration (e.g. "6 min read")
 - summary:
-  * executiveSummary: 1-3 well-structured paragraphs synthesizing the core arguments, evidence, and conclusions.
+  * executiveSummary: Coherent, well-developed paragraphs explaining the main ideas, arguments, and principles in a logical sequence.
   * keyTakeaways: 4 to 8 high-yield key takeaways as concise points.
+  * pageAnalysis: 2 to 6 key page/section references with sectionOrPage, coreSubject, and keyInsight.
   * coreThemes: Main subject taxonomy tags.
 - keyConcepts: 4 to 8 deep concept breakdowns derived directly from the document with title, explanation, formulaOrExample (if technical), and exam importance.
 - examSuite:
-  * multipleChoice: Exactly ${targetQCount} questions strictly grounded in the document:
-    - 4 realistic, distinct answer options labeled explicitly ("A) ...", "B) ...", "C) ...", "D) ...").
-    - Exactly ONE correct answer.
-    - 3 plausible, relevant distractors.
-    - Rotate the correct answer option evenly across ("A", "B", "C", and "D").
-    - Step-by-step rigorous explanation for why the answer is correct and why the distractors are incorrect.
-  * shortAnswer: 3 to 5 conceptual or analytical questions with complete model solution / ideal answer.
-- flashcards: 6 to 12 active recall cards (front: question/concept, back: concise definition/explanation).
+  * multipleChoice: Exactly ${targetQCount} questions with id, question, options, correctAnswer, explanation.
+  * shortAnswer: 3 to 6 meaningful discussion and practical questions with:
+    - id
+    - question
+    - idealAnswer
+    - keyPointsRequired (list of expected answer points)
+    - markingGuidance (e.g. "[2 marks] definition, [3 marks] evaluation")
+    - questionType ("discussion" or "practical")
+    - practicalApplication (practical scenario or numerical application if relevant)
+- flashcards: 6 to 12 active recall cards (front, back).
 
-Source Material Text:
-"""
-${focusedContent.slice(0, 100000)}
-"""`;
+=== AUTHORITATIVE_SOURCE_DOCUMENT_START ===
+[STRICT GROUNDING DIRECTIVE - SOLE AUTHORITATIVE SOURCE]:
+1. The text segments below constitute the EXCLUSIVE AND SOLE AUTHORITATIVE SOURCE OF TRUTH for this generation.
+2. You are STRICTLY AND ENTIRELY PROHIBITED from using external knowledge, pre-trained parametric memory fallbacks, assumptions, or hallucinations.
+3. Every single fact, thesis statement, argument, summary paragraph, key takeaway, concept explanation, exam question, multiple-choice distractor, marking criterion, and answer key MUST be strictly grounded in, verifiable by, and derived directly from these segments.
+4. If a concept, term, or question is not directly discussed or supported by these segments, DO NOT INVENT IT.
+5. External knowledge, parametric fallback, or hallucinated facts constitute an immediate critical failure.
+
+--- BEGIN VERIFIED DOCUMENT SEGMENTS ---
+${chunkedAuthoritativeText.slice(0, 100000)}
+--- END VERIFIED DOCUMENT SEGMENTS ---
+=== AUTHORITATIVE_SOURCE_DOCUMENT_END ===`;
 
     const schemaConfig = {
       type: Type.OBJECT,
@@ -2108,11 +2233,23 @@ ${focusedContent.slice(0, 100000)}
         summary: {
           type: Type.OBJECT,
           properties: {
-            executiveSummary: { type: Type.STRING, description: 'Step-by-step narrative summary in 1-3 well-structured paragraphs' },
+            executiveSummary: { type: Type.STRING, description: 'Coherent, well-developed paragraphs in logical sequence without filler introductions' },
             keyTakeaways: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
               description: 'List of 4 to 8 essential takeaways',
+            },
+            pageAnalysis: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  sectionOrPage: { type: Type.STRING },
+                  coreSubject: { type: Type.STRING },
+                  keyInsight: { type: Type.STRING },
+                },
+                required: ['sectionOrPage', 'coreSubject', 'keyInsight'],
+              },
             },
             coreThemes: {
               type: Type.ARRAY,
@@ -2167,8 +2304,11 @@ ${focusedContent.slice(0, 100000)}
                     type: Type.ARRAY,
                     items: { type: Type.STRING },
                   },
+                  markingGuidance: { type: Type.STRING },
+                  questionType: { type: Type.STRING },
+                  practicalApplication: { type: Type.STRING },
                 },
-                required: ['id', 'question', 'idealAnswer'],
+                required: ['id', 'question', 'idealAnswer', 'keyPointsRequired', 'markingGuidance'],
               },
             },
           },
@@ -2286,10 +2426,16 @@ VERIFICATION RULES:
 5. Chapter Alignment: Confirm the materials align with the user's selected chapters: '${chapterFilterText}' and custom instructions: '${customFocusText || 'None'}'.
 6. Return the final verified, corrected, and hardened study package in the required JSON schema.
 
-ORIGINAL SOURCE TEXT:
-"""
-${focusedContent.slice(0, 80000)}
-"""
+=== AUTHORITATIVE_SOURCE_DOCUMENT_START ===
+[INDEPENDENT VERIFICATION PROTOCOL - ZERO EXTERNAL KNOWLEDGE PERMITTED]:
+The text segments below constitute the EXCLUSIVE AND SOLE AUTHORITATIVE SOURCE OF TRUTH.
+Every single fact, thesis statement, question, correct answer, and marking criteria MUST be derived exclusively from these segments.
+Completely purge, reject, or rewrite any claim, formula, or distractor that relies on external knowledge, parametric memory, or hallucination.
+
+--- BEGIN VERIFIED DOCUMENT SEGMENTS ---
+${chunkedAuthoritativeText.slice(0, 80000)}
+--- END VERIFIED DOCUMENT SEGMENTS ---
+=== AUTHORITATIVE_SOURCE_DOCUMENT_END ===
 
 CANDIDATE STUDY PACKAGE FOR VERIFICATION:
 """
@@ -2658,20 +2804,49 @@ app.post(['/api/easestudy/chat', '/api/easestudy/chat/'], async (req, res) => {
       return res.status(400).json({ success: false, message: 'A user question or message is required.' });
     }
 
-    const cleanContext = (documentText || '').slice(0, 50000);
+    const cleanContext = (documentText || '').slice(0, 70000);
+
+    // High-Precision Passage Retrieval & Relevance Ranking
+    const queryTokens = message.toLowerCase().split(/\W+/).filter((w: string) => w.length > 2);
+    const rawParagraphs = cleanContext.split(/\n\s*\n/).filter((p: string) => p.trim().length > 20);
+    
+    // Score paragraphs based on query term frequency and density
+    const scoredPassages = rawParagraphs.map((para: string) => {
+      const lower = para.toLowerCase();
+      let score = 0;
+      queryTokens.forEach((tok: string) => {
+        const regex = new RegExp(`\\b${tok}`, 'gi');
+        const count = (lower.match(regex) || []).length;
+        score += count * 2;
+      });
+      return { paragraph: para.trim(), score };
+    });
+
+    // Pick the most relevant passages first
+    scoredPassages.sort((a: { paragraph: string; score: number }, b: { paragraph: string; score: number }) => b.score - a.score);
+    const topPassages = scoredPassages.filter((p: { paragraph: string; score: number }) => p.score > 0).slice(0, 6).map((p: { paragraph: string; score: number }) => p.paragraph);
+    const focusedContext = topPassages.length > 0
+      ? `--- HIGH-RELEVANCE TARGET SECTIONS ---\n${topPassages.join('\n\n')}\n\n--- BROADER DOCUMENT CONTEXT ---\n${cleanContext.slice(0, 40000)}`
+      : cleanContext;
 
     const chatPrompt = `You are the EaseStudy Intelligent Document Assistant.
-Your primary directive is to provide a DIRECT, IMMEDIATE, AUTHORITATIVE answer strictly grounded in the document below.
+Your primary directive is to provide a DIRECT, ACCURATE, HIGH-QUALITY answer strictly grounded in the document below.
 
 DOCUMENT TOPIC: "${topic}"
 
-SOURCE DOCUMENT CONTENT:
-"""
-${cleanContext || 'No document text provided.'}
-"""
+=== AUTHORITATIVE_SOURCE_DOCUMENT_START ===
+[STRICT GROUNDING & EXCLUSIVE EVIDENCE DIRECTIVE]:
+The document content and relevant passages below constitute the SOLE AUTHORITATIVE SOURCE of truth.
+External knowledge, parametric memory, or hallucinated assumptions are STRICTLY PROHIBITED.
+Every answer must be 100% grounded in and directly verifiable from the text below.
+
+--- AUTHORITATIVE PASSAGES & CONTEXT ---
+${focusedContext || 'No document text provided.'}
+--- END AUTHORITATIVE PASSAGES & CONTEXT ---
+=== AUTHORITATIVE_SOURCE_DOCUMENT_END ===
 
 CRITICAL DIRECT-ANSWER DIRECTIVES:
-1. GIVE A DIRECT ANSWER IMMEDIATELY IN THE VERY FIRST SENTENCE. State the answer clearly without hesitation.
+1. GIVE A DIRECT ANSWER IMMEDIATELY IN THE VERY FIRST SENTENCE. State the answer clearly and authoritatively without hesitation.
 2. NEVER start with conversational meta-preamble, introductory filler, or disclaimers such as:
    - "Based on the provided document..."
    - "According to the uploaded material..."
@@ -2680,8 +2855,9 @@ CRITICAL DIRECT-ANSWER DIRECTIVES:
    - "The document states that..."
 3. State the exact definition, principle, formula, conclusion, or fact directly.
 4. If explaining steps, mechanisms, or multi-point answers, use clean, concise bullet points immediately following the direct answer.
-5. If the requested information is absent from the document, state concisely: "This information is not addressed in your uploaded document."
-6. Provide an exact supporting quote from the text at the end.
+5. Ground your answer in the specific pages and sections where available (e.g. cite "[Page X]" or "[Chapter Y]").
+6. If the requested information is absent from the document, state concisely: "This information is not addressed in your uploaded document."
+7. Provide an exact supporting quote from the text at the end.
 
 USER QUESTION: "${message}"`;
 
@@ -2705,19 +2881,8 @@ USER QUESTION: "${message}"`;
     }
 
     if (!reply && cleanContext) {
-      // Find the most relevant sentences in cleanContext that match words from user question
-      const queryWords = message.toLowerCase().split(/\W+/).filter((w: string) => w.length > 2);
-      const sentences = cleanContext.split(/(?<=[.?!])\s+/);
-      const matches = sentences
-        .map((s: string) => ({
-          sentence: s.trim(),
-          score: queryWords.filter((w: string) => s.toLowerCase().includes(w)).length,
-        }))
-        .filter((m: { sentence: string; score: number }) => m.score > 0)
-        .sort((a: { sentence: string; score: number }, b: { sentence: string; score: number }) => b.score - a.score);
-
-      if (matches.length > 0) {
-        reply = `${matches[0].sentence}${matches[1] ? ' ' + matches[1].sentence : ''}`;
+      if (topPassages.length > 0) {
+        reply = topPassages.slice(0, 2).join('\n\n');
       } else {
         reply = cleanContext.slice(0, 300);
       }
@@ -2725,13 +2890,20 @@ USER QUESTION: "${message}"`;
       reply = `Refer directly to the core concepts and key takeaways extracted from "${topic}".`;
     }
 
-    // Extract potential citation quotes
+    // Extract high-precision citation quotes from top passages or clean context
     const citations: string[] = [];
-    const lines = cleanContext.split('\n').filter((l: string) => l.trim().length > 30);
-    if (lines.length > 0) {
-      citations.push(lines[0].trim().slice(0, 150));
-      if (lines.length > 1) {
-        citations.push(lines[1].trim().slice(0, 150));
+    if (topPassages.length > 0) {
+      citations.push(topPassages[0].slice(0, 160).trim());
+      if (topPassages.length > 1) {
+        citations.push(topPassages[1].slice(0, 160).trim());
+      }
+    } else {
+      const lines = cleanContext.split('\n').filter((l: string) => l.trim().length > 30);
+      if (lines.length > 0) {
+        citations.push(lines[0].trim().slice(0, 150));
+        if (lines.length > 1) {
+          citations.push(lines[1].trim().slice(0, 150));
+        }
       }
     }
 
@@ -2804,6 +2976,55 @@ app.post(['/api/easestudy/history/record', '/api/easestudy/history/record/'], (r
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: 'Failed to save record' });
+  }
+});
+
+// Update an existing activity (Edit action in 3-dot menu)
+app.post(['/api/easestudy/history/update', '/api/easestudy/history/update/'], (req, res) => {
+  try {
+    const rawId = (req.headers['x-guest-session-id'] as string) || req.body?.sessionId;
+    const sessionId = rawId || 'anonymous_guest';
+    const { activityId, topic, customInstructions } = req.body;
+
+    if (!activityId) {
+      return res.status(400).json({ success: false, message: 'activityId is required' });
+    }
+
+    const existing = memoryEaseStudyActivities.get(sessionId) || [];
+    const itemIndex = existing.findIndex((a) => a.id === activityId);
+    if (itemIndex !== -1) {
+      if (topic) existing[itemIndex].topic = topic.trim();
+      if (customInstructions !== undefined) {
+        (existing[itemIndex] as any).customInstructions = customInstructions;
+      }
+      memoryEaseStudyActivities.set(sessionId, existing);
+      return res.json({ success: true, activity: existing[itemIndex] });
+    }
+
+    res.json({ success: true, message: 'Activity not found in memory (local updated)' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to update record' });
+  }
+});
+
+// Delete an activity (Delete action in 3-dot menu)
+app.post(['/api/easestudy/history/delete', '/api/easestudy/history/delete/'], (req, res) => {
+  try {
+    const rawId = (req.headers['x-guest-session-id'] as string) || req.body?.sessionId;
+    const sessionId = rawId || 'anonymous_guest';
+    const { activityId } = req.body;
+
+    if (!activityId) {
+      return res.status(400).json({ success: false, message: 'activityId is required' });
+    }
+
+    const existing = memoryEaseStudyActivities.get(sessionId) || [];
+    const filtered = existing.filter((a) => a.id !== activityId);
+    memoryEaseStudyActivities.set(sessionId, filtered);
+
+    res.json({ success: true, deletedId: activityId, remainingCount: filtered.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: 'Failed to delete record' });
   }
 });
 

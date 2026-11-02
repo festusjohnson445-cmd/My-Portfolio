@@ -18,7 +18,7 @@
  *    visual schematics and concept diagrams via Gemini with direct download support.
  */
 
-import { supabase } from './supabase';
+import { supabase, EASESTUDY_TABLES, SUPABASE_BUCKETS } from './supabase';
 import { EaseStudyResponse } from '../components/EaseStudyView';
 import { extractCleanTextFromBase64, cleanExtractedString } from './documentTextExtractor';
 
@@ -60,7 +60,7 @@ export interface VisualDiagramResult {
   storageUrl?: string;
 }
 
-export const EASESTUDY_STORAGE_BUCKET = 'easestudy-documents';
+export const EASESTUDY_STORAGE_BUCKET = SUPABASE_BUCKETS.EASESTUDY_DOCUMENTS;
 const LOCAL_DATASET_CACHE_KEY = 'fesline_mode_easestudy_dataset_cache';
 const GUEST_SESSION_STORAGE_KEY = 'easestudy_guest_session_id';
 
@@ -211,6 +211,74 @@ export async function recordGuestActivity(payload: {
 }
 
 /**
+ * Update an existing learning activity (title/topic or custom instructions)
+ */
+export async function updateGuestActivity(
+  activityId: string,
+  updates: { topic?: string; customInstructions?: string }
+): Promise<void> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    await fetch('/api/easestudy/history/update', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        sessionId,
+        activityId,
+        ...updates,
+      }),
+    });
+  } catch {}
+
+  // Update local storage
+  try {
+    const localRaw = localStorage.getItem('fesline_easestudy_activities');
+    if (localRaw) {
+      const items: any[] = JSON.parse(localRaw);
+      const idx = items.findIndex((it) => it.id === activityId);
+      if (idx !== -1) {
+        if (updates.topic) items[idx].topic = updates.topic;
+        if (updates.customInstructions !== undefined) items[idx].customInstructions = updates.customInstructions;
+        localStorage.setItem('fesline_easestudy_activities', JSON.stringify(items));
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Delete an existing learning activity
+ */
+export async function deleteGuestActivity(activityId: string): Promise<void> {
+  const sessionId = getOrCreateGuestSessionId();
+  try {
+    await fetch('/api/easestudy/history/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-guest-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        sessionId,
+        activityId,
+      }),
+    });
+  } catch {}
+
+  // Delete from local storage
+  try {
+    const localRaw = localStorage.getItem('fesline_easestudy_activities');
+    if (localRaw) {
+      const items: any[] = JSON.parse(localRaw);
+      const remaining = items.filter((it) => it.id !== activityId);
+      localStorage.setItem('fesline_easestudy_activities', JSON.stringify(remaining));
+    }
+  } catch {}
+}
+
+/**
  * Generate a deterministic hash/fingerprint of the input material to recognize
  * prior uploads across sessions.
  */
@@ -332,23 +400,43 @@ export async function persistToModeEaseStudyDataset(
     // Handled silently
   }
 
-  // 3. Persist to Supabase Table 'easestudy_dataset'
+  // 3. Persist to Supabase Table 'easestudy_learning_materials'
   try {
-    await supabase.from('easestudy_dataset').upsert(
-      {
-        document_hash: fingerprint,
-        title: result.topic || 'Study Guide',
-        difficulty: metadata.difficulty,
-        reading_time: result.readingTime,
-        summary_json: result.summary,
-        key_concepts_json: result.keyConcepts,
-        exam_suite_json: result.examSuite,
-        flashcards_json: result.flashcards || [],
-        storage_path: `dataset/${fingerprint}.json`,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'document_hash' }
-    );
+    const materialPayload = {
+      id: `mat_${fingerprint}`,
+      document_hash: fingerprint,
+      topic: result.topic || 'Study Guide',
+      difficulty: metadata.difficulty,
+      reading_time: result.readingTime,
+      summary_json: result.summary,
+      key_concepts_json: result.keyConcepts,
+      exam_suite_json: result.examSuite,
+      flashcards_json: result.flashcards || [],
+      page_analysis_json: result.summary?.pageAnalysis || [],
+      version: 1,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Primary project table: easestudy_learning_materials
+    const { error: matErr } = await supabase.from(EASESTUDY_TABLES.MATERIALS).upsert(materialPayload, { onConflict: 'id' });
+    if (matErr) {
+      // Compatibility fallback
+      await supabase.from('easestudy_dataset').upsert(
+        {
+          document_hash: fingerprint,
+          title: materialPayload.topic,
+          difficulty: materialPayload.difficulty,
+          reading_time: materialPayload.reading_time,
+          summary_json: materialPayload.summary_json,
+          key_concepts_json: materialPayload.key_concepts_json,
+          exam_suite_json: materialPayload.exam_suite_json,
+          flashcards_json: materialPayload.flashcards_json,
+          storage_path: `dataset/${fingerprint}.json`,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'document_hash' }
+      );
+    }
   } catch {
     // Database record handled silently
   }

@@ -18,6 +18,12 @@ import {
   Send,
   AlertCircle,
   BookOpen,
+  MoreVertical,
+  Edit3,
+  Trash2,
+  Eye,
+  CheckCircle2,
+  Sliders,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { PortfolioPart } from './Navbar';
@@ -32,9 +38,18 @@ import {
   askDocumentAssistant,
   fetchGuestActivities,
   recordGuestActivity,
+  updateGuestActivity,
+  deleteGuestActivity,
 } from '../utils/easeStudyModelHub';
 import { extractDocumentWithStructure } from '../utils/documentTextExtractor';
 import { DetectedSection } from '../utils/documentStructureDetector';
+import {
+  validateDocumentFile,
+  uploadAndStoreStudyDocument,
+  storeDocumentChunksInSupabase,
+  saveGeneratedLearningMaterialsToSupabase,
+  StoredDocumentMetadata,
+} from '../utils/easeStudyStorage';
 
 export interface EaseStudyResponse {
   topic: string;
@@ -44,6 +59,11 @@ export interface EaseStudyResponse {
     executiveSummary: string;
     keyTakeaways: string[];
     coreThemes: string[];
+    pageAnalysis?: {
+      sectionOrPage: string;
+      coreSubject: string;
+      keyInsight: string;
+    }[];
   };
   keyConcepts: {
     title: string;
@@ -64,6 +84,9 @@ export interface EaseStudyResponse {
       question: string;
       idealAnswer: string;
       keyPointsRequired?: string[];
+      markingGuidance?: string;
+      questionType?: string;
+      practicalApplication?: string;
     }[];
     analyticalQuestions?: {
       id: number;
@@ -147,6 +170,21 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
   // UI Notifications
   const [copiedNotification, setCopiedNotification] = useState(false);
+  const [revealedShortAnswers, setRevealedShortAnswers] = useState<Set<number>>(new Set());
+
+  // Stage 1 Storage States (Upload & Storage Only)
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [storedDocMeta, setStoredDocMeta] = useState<StoredDocumentMetadata | null>(null);
+  const [isStage1Verified, setIsStage1Verified] = useState(false);
+  const [isDetectingChapters, setIsDetectingChapters] = useState(false);
+
+  // 3-Dot Action Menu & Edit Modal States (Recent learning activities)
+  const [activeActivityMenuId, setActiveActivityMenuId] = useState<string | null>(null);
+  const [editingActivity, setEditingActivity] = useState<any | null>(null);
+  const [editTopic, setEditTopic] = useState('');
+  const [editCustomNotes, setEditCustomNotes] = useState('');
+  const [isUpdatingActivity, setIsUpdatingActivity] = useState(false);
 
   // Multi-Version Generation Stack for Session History
   interface StudyVersion {
@@ -223,44 +261,161 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     }
   };
 
+  /**
+   * STAGE 1: Upload and Storage Only
+   * - Validates file format and size (<= 25 MB)
+   * - Displays genuine 0-100% upload progress
+   * - Uploads original binary to private Supabase Storage "materials" bucket
+   * - Upserts metadata and ownership into "documents" table
+   * - Verifies storage
+   * - CRITICAL: Stops completely after storage. Does NOT extract text, run OCR, or call AI.
+   */
   const processSelectedFile = async (file: File) => {
-    if (file.size > 26214400) {
-      setAnalysisError('File exceeds the 25MB maximum size limit.');
+    const validation = validateDocumentFile(file);
+    if (!validation.valid) {
+      setAnalysisError(validation.error || 'Invalid file format or size exceeds 25 MB limit.');
       return;
     }
+
     setUploadedFile(file);
     setFileMimeType(file.type || 'application/octet-stream');
     setAnalysisError(null);
-    setProcessingStatus('Extracting document contents & identifying chapters...');
+    setIsUploading(true);
+    setUploadProgress(0);
+    setProcessingStatus('Uploading...');
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const dataUrl = e.target?.result as string;
-        const base64Clean = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-        setFileBase64(base64Clean);
+      const uploadRes = await uploadAndStoreStudyDocument(file, guestSessionId, (pct) => {
+        setUploadProgress(pct);
+        setProcessingStatus('Uploading...');
+      });
 
-        // Reliable text extraction and OCR
-        const extraction = await extractDocumentWithStructure(file);
+      if (!uploadRes.success || !uploadRes.metadata) {
+        setAnalysisError(uploadRes.error || 'Document storage failed. Please check your connection and try again.');
+        setIsUploading(false);
+        setUploadProgress(null);
+        setProcessingStatus('');
+        return;
+      }
+
+      setStoredDocMeta(uploadRes.metadata);
+      setIsStage1Verified(true);
+      setIsDocumentReady(true);
+      setIsUploading(false);
+      setUploadProgress(null);
+      setProcessingStatus('');
+      console.log(`[Stage 1 Complete] Binary successfully stored and verified at "${uploadRes.metadata.storagePath}". Stopped completely before extraction or AI.`);
+    } catch (err: any) {
+      setAnalysisError(err?.message || 'Storage upload error. Please try again.');
+      setIsUploading(false);
+      setUploadProgress(null);
+      setProcessingStatus('');
+    }
+  };
+
+  /**
+   * Optional helper to pre-detect chapters if user wants to inspect them before generating
+   */
+  const handleDetectChapters = async () => {
+    if (!uploadedFile) return;
+    setIsDetectingChapters(true);
+    setProcessingStatus('Extracting...');
+
+    try {
+      const extraction = await extractDocumentWithStructure(uploadedFile);
+      if (extraction.text && extraction.characterCount >= 50) {
+        setFileExtractedText(extraction.text);
+        setDetectedSections(extraction.sections);
+      }
+    } catch (e: any) {
+      console.warn('Chapter pre-detection notice:', e?.message || e);
+    } finally {
+      setIsDetectingChapters(false);
+      setProcessingStatus('');
+    }
+  };
+
+  /**
+   * STAGE 2: User-Triggered Processing
+   * Processing begins exclusively when the user clicks "Suite".
+   * Asynchronous pipeline through genuine status stages:
+   * retrieving -> extracting -> running_ocr -> analysing -> generating -> verifying -> saving -> completed
+   */
+  const handleStage2Generate = async () => {
+    if (!uploadedFile && !fileExtractedText && !inputText) {
+      setAnalysisError('Please upload and store a document or enter study notes first.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+
+    try {
+      let textToUse = fileExtractedText;
+      let b64 = fileBase64;
+
+      if (uploadedFile && (!textToUse || textToUse.length < 50)) {
+        // Stage 2.1: Retrieving
+        setProcessingStatus('Retrieving document...');
+        await new Promise((r) => setTimeout(r, 200));
+
+        // Read base64 representation for model hub
+        if (!b64) {
+          const reader = new FileReader();
+          b64 = await new Promise<string>((resolve, reject) => {
+            reader.onload = (e) => {
+              const res = e.target?.result as string;
+              resolve(res.includes(',') ? res.split(',')[1] : res);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(uploadedFile);
+          });
+          setFileBase64(b64);
+        }
+
+        // Stage 2.2: Extracting
+        setProcessingStatus('Extracting...');
+        const extraction = await extractDocumentWithStructure(uploadedFile);
+
+        // Stage 2.3: Running OCR (if image or scanned PDF)
+        const isImage = uploadedFile.type.startsWith('image/');
+        if (isImage || (uploadedFile.name.toLowerCase().endsWith('.pdf') && extraction.characterCount < 80)) {
+          setProcessingStatus('Extracting...');
+        }
+
+        // Factual Grounding Verification: Reject if < 50 readable characters
         if (extraction.error || extraction.characterCount < 50) {
           setAnalysisError(
             extraction.error ||
             'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.'
           );
-          setIsDocumentReady(false);
+          setIsAnalyzing(false);
           setProcessingStatus('');
           return;
         }
 
+        textToUse = extraction.text;
         setFileExtractedText(extraction.text);
         setDetectedSections(extraction.sections);
-        setSelectedChapters([]); // default to all
-        setIsDocumentReady(true);
-        setProcessingStatus('');
-      };
-      reader.readAsDataURL(file);
-    } catch {
-      setAnalysisError('Could not process this document. Please try a valid PDF, DOCX, spreadsheet, or text file.');
+
+        // Store extracted text segments into "easestudy_document_chunks" table
+        if (storedDocMeta?.id) {
+          storeDocumentChunksInSupabase(storedDocMeta.id, extraction.text, extraction.sections).catch((cErr) => {
+            console.warn('[Supabase easestudy_document_chunks notice]:', cErr);
+          });
+        }
+
+        // Stage 2.4: Analysing
+        setProcessingStatus('Analysing document pages and structure...');
+        await new Promise((r) => setTimeout(r, 250));
+      }
+
+      // Stage 2.5: Generating
+      setProcessingStatus('Generating...');
+      await runAnalysisWithPayload(uploadedFile, b64, fileMimeType, textToUse, false, []);
+    } catch (err: any) {
+      setAnalysisError(err?.message || 'Document processing error. Please try again.');
+      setIsAnalyzing(false);
       setProcessingStatus('');
     }
   };
@@ -294,10 +449,10 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
     if (forceRegenerate) {
       setIsRegenerating(true);
-      setProcessingStatus('GPT-6 Astra & Gemini 4 Argon generating newly refined questions...');
+      setProcessingStatus('Generating...');
     } else {
       setIsAnalyzing(true);
-      setProcessingStatus('GPT-6 Astra analyzing document & synthesizing study materials...');
+      setProcessingStatus('Generating...');
     }
 
     try {
@@ -347,15 +502,31 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
       // Record in generation history versions
       const newVerNum = (generationVersions[0]?.versionNumber || 0) + 1;
+      const baseGenId = hubResult.generationId || uniqueGenId;
+      const versionUniqueId = `${baseGenId}_v${newVerNum}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const newVersion: StudyVersion = {
-        id: hubResult.generationId || uniqueGenId,
+        id: versionUniqueId,
         versionNumber: newVerNum,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         label: forceRegenerate ? `Refinement v${newVerNum}` : `Initial Generation`,
         result: hubResult.result,
       };
-      setGenerationVersions((prev) => [newVersion, ...prev]);
+      setGenerationVersions((prev) => {
+        const deduplicated = prev.filter((v) => v.id !== versionUniqueId);
+        return [newVersion, ...deduplicated];
+      });
       setActiveVersionId(newVersion.id);
+
+      // Persist to project "easestudy_learning_materials" and complete "easestudy_processing_jobs"
+      saveGeneratedLearningMaterialsToSupabase(
+        storedDocMeta?.id || 'doc_session',
+        hubResult.result,
+        difficulty,
+        newVerNum,
+        storedDocMeta?.jobId
+      ).catch((mErr) => {
+        console.warn('[Supabase easestudy_learning_materials notice]:', mErr);
+      });
 
       // Record activity
       recordGuestActivity({
@@ -718,45 +889,62 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           {/* Upload Configuration & Chapter Focus Selection Stage */}
           {isDocumentReady && uploadedFile ? (
             <div className="w-full space-y-2.5 text-left">
-              {/* Document Info Pill */}
-              <div className="p-2.5 rounded-lg bg-sky-50/90 border border-sky-200 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 truncate">
-                  <div className="w-6 h-6 rounded-md bg-[#1d68bd] text-white flex items-center justify-center shrink-0">
-                    <FileText className="w-3.5 h-3.5" />
+              {/* Document Info & Verified Storage Badge */}
+              <div className="p-3 rounded-lg bg-sky-50/90 border border-sky-200 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 truncate">
+                    <div className="w-7 h-7 rounded-md bg-[#1d68bd] text-white flex items-center justify-center shrink-0 shadow-2xs">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div className="truncate">
+                      <span className="font-bold text-[11px] text-slate-900 block truncate">
+                        {uploadedFile.name}
+                      </span>
+                      <span className="text-[9px] text-slate-500">
+                        {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {uploadedFile.type || 'Document'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="truncate">
-                    <span className="font-bold text-[10.5px] text-slate-900 block truncate">
-                      {uploadedFile.name}
-                    </span>
-                    <span className="text-[9px] text-slate-500">
-                      {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {fileExtractedText.length.toLocaleString()} characters extracted
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadedFile(null);
+                      setFileBase64(null);
+                      setFileExtractedText('');
+                      setDetectedSections([]);
+                      setSelectedChapters([]);
+                      setIsDocumentReady(false);
+                      setIsStage1Verified(false);
+                      setStoredDocMeta(null);
+                      setFocusArea('');
+                    }}
+                    className="text-[9.5px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer shrink-0"
+                  >
+                    Change File
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadedFile(null);
-                    setFileBase64(null);
-                    setFileExtractedText('');
-                    setDetectedSections([]);
-                    setSelectedChapters([]);
-                    setIsDocumentReady(false);
-                    setFocusArea('');
-                  }}
-                  className="text-[9.5px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer shrink-0"
-                >
-                  Change
-                </button>
+
+                {/* Stage 1 Verification Status Indicator */}
+                <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-sky-200/60 text-[9.5px]">
+                  <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>Complete</span>
+                  </div>
+                  {storedDocMeta?.uploadedAt && (
+                    <span className="text-[9px] text-slate-400">
+                      {new Date(storedDocMeta.uploadedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Detected Chapters & Sections Selection Chips */}
               {detectedSections.length > 0 && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <label className="text-[10px] font-bold text-slate-800 flex items-center gap-1">
+                    <label className="text-[9.5px] font-bold text-slate-800 flex items-center gap-1">
                       <BookOpen className="w-3 h-3 text-[#1d68bd]" />
-                      <span>Document Chapters &amp; Sections ({detectedSections.length}):</span>
+                      <span>Select specific chapters to emphasize:</span>
                     </label>
                     <button
                       type="button"
@@ -885,16 +1073,25 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                 </span>
               </label>
 
-              {/* Generate Primary Button */}
+              {/* Stage 2 Trigger Primary Button */}
               <div className="pt-1.5 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => runAnalysisWithPayload(uploadedFile, fileBase64, fileMimeType, fileExtractedText, false)}
-                  disabled={isAnalyzing}
-                  className="flex-1 px-4 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[10.5px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
+                  onClick={handleStage2Generate}
+                  disabled={isAnalyzing || isUploading}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-2 hover:scale-[1.005] active:scale-[0.995] disabled:opacity-60"
                 >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Generate Study Materials &amp; Exam Suite</span>
+                  {isAnalyzing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>{processingStatus || 'Processing Document...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Suite</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -913,22 +1110,43 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                 Drop your PDF, DOCX, PPTX, XLSX, CSV, or text document here.
               </p>
 
-              {/* Browse Documents Primary Button: Small size */}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isAnalyzing}
-                className="px-5 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
-              >
-                {isAnalyzing ? (
-                  <>
-                    <RefreshCw className="w-3 h-3 animate-spin" />
-                    <span>Processing Document...</span>
-                  </>
-                ) : (
-                  <span>Browse Documents</span>
-                )}
-              </button>
+              {/* Genuine 0-100% Upload Progress or Browse Documents Button */}
+              {isUploading ? (
+                <div className="w-full max-w-xs space-y-1.5 my-2 text-left">
+                  <div className="flex items-center justify-between text-[10px] text-slate-700 font-bold">
+                    <span className="flex items-center gap-1.5">
+                      <RefreshCw className="w-3 h-3 animate-spin text-[#1d68bd]" />
+                      <span>Uploading...</span>
+                    </span>
+                    <span className="text-[#1d68bd]">{uploadProgress ?? 0}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
+                    <div
+                      className="h-full bg-gradient-to-r from-sky-500 to-[#1d68bd] transition-all duration-200 rounded-full"
+                      style={{ width: `${Math.max(5, uploadProgress ?? 0)}%` }}
+                    />
+                  </div>
+                  <span className="text-[8.5px] text-slate-400 block text-center">
+                    Stage 1: Validating binary &amp; verifying storage
+                  </span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isAnalyzing || isUploading}
+                  className="px-5 py-2 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white font-bold text-[11px] shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      <span>Processing Document...</span>
+                    </>
+                  ) : (
+                    <span>Browse Documents</span>
+                  )}
+                </button>
+              )}
 
               {/* Or Paste Your Notes Toggle */}
               <button
@@ -1164,44 +1382,222 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
             </p>
           ) : (
             <div className="divide-y divide-slate-100">
-              {recentActivities.slice(0, 5).map((act, idx) => (
-                <div
-                  key={act.id || idx}
-                  className="py-2 flex items-center justify-between gap-2.5 text-[10px] hover:bg-slate-50/80 px-1.5 rounded-lg transition-colors"
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <div className="w-6 h-6 rounded-md bg-sky-50 text-sky-700 flex items-center justify-center shrink-0">
-                      {act.activityType === 'exam_completed' ? (
-                        <ClipboardCheck className="w-3 h-3" />
-                      ) : (
-                        <FileText className="w-3 h-3" />
-                      )}
+              {recentActivities.slice(0, 10).map((act, idx) => {
+                const isMenuOpen = activeActivityMenuId === (act.id || String(idx));
+                return (
+                  <div
+                    key={`act_${act.id || 'activity'}_${idx}`}
+                    className="py-2.5 flex items-center justify-between gap-2.5 text-[10px] hover:bg-slate-50/80 px-2 rounded-lg transition-colors relative"
+                  >
+                    <div
+                      onClick={() => {
+                        if (studyResult) {
+                          setShowWorkspace(true);
+                          setActiveOutputTab(act.activityType === 'exam_completed' ? 'exam' : 'summary');
+                        }
+                      }}
+                      className="flex items-center gap-2 truncate cursor-pointer flex-1"
+                    >
+                      <div className="w-6 h-6 rounded-md bg-sky-50 text-sky-700 flex items-center justify-center shrink-0">
+                        {act.activityType === 'exam_completed' ? (
+                          <ClipboardCheck className="w-3 h-3" />
+                        ) : (
+                          <FileText className="w-3 h-3" />
+                        )}
+                      </div>
+                      <div className="truncate">
+                        <span className="font-bold text-slate-900 block truncate">
+                          {act.topic || act.fileName || 'Study Session'}
+                        </span>
+                        <span className="text-[9px] text-slate-400">
+                          {act.score !== undefined ? `Exam Score: ${act.score}%` : 'Study Guide'} •{' '}
+                          {new Date(act.timestamp).toLocaleDateString()}
+                          {act.customInstructions && ` • Note: ${act.customInstructions}`}
+                        </span>
+                      </div>
                     </div>
-                    <div className="truncate">
-                      <span className="font-bold text-slate-900 block truncate">
-                        {act.topic || act.fileName || 'Study Session'}
-                      </span>
-                      <span className="text-[9px] text-slate-400">
-                        {act.score !== undefined ? `Exam Score: ${act.score}%` : 'Study Guide Generated'} •{' '}
-                        {new Date(act.timestamp).toLocaleDateString()}
-                      </span>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {studyResult && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowWorkspace(true);
+                            setActiveOutputTab(act.activityType === 'exam_completed' ? 'exam' : 'summary');
+                          }}
+                          className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[9.5px] cursor-pointer"
+                        >
+                          Review
+                        </button>
+                      )}
+
+                      {/* 3-Dot Action Menu Button */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveActivityMenuId(isMenuOpen ? null : (act.id || String(idx)));
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                          aria-label="Actions"
+                        >
+                          <MoreVertical className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Dropdown Menu */}
+                        {isMenuOpen && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg border border-slate-200 shadow-md py-1 z-30 text-left"
+                          >
+                            {/* Action 1: Review */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveActivityMenuId(null);
+                                if (studyResult) {
+                                  setShowWorkspace(true);
+                                  setActiveOutputTab(act.activityType === 'exam_completed' ? 'exam' : 'summary');
+                                } else {
+                                  // Trigger Stage 2 generation for this topic
+                                  setFocusArea(act.topic || '');
+                                  handleStage2Generate();
+                                }
+                              }}
+                              className="w-full px-3 py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer font-medium"
+                            >
+                              <Eye className="w-3 h-3 text-sky-600" />
+                              <span>Review</span>
+                            </button>
+
+                            {/* Action 2: Edit */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveActivityMenuId(null);
+                                setEditingActivity(act);
+                                setEditTopic(act.topic || act.fileName || '');
+                                setEditCustomNotes(act.customInstructions || '');
+                              }}
+                              className="w-full px-3 py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer font-medium"
+                            >
+                              <Edit3 className="w-3 h-3 text-amber-600" />
+                              <span>Edit</span>
+                            </button>
+
+                            {/* Action 3: Delete */}
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                setActiveActivityMenuId(null);
+                                const actId = act.id || String(idx);
+                                setRecentActivities((prev) => prev.filter((a) => (a.id || String(idx)) !== actId));
+                                await deleteGuestActivity(actId);
+                              }}
+                              className="w-full px-3 py-1.5 text-[10px] text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer font-medium"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  {studyResult && (
-                    <button
-                      onClick={() => {
-                        setShowWorkspace(true);
-                        setActiveOutputTab(act.activityType === 'exam_completed' ? 'exam' : 'summary');
-                      }}
-                      className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[9.5px] shrink-0 cursor-pointer"
-                    >
-                      Open
-                    </button>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Edit Activity Modal */}
+      {editingActivity && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-900/40 backdrop-blur-xs">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white rounded-xl border border-slate-200 p-4 shadow-xl space-y-3"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+              <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                <Edit3 className="w-3.5 h-3.5 text-[#1d68bd]" />
+                <span>Edit Learning Activity</span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setEditingActivity(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="space-y-2 text-left">
+              <div>
+                <label className="text-[9.5px] font-bold text-slate-700 block mb-0.5">
+                  Topic / Document Title:
+                </label>
+                <input
+                  type="text"
+                  value={editTopic}
+                  onChange={(e) => setEditTopic(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10.5px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                  placeholder="e.g., Thermodynamics & Energy Transfer"
+                />
+              </div>
+
+              <div>
+                <label className="text-[9.5px] font-bold text-slate-700 block mb-0.5">
+                  Custom Notes / Emphasis:
+                </label>
+                <textarea
+                  value={editCustomNotes}
+                  onChange={(e) => setEditCustomNotes(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-lg border border-slate-200 p-2 text-[10.5px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#1d68bd]"
+                  placeholder="e.g., Emphasize First Law formulas and entropy calculations"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingActivity(null)}
+                className="px-3 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-[10px] font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isUpdatingActivity || !editTopic.trim()}
+                onClick={async () => {
+                  if (!editTopic.trim()) return;
+                  setIsUpdatingActivity(true);
+                  try {
+                    await updateGuestActivity(editingActivity.id, {
+                      topic: editTopic.trim(),
+                      customInstructions: editCustomNotes.trim(),
+                    });
+                    setRecentActivities((prev) =>
+                      prev.map((a) =>
+                        a.id === editingActivity.id
+                          ? { ...a, topic: editTopic.trim(), customInstructions: editCustomNotes.trim() }
+                          : a
+                      )
+                    );
+                    setEditingActivity(null);
+                  } finally {
+                    setIsUpdatingActivity(false);
+                  }
+                }}
+                className="px-3.5 py-1 rounded-lg bg-[#1d68bd] hover:bg-[#1557a5] text-white text-[10px] font-bold cursor-pointer disabled:opacity-50"
+              >
+                {isUpdatingActivity ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1272,8 +1668,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                       }}
                       className="text-[9.5px] font-bold text-sky-900 bg-transparent focus:outline-none cursor-pointer"
                     >
-                      {generationVersions.map((v) => (
-                        <option key={v.id} value={v.id}>
+                      {generationVersions.map((v, vIdx) => (
+                        <option key={`ver_${v.id}_${vIdx}`} value={v.id}>
                           {v.label} ({v.timestamp})
                         </option>
                       ))}
@@ -1397,6 +1793,36 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   ))}
                 </div>
               </div>
+
+              {/* Dynamic Page & Section Analysis */}
+              {studyResult.summary.pageAnalysis && studyResult.summary.pageAnalysis.length > 0 && (
+                <div>
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+                    <FileText className="w-3 h-3 text-[#1d68bd]" />
+                    <span>Page &amp; Section Analysis</span>
+                  </h3>
+                  <div className="grid grid-cols-1 gap-2">
+                    {studyResult.summary.pageAnalysis.map((item, pIdx) => (
+                      <div
+                        key={pIdx}
+                        className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-sky-100 text-[#1d68bd]">
+                            {item.sectionOrPage}
+                          </span>
+                          <span className="text-[10px] font-semibold text-slate-900 truncate">
+                            {item.coreSubject}
+                          </span>
+                        </div>
+                        <p className="text-[10px] sm:text-[10.5px] text-slate-700 leading-relaxed pt-0.5">
+                          {item.keyInsight}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
@@ -1523,7 +1949,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
                   return (
                     <div
-                      key={mcq.id || mIdx}
+                      key={`mcq_${mcq.id}_${mIdx}`}
                       className={`bg-white rounded-xl border p-3.5 sm:p-4 shadow-2xs space-y-2.5 transition-all ${
                         isQuizSubmitted
                           ? isCorrect
@@ -1617,6 +2043,121 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                   >
                     Submit Exam &amp; Score
                   </button>
+                </div>
+              )}
+
+              {/* Meaningful Discussion & Practical Examination Questions */}
+              {studyResult.examSuite.shortAnswer && studyResult.examSuite.shortAnswer.length > 0 && (
+                <div className="pt-3 border-t border-slate-200/80 space-y-3">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Award className="w-3.5 h-3.5 text-[#1d68bd]" />
+                      <span>Discussion &amp; Practical Examination Questions</span>
+                    </h3>
+                    <p className="text-[9.5px] text-slate-500">
+                      Structured evaluation questions with expected answer criteria, marking guidance, and practical context.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {studyResult.examSuite.shortAnswer.map((sa, saIdx) => {
+                      const isRevealed = revealedShortAnswers.has(sa.id);
+                      const isPractical = sa.questionType === 'practical' || sa.practicalApplication;
+                      return (
+                        <div
+                          key={`sa_${sa.id}_${saIdx}`}
+                          className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2 text-left"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 text-[9.5px] font-bold flex items-center justify-center shrink-0">
+                                Q{sa.id || saIdx + 1}
+                              </span>
+                              <span
+                                className={`text-[8.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                  isPractical
+                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                    : 'bg-sky-50 text-sky-800 border border-sky-200'
+                                }`}
+                              >
+                                {isPractical ? 'Practical Application' : 'Analytical Discussion'}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRevealedShortAnswers((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(sa.id)) next.delete(sa.id);
+                                  else next.add(sa.id);
+                                  return next;
+                                });
+                              }}
+                              className="text-[9.5px] text-[#1d68bd] hover:underline font-semibold cursor-pointer shrink-0"
+                            >
+                              {isRevealed ? 'Hide Answer & Marking' : 'View Answer & Marking'}
+                            </button>
+                          </div>
+
+                          <h4 className="text-[11px] sm:text-[11.5px] font-bold text-slate-900 leading-snug">
+                            {sa.question}
+                          </h4>
+
+                          {isRevealed && (
+                            <div className="pt-2 border-t border-slate-100 space-y-2.5 text-[10px]">
+                              {/* Expected Answer Points */}
+                              {sa.keyPointsRequired && sa.keyPointsRequired.length > 0 && (
+                                <div className="space-y-1">
+                                  <span className="font-bold text-slate-700 block text-[9.5px]">
+                                    Expected Key Points Required:
+                                  </span>
+                                  <ul className="list-disc list-inside space-y-0.5 text-slate-600 pl-1">
+                                    {sa.keyPointsRequired.map((kp, kpIdx) => (
+                                      <li key={kpIdx} className="leading-relaxed">
+                                        {kp}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Marking Guidance */}
+                              {sa.markingGuidance && (
+                                <div className="p-2 rounded-lg bg-emerald-50/80 border border-emerald-200 text-emerald-900">
+                                  <span className="font-bold block text-[9.5px] mb-0.5">
+                                    Marking Guidance &amp; Scoring Rubric:
+                                  </span>
+                                  <p className="leading-relaxed text-[9.5px]">{sa.markingGuidance}</p>
+                                </div>
+                              )}
+
+                              {/* Practical Application Context if available */}
+                              {sa.practicalApplication && (
+                                <div className="p-2 rounded-lg bg-sky-50/70 border border-sky-100 text-sky-900">
+                                  <span className="font-bold block text-[9.5px] mb-0.5">
+                                    Practical Context:
+                                  </span>
+                                  <p className="leading-relaxed text-[9.5px]">
+                                    {sa.practicalApplication}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Model Solution / Ideal Answer */}
+                              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+                                <span className="font-bold text-slate-900 block text-[9.5px]">
+                                  Model Solution:
+                                </span>
+                                <p className="text-slate-700 leading-relaxed font-normal">
+                                  {sa.idealAnswer}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

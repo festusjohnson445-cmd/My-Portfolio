@@ -170,9 +170,12 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
                 <span className="px-2 py-0.5 rounded-md bg-emerald-950/80 border border-emerald-800 text-emerald-200 font-mono text-[11px]">
                   {SUPABASE_BUCKETS.MATERIALS} (public)
                 </span>
+                <span className="px-2 py-0.5 rounded-md bg-sky-950/80 border border-sky-800 text-sky-200 font-mono text-[11px]">
+                  {SUPABASE_BUCKETS.EASESTUDY_DOCUMENTS} (public)
+                </span>
               </div>
               <p className="text-[11px] text-slate-400 pt-1">
-                Stores your profile photo and engineering materials attachments.
+                Stores your profile photo, engineering materials, and EaseStudy documents.
               </p>
             </div>
 
