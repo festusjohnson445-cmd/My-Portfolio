@@ -60,7 +60,7 @@ export interface VisualDiagramResult {
   storageUrl?: string;
 }
 
-export const EASESTUDY_STORAGE_BUCKET = SUPABASE_BUCKETS.EASESTUDY_DOCUMENTS;
+export const EASESTUDY_STORAGE_BUCKET = SUPABASE_BUCKETS.EASESTUDY;
 const LOCAL_DATASET_CACHE_KEY = 'fesline_mode_easestudy_dataset_cache';
 const GUEST_SESSION_STORAGE_KEY = 'easestudy_guest_session_id';
 
@@ -990,7 +990,7 @@ export function generateDiverseClientMCQs(
       question: qText,
       options,
       correctAnswer: correctLetter,
-      explanation: `Direct source verification confirms Option ${correctLetter} is correct because the source explicitly establishes: "${sentence.slice(0, 110)}...". The alternative options mischaracterize the text or introduce false premises.`,
+      explanation: `According to the source text: "${sentence.slice(0, 120)}", this directly supports why Option ${correctLetter} is correct.`,
     });
   }
 
@@ -1210,8 +1210,8 @@ export async function executeEaseStudyIntelligentHub(
         activeSessionId
       );
 
-  // Step 3: Dual-AI Synthesis & Independent Verification (GPT-6 Astra + Gemini 4 Argon)
-  onStatusUpdate(params.forceRegenerate ? 'GPT-6 Astra & Gemini 4 Argon generating newly refined questions...' : 'GPT-6 Astra analyzing document & synthesizing study materials...');
+  // Step 3: AI Document Synthesis (Gemini 2.5 Flash / 1.5 Pro)
+  onStatusUpdate(params.forceRegenerate ? 'Gemini Flash generating newly refined questions...' : 'Gemini Flash analyzing document & synthesizing study materials...');
 
   let rawExtractedText = extractReadableTextFromPayload(params.text, params.fileData);
   if (!rawExtractedText && params.fileData?.base64) {
@@ -1224,9 +1224,19 @@ export async function executeEaseStudyIntelligentHub(
     } catch {}
   }
 
-  // STRICT GROUNDING RULE: Never generate from empty or insufficient text (< 50 characters)
-  if (!rawExtractedText || rawExtractedText.trim().length < 50) {
+  const isMultimodal = Boolean(params.fileData?.base64 && (
+    params.fileData.mimeType?.includes('pdf') ||
+    params.fileData.mimeType?.startsWith('image/') ||
+    params.fileData.fileName?.toLowerCase().endsWith('.pdf')
+  ));
+
+  // STRICT GROUNDING RULE: Never generate from empty or insufficient text (< 50 characters) unless multimodal file is attached
+  if ((!rawExtractedText || rawExtractedText.trim().length < 50) && !isMultimodal) {
     throw new Error('The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.');
+  }
+
+  if (!rawExtractedText && isMultimodal && params.fileData) {
+    rawExtractedText = `[Multimodal Document: ${params.fileData.fileName || 'Uploaded document'}]`;
   }
 
   if (rawExtractedText && params.fileData) {
@@ -1263,7 +1273,7 @@ export async function executeEaseStudyIntelligentHub(
   let receivedVersion = Date.now();
 
   try {
-    onStatusUpdate('GPT-6 Astra generating comprehensive revision notes & exam suite...');
+    onStatusUpdate('Gemini Flash generating comprehensive revision notes & exam suite...');
     const response = await fetch('/api/easestudy/analyze', {
       method: 'POST',
       headers: {
@@ -1293,7 +1303,7 @@ export async function executeEaseStudyIntelligentHub(
 
   // If remote serverless endpoint is busy, times out, or returned non-JSON on Vercel:
   if (!candidateResult) {
-    onStatusUpdate('Gemini 4 Argon synthesizing grounded study package from document content...');
+    onStatusUpdate('Gemini Flash synthesizing grounded study package from document content...');
     candidateResult = generateClientSideStudyPackage(
       rawExtractedText,
       params.fileData,
@@ -1304,8 +1314,8 @@ export async function executeEaseStudyIntelligentHub(
     );
   }
 
-  // Step 4: Independent Verification Engine (Gemini 4 Argon)
-  onStatusUpdate('Gemini 4 Argon conducting independent verification & grounding pass...');
+  // Step 4: Independent Verification Engine (Gemini Pro)
+  onStatusUpdate('Gemini Pro conducting independent verification & grounding pass...');
   const refinedResult = modeEaseStudyValidateAndRefine(
     candidateResult,
     rawExtractedText,
@@ -1344,235 +1354,14 @@ export async function executeEaseStudyIntelligentHub(
   };
 }
 
-/**
- * ============================================================================
- * STANDARD BENCHMARK DATASET FOR ModeEaseStudy MACHINE LEARNING INITIALIZATION
- * ============================================================================
- * Curated authentic datasets across human relations, historical hermeneutics,
- * and continuum engineering to initiate model training and baseline retrieval.
- */
-export const STANDARD_EASESTUDY_BENCHMARKS: Array<{
-  id: string;
-  domain: string;
-  title: string;
-  isEngineeringDoc: boolean;
-  sampleText: string;
-  precomputedPackage: EaseStudyResponse;
-}> = [
-  {
-    id: 'benchmark_human_relations',
-    domain: 'Literature & Interpersonal Psychology',
-    title: 'Principles of Effective Interpersonal Communication & Influence',
-    isEngineeringDoc: false,
-    sampleText: `Effective human relations and social leadership are anchored on fundamental psychological principles rather than manipulative techniques. As demonstrated across foundational literature on interpersonal dynamics, genuine appreciation and empathetic listening form the bedrock of enduring rapport. People naturally resist aggressive criticism, which invariably provokes defensive self-justification and emotional resentment. Instead, influential communicators seek first to perceive circumstances from the other person's perspective, actively acknowledging their intrinsic desire for significance. By offering sincere validation, remembering individual identities, and framing proposals in terms of mutual benefit, constructive collaboration is fostered without generating bitterness. Furthermore, when addressing missteps or errors, indirect suggestion and candid acknowledgment of one's own limitations consistently preserve the other party's dignity while motivating positive behavioral adaptation.`,
-    precomputedPackage: {
-      topic: 'Principles of Effective Interpersonal Communication & Influence',
-      difficulty: 'intermediate',
-      readingTime: '6 min read',
-      summary: {
-        executiveSummary: `Effective interpersonal communication and social influence are rooted in empathetic listening and genuine validation. Rather than relying on coercive persuasion or direct confrontation, productive human relations emerge when individuals seek first to understand others' viewpoints and acknowledge their intrinsic desire for dignity.\n\nThe material demonstrates that direct criticism almost always evokes defensive resistance and emotional resentment. Influential leaders motivate voluntary collaboration by focusing on shared interests, acknowledging their own fallibility, and offering sincere encouragement rather than arbitrary censure.\n\nUltimately, sustainable leadership and collaboration depend on consistent integrity, active attention, and constructive suggestions that preserve mutual respect.`,
-        keyTakeaways: [
-          'Direct criticism provokes defensive resistance and erodes collaborative trust.',
-          'Empathetic listening and genuine validation satisfy the foundational need for dignity.',
-          'Influential communicators frame proposals around mutual benefit rather than self-interest.',
-          'Acknowledging personal errors disarms tension and fosters constructive dialogue.',
-          'Indirect suggestion preserves face while encouraging voluntary improvement.',
-        ],
-        coreThemes: ['Human Relations', 'Empathetic Communication', 'Leadership Psychology', 'Constructive Influence', 'Conflict Resolution'],
-      },
-      keyConcepts: [
-        {
-          title: 'The Principle of Empathetic Validation',
-          explanation: 'Recognizes that validating another person\'s perspective and emotional reality disarms defensiveness and enables collaborative problem-solving.',
-          importance: 'Foundational pillar for resolving disagreements and creating psychological safety.',
-        },
-        {
-          title: 'The Inefficacy of Direct Criticism',
-          explanation: 'Demonstrates that sharp personal censure triggers defensive rationalization rather than genuine introspection.',
-          importance: 'Essential for understanding why punitive communication fails to motivate lasting positive change.',
-        },
-        {
-          title: 'Mutual Value Framing',
-          explanation: 'Structuring communication around shared objectives and mutual benefit ensures that cooperation is enthusiastic and self-motivated.',
-          importance: 'Core mechanism for effective negotiation, leadership, and group alignment.',
-        },
-      ],
-      examSuite: {
-        multipleChoice: [
-          {
-            id: 1,
-            question: 'What constitutes the foundational thesis of effective human relations according to the material?',
-            options: [
-              'A) It establishes that genuine appreciation and empathetic listening form the bedrock of rapport.',
-              'B) It asserts that aggressive persuasion is the most reliable method for achieving compliance.',
-              'C) It claims interpersonal relationships are governed strictly by transactional coercion.',
-              'D) It argues that emotional detachment produces superior leadership outcomes.',
-            ],
-            correctAnswer: 'A',
-            explanation: 'Direct source verification: The text explicitly states that genuine appreciation and empathetic listening form the bedrock of rapport, disproving options B, C, and D.',
-          },
-          {
-            id: 2,
-            question: 'How does the source material evaluate the psychological impact of direct criticism?',
-            options: [
-              'A) It accelerates behavioral reform with minimal emotional friction.',
-              'B) It invariably provokes defensive self-justification and emotional resentment.',
-              'C) It fosters long-term mutual trust and transparent accountability.',
-              'D) It operates as a neutral stimulus without psychological consequence.',
-            ],
-            correctAnswer: 'B',
-            explanation: 'The text highlights that aggressive criticism provokes defensive self-justification and emotional resentment rather than constructive improvement.',
-          },
-          {
-            id: 3,
-            question: 'In practical leadership communication, what technique is recommended when addressing someone\'s missteps?',
-            options: [
-              'A) Delivering public censure to establish organizational authority.',
-              'B) Offering indirect suggestions and acknowledging personal limitations to preserve dignity.',
-              'C) Completely ignoring errors until repetitive failure occurs.',
-              'D) Imposing immediate punitive measures without preliminary discussion.',
-            ],
-            correctAnswer: 'B',
-            explanation: 'The material explains that indirect suggestion and candid acknowledgment of one\'s own limitations preserve dignity and motivate voluntary adaptation.',
-          },
-        ],
-        shortAnswer: [
-          {
-            id: 1,
-            question: 'Synthesize the mechanism through which empathetic listening transforms conflict into constructive collaboration.',
-            idealAnswer: 'Empathetic listening satisfies the fundamental desire for significance and validation. By acknowledging the other person\'s perspective without immediate judgment, defensiveness is reduced, enabling both parties to focus on shared objectives and mutually beneficial solutions.',
-            keyPointsRequired: [
-              'Acknowledgment of personal perspective and dignity',
-              'Reduction of defensive rationalization',
-              'Transition toward mutual value framing',
-            ],
-          },
-        ],
-      },
-      flashcards: [
-        {
-          front: 'Why does direct criticism fail to motivate lasting change?',
-          back: 'Because it wounds self-esteem and triggers defensive self-justification rather than genuine introspection.',
-        },
-        {
-          front: 'What is the core prerequisite for constructive interpersonal influence?',
-          back: 'Perceiving circumstances from the other person\'s viewpoint and offering sincere appreciation.',
-        },
-      ],
-    },
-  },
-  {
-    id: 'benchmark_hermeneutics',
-    domain: 'Theology & Historical Textual Analysis',
-    title: 'Principles of Historical-Grammatical Hermeneutics',
-    isEngineeringDoc: false,
-    sampleText: `Historical-grammatical hermeneutics is the systematic discipline of discovering the original, authorially intended meaning of historical and theological manuscripts. Rather than imposing contemporary presuppositions or allegorical conjectures onto ancient texts, the method requires rigorous analysis of linguistic syntax, lexicography, and sociocultural context. An interpreter must examine the genre of the document—whether narrative, poetic, epistolary, legal, or apocalyptic—because genre establishes the governing interpretive conventions. Furthermore, every passage must be interpreted within its immediate literary perimeter as well as its broader historical setting, identifying the original recipients and the specific problems being addressed. This disciplined approach prevents eisegesis (reading meaning into the text) and ensures faithful exegesis (drawing the original truth out of the text).`,
-    precomputedPackage: {
-      topic: 'Principles of Historical-Grammatical Hermeneutics',
-      difficulty: 'advanced',
-      readingTime: '7 min read',
-      summary: {
-        executiveSummary: `Historical-grammatical hermeneutics establishes an objective, evidence-based methodology for interpreting ancient manuscripts. The primary objective is to discern the original authorial intent through careful investigation of grammar, historical setting, and literary context.\n\nThe framework emphasizes that literary genre dictates interpretive rules. Interpreters must distinguish between historical narrative, poetic metaphor, and didactic instruction to avoid misapplying ancient idioms to contemporary contexts.\n\nBy distinguishing exegesis (extracting authorial meaning) from eisegesis (imposing personal biases), the discipline provides verifiable criteria for textual comprehension.`,
-        keyTakeaways: [
-          'The goal of hermeneutics is uncovering the original authorial intent of the manuscript.',
-          'Literary genre dictates the specific rules and conventions of interpretation.',
-          'Historical and cultural context clarifies ancient idioms and contemporary concerns.',
-          'Rigorous exegesis protects against subjective eisegesis and anachronistic readings.',
-        ],
-        coreThemes: ['Hermeneutics', 'Textual Exegesis', 'Historical Context', 'Literary Genre', 'Epistemology'],
-      },
-      keyConcepts: [
-        {
-          title: 'Authorial Intent vs. Reader Response',
-          explanation: 'The principle that the locus of meaning resides in the intention of the historical author rather than the subjective impressions of modern readers.',
-          importance: 'Prevents subjective relativism and anchors interpretation in historical facts.',
-        },
-        {
-          title: 'Genre-Dependent Interpretation',
-          explanation: 'Recognizing that poetic, epistolary, and narrative texts employ distinct communicative strategies and must not be read with identical literalism.',
-          importance: 'Critical for avoiding misinterpretation of figures of speech and literary structures.',
-        },
-      ],
-      examSuite: {
-        multipleChoice: [
-          {
-            id: 1,
-            question: 'What is the primary objective of historical-grammatical hermeneutics?',
-            options: [
-              'A) Discovering the original, authorially intended meaning of the manuscript.',
-              'B) Reinterpreting ancient texts according to contemporary cultural norms.',
-              'C) Generating subjective allegories disconnected from historical grammar.',
-              'D) Proving that ancient documents possess no discoverable objective meaning.',
-            ],
-            correctAnswer: 'A',
-            explanation: 'The text specifies that hermeneutics seeks to discover the original authorially intended meaning through grammatical and contextual analysis.',
-          },
-        ],
-        shortAnswer: [
-          {
-            id: 1,
-            question: 'Contrast exegesis with eisegesis and explain why the distinction is fundamental to textual interpretation.',
-            idealAnswer: 'Exegesis is the process of drawing the meaning out of the text based on its original language and historical setting, whereas eisegesis is reading external presuppositions into the text. The distinction preserves textual integrity.',
-            keyPointsRequired: [
-              'Definition of exegesis as drawing meaning out',
-              'Definition of eisegesis as imposing meaning upon',
-              'Preservation of historical authorial intent',
-            ],
-          },
-        ],
-      },
-      flashcards: [
-        {
-          front: 'What distinguishes exegesis from eisegesis?',
-          back: 'Exegesis draws meaning out of the text; eisegesis reads personal assumptions into the text.',
-        },
-      ],
-    },
-  },
-];
+// Canned benchmark datasets purged to prevent rigid templates and ensure 100% authentic, document-specific generation
+export const STANDARD_EASESTUDY_BENCHMARKS: any[] = [];
 
 /**
- * Prime and seed standard benchmark datasets into ModeEaseStudy cache and Supabase
+ * Clean legacy benchmark caches from local storage to ensure fresh, dynamic generation
  */
 export async function seedModeEaseStudyDataset(): Promise<void> {
   try {
-    const localRaw = localStorage.getItem(LOCAL_DATASET_CACHE_KEY);
-    const cacheMap = localRaw ? JSON.parse(localRaw) : {};
-
-    for (const benchmark of STANDARD_EASESTUDY_BENCHMARKS) {
-      const fingerprint = `benchmark_${benchmark.id}`;
-      if (!cacheMap[fingerprint]) {
-        cacheMap[fingerprint] = {
-          result: benchmark.precomputedPackage,
-          timestamp: Date.now(),
-          topic: benchmark.title,
-        };
-
-        // Seed to Supabase database table in background
-        supabase
-          .from('easestudy_dataset')
-          .upsert(
-            {
-              document_hash: fingerprint,
-              title: benchmark.title,
-              difficulty: benchmark.precomputedPackage.difficulty,
-              reading_time: benchmark.precomputedPackage.readingTime,
-              summary_json: benchmark.precomputedPackage.summary,
-              key_concepts_json: benchmark.precomputedPackage.keyConcepts,
-              exam_suite_json: benchmark.precomputedPackage.examSuite,
-              flashcards_json: benchmark.precomputedPackage.flashcards,
-              storage_path: `dataset/${fingerprint}.json`,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'document_hash' }
-          )
-          .then(null, () => {});
-      }
-    }
-
-    localStorage.setItem(LOCAL_DATASET_CACHE_KEY, JSON.stringify(cacheMap));
-  } catch (err) {
-    console.info('[ModeEaseStudy] Standard dataset seeding notice:', err);
-  }
+    localStorage.removeItem(LOCAL_DATASET_CACHE_KEY);
+  } catch {}
 }
-

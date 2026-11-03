@@ -108,6 +108,96 @@ interface EaseStudyViewProps {
 
 type StudyOutputTab = 'summary' | 'concepts' | 'exam' | 'flashcards' | 'diagrams' | 'chat';
 
+export interface FileTypeBadge {
+  bg: string;
+  badge: string;
+  label: string;
+  borderColor: string;
+  tagColor: string;
+}
+
+export function getFileTypeBadge(fileName: string = '', mimeType: string = ''): FileTypeBadge {
+  const name = (fileName || '').toLowerCase();
+  const mime = (mimeType || '').toLowerCase();
+
+  if (name.endsWith('.pdf') || mime.includes('pdf')) {
+    return {
+      bg: 'bg-rose-600',
+      badge: 'PDF',
+      label: 'PDF Document',
+      borderColor: 'border-rose-200',
+      tagColor: 'text-rose-700 bg-rose-50',
+    };
+  }
+  if (
+    name.endsWith('.docx') ||
+    name.endsWith('.doc') ||
+    mime.includes('word') ||
+    mime.includes('officedocument')
+  ) {
+    return {
+      bg: 'bg-blue-600',
+      badge: 'DOC',
+      label: 'Word Document',
+      borderColor: 'border-blue-200',
+      tagColor: 'text-blue-700 bg-blue-50',
+    };
+  }
+  if (
+    name.endsWith('.xlsx') ||
+    name.endsWith('.xls') ||
+    name.endsWith('.csv') ||
+    name.endsWith('.tsv') ||
+    mime.includes('sheet') ||
+    mime.includes('excel') ||
+    mime.includes('csv')
+  ) {
+    return {
+      bg: 'bg-emerald-600',
+      badge: 'XLS',
+      label: 'Spreadsheet',
+      borderColor: 'border-emerald-200',
+      tagColor: 'text-emerald-700 bg-emerald-50',
+    };
+  }
+  if (
+    name.endsWith('.pptx') ||
+    name.endsWith('.ppt') ||
+    mime.includes('presentation') ||
+    mime.includes('powerpoint')
+  ) {
+    return {
+      bg: 'bg-amber-600',
+      badge: 'PPT',
+      label: 'PowerPoint',
+      borderColor: 'border-amber-200',
+      tagColor: 'text-amber-700 bg-amber-50',
+    };
+  }
+  if (
+    name.endsWith('.png') ||
+    name.endsWith('.jpg') ||
+    name.endsWith('.jpeg') ||
+    name.endsWith('.webp') ||
+    mime.startsWith('image/')
+  ) {
+    return {
+      bg: 'bg-purple-600',
+      badge: 'IMG',
+      label: 'Image Document',
+      borderColor: 'border-purple-200',
+      tagColor: 'text-purple-700 bg-purple-50',
+    };
+  }
+  return {
+    bg: 'bg-slate-700',
+    badge: 'TXT',
+    label: 'Text Document',
+    borderColor: 'border-slate-200',
+    tagColor: 'text-slate-700 bg-slate-50',
+  };
+}
+
 export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
   // Navigation & View States
   const [activeOutputTab, setActiveOutputTab] = useState<StudyOutputTab>('summary');
@@ -379,27 +469,34 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
 
         // Stage 2.3: Running OCR (if image or scanned PDF)
         const isImage = uploadedFile.type.startsWith('image/');
-        if (isImage || (uploadedFile.name.toLowerCase().endsWith('.pdf') && extraction.characterCount < 80)) {
+        const isPdf = uploadedFile.type.includes('pdf') || uploadedFile.name.toLowerCase().endsWith('.pdf');
+        if (isImage || (isPdf && extraction.characterCount < 80)) {
           setProcessingStatus('Extracting...');
         }
 
-        // Factual Grounding Verification: Reject if < 50 readable characters
+        const isMultimodal = Boolean(b64 && (isPdf || isImage));
+
+        // Grounding Verification: Allow multimodal PDF or Image even if plain text is short/zero
         if (extraction.error || extraction.characterCount < 50) {
-          setAnalysisError(
-            extraction.error ||
-            'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.'
-          );
-          setIsAnalyzing(false);
-          setProcessingStatus('');
-          return;
+          if (isMultimodal) {
+            textToUse = extraction.text || `[Multimodal Document: ${uploadedFile.name} (${uploadedFile.type || 'application/pdf'})]`;
+          } else {
+            setAnalysisError(
+              extraction.error ||
+              'The uploaded document contains no readable text or could not be extracted (0 characters). Please provide a valid, readable PDF, DOCX, spreadsheet, or text document.'
+            );
+            setIsAnalyzing(false);
+            setProcessingStatus('');
+            return;
+          }
+        } else {
+          textToUse = extraction.text;
+          setFileExtractedText(extraction.text);
+          setDetectedSections(extraction.sections);
         }
 
-        textToUse = extraction.text;
-        setFileExtractedText(extraction.text);
-        setDetectedSections(extraction.sections);
-
         // Store extracted text segments into "easestudy_document_chunks" table
-        if (storedDocMeta?.id) {
+        if (storedDocMeta?.id && extraction.text) {
           storeDocumentChunksInSupabase(storedDocMeta.id, extraction.text, extraction.sections).catch((cErr) => {
             console.warn('[Supabase easestudy_document_chunks notice]:', cErr);
           });
@@ -437,10 +534,16 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
     setExamScore(null);
     setExamFilterMode('all');
 
-    // STRICT GROUNDING RULE: Never start AI generation if extraction fails or produces < 50 chars
-    if (!extractedTxt || extractedTxt.trim().length < 50) {
+    const isMultimodal = Boolean(b64 && (
+      mime?.includes('pdf') ||
+      mime?.startsWith('image/') ||
+      file?.name.toLowerCase().endsWith('.pdf')
+    ));
+
+    // STRICT GROUNDING RULE: Never start AI generation if extraction fails or produces < 50 chars unless multimodal
+    if ((!extractedTxt || extractedTxt.trim().length < 50) && !isMultimodal) {
       setAnalysisError(
-        'The uploaded document contains no readable text or insufficient content (0 characters). AI generation requires valid extracted text and cannot use filenames or metadata as substitutes.'
+        'The uploaded document contains no readable text or insufficient content (0 characters). AI generation requires valid extracted text or a readable PDF document.'
       );
       setIsAnalyzing(false);
       setIsRegenerating(false);
@@ -890,53 +993,58 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           {isDocumentReady && uploadedFile ? (
             <div className="w-full space-y-2.5 text-left">
               {/* Document Info & Verified Storage Badge */}
-              <div className="p-3 rounded-lg bg-sky-50/90 border border-sky-200 flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 truncate">
-                    <div className="w-7 h-7 rounded-md bg-[#1d68bd] text-white flex items-center justify-center shrink-0 shadow-2xs">
-                      <FileText className="w-4 h-4" />
+              {(() => {
+                const badge = getFileTypeBadge(uploadedFile.name, uploadedFile.type);
+                return (
+                  <div className="p-3 rounded-lg bg-slate-50/90 border border-slate-200/90 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 truncate">
+                        <div className={`w-8 h-8 rounded-md ${badge.bg} text-white flex flex-col items-center justify-center shrink-0 shadow-xs font-bold`}>
+                          <span className="text-[10px] tracking-tight">{badge.badge}</span>
+                        </div>
+                        <div className="truncate">
+                          <span className="font-bold text-[11px] text-slate-900 block truncate">
+                            {uploadedFile.name}
+                          </span>
+                          <span className="text-[9.5px] text-slate-500 font-medium">
+                            {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {badge.label}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUploadedFile(null);
+                          setFileBase64(null);
+                          setFileExtractedText('');
+                          setDetectedSections([]);
+                          setSelectedChapters([]);
+                          setIsDocumentReady(false);
+                          setIsStage1Verified(false);
+                          setStoredDocMeta(null);
+                          setFocusArea('');
+                        }}
+                        className="text-[9.5px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer shrink-0"
+                      >
+                        Change File
+                      </button>
                     </div>
-                    <div className="truncate">
-                      <span className="font-bold text-[11px] text-slate-900 block truncate">
-                        {uploadedFile.name}
-                      </span>
-                      <span className="text-[9px] text-slate-500">
-                        {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • {uploadedFile.type || 'Document'}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setUploadedFile(null);
-                      setFileBase64(null);
-                      setFileExtractedText('');
-                      setDetectedSections([]);
-                      setSelectedChapters([]);
-                      setIsDocumentReady(false);
-                      setIsStage1Verified(false);
-                      setStoredDocMeta(null);
-                      setFocusArea('');
-                    }}
-                    className="text-[9.5px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer shrink-0"
-                  >
-                    Change File
-                  </button>
-                </div>
 
-                {/* Stage 1 Verification Status Indicator */}
-                <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-sky-200/60 text-[9.5px]">
-                  <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>Complete</span>
+                    {/* Stage 1 Verification Status Indicator */}
+                    <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-200/60 text-[9.5px]">
+                      <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Complete</span>
+                      </div>
+                      {storedDocMeta?.uploadedAt && (
+                        <span className="text-[9px] text-slate-400">
+                          {new Date(storedDocMeta.uploadedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {storedDocMeta?.uploadedAt && (
-                    <span className="text-[9px] text-slate-400">
-                      {new Date(storedDocMeta.uploadedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  )}
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Detected Chapters & Sections Selection Chips */}
               {detectedSections.length > 0 && (
@@ -1609,8 +1717,8 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
           {/* In-place Re-generating Progress Banner */}
           {isRegenerating && (
             <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-[10px] font-medium flex items-center justify-center gap-2 animate-pulse shadow-2xs">
-              <RefreshCw className="w-3 h-3 animate-spin text-[#1d68bd]" />
-              <span>{processingStatus || 'GPT-6 Astra & Gemini 4 Argon formulating newly refined questions...'}</span>
+              <RefreshCw className="w-3 h-3 animate-spin text-sky-600" />
+              <span>{processingStatus || 'Gemini Flash formulating newly refined study suite...'}</span>
             </div>
           )}
 
@@ -1626,11 +1734,14 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
                     <Clock className="w-2.5 h-2.5" />
                     {studyResult.readingTime}
                   </span>
-                  {uploadedFile && (
-                    <span className="text-[9.5px] text-slate-500 font-mono truncate max-w-[150px]">
-                      • {uploadedFile.name}
-                    </span>
-                  )}
+                  {uploadedFile && (() => {
+                    const b = getFileTypeBadge(uploadedFile.name, uploadedFile.type);
+                    return (
+                      <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold ${b.tagColor} border ${b.borderColor} truncate max-w-[180px]`}>
+                        {b.badge}: {uploadedFile.name}
+                      </span>
+                    );
+                  })()}
                   {selectedChapters.length > 0 && (
                     <span className="px-1.5 py-0.5 rounded text-[8.5px] font-bold bg-sky-50 text-sky-800 border border-sky-200 truncate max-w-[150px]">
                       Chapters: {selectedChapters.length} selected

@@ -1,4 +1,4 @@
-import { supabase, resilientSupabaseUpsert, SUPABASE_BUCKETS, EASESTUDY_TABLES } from './supabase';
+import { supabase, resilientSupabaseUpsert, SUPABASE_BUCKETS, EASESTUDY_TABLES, getOrCreateVisitorIdentity } from './supabase';
 import type { EaseStudyResponse } from '../components/EaseStudyView';
 
 export interface StoredDocumentMetadata {
@@ -86,9 +86,10 @@ export async function uploadAndStoreStudyDocument(
   const timestamp = Date.now();
   const docId = `doc_${timestamp}_${Math.random().toString(36).substring(2, 9)}`;
   const jobId = `job_${timestamp}_${Math.random().toString(36).substring(2, 7)}`;
-  const userPrefix = (ownerOrGuestId || 'guest').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const storagePath = `easestudy/${userPrefix}/${timestamp}_${cleanName}`;
-  const targetBucket = SUPABASE_BUCKETS.EASESTUDY_DOCUMENTS;
+  const visitorInfo = getOrCreateVisitorIdentity();
+  const visitorId = (ownerOrGuestId && ownerOrGuestId !== 'guest' ? ownerOrGuestId : visitorInfo.visitorId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const storagePath = `visitors/${visitorId}/${timestamp}_${cleanName}`;
+  const targetBucket = SUPABASE_BUCKETS.EASESTUDY;
 
   let contentType = file.type || 'application/octet-stream';
   if (!contentType || contentType === 'application/octet-stream') {

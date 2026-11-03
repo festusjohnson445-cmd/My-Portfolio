@@ -72,6 +72,7 @@ export const SUPABASE_BUCKETS = {
   MATERIALS: 'materials',
   MODE_EASE_STUDY: 'ModeEaseStudy',
   EASESTUDY_DOCUMENTS: 'easestudy-documents',
+  EASESTUDY: 'EaseStudy',
 } as const;
 
 // Project-Specific Table Constants
@@ -81,6 +82,40 @@ export const EASESTUDY_TABLES = {
   MATERIALS: 'easestudy_learning_materials',
   JOBS: 'easestudy_processing_jobs',
 } as const;
+
+/**
+ * Returns or generates a persistent unique visitor ID across desktop and mobile devices.
+ * Uses high-entropy device-tagged UUID persisted in localStorage with cookie fallback.
+ */
+export function getOrCreateVisitorIdentity(): { visitorId: string; deviceType: 'mobile' | 'desktop' } {
+  const STORAGE_KEY = 'easestudy_unique_visitor_id';
+  let visitorId = '';
+  try {
+    visitorId = localStorage.getItem(STORAGE_KEY) || '';
+  } catch {}
+
+  if (!visitorId && typeof document !== 'undefined') {
+    const match = document.cookie.match(new RegExp('(?:^|; )' + STORAGE_KEY + '=([^;]*)'));
+    if (match) visitorId = decodeURIComponent(match[1]);
+  }
+
+  const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const deviceType: 'mobile' | 'desktop' = isMobile ? 'mobile' : 'desktop';
+
+  if (!visitorId || visitorId.length < 10) {
+    const rand = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+    visitorId = `v_${deviceType}_${Date.now()}_${rand}`;
+    try {
+      localStorage.setItem(STORAGE_KEY, visitorId);
+      if (typeof document !== 'undefined') {
+        const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+        document.cookie = `${STORAGE_KEY}=${encodeURIComponent(visitorId)}; expires=${expires}; path=/; SameSite=Lax`;
+      }
+    } catch {}
+  }
+
+  return { visitorId, deviceType };
+}
 
 // ============================================================================
 // EASESTUDY SUPABASE TYPES & INTERFACES
@@ -2186,31 +2221,41 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
 -- 5. EASESTUDY PROJECT STORAGE & DATABASE TABLES DDL
 -- ============================================================================
 
--- Create public 'easestudy-documents' storage bucket
-INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('easestudy-documents', 'easestudy-documents', true, 26214400, NULL)
-ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 26214400;
-
--- Storage RLS Policies for easestudy-documents
+-- Clean up legacy bucket policies
+DROP POLICY IF EXISTS "Public Read ModeEaseStudy Bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Public Upload ModeEaseStudy Bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Public Update ModeEaseStudy Bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Public Delete ModeEaseStudy Bucket" ON storage.objects;
 DROP POLICY IF EXISTS "Public Read easestudy-documents Bucket" ON storage.objects;
-CREATE POLICY "Public Read easestudy-documents Bucket"
-ON storage.objects FOR SELECT TO public
-USING (bucket_id = 'easestudy-documents');
-
 DROP POLICY IF EXISTS "Public Upload easestudy-documents Bucket" ON storage.objects;
-CREATE POLICY "Public Upload easestudy-documents Bucket"
-ON storage.objects FOR INSERT TO public
-WITH CHECK (bucket_id = 'easestudy-documents');
-
 DROP POLICY IF EXISTS "Public Update easestudy-documents Bucket" ON storage.objects;
-CREATE POLICY "Public Update easestudy-documents Bucket"
-ON storage.objects FOR UPDATE TO public
-USING (bucket_id = 'easestudy-documents');
-
 DROP POLICY IF EXISTS "Public Delete easestudy-documents Bucket" ON storage.objects;
-CREATE POLICY "Public Delete easestudy-documents Bucket"
+
+-- Create new public 'EaseStudy' storage bucket (50 MB limit, open to visitors)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('EaseStudy', 'EaseStudy', true, 52428800, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 52428800;
+
+-- Storage RLS Policies for 'EaseStudy' bucket (Desktop, mobile & visitor access)
+DROP POLICY IF EXISTS "Public Read EaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Read EaseStudy Bucket"
+ON storage.objects FOR SELECT TO public
+USING (bucket_id = 'EaseStudy');
+
+DROP POLICY IF EXISTS "Public Upload EaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Upload EaseStudy Bucket"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (bucket_id = 'EaseStudy');
+
+DROP POLICY IF EXISTS "Public Update EaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Update EaseStudy Bucket"
+ON storage.objects FOR UPDATE TO public
+USING (bucket_id = 'EaseStudy');
+
+DROP POLICY IF EXISTS "Public Delete EaseStudy Bucket" ON storage.objects;
+CREATE POLICY "Public Delete EaseStudy Bucket"
 ON storage.objects FOR DELETE TO public
-USING (bucket_id = 'easestudy-documents');
+USING (bucket_id = 'EaseStudy');
 
 -- 1. File Metadata Table: easestudy_documents
 CREATE TABLE IF NOT EXISTS public.easestudy_documents (
@@ -2221,7 +2266,7 @@ CREATE TABLE IF NOT EXISTS public.easestudy_documents (
   file_size BIGINT NOT NULL,
   file_type TEXT NOT NULL,
   storage_path TEXT NOT NULL,
-  storage_bucket TEXT NOT NULL DEFAULT 'easestudy-documents',
+  storage_bucket TEXT NOT NULL DEFAULT 'EaseStudy',
   public_url TEXT,
   status TEXT DEFAULT 'stored_and_verified',
   document_hash TEXT,

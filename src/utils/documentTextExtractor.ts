@@ -133,7 +133,7 @@ export async function extractDocumentWithStructure(file: File): Promise<Extracti
   }
 
   // 5. PDF, Scanned PDF, PPT, or Images (.png, .jpg, .jpeg, .webp)
-  // For these formats, call server-side extraction engine powered by pdfjs-dist & Gemini 4 Argon OCR
+  // For these formats, call server-side extraction engine powered by pdfjs-dist & Gemini 2.5 Flash OCR
   if (
     !rawText ||
     rawText.trim().length < 50 ||
@@ -308,7 +308,7 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 /**
- * Calls `/api/easestudy/extract-text` for server-side parsing and Gemini 4 Argon OCR.
+ * Calls `/api/easestudy/extract-text` for server-side parsing and Gemini 2.5 Flash OCR.
  */
 async function callServerSideExtraction(
   base64: string,
