@@ -479,7 +479,7 @@ export const EaseStudyView: React.FC<EaseStudyViewProps> = () => {
         // Grounding Verification: Allow multimodal PDF or Image even if plain text is short/zero
         if (extraction.error || extraction.characterCount < 50) {
           if (isMultimodal) {
-            textToUse = extraction.text || `[Multimodal Document: ${uploadedFile.name} (${uploadedFile.type || 'application/pdf'})]`;
+            textToUse = extraction.text || '';
           } else {
             setAnalysisError(
               extraction.error ||

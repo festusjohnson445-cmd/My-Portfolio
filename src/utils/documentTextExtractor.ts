@@ -341,31 +341,83 @@ async function callServerSideExtraction(
 }
 
 /**
- * Purges all leaked docProps, XML tags, binary zip headers (e.g. [Content_Types], docProps),
- * and compresses whitespace.
+ * Sanitizes extracted document text before it reaches model parameters or prompt contexts.
+ * Strips out internal file wrapper string injections, system header tags, MIME type labels,
+ * and storage path strings (e.g., [Multimodal Document: ...], [application/pdf], storage/v1/object/public/...).
  */
-export function cleanExtractedString(raw: string): string {
+export function sanitizeDocumentText(raw: string): string {
   if (!raw) return '';
 
-  // If the string starts with zip or binary header indicators, reject the binary noise
-  if (raw.startsWith('PK\x03\x04') || raw.startsWith('PK\x05\x06') || raw.includes('[Content_Types].xml')) {
-    const textNodeMatches = raw.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+  let sanitized = String(raw);
+
+  // If the string starts with zip or binary header indicators, reject binary noise
+  if (sanitized.startsWith('PK\x03\x04') || sanitized.startsWith('PK\x05\x06') || sanitized.includes('[Content_Types].xml')) {
+    const textNodeMatches = sanitized.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
     if (textNodeMatches && textNodeMatches.length > 0) {
-      raw = textNodeMatches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
+      sanitized = textNodeMatches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
     } else {
       return '';
     }
   }
 
-  return raw
+  // 1. Strip raw multimodal wrapper string injections, system header tags, and chunk labels
+  sanitized = sanitized
+    .replace(/\[Multimodal Document:[^\]]*\]/gi, '')
+    .replace(/Multimodal Document:[^\n]*/gi, '')
+    .replace(/\[Uploaded File:[^\]]*\]/gi, '')
+    .replace(/Uploaded File:[^\n]*/gi, '')
+    .replace(/\[Uploaded Document Content[^\]]*\]:?/gi, '')
+    .replace(/Uploaded Document Content[^\n]*:?/gi, '')
+    .replace(/User Provided Text\/Notes:?/gi, '')
+    .replace(/\[AUTHORITATIVE_CHUNK_\d+\]:?/gi, '')
+    .replace(/=== AUTHORITATIVE_SOURCE_DOCUMENT_(?:START|END) ===/gi, '')
+    .replace(/--- (?:BEGIN|END) VERIFIED DOCUMENT SEGMENTS ---/gi, '')
+    .replace(/\[STRICT GROUNDING DIRECTIVE[^\]]*\]/gi, '');
+
+  // 2. Strip MIME type labels (e.g. [application/pdf], [image/png], application/pdf, etc.)
+  sanitized = sanitized
+    .replace(/\[(?:application|image|audio|video|text)\/[a-zA-Z0-9_.+-]+\]/gi, '')
+    .replace(/\b(?:application\/(?:pdf|vnd\.[a-zA-Z0-9_.+-]+|msword|octet-stream|zip|json)|image\/(?:png|jpeg|jpg|webp|gif)|text\/(?:plain|csv|markdown))\b/gi, '');
+
+  // 3. Strip Cloud / Supabase / local storage path strings and URLs
+  sanitized = sanitized
+    .replace(/https?:\/\/[^\s"'<>]+\/storage\/v1\/object\/public\/[^\s"'<>]+/gi, '')
+    .replace(/storage\/v1\/object\/public\/[^\s"'<>]+/gi, '')
+    .replace(/https?:\/\/[^\s"'<>]+\/api\/documents\/files\/[^\s"'<>]+/gi, '')
+    .replace(/\/api\/documents\/files\/[^\s"'<>]+/gi, '')
+    .replace(/(?:data\/uploads|\/app\/applet\/data)\/[^\s"'<>]+/gi, '')
+    .replace(/\b(?:file:\/\/|uploads\/)[^\s"'<>]+/gi, '');
+
+  // 4. Strip XML / OpenXML / HTML / DOCX container tags and artifacts
+  sanitized = sanitized
     .replace(/<[^>]+>/g, ' ')
     .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
     .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
     .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
     .replace(/word\/(?:document|fontTable|styles|settings|webSettings)\.xml[^\s]*/gi, '')
-    .replace(/_rels\/\.rels[^\s]*/gi, '')
+    .replace(/_rels\/\.rels[^\s]*/gi, '');
+
+  // 5. Clean slide, sheet, and page markers into clean natural section breaks
+  sanitized = sanitized
+    .replace(/--- Slide \d+ ---\n?/gi, '\n\n')
+    .replace(/--- Sheet: [^\n]+ ---\n?/gi, '\n\n')
+    .replace(/--- Page \d+ ---\n?/gi, '\n\n');
+
+  // 6. Normalize whitespace and newlines
+  sanitized = sanitized
     .replace(/\r\n|\r/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+
+  return sanitized;
 }
+
+/**
+ * Purges all leaked docProps, XML tags, binary zip headers (e.g. [Content_Types], docProps),
+ * internal file wrappers, and compresses whitespace.
+ */
+export function cleanExtractedString(raw: string): string {
+  return sanitizeDocumentText(raw);
+}
+

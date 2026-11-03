@@ -1130,7 +1130,114 @@ The output must be a valid JSON object matching the requested schema with:
   }
 });
 
-// Helper to generate distinct, diverse multiple choice questions covering different cognitive archetypes
+// System instruction block for EaseStudy - genre-agnostic, context-adaptive
+const EASESTUDY_SYSTEM_INSTRUCTION = {
+  parts: [
+    {
+      text: "You are EaseStudy, an advanced, highly adaptive educational intelligence engine. Your role is to analyze uploaded documents—including self-help books, literature, business manuals, educational notes, research papers, and technical literature—and generate clean, highly accurate, context-aware study assets (executive summaries, key concepts, flashcards, and practice exam suites).\n\nCRITICAL OPERATIONAL DIRECTIVES:\n\n1. GENRE-ADAPTIVE TERMINOLOGY & TONE:\n   - Automatically evaluate and adapt to the true domain, style, and genre of the source document.\n   - For self-help, inspirational, business, or personal development literature (e.g., Dale Carnegie, human relations, psychology, leadership), use practical, behavioral, and personal growth terminology (e.g., 'Core Principles', 'Practical Takeaways', 'Behavioral Insights', 'Actionable Lessons').\n   - STRICTLY PROHIBITED: Do NOT force academic, research, or scientific jargon (e.g., 'central thesis', 'methodological framework', 'empirical data', 'analytical arguments', 'experimental baseline') unless the document is explicitly a scientific research paper or academic thesis.\n\n2. NO SYSTEM METADATA OR FILE NAME LEAKS:\n   - Never mention file names, file extensions (.pdf, .docx), MIME types, storage locations, or raw system tags (e.g., 'multimodal document', 'uploaded file') inside any summary, concept, question, option, or explanation.\n   - Treat the text content purely as the subject matter itself.\n\n3. DYNAMIC SECTION & CHAPTER SCOPING:\n   - Only reference specific chapters, sections, or page ranges if they are explicitly present in the document text or if the user explicitly requested a specific scope.\n   - Never default to labeling output as 'Chapter 1' unless the active text chunk explicitly represents Chapter 1.\n\n4. CONTENT-GROUNDED EVALUATIONS & EXAM SUITES:\n   - All practice exam questions, options, and explanations must directly evaluate core concepts, themes, and ideas from inside the text.\n   - Distractors (incorrect options) must represent plausible conceptual misinterpretations related to the document's subject matter rather than generic meta-phrases about 'analytical frameworks' or 'data anomalies'."
+    }
+  ]
+};
+
+// Comprehensive document context and text sanitizer
+function sanitizeDocumentText(raw: string): string {
+  if (!raw) return '';
+
+  let sanitized = String(raw);
+
+  // If binary/zip header indicators exist, strip xml nodes
+  if (sanitized.startsWith('PK\x03\x04') || sanitized.startsWith('PK\x05\x06') || sanitized.includes('[Content_Types].xml')) {
+    const textNodeMatches = sanitized.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+    if (textNodeMatches && textNodeMatches.length > 0) {
+      sanitized = textNodeMatches.map((m) => m.replace(/<[^>]+>/g, '')).join(' ');
+    } else {
+      return '';
+    }
+  }
+
+  // 1. Strip raw multimodal wrapper injections, system header tags, and chunk labels
+  sanitized = sanitized
+    .replace(/\[Multimodal Document:[^\]]*\]/gi, '')
+    .replace(/Multimodal Document:[^\n]*/gi, '')
+    .replace(/\[Uploaded File:[^\]]*\]/gi, '')
+    .replace(/Uploaded File:[^\n]*/gi, '')
+    .replace(/\[Uploaded Document Content[^\]]*\]:?/gi, '')
+    .replace(/Uploaded Document Content[^\n]*:?/gi, '')
+    .replace(/User Provided Text\/Notes:?/gi, '')
+    .replace(/\[AUTHORITATIVE_CHUNK_\d+\]:?/gi, '')
+    .replace(/=== AUTHORITATIVE_SOURCE_DOCUMENT_(?:START|END) ===/gi, '')
+    .replace(/--- (?:BEGIN|END) VERIFIED DOCUMENT SEGMENTS ---/gi, '')
+    .replace(/\[STRICT GROUNDING DIRECTIVE[^\]]*\]/gi, '');
+
+  // 2. Strip MIME type labels (e.g. [application/pdf], [image/png], application/pdf, etc.)
+  sanitized = sanitized
+    .replace(/\[(?:application|image|audio|video|text)\/[a-zA-Z0-9_.+-]+\]/gi, '')
+    .replace(/\b(?:application\/(?:pdf|vnd\.[a-zA-Z0-9_.+-]+|msword|octet-stream|zip|json)|image\/(?:png|jpeg|jpg|webp|gif)|text\/(?:plain|csv|markdown))\b/gi, '');
+
+  // 3. Strip Cloud / Supabase / local storage path strings and URLs
+  sanitized = sanitized
+    .replace(/https?:\/\/[^\s"'<>]+\/storage\/v1\/object\/public\/[^\s"'<>]+/gi, '')
+    .replace(/storage\/v1\/object\/public\/[^\s"'<>]+/gi, '')
+    .replace(/https?:\/\/[^\s"'<>]+\/api\/documents\/files\/[^\s"'<>]+/gi, '')
+    .replace(/\/api\/documents\/files\/[^\s"'<>]+/gi, '')
+    .replace(/(?:data\/uploads|\/app\/applet\/data)\/[^\s"'<>]+/gi, '')
+    .replace(/\b(?:file:\/\/|uploads\/)[^\s"'<>]+/gi, '');
+
+  // 4. Strip XML / OpenXML / HTML / DOCX container tags and artifacts
+  sanitized = sanitized
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
+    .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
+    .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
+    .replace(/word\/(?:document|fontTable|styles|settings|webSettings)\.xml[^\s]*/gi, '')
+    .replace(/_rels\/\.rels[^\s]*/gi, '');
+
+  // 5. Clean slide, sheet, and page markers into clean natural breaks
+  sanitized = sanitized
+    .replace(/--- Slide \d+ ---\n?/gi, '\n\n')
+    .replace(/--- Sheet: [^\n]+ ---\n?/gi, '\n\n')
+    .replace(/--- Page \d+ ---\n?/gi, '\n\n');
+
+  // 6. Normalize whitespace
+  sanitized = sanitized
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+
+  return sanitized;
+}
+
+// Clean document noise alias for backwards compatibility
+const cleanDocNoise = (raw: string): string => sanitizeDocumentText(raw);
+
+// Detect if text content belongs to personal growth / self-help / business / leadership literature
+function detectGenreFromContent(text: string, isEngineering: boolean): 'personal_growth' | 'technical' | 'general' {
+  if (isEngineering) return 'technical';
+  const lower = text.toLowerCase();
+  const personalGrowthKeywords = [
+    'habit', 'habits', 'carnegie', 'friend', 'friends', 'influence', 'people', 'listen', 'listening',
+    'mindset', 'leadership', 'leader', 'communication', 'attitude', 'behavior', 'empathy', 'growth',
+    'relationship', 'relationships', 'success', 'praise', 'appreciation', 'criticism', 'win', 'inspire',
+    'emotional', 'psychology', 'purpose', 'self-help', 'motivation', 'personal development'
+  ];
+  let pgCount = 0;
+  for (const kw of personalGrowthKeywords) {
+    if (lower.includes(kw)) pgCount++;
+  }
+  if (pgCount >= 2) return 'personal_growth';
+
+  const techKeywords = ['force', 'stress', 'strain', 'cad', 'finite element', 'fea', 'gdt', 'algorithm', 'equation', 'formula'];
+  let techCount = 0;
+  for (const kw of techKeywords) {
+    if (lower.includes(kw)) techCount++;
+  }
+  if (techCount >= 3) return 'technical';
+
+  return 'general';
+}
+
+// Helper to generate distinct, genre-adaptive multiple choice questions covering different cognitive archetypes
 function generateDiverseMCQs(
   textContent: string,
   topic: string,
@@ -1140,100 +1247,124 @@ function generateDiverseMCQs(
   salt: number = 0,
   priorQuestions: string[] = []
 ) {
-  let clean = (textContent || '').replace(/\s+/g, ' ').trim();
+  const clean = sanitizeDocumentText(textContent || '');
   const rawSentences = clean
     .split(/(?<=[.?!])\s+/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 25 && s.length < 280 && !s.toLowerCase().startsWith('user provided') && !s.toLowerCase().startsWith('uploaded document'));
+    .filter((s) => s.length > 25 && s.length < 280);
 
   const count = Math.min(50, Math.max(5, targetCount));
   const mcqs: any[] = [];
   const letters: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
+  const genre = detectGenreFromContent(clean, isEngineeringDoc);
 
   const priorStems = new Set(
     priorQuestions.map((q) => q.toLowerCase().replace(/[^a-z0-9]/g, ' ').slice(0, 35))
   );
 
-  const archetypes = [
+  // Genre-adaptive archetypes with plausible conceptual distractors
+  const archetypes = genre === 'personal_growth' ? [
     {
-      type: 'thesis',
-      makeQuestion: (s: string) => `What represents the central thesis or foundational premise of ${topic} as established in the study material?`,
-      makeCorrect: (s: string) => `It establishes that ${s.toLowerCase().replace(/^[a-z]/, (c) => c.toLowerCase())}`,
-      d1: `It outright rejects analytical observation in favor of arbitrary speculation`,
-      d2: `It applies strictly as an unrelated theoretical footnote with zero practical utility`,
-      d3: `It is framed solely as an unverified personal hypothesis refuted by the author`,
+      type: 'principle',
+      makeQuestion: (s: string) => `What foundational principle does the material emphasize regarding ${topic}?`,
+      makeCorrect: (s: string) => `It emphasizes that ${s.toLowerCase().replace(/^[a-z]/, (c) => c.toLowerCase())}`,
+      d1: `Prioritizing immediate self-justification over empathetic understanding`,
+      d2: `Assuming superficial flattery can replace genuine personal investment`,
+      d3: `Focusing solely on correcting others' faults rather than examining personal habits`,
     },
     {
-      type: 'mechanism',
-      makeQuestion: (s: string) => {
-        const words = s.split(' ').slice(0, 7).join(' ');
-        return `Regarding the discussion of "${words}...", how does the source text explain its operational role?`;
-      },
-      makeCorrect: (s: string) => `The source establishes that ${s.toLowerCase()}`,
-      d1: `It functions purely as a secondary anomaly without contextual relevance`,
-      d2: `It dismisses standard criteria in favor of unverified generalizations`,
-      d3: `It asserts an opposing conclusion that invalidates the primary discussion`,
-    },
-    {
-      type: 'cause_effect',
+      type: 'behavior',
       makeQuestion: (s: string) => {
         const words = s.split(' ').slice(0, 6).join(' ');
-        return `Based on the provided analysis of "${words}...", what primary consequence or outcome is documented?`;
+        return `Regarding the lesson on "${words}...", what actionable behavioral shift is recommended?`;
       },
-      makeCorrect: (s: string) => `Directly produces the documented result: "${s.slice(0, 85)}..."`,
-      d1: `Causes a complete collapse of analytical consistency across the framework`,
-      d2: `Has no measurable effect and is treated as an extraneous data point`,
-      d3: `Reverses the foundational premise established in earlier sections`,
+      makeCorrect: (s: string) => `The text demonstrates that ${s.toLowerCase()}`,
+      d1: `Relying on external pressure and criticism to force compliance`,
+      d2: `Avoiding constructive dialogue in hopes disagreements resolve themselves`,
+      d3: `Treating personal relationships as purely transactional exchanges`,
     },
     {
-      type: 'distinction',
-      makeQuestion: (s: string) => `How does the material distinguish verified conclusions from unsupported assumptions within ${topic}?`,
-      makeCorrect: (s: string) => `By requiring factual textual evidence and clear criteria: "${s.slice(0, 80)}..."`,
-      d1: `By accepting anecdotal claims as equivalent to verified evidence`,
-      d2: `By prioritizing subjective preference over documented observations`,
-      d3: `By ignoring contradictory facts to preserve initial hypotheses`,
+      type: 'impact',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 6).join(' ');
+        return `According to the discussion on "${words}...", what primary impact or practical outcome occurs?`;
+      },
+      makeCorrect: (s: string) => `It fosters the documented outcome: "${s.slice(0, 85)}..."`,
+      d1: `Creates hidden resentment and damages mutual rapport over time`,
+      d2: `Has negligible influence on daily interactions and cooperative teamwork`,
+      d3: `Diminishes authentic self-expression in favor of rigid compliance`,
+    },
+    {
+      type: 'mindset',
+      makeQuestion: (s: string) => `How does the material guide the reader to respond constructively within ${topic}?`,
+      makeCorrect: (s: string) => `By embracing the core insight: "${s.slice(0, 80)}..."`,
+      d1: `By reacting defensively to unfamiliar viewpoints or feedback`,
+      d2: `By prioritizing speed over meaningful personal connection`,
+      d3: `By dismissing others' motivations as irrelevant to shared success`,
     },
     {
       type: 'application',
       makeQuestion: (s: string) => {
         const words = s.split(' ').slice(0, 6).join(' ');
-        return `In a practical application involving "${words}...", what critical guideline does the text recommend?`;
+        return `When applying the teachings around "${words}...", what is the most constructive approach?`;
       },
-      makeCorrect: (s: string) => `Adhering to the verified principle that ${s.toLowerCase()}`,
-      d1: `Ignoring foundational constraints in favor of rapid assumptions`,
-      d2: `Treating documented parameters as entirely optional guidelines`,
-      d3: `Applying conclusions from unrelated disciplines without adaptation`,
+      makeCorrect: (s: string) => `Living the principle that ${s.toLowerCase()}`,
+      d1: `Waiting for the other person to take the first conciliatory step`,
+      d2: `Relying on rigid scripts rather than attentive, genuine listening`,
+      d3: `Viewing compromise as an inherent sign of personal weakness`,
+    },
+  ] : [
+    {
+      type: 'core_idea',
+      makeQuestion: (s: string) => `What represents a primary insight or core principle of ${topic} as presented in the text?`,
+      makeCorrect: (s: string) => `It establishes that ${s.toLowerCase().replace(/^[a-z]/, (c) => c.toLowerCase())}`,
+      d1: `It suggests initial assumptions are infallible and require no further testing`,
+      d2: `It treats foundational principles as purely optional historical context`,
+      d3: `It argues that practical application is secondary to abstract conjecture`,
     },
     {
-      type: 'constraint',
-      makeQuestion: (s: string) => `Which governing constraint or essential boundary condition is highlighted in the text for ${topic}?`,
-      makeCorrect: (s: string) => `Maintaining alignment with documented findings: "${s.slice(0, 80)}..."`,
-      d1: `Assuming unrestricted validity under all conceivable external conditions`,
-      d2: `Disregarding potential anomalies or exceptions noted in the source`,
-      d3: `Replacing structured definitions with arbitrary terminology`,
+      type: 'application',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 7).join(' ');
+        return `Regarding the discussion of "${words}...", what key relationship is highlighted in the text?`;
+      },
+      makeCorrect: (s: string) => `The text establishes that ${s.toLowerCase()}`,
+      d1: `It treats this factor as an isolated detail with no broader relevance`,
+      d2: `It concludes that opposing viewpoints have equal validity without supporting facts`,
+      d3: `It asserts an unrelated conclusion that contradicts earlier sections`,
     },
     {
-      type: 'synthesis',
+      type: 'cause_effect',
       makeQuestion: (s: string) => {
         const words = s.split(' ').slice(0, 6).join(' ');
-        return `How does the author's treatment of "${words}..." integrate with the broader framework of the subject?`;
+        return `Based on the provided analysis of "${words}...", what documented outcome is emphasized?`;
       },
-      makeCorrect: (s: string) => `It provides contextual grounding that reinforces the core deductions of the text`,
-      d1: `It contradicts the primary conclusions without offering resolution`,
-      d2: `It exists as an isolated digression completely unrelated to the core themes`,
-      d3: `It replaces the established methodology with speculative claims`,
+      makeCorrect: (s: string) => `It directly leads to: "${s.slice(0, 85)}..."`,
+      d1: `Produces unintended friction that undermines primary objectives`,
+      d2: `Has no measurable effect on the surrounding system or process`,
+      d3: `Reverses the core conclusions reached by the author`,
     },
     {
-      type: 'evaluation',
-      makeQuestion: (s: string) => `Which statement reflects an accurate, factually grounded deduction from the source document?`,
-      makeCorrect: (s: string) => `The source establishes that ${s.toLowerCase()}`,
-      d1: `The material claims all conclusions are tentative and lack factual grounding`,
-      d2: `The author rejects systematic inquiry in favor of intuitive assertion`,
-      d3: `The findings apply exclusively to isolated test cases with no general validity`,
+      type: 'distinction',
+      makeQuestion: (s: string) => `How does the material substantiate its core claims within ${topic}?`,
+      makeCorrect: (s: string) => `By demonstrating that ${s.toLowerCase().slice(0, 80)}...`,
+      d1: `By relying on untested generalizations without contextual examples`,
+      d2: `By prioritizing subjective preference over documented observations`,
+      d3: `By disregarding nuanced exceptions mentioned in earlier passages`,
+    },
+    {
+      type: 'takeaway',
+      makeQuestion: (s: string) => {
+        const words = s.split(' ').slice(0, 6).join(' ');
+        return `What essential takeaway emerges from the discussion of "${words}..."?`;
+      },
+      makeCorrect: (s: string) => `The understanding that ${s.toLowerCase()}`,
+      d1: `The premise that standard practices can be bypassed without consequence`,
+      d2: `The view that established guidelines are overly restrictive and obsolete`,
+      d3: `The belief that outcomes depend primarily on chance rather than preparation`,
     },
   ];
 
-  // Shift sentence and archetype index based on salt to guarantee freshness on re-generation
   const saltOffset = Math.abs(salt || 0);
   const sentenceOffset = rawSentences.length > 0 ? saltOffset % rawSentences.length : 0;
   const archOffset = (saltOffset + 3) % archetypes.length;
@@ -1243,14 +1374,14 @@ function generateDiverseMCQs(
     const arch = archetypes[(attemptIdx + archOffset) % archetypes.length];
     const sentence = rawSentences.length > 0
       ? rawSentences[(attemptIdx + sentenceOffset) % rawSentences.length]
-      : `Core principles establish verifiable criteria for ${topic}.`;
+      : `Core principles establish verifiable understanding for ${topic}.`;
 
     const qText = arch.makeQuestion(sentence);
     const stemSig = qText.toLowerCase().replace(/[^a-z0-9]/g, ' ').slice(0, 35);
 
     attemptIdx++;
     if (priorStems.has(stemSig)) {
-      continue; // Skip questions already asked in previous generation
+      continue;
     }
 
     const correctContent = arch.makeCorrect(sentence);
@@ -1274,14 +1405,44 @@ function generateDiverseMCQs(
       question: qText,
       options,
       correctAnswer: correctLetter,
-      explanation: `According to the source text: "${sentence.slice(0, 120)}", this directly validates why Option ${correctLetter} is correct.`,
+      explanation: `As detailed in the material: "${sentence.slice(0, 120)}", this directly explains why Option ${correctLetter} is correct.`,
     });
   }
 
   return mcqs;
 }
 
-// Helper to generate a comprehensive study package when remote AI is unavailable or encounters network issues
+// Clean human topic derivation without file metadata, extensions, or storage paths
+function cleanTopicFromSource(fileName?: string, textContent?: string, specialFocus?: string): string {
+  if (specialFocus && specialFocus.trim().length > 3) {
+    const cleaned = specialFocus.trim();
+    if (cleaned.length < 50 && !cleaned.toLowerCase().includes('understand') && !cleaned.toLowerCase().includes('summarize')) {
+      return cleaned;
+    }
+  }
+
+  if (textContent && textContent.trim().length > 0) {
+    const cleanLines = textContent
+      .split('\n')
+      .map((l) => l.replace(/[#*_-]/g, '').trim())
+      .filter((l) => l.length > 3 && l.length < 70 && !l.includes('/') && !l.includes('\\') && !l.includes('.pdf') && !l.includes('.docx'));
+    if (cleanLines.length > 0) {
+      return cleanLines[0];
+    }
+  }
+
+  if (fileName && fileName.trim().length > 0) {
+    const noExt = fileName.replace(/\.[a-zA-Z0-9]+$/g, '');
+    const cleanName = noExt.replace(/[_-]+/g, ' ').replace(/\b(?:screenshot|upload|doc|file|scan)\b/gi, '').trim();
+    if (cleanName.length > 2) {
+      return cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+    }
+  }
+
+  return 'Study Overview';
+}
+
+// Helper to generate a genre-adaptive study package when remote AI is unavailable or encountering network issues
 function generateFallbackStudyPackage(
   textContent: string,
   fileName: string = '',
@@ -1292,28 +1453,9 @@ function generateFallbackStudyPackage(
   salt: number = 0,
   priorQuestions: string[] = []
 ) {
-  let cleanText = (textContent || '').trim();
-  cleanText = cleanText
-    .replace(/^User Provided Text\/Notes:\s*/i, '')
-    .replace(/^Uploaded Document Content \([^)]*\):\s*/i, '')
-    .trim();
-  const cleanName = (fileName || '').replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').trim();
-
-  let topic = isEngineeringDoc ? 'Engineering Analysis' : 'Subject Overview';
-  if (cleanName && cleanName.length > 2 && !cleanName.toLowerCase().startsWith('screenshot')) {
-    topic = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
-  } else if (cleanText.length > 0) {
-    const lines = cleanText
-      .split('\n')
-      .map((l) => l.replace(/[#*_-]/g, '').trim())
-      .filter((l) => l.length > 3 && !l.toLowerCase().startsWith('user provided text') && !l.toLowerCase().startsWith('uploaded document'));
-    if (lines.length > 0 && lines[0].length > 3 && lines[0].length < 90) {
-      topic = lines[0];
-    }
-  }
-  if (specialFocus) {
-    topic = `${topic} — ${specialFocus}`;
-  }
+  const cleanText = sanitizeDocumentText(textContent || '');
+  const topic = cleanTopicFromSource(fileName, cleanText, specialFocus);
+  const genre = detectGenreFromContent(cleanText, isEngineeringDoc);
 
   // Extract real sentences and keywords from source text
   const rawSentences = cleanText
@@ -1323,21 +1465,57 @@ function generateFallbackStudyPackage(
 
   const readingTime = `${Math.max(4, Math.ceil(Math.min(cleanText.length, 6000) / 400) + 3)} min read`;
 
-  // Step-by-step narrative in natural, domain-authentic voice
-  const paragraph1 = rawSentences.length > 0
-    ? `The central focus of ${topic} centers on the core perspectives and assertions outlined in the text. In particular, the discussion emphasizes: "${rawSentences[0]}"`
-    : `The material examines the primary themes, central assertions, and core perspectives of ${topic}, establishing the context necessary for clear understanding.`;
+  let paragraph1 = '';
+  let paragraph2 = '';
+  let paragraph3 = '';
 
-  const paragraph2 = rawSentences.length >= 2
-    ? `Expanding on this foundation, the text highlights that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Furthermore, the discussion emphasizes that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.` : ''}`
-    : `The discussion methodically explores the essential relationships, comparative viewpoints, and practical lessons conveyed throughout the source.`;
+  if (genre === 'personal_growth') {
+    paragraph1 = rawSentences.length > 0
+      ? `The foundational principle of ${topic} centers on actionable personal growth and behavioral understanding. The material emphasizes that: "${rawSentences[0]}"`
+      : `The material explores core principles, interpersonal dynamics, and actionable habits that foster personal and professional effectiveness.`;
 
-  const paragraph3 = specialFocus
-    ? `Special attention is concentrated on ${specialFocus}, detailing how its principles connect directly with the broader themes of the text.`
-    : `Overall, these findings establish a cohesive understanding of ${topic}, bridging foundational ideas with practical, real-world application.`;
+    paragraph2 = rawSentences.length >= 2
+      ? `Building upon this foundation, the text demonstrates that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Furthermore, it underscores that "${rawSentences[2]}", providing a clear path to constructive communication and lasting relationships.` : ''}`
+      : `The insights emphasize continuous self-reflection, empathetic communication, and the practical application of everyday leadership habits.`;
+
+    paragraph3 = specialFocus
+      ? `Special emphasis is placed on ${specialFocus}, illustrating how intentional habits create positive ripple effects across personal and professional interactions.`
+      : `Ultimately, these lessons offer a practical roadmap for personal mastery, encouraging thoughtful, constructive action.`;
+  } else if (genre === 'technical') {
+    paragraph1 = rawSentences.length > 0
+      ? `The technical foundation of ${topic} examines physical principles and operational criteria. Specifically: "${rawSentences[0]}"`
+      : `The text outlines governing principles, physical constraints, and analytical criteria essential to understanding ${topic}.`;
+
+    paragraph2 = rawSentences.length >= 2
+      ? `Expanding on these fundamentals, the analysis highlights that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Additionally, the data confirms that "${rawSentences[2]}", validating operational safety and structural balance.` : ''}`
+      : `The discussion methodically explores governing equations, boundary limits, and performance envelopes.`;
+
+    paragraph3 = specialFocus
+      ? `Special attention is concentrated on ${specialFocus}, evaluating governing relationships under realistic working loads.`
+      : `In summary, these engineering insights bridge analytical modeling with reliable, real-world implementation.`;
+  } else {
+    paragraph1 = rawSentences.length > 0
+      ? `The discussion of ${topic} explores the primary themes, central assertions, and core perspectives outlined in the material. In particular: "${rawSentences[0]}"`
+      : `The material examines the central themes and core perspectives of ${topic}, providing the context needed for thorough understanding.`;
+
+    paragraph2 = rawSentences.length >= 2
+      ? `Expanding on this foundation, the text highlights that "${rawSentences[1]}" ${rawSentences.length >= 3 ? `Furthermore, it emphasizes that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.` : ''}`
+      : `The text methodically explores the essential relationships, comparative viewpoints, and practical lessons conveyed throughout the source.`;
+
+    paragraph3 = specialFocus
+      ? `Special focus is placed on ${specialFocus}, detailing how its principles connect directly with the broader themes of the text.`
+      : `Overall, these findings establish a cohesive understanding of ${topic}, bridging foundational ideas with practical application.`;
+  }
 
   const keyTakeaways = rawSentences.length >= 4
     ? rawSentences.slice(0, 5).map((s) => s.replace(/^[•\-\d.]\s*/, ''))
+    : genre === 'personal_growth'
+    ? [
+        `Genuine appreciation and active listening build trust and open communication in ${topic}.`,
+        'Focusing on understanding other perspectives de-escalates conflict and inspires cooperation.',
+        'Consistent daily habits lead to lasting personal and professional effectiveness.',
+        'Constructive feedback is best received when grounded in empathy and mutual respect.',
+      ]
     : [
         `Clear conceptual understanding serves as the foundation for ${topic}.`,
         'Core principles establish the primary criteria for analysis and interpretation.',
@@ -1345,7 +1523,15 @@ function generateFallbackStudyPackage(
         'Systematic review reinforces long-term retention and practical mastery.',
       ];
 
-  const coreThemes = isEngineeringDoc
+  const coreThemes = genre === 'personal_growth'
+    ? [
+        topic.split('—')[0].trim(),
+        'Core Principles',
+        'Behavioral Insights',
+        'Actionable Lessons',
+        'Practical Takeaways',
+      ]
+    : genre === 'technical'
     ? [
         topic.split('—')[0].trim(),
         'Engineering Analysis',
@@ -1356,14 +1542,14 @@ function generateFallbackStudyPackage(
     : [
         topic.split('—')[0].trim(),
         'Core Principles',
-        'Contextual Interpretation',
-        'Analytical Synthesis',
-        'Subject Framework',
+        'Contextual Understanding',
+        'Key Perspectives',
+        'Subject Overview',
       ];
 
-  // Core Concepts: Dynamically grounded in text for general docs, formulas only for engineering docs
+  // Key Concepts dynamically adapted to document genre
   let keyConcepts: any[] = [];
-  if (isEngineeringDoc) {
+  if (genre === 'technical') {
     keyConcepts = [
       {
         title: 'Governing Relations & Balance Criteria',
@@ -1384,45 +1570,88 @@ function generateFallbackStudyPackage(
         importance: 'Ensures reliable long-term performance and prevents structural degradation.',
       },
     ];
-  } else {
-    // Derive concepts directly from real document sentences or paragraphs
+  } else if (genre === 'personal_growth') {
     if (rawSentences.length >= 3) {
       keyConcepts = [
         {
           title: `Core Principle: ${rawSentences[0].split(' ').slice(0, 5).join(' ')}`,
-          explanation: `The source material establishes that "${rawSentences[0]}", serving as a foundational pillar for ${topic}.`,
+          explanation: `The material emphasizes that "${rawSentences[0]}", serving as a foundational behavioral guideline.`,
+          formulaOrExample: `Practical Application: Focus on intentional communication and empathetic listening.`,
+          importance: 'Underpins personal leadership and positive interpersonal influence.',
+        },
+        {
+          title: `Behavioral Insight: ${rawSentences[1].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `A central observation in the text highlights that "${rawSentences[1]}", highlighting the power of understanding others' motivations.`,
+          formulaOrExample: `Actionable Lesson: Avoid reflexive criticism; seek first to comprehend underlying needs.`,
+          importance: 'Essential for resolving interpersonal tension and fostering teamwork.',
+        },
+        {
+          title: `Actionable Lesson: ${rawSentences[2].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `The discussion concludes that "${rawSentences[2]}", translating mindful awareness into daily practice.`,
+          formulaOrExample: `Habit Formation: Reinforce constructive behaviors consistently in daily routines.`,
+          importance: 'Provides the bridge between reading principles and living them effectively.',
+        },
+      ];
+    } else {
+      keyConcepts = [
+        {
+          title: 'Empathy & Attentive Listening',
+          explanation: 'Genuinely seeking to understand another person perspective before offering advice builds lasting rapport and mutual trust.',
+          formulaOrExample: 'Listen to understand rather than to formulate an immediate response.',
+          importance: 'Foundational for all collaborative relationships and constructive dialogue.',
+        },
+        {
+          title: 'Constructive Encouragement vs. Criticism',
+          explanation: 'Focusing on genuine appreciation and encouragement motivates individuals far more effectively than public rebuke.',
+          formulaOrExample: 'Praise specific improvements and acknowledge sincere effort.',
+          importance: 'Drives sustained motivation and voluntary cooperation.',
+        },
+        {
+          title: 'Mindful Ownership & Reflection',
+          explanation: 'Taking personal responsibility for interpersonal outcomes empowers constructive problem-solving over defensive reaction.',
+          formulaOrExample: 'Frame challenges around what can be positively adjusted moving forward.',
+          importance: 'Crucial for personal resilience and mature leadership.',
+        },
+      ];
+    }
+  } else {
+    if (rawSentences.length >= 3) {
+      keyConcepts = [
+        {
+          title: `Core Principle: ${rawSentences[0].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `The material establishes that "${rawSentences[0]}", serving as a foundational pillar for ${topic}.`,
           formulaOrExample: rawSentences[0].slice(0, 110),
-          importance: 'Underpins the primary thesis and provides the factual baseline for contextual understanding.',
+          importance: 'Underpins the primary subject matter and establishes baseline context.',
         },
         {
-          title: `Analytical Focus: ${rawSentences[1].split(' ').slice(0, 5).join(' ')}`,
-          explanation: `A central deduction highlighted in the document notes that "${rawSentences[1]}", providing critical contextual support.`,
+          title: `Key Perspective: ${rawSentences[1].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `A central insight highlighted in the document notes that "${rawSentences[1]}", providing critical supporting context.`,
           formulaOrExample: rawSentences[1].slice(0, 110),
-          importance: 'Essential for addressing analytical questions and understanding relational dynamics in the text.',
+          importance: 'Essential for understanding relational dynamics and nuanced details in the text.',
         },
         {
-          title: `Synthesis & Interpretation: ${rawSentences[2].split(' ').slice(0, 5).join(' ')}`,
-          explanation: `The text further articulates that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.`,
+          title: `Synthesis & Application: ${rawSentences[2].split(' ').slice(0, 5).join(' ')}`,
+          explanation: `The text articulates that "${rawSentences[2]}", integrating the broader perspectives into an actionable conclusion.`,
           formulaOrExample: rawSentences[2].slice(0, 110),
-          importance: 'Vital for comprehensive recall, synthesis, and examination readiness.',
+          importance: 'Vital for comprehensive recall, synthesis, and real-world application.',
         },
       ];
     } else {
       keyConcepts = [
         {
           title: `Foundational Premise of ${topic}`,
-          explanation: `The material structures core propositions, operational definitions, and standard evidentiary methods as outlined in the text.`,
-          importance: 'Provides the baseline for subsequent analytical arguments.',
+          explanation: `The material outlines core propositions and standard criteria as structured in the text.`,
+          importance: 'Provides the baseline for subsequent discussion.',
         },
         {
-          title: 'Core Methodological Framework',
-          explanation: 'Structured methodologies and analytical criteria enable systematic evaluation of claims and case studies without bias.',
-          importance: 'Critical for evaluating evidence and articulating well-substantiated solutions in assessments.',
+          title: 'Key Thematic Relationships',
+          explanation: 'Structured themes and comparative criteria enable balanced understanding of ideas and case examples.',
+          importance: 'Critical for evaluating claims and articulating well-reasoned perspectives.',
         },
         {
-          title: 'Synthesis & Practical Application',
-          explanation: 'Translates high-level theoretical guidelines into concrete implementations, identifying boundary conditions, exceptions, and key takeaways.',
-          importance: 'Essential for addressing high-level case study and scenario-based questions.',
+          title: 'Practical Takeaways',
+          explanation: 'Translates high-level principles into tangible implementations, identifying boundaries, exceptions, and key lessons.',
+          importance: 'Essential for applying ideas effectively in practice.',
         },
       ];
     }
@@ -1430,30 +1659,74 @@ function generateFallbackStudyPackage(
 
   // Generate requested MCQ count with guaranteed non-duplicate diverse questions
   const targetCount = Math.min(50, Math.max(5, requestedQCount));
-  const generatedMcqs = generateDiverseMCQs(cleanText, topic, targetCount, targetDifficulty, isEngineeringDoc);
+  const generatedMcqs = generateDiverseMCQs(cleanText, topic, targetCount, targetDifficulty, isEngineeringDoc, salt, priorQuestions);
 
-  const shortAnswers = [
+  const shortAnswers = genre === 'personal_growth' ? [
     {
       id: 1,
-      question: `Synthesize the primary thesis of ${topic} and explain how it is structured according to the source document.`,
+      question: `Synthesize the primary behavioral lesson of ${topic} and explain how it applies to everyday relationships.`,
       idealAnswer: rawSentences.length > 0
-        ? `The primary thesis of ${topic} emphasizes that "${rawSentences[0]}". The text develops this through contextual arguments and practical observations, demonstrating how fundamental ideas lead to actionable understanding.`
+        ? `The primary lesson emphasizes that "${rawSentences[0]}". In practice, this means actively listening to understand others, choosing empathy over defensiveness, and building trust through genuine appreciation.`
+        : `The lesson highlights the importance of empathy, attentive listening, and sincere encouragement. By focusing on the other person's perspective and needs, we establish trust and constructive collaboration.`,
+      keyPointsRequired: [
+        'Identification of the core behavioral principle',
+        'Emphasis on empathy and active listening',
+        'Practical application to everyday communication and teamwork',
+      ],
+      markingGuidance: 'Award 2 marks for clear identification of the principle, 2 marks for empathy/listening explanation, and 1 mark for practical daily application (Total: 5 marks).',
+      questionType: 'discussion',
+      practicalApplication: 'Directly applicable to personal leadership, family dynamics, and professional workplace communication.',
+    },
+    {
+      id: 2,
+      question: `Identify two actionable takeaways emphasized in the material for resolving conflict or tension.`,
+      idealAnswer: rawSentences.length >= 2
+        ? `First, the text shows that "${rawSentences[0]}". Second, it highlights that "${rawSentences[1]}", guiding individuals to de-escalate emotional reactivity.`
+        : `First, suspend judgment and listen attentively without formulating an immediate rebuttal. Second, acknowledge the other party's feelings and seek mutually beneficial solutions.`,
+      keyPointsRequired: [
+        'Two distinct, actionable takeaways from the text',
+        'Focus on de-escalation and collaborative resolution',
+      ],
+      markingGuidance: 'Award 2.5 marks for each correctly articulated actionable takeaway (Total: 5 marks).',
+      questionType: 'practical',
+      practicalApplication: 'Useful in negotiations, mediation, and resolving interpersonal disagreements constructively.',
+    },
+    {
+      id: 3,
+      question: `How does the author recommend sustaining positive behavioral habits over the long term?`,
+      idealAnswer: rawSentences.length >= 3
+        ? `The author emphasizes that "${rawSentences[2]}", showing that consistent small daily practices create enduring personal transformation.`
+        : `By consciously practicing mindful communication daily, viewing mistakes as learning opportunities, and regularly reflecting on personal interactions.`,
+      keyPointsRequired: [
+        'Consistency in daily practice',
+        'Mindful reflection and continuous self-improvement',
+      ],
+      markingGuidance: 'Award 3 marks for habit consistency principles and 2 marks for self-reflection guidance (Total: 5 marks).',
+      questionType: 'discussion',
+      practicalApplication: 'Essential for habit coaching, executive leadership development, and personal mastery.',
+    },
+  ] : [
+    {
+      id: 1,
+      question: `Synthesize the primary focus of ${topic} and explain how it is structured according to the source material.`,
+      idealAnswer: rawSentences.length > 0
+        ? `The primary focus of ${topic} emphasizes that "${rawSentences[0]}". The text develops this through contextual arguments and practical observations, demonstrating how fundamental ideas lead to actionable understanding.`
         : `According to the source material, ${topic} is structured around clearly defined principles, systematic evaluation steps, and verifiable conclusions. The text methodically builds from core insights to practical application.`,
       keyPointsRequired: [
-        'Identification of foundational definitions and scope',
+        'Identification of foundational concepts and scope',
         'Explanation of analytical evaluation methodologies',
-        'Connection between theoretical principles and practical application',
+        'Connection between core principles and practical application',
       ],
       markingGuidance: 'Award 2 marks for clear identification of foundational definitions, 2 marks for explanation of analytical methodologies, and 1 mark for connecting principles to practical application (Total: 5 marks).',
       questionType: 'discussion',
-      practicalApplication: 'Applies to synthesizing multi-source findings into an executive briefing or thesis review.',
+      practicalApplication: 'Applies to synthesizing multi-source findings into an executive briefing or overview.',
     },
     {
       id: 2,
       question: `Identify two key critical takeaways or governing constraints emphasized in the material for ${topic}.`,
       idealAnswer: rawSentences.length >= 2
         ? `The material highlights that "${rawSentences[0]}". Second, it demonstrates that "${rawSentences[1]}", ensuring consistent results across varying scenarios.`
-        : `The material highlights that contextual constraints and rigorous definition boundaries dictate reliable outcomes. Second, systematic validation and adherence to verified principles prevent errors.`,
+        : `The material highlights that contextual constraints and clear definitions dictate reliable outcomes. Second, systematic validation and adherence to verified principles prevent errors.`,
       keyPointsRequired: [
         'Articulation of primary constraints or boundaries',
         'Emphasis on systematic validation and factual accuracy',
@@ -1464,10 +1737,10 @@ function generateFallbackStudyPackage(
     },
     {
       id: 3,
-      question: `Evaluate the primary evidence presented in the text and discuss how it withstands counter-arguments or critical edge cases.`,
+      question: `Evaluate the primary evidence presented in the text and discuss how it supports the core conclusions.`,
       idealAnswer: rawSentences.length >= 3
         ? `The text supports its deductions by showing that "${rawSentences[2]}", providing verifiable corroboration that prevents reductive misinterpretations.`
-        : `The text grounds each claim in explicit definitions and empirical examples, demonstrating that theoretical assumptions remain valid only within the observed boundary constraints.`,
+        : `The text grounds each claim in explicit definitions and examples, demonstrating that theoretical assumptions remain valid only within the observed boundary constraints.`,
       keyPointsRequired: [
         'Reference to specific textual evidence or mechanisms',
         'Analysis of boundary conditions and edge cases',
@@ -1480,26 +1753,43 @@ function generateFallbackStudyPackage(
 
   const pageAnalysisList = [
     {
-      sectionOrPage: 'Section 1 / Overview',
+      sectionOrPage: 'Core Foundations',
       coreSubject: topic,
       keyInsight: rawSentences[0] || 'Foundational principles and operational definitions as structured in the source material.',
     },
     ...(rawSentences.length > 1 ? [{
-      sectionOrPage: 'Section 2 / Core Arguments',
-      coreSubject: 'Core Mechanics & Principles',
-      keyInsight: rawSentences[1] || 'Systematic progression of arguments and evidence evaluation.',
+      sectionOrPage: 'Key Perspectives & Development',
+      coreSubject: 'Core Insights & Principles',
+      keyInsight: rawSentences[1] || 'Systematic progression of ideas and evidence evaluation.',
     }] : []),
     ...(rawSentences.length > 2 ? [{
-      sectionOrPage: 'Section 3 / Synthesis & Application',
+      sectionOrPage: 'Synthesis & Practical Takeaways',
       coreSubject: 'Synthesis & Implications',
-      keyInsight: rawSentences[2] || 'Practical translation of conclusions, boundary constraints, and practical takeaways.',
+      keyInsight: rawSentences[2] || 'Practical translation of conclusions and actionable takeaways.',
     }] : []),
   ];
 
-  const flashcards = [
+  const flashcards = genre === 'personal_growth' ? [
+    {
+      front: `What is the core principle of ${topic}?`,
+      back: rawSentences[0] || `Fostering empathetic understanding and mindful communication to build lasting trust and cooperation.`,
+    },
+    {
+      front: `What actionable behavioral shift is emphasized in the text?`,
+      back: rawSentences[1] || `Listening actively to understand the other person's perspective rather than rushing to argue or criticize.`,
+    },
+    {
+      front: `What is the primary takeaway for navigating disagreements?`,
+      back: rawSentences[2] || `De-escalate emotional reactivity by validating underlying needs and seeking cooperative solutions.`,
+    },
+    {
+      front: `How are lasting habits developed according to the material?`,
+      back: rawSentences[3] || `Through intentional daily reflection, sincere appreciation, and consistent constructive action.`,
+    },
+  ] : [
     {
       front: `What is the central focus of ${topic}?`,
-      back: rawSentences[0] || `A systematic investigation of core principles, factual criteria, and practical methodologies grounded in the source text.`,
+      back: rawSentences[0] || `A systematic study of core principles, factual criteria, and practical methodologies grounded in the source text.`,
     },
     {
       front: `How does the source material define success or validation for ${topic}?`,
@@ -1533,21 +1823,6 @@ function generateFallbackStudyPackage(
     flashcards,
   };
 }
-
-const cleanDocNoise = (raw: string): string => {
-  if (!raw) return '';
-  return raw
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/schemas\.(?:openxmlformats|microsoft)\.org[^\s]*/gi, '')
-    .replace(/\[Content_Types\]\.xml[^\s]*/gi, '')
-    .replace(/docProps\/(?:app|core|custom)\.xml[^\s]*/gi, '')
-    .replace(/word\/(?:document|fontTable|styles|settings)\.xml[^\s]*/gi, '')
-    .replace(/_rels\/\.rels[^\s]*/gi, '')
-    .replace(/\r\n|\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-};
 
 // In-memory Caches & Usage Tracking
 const extractionCache = new Map<string, { extractedText: string; sections: any[]; characterCount: number; timestamp: number }>();
@@ -2063,9 +2338,11 @@ app.post(['/api/easestudy/analyze', '/api/easestudy/analyze/', '/easestudy/analy
       }
     }
 
+    const sanitizedUserNotes = sanitizeDocumentText(text || '');
+    const sanitizedDocText = sanitizeDocumentText(extractedDocxText || '');
     const combinedTextContent = [
-      text ? `User Provided Text/Notes:\n${cleanDocNoise(text)}` : '',
-      extractedDocxText ? `Uploaded Document Content (${fileData?.fileName || 'Document'}):\n${extractedDocxText}` : '',
+      sanitizedUserNotes,
+      sanitizedDocText,
     ].filter(Boolean).join('\n\n');
 
     // Strict grounding check: allow either extracted text (>= 20 chars) OR multimodal file payload (PDF/Image)
@@ -2133,116 +2410,75 @@ ${priorQuestionsList ? `PREVIOUS QUESTIONS TO STRICTLY AVOID:\n${priorQuestionsL
         selectedChapters.some((c) => s.title.toLowerCase().includes(c.toLowerCase()) || c.toLowerCase().includes(s.title.toLowerCase()))
       );
       if (matchedSections.length > 0) {
-        // Extract relevant chunks
         const chunks: string[] = [];
         for (const sec of matchedSections) {
-          if (sec.snippet) chunks.push(sec.snippet);
+          if (sec.snippet) chunks.push(sanitizeDocumentText(sec.snippet));
         }
         if (chunks.length > 0) {
-          focusedContent = `--- EMPHASIZED SELECTED CHAPTERS ---\n${chunks.join('\n\n')}\n\n--- DOCUMENT BROADER CONTEXT ---\n${combinedTextContent.slice(0, 40000)}`;
+          focusedContent = `${chunks.join('\n\n')}\n\n${combinedTextContent.slice(0, 40000)}`.trim();
         }
       }
     }
 
     const activeGenId = generationId || `gen_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-    // Formulate segmented chunks for rigid prompt delimiting
-    const rawSegments = focusedContent.split(/\n\s*\n/).filter((s: string) => s.trim().length > 0);
-    const chunkBlocks: string[] = [];
-    let curChunk = '';
-    let cIdx = 1;
-    for (const seg of rawSegments) {
-      if ((curChunk + '\n\n' + seg).length > 1600 && curChunk.length > 50) {
-        chunkBlocks.push(`[AUTHORITATIVE_CHUNK_${cIdx}]:\n${curChunk.trim()}`);
-        curChunk = seg;
-        cIdx++;
-      } else {
-        curChunk = curChunk ? `${curChunk}\n\n${seg}` : seg;
-      }
-    }
-    if (curChunk.trim().length > 0) {
-      chunkBlocks.push(`[AUTHORITATIVE_CHUNK_${cIdx}]:\n${curChunk.trim()}`);
-    }
-    const chunkedAuthoritativeText = chunkBlocks.join('\n\n');
+    // Prepare prompt with sanitized textual content ONLY (no raw file wrappers or metadata strings)
+    const primaryGenerationPrompt = `Analyze the provided document text and generate a comprehensive study suite tailored dynamically to the true genre, tone, and domain of this material.
 
-    const primaryGenerationPrompt = `You are the EaseStudy Intelligent Academic Engine powered by Google Gemini.
-Your role is to analyze the document content and generate a comprehensive, publication-grade academic study suite specifically tailored to this material.
-
-CRITICAL PEDAGOGICAL DIRECTIVES:
-1. Dynamic, Authentic Content (Zero Canned Templates):
-   - Never use rigid, repetitive question stems or canned explanation formulas (e.g. do NOT write "Direct source verification confirms Option X is correct...").
-   - Deeply understand the author's work, specific examples, real-world principles, and intellectual distinctions.
-   - Formulate engaging, varied questions that test true conceptual comprehension, situational application, and nuanced arguments.
-2. Summary Section:
-   - Coherent, fluent, well-developed narrative paragraphs explaining the core theses, arguments, and practical lessons in logical sequence.
-   - Do NOT use filler introductions like "This document explores..." or "Based on the material...". Start directly with the core subject dynamics.
-   - Provide page analysis identifying key sections or pages with their central insights.
-3. Examination Suite:
-   - Multiple Choice: Exactly ${targetQCount} high-yield questions directly derived from the document. Each question must have 4 distinct, plausible options ("A) ...", "B) ...", "C) ...", "D) ..."), exactly 1 correct answer, 3 meaningful distractors, and an engaging, crystal-clear explanation explaining why the correct choice reflects the source text.
-   - Short Answer & Discussion: 3 to 6 practical and discussion questions with ideal answers, expected key points, and clear marking guidance (e.g. "[2 marks] for identifying X, [3 marks] for evaluating Y").
-4. Difficulty Level: ${difficulty}.
-5. Chapter Focus: ${chapterFilterText}
-${customFocusText ? `6. ${customFocusText}` : ''}
-${directFocusText ? `7. ${directFocusText}` : ''}
-${isEngineeringDoc ? '8. Technical Context: Include governing formulas, calculations, and boundary conditions.' : '8. General Domain: Formulate concepts using rigorous qualitative terminology.'}
+REQUIREMENTS:
+1. Genre and Tone Adaptation:
+   - For self-help, motivational, business, psychology, or leadership literature: Use practical, behavioral, and personal growth terminology (e.g., 'Core Principles', 'Practical Takeaways', 'Behavioral Insights', 'Actionable Lessons'). Never force academic or research jargon (e.g., 'central thesis', 'methodological framework', 'empirical data', 'analytical arguments', 'experimental baseline').
+   - For technical, mathematical, or scientific documents: Use precise technical terminology, governing formulas, and domain parameters.
+   - For general literature, history, or humanities: Adapt fluidly to the narrative themes, characters, historical context, or literary arguments.
+2. Section & Chapter Scoping:
+   - Only reference specific chapters or page ranges if they are explicitly present in the document text or if explicitly requested.
+   - Never default to labeling output as 'Chapter 1' unless the active text chunk explicitly represents Chapter 1.
+3. Summary & Insights:
+   - Provide a fluent, well-developed executive summary exploring the main ideas and practical takeaways in logical sequence. Start directly with the core subject dynamics without filler openings like "This document explores...".
+   - Extract 4 to 8 high-impact takeaways or actionable principles reflecting the document genre.
+   - Highlight core themes and important sections present in the text without defaulting to rigid chapter numbers.
+4. Key Concepts:
+   - Provide 4 to 8 deep concept breakdowns derived directly from the document.
+   - For non-technical works, emphasize practical principles, behavioral examples, and application. For technical works, include relevant formulas and technical importance.
+5. Practice Exam Suite:
+   - Multiple Choice: Provide exactly ${targetQCount} high-quality questions derived directly from the text.
+   - Each question must have 4 distinct options ("A) ...", "B) ...", "C) ...", "D) ..."), 1 correct answer, and 3 plausible distractors that represent realistic conceptual misunderstandings of the subject matter (avoid generic meta-phrases about 'analytical frameworks' or 'data anomalies').
+   - Engaging explanations explaining why the correct choice reflects the source text.
+   - Short Answer & Discussion: 3 to 6 practical or discussion questions with ideal answers, required key points, and clear scoring guidance.
+6. Flashcards:
+   - 6 to 12 active recall cards (front, back) focusing on core ideas, definitions, and practical takeaways.
+7. Target Difficulty: ${difficulty}.
+${selectedChapters && selectedChapters.length > 0 ? `Focus on sections/topics: ${selectedChapters.join(', ')}` : ''}
+${customFocusText ? `${customFocusText}` : ''}
+${directFocusText ? `${directFocusText}` : ''}
 ${regenerateDirective}
 
-REQUIRED OUTPUT STRUCTURE (JSON):
-- topic: Clear, concise subject title
-- difficulty: "${difficulty}"
-- readingTime: Estimated reading duration (e.g. "6 min read")
-- summary:
-  * executiveSummary: Coherent, well-developed paragraphs explaining the main ideas, arguments, and principles in a logical sequence.
-  * keyTakeaways: 4 to 8 high-yield key takeaways as concise points.
-  * pageAnalysis: 2 to 6 key page/section references with sectionOrPage, coreSubject, and keyInsight.
-  * coreThemes: Main subject taxonomy tags.
-- keyConcepts: 4 to 8 deep concept breakdowns derived directly from the document with title, explanation, formulaOrExample (if technical), and exam importance.
-- examSuite:
-  * multipleChoice: Exactly ${targetQCount} questions with id, question, options, correctAnswer, explanation.
-  * shortAnswer: 3 to 6 meaningful discussion and practical questions with:
-    - id
-    - question
-    - idealAnswer
-    - keyPointsRequired (list of expected answer points)
-    - markingGuidance (e.g. "[2 marks] definition, [3 marks] evaluation")
-    - questionType ("discussion" or "practical")
-    - practicalApplication (practical scenario or numerical application if relevant)
-- flashcards: 6 to 12 active recall cards (front, back).
-
-=== AUTHORITATIVE_SOURCE_DOCUMENT_START ===
-[STRICT GROUNDING DIRECTIVE - SOLE AUTHORITATIVE SOURCE]:
-1. The text segments below constitute the EXCLUSIVE AND SOLE AUTHORITATIVE SOURCE OF TRUTH for this generation.
-2. You are STRICTLY AND ENTIRELY PROHIBITED from using external knowledge, pre-trained parametric memory fallbacks, assumptions, or hallucinations.
-3. Every single fact, thesis statement, argument, summary paragraph, key takeaway, concept explanation, exam question, multiple-choice distractor, marking criterion, and answer key MUST be strictly grounded in, verifiable by, and derived directly from these segments.
-4. If a concept, term, or question is not directly discussed or supported by these segments, DO NOT INVENT IT.
-5. External knowledge, parametric fallback, or hallucinated facts constitute an immediate critical failure.
-
---- BEGIN VERIFIED DOCUMENT SEGMENTS ---
-${chunkedAuthoritativeText.slice(0, 100000)}
---- END VERIFIED DOCUMENT SEGMENTS ---
-=== AUTHORITATIVE_SOURCE_DOCUMENT_END ===`;
+DOCUMENT CONTENT:
+"""
+${focusedContent.slice(0, 100000)}
+"""`;
 
     const schemaConfig = {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING, description: 'Clear topic or title of the material' },
+        topic: { type: Type.STRING, description: 'Subject or title of the material (strictly do not mention file names, file extensions like .pdf or .docx, storage locations, or system tags)' },
         difficulty: { type: Type.STRING, description: 'Target difficulty level' },
-        readingTime: { type: Type.STRING, description: 'Estimated reading time e.g. 7 min read' },
+        readingTime: { type: Type.STRING, description: 'Estimated reading time (e.g. "6 min read")' },
         summary: {
           type: Type.OBJECT,
           properties: {
-            executiveSummary: { type: Type.STRING, description: 'Coherent, well-developed paragraphs in logical sequence without filler introductions' },
+            executiveSummary: { type: Type.STRING, description: 'Coherent, fluent paragraphs in logical sequence reflecting the document genre and tone without generic filler introductions' },
             keyTakeaways: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
-              description: 'List of 4 to 8 essential takeaways',
+              description: 'List of 4 to 8 high-impact takeaways or actionable principles reflecting the document genre',
             },
             pageAnalysis: {
               type: Type.ARRAY,
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  sectionOrPage: { type: Type.STRING },
+                  sectionOrPage: { type: Type.STRING, description: 'Key section or theme dynamically extracted from text (only reference chapters/pages if explicitly present in the text; never default to Chapter 1)' },
                   coreSubject: { type: Type.STRING },
                   keyInsight: { type: Type.STRING },
                 },
@@ -2252,7 +2488,7 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
             coreThemes: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
-              description: 'List of main theme tags',
+              description: 'List of main theme tags matching the document genre',
             },
           },
           required: ['executiveSummary', 'keyTakeaways', 'coreThemes'],
@@ -2264,7 +2500,7 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
             properties: {
               title: { type: Type.STRING },
               explanation: { type: Type.STRING },
-              formulaOrExample: { type: Type.STRING },
+              formulaOrExample: { type: Type.STRING, description: 'Practical behavioral example or technical formula if applicable' },
               importance: { type: Type.STRING },
             },
             required: ['title', 'explanation', 'importance'],
@@ -2329,16 +2565,17 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
 
     let candidateStudyPackage: any = null;
 
-    // STEP 1: Google Gemini Generation (Gemini 2.5 Flash with Gemini 1.5 Pro fallback)
+    // STEP 1: Google Gemini Generation with adaptive System Instruction & clean contents payload
     console.log('[EaseStudy Engine] Synthesizing study suite with Google Gemini...');
 
     const requestContents: any[] = [];
     if (multimodalFilePayload) {
+      // Pass clean inlineData cleanly without concatenating raw metadata strings or file path strings
       requestContents.push(multimodalFilePayload);
     }
     requestContents.push({ text: primaryGenerationPrompt });
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-pro'];
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-1.5-pro'];
 
     for (const modelName of modelsToTry) {
       try {
@@ -2347,9 +2584,9 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
           model: modelName,
           contents: requestContents,
           config: {
+            systemInstruction: EASESTUDY_SYSTEM_INSTRUCTION,
             responseMimeType: 'application/json',
             responseSchema: schemaConfig,
-            temperature: forceRegenerate ? 0.75 : 0.4,
           },
         });
 
@@ -2380,9 +2617,17 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
 
     // ModeEaseStudy Post-Verification Sanitization & Domain Integrity Check
     if (parsed) {
-      const sanitizeText = (txt: any): any => {
+      const sanitizeOutputText = (txt: any): any => {
         if (typeof txt === 'string') {
           return txt
+            .replace(/\[Multimodal Document:[^\]]*\]/gi, '')
+            .replace(/Multimodal Document:[^\n]*/gi, '')
+            .replace(/\[Uploaded File:[^\]]*\]/gi, '')
+            .replace(/Uploaded File:[^\n]*/gi, '')
+            .replace(/\[application\/[a-zA-Z0-9_.+-]+\]/gi, '')
+            .replace(/storage\/v1\/object\/public\/[^\s"'<>]+/gi, '')
+            .replace(/\b(?:application\/(?:pdf|vnd\.[a-zA-Z0-9_.+-]+|msword|octet-stream|zip)|image\/(?:png|jpeg|jpg|webp))\b/gi, '')
+            .replace(/\.(?:pdf|docx?|pptx?|xlsx?)\b/gi, '')
             .replace(/1st\s*Class\s*(Study)?/gi, '')
             .replace(/\b1st\s*Class\b/gi, '')
             .replace(/verified\s*academic\s*study\s*guide/gi, 'overview')
@@ -2394,6 +2639,8 @@ ${chunkedAuthoritativeText.slice(0, 100000)}
         }
         return txt;
       };
+
+      const sanitizeText = sanitizeOutputText;
 
       if (parsed.summary) {
         let exec = sanitizeText(parsed.summary.executiveSummary);
@@ -2706,18 +2953,19 @@ app.all(['/api/easestudy/session', '/api/easestudy/session/'], (req, res) => {
 // 13. "Ask Your Document" Grounded Chat Assistant
 app.post(['/api/easestudy/chat', '/api/easestudy/chat/'], async (req, res) => {
   try {
-    const { message, documentText, topic = 'Study Document', history = [] } = req.body;
+    const { message, documentText, topic = 'Study Material', history = [] } = req.body;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ success: false, message: 'A user question or message is required.' });
     }
 
-    const cleanContext = (documentText || '').slice(0, 70000);
+    const cleanContext = sanitizeDocumentText(documentText || '').slice(0, 70000);
+    const safeTopic = cleanTopicFromSource('', cleanContext, typeof topic === 'string' ? topic : '');
 
     // High-Precision Passage Retrieval & Relevance Ranking
     const queryTokens = message.toLowerCase().split(/\W+/).filter((w: string) => w.length > 2);
     const rawParagraphs = cleanContext.split(/\n\s*\n/).filter((p: string) => p.trim().length > 20);
-    
+
     // Score paragraphs based on query term frequency and density
     const scoredPassages = rawParagraphs.map((para: string) => {
       const lower = para.toLowerCase();
@@ -2734,57 +2982,42 @@ app.post(['/api/easestudy/chat', '/api/easestudy/chat/'], async (req, res) => {
     scoredPassages.sort((a: { paragraph: string; score: number }, b: { paragraph: string; score: number }) => b.score - a.score);
     const topPassages = scoredPassages.filter((p: { paragraph: string; score: number }) => p.score > 0).slice(0, 6).map((p: { paragraph: string; score: number }) => p.paragraph);
     const focusedContext = topPassages.length > 0
-      ? `--- HIGH-RELEVANCE TARGET SECTIONS ---\n${topPassages.join('\n\n')}\n\n--- BROADER DOCUMENT CONTEXT ---\n${cleanContext.slice(0, 40000)}`
+      ? `${topPassages.join('\n\n')}\n\n${cleanContext.slice(0, 40000)}`.trim()
       : cleanContext;
 
-    const chatPrompt = `You are the EaseStudy Intelligent Document Assistant.
-Your primary directive is to provide a DIRECT, ACCURATE, HIGH-QUALITY answer strictly grounded in the document below.
+    const chatPrompt = `Provide a direct, accurate, and context-aware answer strictly grounded in the document text provided below. Adapt naturally to the domain, tone, and genre of the material.
 
-DOCUMENT TOPIC: "${topic}"
+GUIDELINES:
+1. Provide the direct answer clearly and authoritatively in the first sentence.
+2. Never use generic introductory meta-preamble like "Based on the provided document..." or "According to the uploaded material...".
+3. If explaining steps, principles, or multi-point insights, use clean, readable bullet points immediately following the direct answer.
+4. If the requested information is absent from the text, state clearly: "This information is not addressed in the provided document."
 
-=== AUTHORITATIVE_SOURCE_DOCUMENT_START ===
-[STRICT GROUNDING & EXCLUSIVE EVIDENCE DIRECTIVE]:
-The document content and relevant passages below constitute the SOLE AUTHORITATIVE SOURCE of truth.
-External knowledge, parametric memory, or hallucinated assumptions are STRICTLY PROHIBITED.
-Every answer must be 100% grounded in and directly verifiable from the text below.
-
---- AUTHORITATIVE PASSAGES & CONTEXT ---
+DOCUMENT TEXT CONTENT:
+"""
 ${focusedContext || 'No document text provided.'}
---- END AUTHORITATIVE PASSAGES & CONTEXT ---
-=== AUTHORITATIVE_SOURCE_DOCUMENT_END ===
+"""
 
-CRITICAL DIRECT-ANSWER DIRECTIVES:
-1. GIVE A DIRECT ANSWER IMMEDIATELY IN THE VERY FIRST SENTENCE. State the answer clearly and authoritatively without hesitation.
-2. NEVER start with conversational meta-preamble, introductory filler, or disclaimers such as:
-   - "Based on the provided document..."
-   - "According to the uploaded material..."
-   - "In the source text provided..."
-   - "As an AI assistant..."
-   - "The document states that..."
-3. State the exact definition, principle, formula, conclusion, or fact directly.
-4. If explaining steps, mechanisms, or multi-point answers, use clean, concise bullet points immediately following the direct answer.
-5. Ground your answer in the specific pages and sections where available (e.g. cite "[Page X]" or "[Chapter Y]").
-6. If the requested information is absent from the document, state concisely: "This information is not addressed in your uploaded document."
-7. Provide an exact supporting quote from the text at the end.
-
-USER QUESTION: "${message}"`;
+QUESTION: "${message}"`;
 
     let reply = '';
-    const EXCLUSIVE_GEMINI_MODEL = 'gemini-2.5-flash';
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash'];
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (const modelName of modelsToTry) {
       try {
         const response = await ai.models.generateContent({
-          model: EXCLUSIVE_GEMINI_MODEL,
+          model: modelName,
           contents: chatPrompt,
+          config: {
+            systemInstruction: EASESTUDY_SYSTEM_INSTRUCTION,
+          },
         });
         if (response && response.text) {
           reply = response.text.trim();
           break;
         }
       } catch (callErr) {
-        console.warn(`[EaseStudy Chat] ${EXCLUSIVE_GEMINI_MODEL} attempt ${attempt} error:`, cleanErrorMessage(callErr));
-        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 800));
+        console.warn(`[EaseStudy Chat] ${modelName} notice:`, cleanErrorMessage(callErr));
       }
     }
 
@@ -2795,7 +3028,7 @@ USER QUESTION: "${message}"`;
         reply = cleanContext.slice(0, 300);
       }
     } else if (!reply) {
-      reply = `Refer directly to the core concepts and key takeaways extracted from "${topic}".`;
+      reply = `Refer directly to the core concepts and practical takeaways extracted from "${safeTopic}".`;
     }
 
     // Extract high-precision citation quotes from top passages or clean context
