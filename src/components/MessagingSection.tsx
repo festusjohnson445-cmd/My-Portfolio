@@ -807,7 +807,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
 
     // Data-saver live sync interval:
     // Only runs background polling when the messaging page is actively visible.
-    // Suspended when navigating or scrolling other pages (Home, Profile, Hub, EaseStudy) to prevent high data consumption.
+    // Suspended when navigating or scrolling other pages (Home, Profile, Hub) to prevent high data consumption.
     let syncInterval: any = null;
     if (isActive) {
       syncInterval = setInterval(() => {

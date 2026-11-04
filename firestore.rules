@@ -27,7 +27,7 @@ service cloud.firestore {
       }
     }
 
-    // 4. EaseStudy Learning Sessions
+    // 4. Learning Sessions
     match /learning_sessions/{sessionId} {
       allow read, write: if true;
     }

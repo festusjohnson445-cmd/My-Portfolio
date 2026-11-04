@@ -72,7 +72,7 @@
     },
     "LearningSession": {
       "title": "LearningSession",
-      "description": "EaseStudy AI study guide, concept flashcards, and exam suite",
+      "description": "Engineering training, technical tutorials, and masterclass sessions",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -121,7 +121,7 @@
     },
     "/learning_sessions/{sessionId}": {
       "schema": "LearningSession",
-      "description": "EaseStudy AI generated study sessions and exams"
+      "description": "Engineering training and masterclass sessions"
     },
     "/inquiries/{inquiryId}": {
       "schema": "DirectInquiry",

@@ -12,7 +12,7 @@ import { FeslineLogo } from './FeslineLogo';
 import { useProfileSync } from '../utils/profileState';
 import { withRecordVersion } from '../utils/supabase';
 
-export type PortfolioPart = 'home' | 'profile' | 'overview' | 'easestudy' | 'messaging';
+export type PortfolioPart = 'home' | 'profile' | 'overview' | 'messaging';
 
 interface NavbarProps {
   activePart: PortfolioPart;
@@ -58,8 +58,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'home', label: 'Home', number: '01', sub: 'Welcome & Interactive Overview' },
     { id: 'profile', label: 'My Profile', number: '02', sub: 'Bio, Custom Files & Credentials' },
     { id: 'overview', label: 'Engineering Hub', number: '03', sub: 'Technical Documents & Device Uploads' },
-    { id: 'easestudy', label: 'EaseStudy', number: '04', sub: 'Document & Image AI Study Suite & Exam Generator' },
-    { id: 'messaging', label: 'Messaging', number: '05', sub: 'Direct Chat & Job/Service Discussions' },
+    { id: 'messaging', label: 'Messaging', number: '04', sub: 'Direct Chat & Job/Service Discussions' },
   ];
 
   const handleNavClick = (part: PortfolioPart) => {

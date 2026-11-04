@@ -10,7 +10,6 @@ import { ResumeDownloadModal } from './components/ResumeDownloadModal';
 import { ProjectDetailModal } from './components/ProjectDetailModal';
 import { WhitepaperModal } from './components/WhitepaperModal';
 import { MessagingSection } from './components/MessagingSection';
-import { EaseStudyView } from './components/EaseStudyView';
 import { generateAndDownloadResume } from './utils/generateResumePdf';
 import { getStoredBio, getStoredDocuments, syncGlobalProfileWithServer, setOwnerAuthenticated } from './utils/profileState';
 import { supabase, onSupabaseAuthStateChange } from './utils/supabase';
@@ -115,8 +114,6 @@ export default function App() {
       setActivePart('profile');
     } else if (hash === 'overview' || hash === 'hub' || hash === 'projects' || hash === 'case-studies') {
       setActivePart('overview');
-    } else if (hash === 'easestudy' || hash === 'modelme' || hash === 'modeling' || hash === 'model') {
-      setActivePart('easestudy');
     } else if (hash === 'metrology' || hash === 'cad-comparison' || hash === 'gdt-drawings' || hash === 'messaging' || hash === 'toolbox' || hash === 'chat' || hash === 'credentials' || hash === 'contact') {
       setActivePart('messaging');
     } else {
@@ -203,13 +200,13 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
             <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="text-[11px] sm:text-[13px] text-slate-700">
-                <span className="text-cyan-900 font-bold font-sans">OVERVIEW COMPLETE:</span> Ready to analyze technical documents, extract key concepts, and generate practice exams with EaseStudy AI?
+                <span className="text-cyan-900 font-bold font-sans">OVERVIEW COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
               </div>
               <button
-                onClick={() => handleSelectPart('easestudy')}
+                onClick={() => handleSelectPart('messaging')}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
               >
-                <span>Proceed to EaseStudy AI Suite (Part 04)</span>
+                <span>Proceed to Messaging (Part 04)</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -217,32 +214,7 @@ export default function App() {
         </section>
 
         {/* ======================================================== */}
-        {/* 04. EASESTUDY (AI DOCUMENT / IMAGE EXAM & STUDY STUDIO)  */}
-        {/* ======================================================== */}
-        <section id="easestudy" className={`relative flex-1 w-full flex-col border-b border-[#b0bece] py-8 sm:py-10 bg-[#dce1e8] justify-between ${activePart === 'easestudy' ? 'flex' : 'hidden'}`}>
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full flex-1">
-            <EaseStudyView onNavigatePart={handleSelectPart} />
-
-            {/* Bottom Navigator (Center Justified, Text size reduced by 15%) */}
-            <div className="pt-8 mt-auto flex justify-center">
-              <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-center text-center gap-3.5 sm:gap-6 max-w-4xl mx-auto w-full">
-                <div className="text-[10.6px] sm:text-[11.9px] text-slate-700 text-center">
-                  <span className="text-cyan-900 font-bold font-sans">EASESTUDY COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
-                </div>
-                <button
-                  onClick={() => handleSelectPart('messaging')}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[10.2px] sm:text-[11.5px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <span>Proceed to Messaging (Part 05)</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ======================================================== */}
-        {/* 05. FULL PAGE MESSAGING SECTION ONLY                     */}
+        {/* 04. FULL PAGE MESSAGING SECTION ONLY                     */}
         {/* ======================================================== */}
         <section id="messaging" className={`flex-1 min-h-0 h-full w-full bg-[#dce1e8] flex-col overflow-hidden ${activePart === 'messaging' ? 'flex' : 'hidden'}`}>
           <MessagingSection onBack={() => handleSelectPart('home')} isActive={activePart === 'messaging'} />

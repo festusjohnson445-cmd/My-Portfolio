@@ -5,7 +5,6 @@ import {
   Layers,
   Zap,
   MessageSquare,
-  BrainCircuit
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
@@ -123,7 +122,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-5xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-6xl mx-auto">
             {/* Card 1: My Profile */}
             <div 
               onClick={() => onNavigatePart('profile')}
@@ -196,33 +195,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               </div>
             </div>
 
-            {/* Card 3: EaseStudy Studio */}
-            <div 
-              onClick={() => onNavigatePart('easestudy')}
-              className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
-                    <BrainCircuit className="w-5 h-5 text-cyan-800" />
-                  </div>
-                </div>
-
-                <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  EaseStudy - Studio
-                </h3>
-                <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Upload course materials, articles, or notes to generate instant step-by-step summaries, interactive exam suites, and visual concept diagrams.
-                </p>
-              </div>
-
-              <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Open EaseStudy Studio</span>
-                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-
-            {/* Card 4: Direct Messaging & Inquiry Channel */}
+            {/* Card 3: Direct Messaging & Inquiry Channel */}
             <div 
               onClick={() => onNavigatePart('messaging')}
               className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"

@@ -502,57 +502,7 @@ export async function deleteConversationFromFirestore(conversationId: string): P
 }
 
 // ============================================================================
-// 5. EASESTUDY AI LEARNING SESSIONS (FIRESTORE)
-// ============================================================================
-
-export interface PersistentLearningSession {
-  id: string;
-  topic: string;
-  difficulty: string;
-  summary: string;
-  concepts?: any[];
-  flashcards?: any[];
-  examSuite?: any;
-  createdAt: string;
-}
-
-/**
- * Saves an AI-generated learning session to Firestore
- */
-export async function saveLearningSessionToFirestore(session: PersistentLearningSession): Promise<void> {
-  try {
-    const sessionRef = doc(db, COLLECTIONS.LEARNING_SESSIONS, session.id);
-    const cleanPayload = cleanForFirestore({
-      ...session,
-      createdAt: session.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    await setDoc(sessionRef, cleanPayload, { merge: true });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `${COLLECTIONS.LEARNING_SESSIONS}/${session.id}`);
-  }
-}
-
-/**
- * Fetches recent learning sessions from Firestore
- */
-export async function fetchLearningSessionsFromFirestore(): Promise<PersistentLearningSession[]> {
-  try {
-    const colRef = collection(db, COLLECTIONS.LEARNING_SESSIONS);
-    const snap = await getDocs(colRef);
-    const sessions: PersistentLearningSession[] = [];
-    snap.forEach((d) => {
-      sessions.push(d.data() as PersistentLearningSession);
-    });
-    return sessions;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, COLLECTIONS.LEARNING_SESSIONS);
-    return [];
-  }
-}
-
-// ============================================================================
-// 6. DIRECT INQUIRIES & RECRUITER CONTACTS (FIRESTORE)
+// 5. DIRECT INQUIRIES & RECRUITER CONTACTS (FIRESTORE)
 // ============================================================================
 
 export interface DirectInquiryData {
