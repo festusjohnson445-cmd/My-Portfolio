@@ -849,13 +849,23 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
         if (uploadRes && uploadRes.publicUrl) {
           finalAttachmentUrl = uploadRes.publicUrl;
-          if (!finalPreviewUrl && (docSelectedFile.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(docSelectedFile.name))) {
+          if (docSelectedFile.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(docSelectedFile.name)) {
             finalPreviewUrl = uploadRes.publicUrl;
           }
+        } else {
+          throw new Error('Supabase Storage did not return a public download URL.');
         }
       } catch (err: any) {
-        console.warn('[Document Upload Note]:', err);
+        console.error('[Profile Document Upload Error]:', err);
+        setIsSavingDoc(false);
+        setDocFormError(`Upload to Supabase Storage failed: ${err?.message || 'Storage error'}`);
+        return;
       }
+    }
+
+    // Avoid persisting oversized base64 binary blobs when a remote URL exists
+    if (finalAttachmentUrl && finalAttachmentUrl.startsWith('http') && finalPreviewUrl && finalPreviewUrl.length > 180000) {
+      finalPreviewUrl = undefined;
     }
 
     try {

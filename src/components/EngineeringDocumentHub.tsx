@@ -65,6 +65,7 @@ import {
 import {
   supabase,
   uploadMaterialToSupabaseBucket,
+  uploadMaterialThumbnailToBucket,
   saveMaterialToSupabaseTable,
   fetchMaterialsFromSupabaseTable,
   deleteMaterialFromSupabaseBucket,
@@ -73,6 +74,19 @@ import {
   getAuthenticatedOwnerUid,
 } from '../utils/supabase';
 import { PortfolioPart } from './Navbar';
+
+function sanitizeDocumentDescription(desc?: string): string {
+  if (!desc) return '';
+  const trimmed = desc.trim();
+  if (!trimmed) return '';
+  if (
+    /^Technical document ".*" uploaded to precision engineering repository\.?$/i.test(trimmed) ||
+    /^Technical specification for .+$/i.test(trimmed)
+  ) {
+    return '';
+  }
+  return trimmed;
+}
 
 export type DocumentCategory =
   | 'Christians Book'
@@ -208,7 +222,7 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
         alt={doc.title}
         loading="lazy"
         decoding="async"
-        className="w-full h-full object-contain p-1.5 group-hover:scale-105 transition-transform duration-300"
+        className="w-full h-full object-contain object-center bg-white group-hover:scale-[1.02] transition-transform duration-300"
       />
     );
   }
@@ -502,14 +516,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         console.warn('Server documents sync note:', sErr);
       }
 
-      // 4. Sync with Supabase "materials" table (public read for unauthenticated visitors)
+      // 4. Sync with Supabase "materials" table (public read for unauthenticated visitors — source of truth)
       try {
-        const supaMaterials = await fetchMaterialsFromSupabaseTable();
+        const supaMaterials = await fetchMaterialsFromSupabaseTable(force);
         if (Array.isArray(supaMaterials) && supaMaterials.length > 0) {
           const currentDeleted = getDeletedDocIds();
           supaMaterials.forEach((m: any) => {
             if (m && m.id && !currentDeleted.has(m.id)) {
               const existing = docsMap.get(m.id);
+              const resolvedDownloadUrl =
+                m.download_url ||
+                m.file_url ||
+                (existing?.downloadUrl && String(existing.downloadUrl).startsWith('http')
+                  ? existing.downloadUrl
+                  : `/api/documents/files/${m.id}`);
               docsMap.set(m.id, {
                 id: m.id,
                 title: m.title || existing?.title || 'Engineering Document',
@@ -517,19 +537,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 fileSize: m.file_size || existing?.fileSize || 'Standard',
                 fileType: m.file_type || existing?.fileType || 'PDF',
                 category: m.category || existing?.category || 'Technical Drawing',
-                description: m.description || existing?.description || '',
+                description: sanitizeDocumentDescription(m.description || existing?.description || ''),
                 author: m.author || existing?.author || 'Festus, Olorunsogo Johnson (Owner)',
                 uploaderName: m.author || existing?.uploaderName || 'Festus, Olorunsogo Johnson (Owner)',
                 uploaderType: 'owner',
                 status: 'approved',
                 uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
                 downloadCount: m.download_count || 0,
-                tags: m.tags || ['Engineering'],
+                tags: Array.isArray(m.tags) && m.tags.length > 0 ? m.tags : ['Engineering'],
                 previewUrl: m.preview_url || existing?.previewUrl,
-                downloadUrl: m.download_url || `/api/documents/files/${m.id}`,
+                downloadUrl: resolvedDownloadUrl,
                 dataUrl: existing?.dataUrl,
                 hasServerFile: true,
                 isCustomUpload: true,
+                ...(m.storage_path ? { storagePath: m.storage_path } : {}),
               });
             }
           });
@@ -611,6 +632,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     };
   }, [loadDocuments]);
 
+  useEffect(() => {
+    if (!previewModalDoc) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreviewModalDoc(null);
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [previewModalDoc]);
+
   const saveDocumentsToStorage = (updatedDocs: PublicEngineeringDocument[]) => {
     const sorted = sortDocumentsDescending(updatedDocs);
     globalHubDocsMemoryCache = sorted;
@@ -643,7 +673,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       let preview: string | null = null;
 
-      // Generate preview safely for real images and PDFs only
+      // Generate lightweight preview thumbnail safely for real images and PDFs only
       if (file.type.startsWith('image/')) {
         preview = await new Promise<string | null>((resolve) => {
           const reader = new FileReader();
@@ -654,7 +684,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       } else if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
         try {
           const buffer = await file.arrayBuffer();
-          preview = await renderPdfFirstPageToImage(buffer, 800);
+          preview = await renderPdfFirstPageToImage(buffer, 540);
         } catch {
           preview = null;
         }
@@ -667,7 +697,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         file,
         title: capitalizedTitle,
         category: detectedCat,
-        description: `Technical document "${file.name}" uploaded to precision engineering repository.`,
+        description: '',
         tags: `${ext}, Engineering, ${detectedCat}`,
         previewUrl: preview,
         fileSize: formatBytes(file.size),
@@ -750,18 +780,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           const publicUrl = supaRes.publicUrl;
           const storagePath = supaRes.storagePath;
 
-          let fileDataUrl = '';
-          try {
-            fileDataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = (ev) => resolve((ev.target?.result as string) || '');
-              reader.onerror = () => reject(new Error('Failed to read file binary'));
-              reader.readAsDataURL(item.file);
-            });
-          } catch {
-            fileDataUrl = '';
-          }
-
           const tagList = item.tags
             .split(',')
             .map((t) => t.trim())
@@ -770,6 +788,17 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           const docId = `doc-${Date.now()}-${i}`;
           const timestamp = Date.now() + i;
 
+          // Upload lightweight PDF Page-1 thumbnail (~25KB) to bucket so visitors avoid downloading full PDFs just to view cards
+          let finalPreviewUrl: string | undefined = undefined;
+          if (item.file.type.startsWith('image/')) {
+            finalPreviewUrl = publicUrl;
+          } else if (item.previewUrl && item.previewUrl.startsWith('data:image/')) {
+            const uploadedThumbUrl = await uploadMaterialThumbnailToBucket(item.previewUrl, docId, ownerUid);
+            finalPreviewUrl = uploadedThumbUrl || item.previewUrl;
+          } else if (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) {
+            finalPreviewUrl = item.previewUrl;
+          }
+
           const docObj: PublicEngineeringDocument = {
             id: docId,
             title: item.title.trim() || item.file.name,
@@ -777,7 +806,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             fileSize: item.fileSize,
             fileType: item.fileType,
             category: item.category,
-            description: item.description.trim() || `Technical specification for ${item.file.name}`,
+            description: sanitizeDocumentDescription(item.description),
             author: effectiveUploader,
             uploaderName: effectiveUploader,
             uploaderType: 'owner',
@@ -786,8 +815,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             uploadTimestamp: timestamp,
             downloadCount: 0,
             tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
-            previewUrl: (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) ? item.previewUrl : publicUrl,
-            dataUrl: fileDataUrl,
+            previewUrl: finalPreviewUrl,
             downloadUrl: publicUrl,
             hasServerFile: true,
             isCustomUpload: true,
@@ -800,16 +828,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       );
 
       // 3. Save official materials to Supabase "materials" table row (file_url, download_url)
-      // Awaits completion and throws on error to halt state updates
+      // Awaits completion and throws on error so database failures never fail silently
       setUploadProgress({ current: 1, total, percent: 60, currentFileName: 'Saving to Supabase "materials" table...' });
       await Promise.all(
-        newDocs.map(async (docItem) => {
-          try {
-            await saveMaterialToSupabaseTable(docItem, ownerUid);
-          } catch (mErr) {
-            console.warn('[Material Save Note]:', mErr);
-          }
-        })
+        newDocs.map((docItem) => saveMaterialToSupabaseTable(docItem, ownerUid))
       );
 
       setUploadProgress({ current: 1, total, percent: 75, currentFileName: 'Broadcasting metadata...' });
@@ -823,15 +845,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setDocuments(updatedAll);
       saveDocumentsToStorage(updatedAll);
 
-      // 5. Sync with server & Firestore
-      try {
-        await fetch('/api/documents/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ documents: newDocs }),
-        });
-      } catch (backendErr) {
-        console.warn('Backend batch sync note:', backendErr);
+      // 5. Sync metadata with local backup server (when running locally) & Firestore without sending base64 binary bloat
+      const isLocalHost =
+        typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+      if (isLocalHost) {
+        try {
+          await fetch('/api/documents/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ documents: newDocs }),
+          });
+        } catch (backendErr) {
+          console.warn('Backend batch sync note:', backendErr);
+        }
       }
 
       await Promise.allSettled(
@@ -1153,36 +1180,32 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           </div>
         </div>
 
-        {/* Category Filter Pills */}
-        <div className="space-y-2 pt-2 border-t border-slate-200">
-          <div className="flex items-center justify-between text-[10.5px] sm:text-[11.5px] font-mono text-slate-500">
-            <span className="flex items-center gap-1 font-semibold text-slate-700">
-              <Filter className="w-3 h-3 text-cyan-700" />
-              <span>Category Filter:</span>
-            </span>
-            <span className="text-[10px] sm:text-[10.5px] text-cyan-800 font-semibold">
-              {selectedCategory === 'All' ? 'Showing All Categories' : selectedCategory} ({filteredDocs.length})
-            </span>
-          </div>
+        {/* Category Filter Dropdown */}
+        <div className="pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <label
+            htmlFor="hub-category-filter"
+            className="flex items-center gap-1.5 text-[10.5px] sm:text-[11.5px] font-semibold text-slate-700"
+          >
+            <Filter className="w-3.5 h-3.5 text-cyan-700" />
+            <span>Category Filter:</span>
+          </label>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5">
-            {categories.map((cat) => {
-              const isSelected = selectedCategory === cat;
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-2 py-1 rounded-lg text-[9.5px] sm:text-[10px] font-semibold text-center leading-tight flex items-center justify-center transition-all cursor-pointer select-none min-h-[28px] sm:min-h-[30px] ${
-                    isSelected
-                      ? 'bg-cyan-700 text-white shadow-2xs ring-1 ring-cyan-600/30 font-bold'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200/90'
-                  }`}
-                >
-                  <span className="break-words text-center leading-tight">{cat}</span>
-                </button>
-              );
-            })}
+          <div className="flex items-center gap-2.5 flex-1 sm:max-w-sm justify-end">
+            <select
+              id="hub-category-filter"
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full sm:w-64 px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-[10.5px] sm:text-[11.5px] font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
+            >
+              {categories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat === 'All' ? 'All Categories' : cat}
+                </option>
+              ))}
+            </select>
+            <span className="text-[10px] sm:text-[10.5px] text-cyan-800 font-semibold whitespace-nowrap shrink-0">
+              ({filteredDocs.length})
+            </span>
           </div>
         </div>
       </div>
@@ -1227,123 +1250,142 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filteredDocs.map((doc) => (
-              <div
-                key={doc.id}
-                className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative"
-              >
-                {/* Card Top: Preview Thumbnail & Format Badge */}
-                <div className="relative w-full h-44 bg-slate-50 overflow-hidden border-b border-slate-200">
-                  <EngineeringHubPdfCardThumbnail doc={doc} />
+            {filteredDocs.map((doc) => {
+              const cleanDesc = sanitizeDocumentDescription(doc.description);
+              return (
+                <div
+                  key={doc.id}
+                  className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative"
+                >
+                  {/* Card Top: Full-Fit First Page Preview Thumbnail & Format Badge */}
+                  <div
+                    onClick={() => {
+                      if (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) {
+                        setPreviewModalDoc(doc);
+                      }
+                    }}
+                    className={`relative w-full h-64 sm:h-72 bg-white overflow-hidden border-b border-slate-200 flex items-center justify-center ${
+                      doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) ? 'cursor-pointer' : ''
+                    }`}
+                  >
+                    <EngineeringHubPdfCardThumbnail doc={doc} />
 
-                  {/* Format & Size Badge */}
-                  <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
-                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
-                      {doc.fileType}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
-                      {doc.fileSize}
-                    </span>
+                    {/* Format & Size Badge */}
+                    <div className="absolute top-2 left-2 flex items-center gap-1">
+                      <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
+                        {doc.fileType}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
+                        {doc.fileSize}
+                      </span>
+                    </div>
+
+                    {/* Preview Button */}
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewModalDoc(doc);
+                          }}
+                          className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
+                          title="View Full Resolution Preview"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Preview Button */}
-                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
-                    {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && (
+                  {/* Card Middle: Content & Metadata */}
+                  <div className="p-4 sm:p-5 space-y-2.5 flex-1 flex flex-col justify-between">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
+                        <span className="text-cyan-700 font-semibold flex items-center gap-1">
+                          {getCategoryIcon(doc.category)}
+                          <span className="truncate max-w-[140px]">{doc.category}</span>
+                        </span>
+                        <span className="flex items-center gap-1 shrink-0">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          <span>{doc.uploadDate}</span>
+                        </span>
+                      </div>
+
+                      <h3 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug">
+                        {doc.title}
+                      </h3>
+
+                      {cleanDesc && (
+                        <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed">
+                          {cleanDesc}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Tags & Author */}
+                    <div className="space-y-2.5 pt-1.5">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {doc.tags.slice(0, 3).map((tag, i) => (
+                          <span
+                            key={i}
+                            className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600"
+                          >
+                            #{tag}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                        <span className="truncate max-w-[170px]" title={doc.uploaderName || doc.author}>
+                          By: <span className="text-slate-800 font-semibold">{doc.uploaderName || doc.author}</span>
+                        </span>
+                        <span className="text-cyan-700 font-bold flex items-center gap-1">
+                          <FolderDown className="w-3 h-3 text-cyan-600" />
+                          <span>{doc.downloadCount} downloads</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card Bottom: Direct HTML Download Link & Compact Delete */}
+                  <div className="p-2 bg-slate-50 border-t border-slate-200 flex items-center gap-1.5">
+                    <a
+                      href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
+                      download={doc.fileName}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => {
+                        incrementHubDocumentDownload(doc.id).catch(() => {});
+                        try {
+                          fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
+                        } catch {}
+                      }}
+                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-[11px] sm:text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer text-center no-underline"
+                    >
+                      <Download className="w-3.5 h-3.5 text-white" />
+                      <span>Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
+                      <span className="text-[9.5px] opacity-80 font-mono">({doc.fileSize})</span>
+                    </a>
+
+                    {isOwner && (
                       <button
-                        onClick={() => setPreviewModalDoc(doc)}
-                        className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
-                        title="View Full Resolution Preview"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDocToDelete(doc);
+                        }}
+                        className="p-1.5 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 flex items-center justify-center transition-all cursor-pointer shadow-2xs shrink-0"
+                        title="Delete document (Owner only)"
+                        aria-label="Delete document"
                       >
-                        <Eye className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     )}
                   </div>
                 </div>
-
-                {/* Card Middle: Content & Metadata */}
-                <div className="p-4 sm:p-5 space-y-3 flex-1 flex flex-col justify-between">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
-                      <span className="text-cyan-700 font-semibold flex items-center gap-1">
-                        {getCategoryIcon(doc.category)}
-                        <span className="truncate max-w-[140px]">{doc.category}</span>
-                      </span>
-                      <span className="flex items-center gap-1 shrink-0">
-                        <Clock className="w-3 h-3 text-slate-400" />
-                        <span>{doc.uploadDate}</span>
-                      </span>
-                    </div>
-
-                    <h3 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug">
-                      {doc.title}
-                    </h3>
-
-                    <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed">
-                      {doc.description}
-                    </p>
-                  </div>
-
-                  {/* Tags & Author */}
-                  <div className="space-y-3 pt-2">
-                    <div className="flex flex-wrap items-center gap-1">
-                      {doc.tags.slice(0, 3).map((tag, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600"
-                        >
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                      <span className="truncate max-w-[170px]" title={doc.uploaderName || doc.author}>
-                        By: <span className="text-slate-800 font-semibold">{doc.uploaderName || doc.author}</span>
-                      </span>
-                      <span className="text-cyan-700 font-bold flex items-center gap-1">
-                        <FolderDown className="w-3 h-3 text-cyan-600" />
-                        <span>{doc.downloadCount} downloads</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Card Bottom: Direct HTML Download Link & Delete (Small & Fitted) */}
-                <div className="p-2 bg-slate-50 border-t border-slate-200 flex items-center gap-1.5">
-                  <a
-                    href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
-                    download={doc.fileName}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => {
-                      incrementHubDocumentDownload(doc.id).catch(() => {});
-                      try {
-                        fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
-                      } catch {}
-                    }}
-                    className="flex-1 py-1.5 px-2.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-[11px] sm:text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer text-center no-underline"
-                  >
-                    <Download className="w-3.5 h-3.5 text-white" />
-                    <span>Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
-                    <span className="text-[9.5px] opacity-80 font-mono">({doc.fileSize})</span>
-                  </a>
-
-                  {isOwner && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDocToDelete(doc);
-                      }}
-                      className="py-1.5 px-2.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 font-semibold text-xs flex items-center justify-center gap-1 transition-all cursor-pointer shadow-2xs shrink-0"
-                      title="Delete document (Owner only)"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1522,7 +1564,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                               </button>
                             </div>
 
-                            {/* Category Selector & Tags */}
+                            {/* Category Selector, Tags & Description */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-200/60">
                               <div>
                                 <label className="block text-[10px] font-mono text-slate-500 uppercase">Category</label>
@@ -1548,6 +1590,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                                   onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
                                   placeholder="Comma separated tags"
                                   className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Description</label>
+                                <textarea
+                                  rows={2}
+                                  value={item.description}
+                                  onChange={(e) => handleUpdateQueueItem(item.id, { description: e.target.value })}
+                                  placeholder="Enter document description (optional)"
+                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
                                 />
                               </div>
                             </div>
@@ -1625,20 +1677,29 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       {/* 6. MODAL: LIGHTBOX PREVIEW */}
       {previewModalDoc && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="relative w-full max-w-4xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-6 shadow-2xl text-slate-800 space-y-4 max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div>
+        <div
+          onClick={() => setPreviewModalDoc(null)}
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-4xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-6 shadow-2xl text-slate-800 space-y-4 max-h-[90vh] flex flex-col"
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3 gap-2">
+              <div className="min-w-0">
                 <span className="text-[10px] font-mono text-cyan-700 block font-semibold">{previewModalDoc.category}</span>
                 <h3 className="text-base sm:text-lg font-bold text-slate-900 truncate max-w-[600px]">
                   {previewModalDoc.title}
                 </h3>
               </div>
               <button
+                type="button"
                 onClick={() => setPreviewModalDoc(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-300 hover:border-rose-300 transition-colors cursor-pointer shrink-0 shadow-2xs"
+                aria-label="Close Preview"
+                title="Close Preview"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 

@@ -7,7 +7,6 @@
 
     /* Dynamic CSS Variables defaults */
     --primary-color: #164e63;
-    --secondary-color: #0891b2;
     --bg-primary: #dce1e8;
     --surface-bg: #edf2f8;
     --card-bg: rgba(255, 255, 255, 0.9);
@@ -15,12 +14,7 @@
     --text-muted: #475569;
     --border-subtle: #b8c6d4;
     --footer-bg: #d2d8e1;
-    --button-radius: 0.75rem;
-    --button-padding-y: 0.45rem;
-    --button-padding-x: 0.85rem;
-    --button-font-size: 0.78rem;
     --navbar-bg: rgba(214, 220, 228, 0.95);
-    --navbar-height: 4rem;
   }
   
   html {
@@ -68,18 +62,6 @@
   .page-heading-primary {
     text-align: center;
     justify-content: center;
-  }
-
-  /* Compact button helper class */
-  .btn-dynamic-custom {
-    border-radius: var(--button-radius, 0.75rem);
-    padding-top: var(--button-padding-y, 0.45rem);
-    padding-bottom: var(--button-padding-y, 0.45rem);
-    padding-left: var(--button-padding-x, 0.85rem);
-    padding-right: var(--button-padding-x, 0.85rem);
-    font-size: var(--button-font-size, 0.78rem);
-    font-family: "Times New Roman", Times, serif;
-    transition: all 0.15s ease-in-out;
   }
 }
 

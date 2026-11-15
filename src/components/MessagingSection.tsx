@@ -57,6 +57,7 @@ import {
   supabase,
   uploadChatFileToMaterialsBucket,
   updateMessageInSupabase,
+  markConversationMessagesAsSeenInSupabase,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -777,43 +778,40 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       }
     };
 
-    // Supabase Database Table Changes Subscription (messages, conversations, visitor_profiles)
-    const unsubSupabaseDbStream = subscribeToSupabaseMessagingRealtime(() => {
-      fetchChatsFromServer();
-    });
-
-    // SSE Stream Subscription for instant server push
-    let sseSource: EventSource | null = null;
-    try {
-      sseSource = new EventSource('/api/chats/stream');
-      sseSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data && data.conversations && Array.isArray(data.conversations)) {
-            const cleaned = data.conversations.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
-            setConversations((prev) => {
-              if (JSON.stringify(prev) !== JSON.stringify(cleaned)) {
-                try {
-                  localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(cleaned));
-                } catch {}
-                return cleaned;
-              }
-              return prev;
-            });
-          }
-        } catch {}
-      };
-    } catch {}
-
-    // Data-saver live sync interval:
-    // Only runs background polling when the messaging page is actively visible.
-    // Suspended when navigating or scrolling other pages (Home, Profile, Hub) to prevent high data consumption.
-    let syncInterval: any = null;
+    // Supabase Database Table Changes Subscription (only active when Messaging view is open to save data; Navbar handles lightweight unread badge globally)
+    let unsubSupabaseDbStream = () => {};
     if (isActive) {
-      syncInterval = setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return;
+      unsubSupabaseDbStream = subscribeToSupabaseMessagingRealtime(() => {
         fetchChatsFromServer();
-      }, 25000);
+      });
+    }
+
+    // SSE Stream Subscription only for local dev server when active (cuts redundant bandwidth in production)
+    let sseSource: EventSource | null = null;
+    const isLocalHost =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (isActive && isLocalHost) {
+      try {
+        sseSource = new EventSource('/api/chats/stream');
+        sseSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data && data.conversations && Array.isArray(data.conversations)) {
+              const cleaned = data.conversations.filter((c: any) => c && c.id && !deletedConvIdsRef.current.has(c.id));
+              setConversations((prev) => {
+                if (JSON.stringify(prev) !== JSON.stringify(cleaned)) {
+                  try {
+                    localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(cleaned));
+                  } catch {}
+                  return cleaned;
+                }
+                return prev;
+              });
+            }
+          } catch {}
+        };
+      } catch {}
     }
 
     window.addEventListener('storage', handleStorage);
@@ -821,7 +819,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     window.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      if (syncInterval) clearInterval(syncInterval);
       unsubSupabaseDbStream();
       if (sseSource) sseSource.close();
       window.removeEventListener('storage', handleStorage);
@@ -1397,6 +1394,29 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     }
   }, [isOwner]);
 
+  // Mark incoming messages as 'seen' in Supabase whenever actively viewing Messaging
+  useEffect(() => {
+    if (!isActive) return;
+    if (isOwner) {
+      if (isOwnerChatSelected && activeOwnerConvId && activeOwnerConvId !== 'inbox-empty') {
+        markConversationMessagesAsSeenInSupabase({
+          conversationId: activeOwnerConvId,
+          readerRole: 'owner',
+        });
+      }
+    } else {
+      const currVId = visitorId || getStoredVisitorId();
+      const currCId = conversationId || (currVId ? `conv_${currVId}` : '');
+      if (currVId && currCId) {
+        markConversationMessagesAsSeenInSupabase({
+          conversationId: currCId,
+          readerRole: 'visitor',
+          visitorId: currVId,
+        });
+      }
+    }
+  }, [isActive, isOwner, isOwnerChatSelected, activeOwnerConvId, conversationId, visitorId, messages.length]);
+
   // Direct mail notification toast
   const [showMailNotice, setShowMailNotice] = useState<string | null>(null);
 
@@ -1593,18 +1613,27 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       setMessages([]);
     }
 
-    setConversations((prev) =>
-      prev.map((c) => {
+    setConversations((prev) => {
+      const updated = prev.map((c) => {
         if (c.id === convId) {
           return {
             ...c,
             unread: false,
-            messages: c.messages.map((m) => ({ ...m, status: 'seen' }))
+            messages: c.messages.map((m) => ({ ...m, status: 'seen' as const }))
           };
         }
         return c;
-      })
-    );
+      });
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    markConversationMessagesAsSeenInSupabase({
+      conversationId: convId,
+      readerRole: 'owner',
+    });
   };
 
   // Owner toggles important (Star) status on a conversation
@@ -2030,7 +2059,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         conversation_id: targetOwnerConvId,
         text: '',
         timestamp: timeStr,
-        status: 'seen',
+        status: 'unseen',
         voiceNote: voiceData,
         created_at: new Date().toISOString(),
       };
@@ -2359,7 +2388,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         conversation_id: targetOwnerConvId,
         text: currentText,
         timestamp: timeStr,
-        status: 'seen',
+        status: 'unseen',
         attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
         created_at: new Date().toISOString(),
       };

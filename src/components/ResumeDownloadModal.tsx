@@ -58,6 +58,15 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
     });
   }, [isOpen, bio.experiences, bio.publications, bio.achievements]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const certifiedSet = new Set((bio.certifiedSkills || []).map((s) => s.toLowerCase()));
@@ -145,17 +154,24 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
-      <div className="relative w-full max-w-4xl bg-[#edf2f8] border border-[#b8c6d4] rounded-2xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col font-serif">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-4xl bg-[#edf2f8] border border-[#b8c6d4] rounded-2xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col font-serif"
+      >
         {/* Top Controls */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 border-b border-[#b8c6d4] bg-[#dce2e9] shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-2.5 border-b border-[#b8c6d4] bg-[#dce2e9] shrink-0">
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-cyan-700" />
-            <span className="text-[11px] font-semibold text-slate-800">Resume Preview</span>
+            <span className="text-[11px] font-semibold text-slate-800">ATS Preview</span>
           </div>
 
           <div className="flex items-center gap-1.5">
             <button
+              type="button"
               onClick={handleCopyText}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-[#e2e8f0] hover:bg-white text-slate-800 border border-[#b8c6d4] transition-colors cursor-pointer"
             >
@@ -163,6 +179,7 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
               <span>{copied ? 'Copied' : 'Copy'}</span>
             </button>
             <button
+              type="button"
               onClick={handlePrint}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-[#e2e8f0] hover:bg-white text-slate-800 border border-[#b8c6d4] transition-colors cursor-pointer"
             >
@@ -170,6 +187,7 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
               <span>Print</span>
             </button>
             <button
+              type="button"
               onClick={handleDownloadPdf}
               disabled={downloading}
               className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-[11px] font-semibold bg-cyan-800 hover:bg-cyan-900 text-white shadow-2xs transition-colors cursor-pointer"
@@ -178,9 +196,11 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
               <span>{downloading ? 'Formatting...' : 'Download PDF'}</span>
             </button>
             <button
+              type="button"
               onClick={onClose}
-              className="p-1 rounded-lg text-slate-600 hover:text-slate-950 hover:bg-white transition-colors cursor-pointer ml-1"
-              aria-label="Close"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-[#b8c6d4] hover:border-rose-300 transition-colors cursor-pointer ml-1 font-bold text-xs shadow-2xs"
+              aria-label="Close ATS Preview"
+              title="Close ATS Preview"
             >
               <X className="w-4 h-4" />
             </button>

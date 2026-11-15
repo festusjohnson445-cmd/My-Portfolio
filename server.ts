@@ -698,7 +698,10 @@ app.post('/api/documents', async (req, res) => {
       uploadTimestamp,
       fileBinary,
       mimeType,
-      downloadUrl: `/api/documents/files/${docId}`,
+      downloadUrl:
+        newDoc.downloadUrl && String(newDoc.downloadUrl).startsWith('http')
+          ? newDoc.downloadUrl
+          : `/api/documents/files/${docId}`,
       hasServerFile: true,
       dataUrl: newDoc.dataUrl && newDoc.dataUrl.length > 500000 ? undefined : newDoc.dataUrl,
     };
@@ -747,7 +750,10 @@ app.post('/api/documents/batch', async (req, res) => {
         uploadTimestamp,
         fileBinary,
         mimeType,
-        downloadUrl: `/api/documents/files/${docId}`,
+        downloadUrl:
+          newDoc.downloadUrl && String(newDoc.downloadUrl).startsWith('http')
+            ? newDoc.downloadUrl
+            : `/api/documents/files/${docId}`,
         hasServerFile: true,
         dataUrl: newDoc.dataUrl && newDoc.dataUrl.length > 500000 ? undefined : newDoc.dataUrl,
       };

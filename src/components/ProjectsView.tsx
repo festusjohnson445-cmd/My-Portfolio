@@ -344,7 +344,7 @@ export const ProjectsView: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 {selectedProject.images.map((img, i) => (
                   <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                    <img src={img.url} alt={img.title} className="w-full h-44 object-cover" />
+                    <img src={img.url} alt={img.title} loading="lazy" decoding="async" className="w-full h-44 object-cover" />
                     {img.title && (
                       <p className="px-2.5 py-1.5 text-[11px] text-slate-700 text-center">{img.title}</p>
                     )}
@@ -371,6 +371,7 @@ export const ProjectsView: React.FC = () => {
                       <video
                         src={vid.url}
                         controls
+                        preload="metadata"
                         className="w-full h-full transition-transform duration-200"
                         style={{
                           objectFit: videoCardControls.objectFit || 'cover',

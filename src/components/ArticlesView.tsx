@@ -607,6 +607,7 @@ export const ArticlesView: React.FC = () => {
                   <video
                     src={selectedArticle.heroMedia.url}
                     controls
+                    preload="metadata"
                     className="w-full h-full transition-transform duration-200"
                     style={{
                       objectFit: videoCardControls.objectFit || 'cover',
@@ -619,6 +620,8 @@ export const ArticlesView: React.FC = () => {
                   <img
                     src={selectedArticle.heroMedia.url}
                     alt={selectedArticle.heroMedia.caption || selectedArticle.title}
+                    loading="lazy"
+                    decoding="async"
                     className="max-h-[380px] object-contain"
                   />
                 </div>
@@ -632,6 +635,8 @@ export const ArticlesView: React.FC = () => {
               <img
                 src={selectedArticle.thumbnailUrl}
                 alt={selectedArticle.title}
+                loading="lazy"
+                decoding="async"
                 className="max-h-[340px] object-contain"
               />
             </div>
@@ -729,7 +734,7 @@ export const ArticlesView: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {selectedArticle.diagrams.map((diag, idx) => (
                       <div key={idx} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                        <img src={diag.url} alt={diag.title} className="w-full h-48 object-contain rounded bg-white" />
+                        <img src={diag.url} alt={diag.title} loading="lazy" decoding="async" className="w-full h-48 object-contain rounded bg-white" />
                         {diag.title && <p className="text-[11px] text-slate-700 text-center font-semibold">{diag.title}</p>}
                       </div>
                     ))}
@@ -742,7 +747,7 @@ export const ArticlesView: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
                   {selectedArticle.images.map((im, idx) => (
                     <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
-                      <img src={im.url} alt={im.title} className="w-full h-48 object-cover" />
+                      <img src={im.url} alt={im.title} loading="lazy" decoding="async" className="w-full h-48 object-cover" />
                       {im.title && <p className="px-2 py-1 text-[11px] text-center text-slate-700">{im.title}</p>}
                     </div>
                   ))}
@@ -760,6 +765,7 @@ export const ArticlesView: React.FC = () => {
                         <video
                           src={v.url}
                           controls
+                          preload="metadata"
                           className="w-full h-full transition-transform duration-200"
                           style={{
                             objectFit: videoCardControls.objectFit || 'cover',

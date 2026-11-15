@@ -352,11 +352,12 @@ export async function uploadAvatarToSupabaseBucket(
   const fileName = `avatar_${Date.now()}.${ext}`;
   const storagePath = `${ownerUid}/${fileName}`;
 
-  // 2. Upload strictly with { contentType, upsert: true } and await completion
+  // 2. Upload strictly with { contentType, upsert: true, cacheControl: '3600' } and await completion
   const { error: uploadError } = await supabase.storage
     .from(SUPABASE_BUCKETS.AVATARS)
     .upload(storagePath, uploadBody, {
       contentType,
+      cacheControl: '3600',
       upsert: true,
     });
 
@@ -444,13 +445,32 @@ export async function uploadMaterialToSupabaseBucket(
     else if (fileName.endsWith('.iges') || fileName.endsWith('.igs')) contentType = 'model/iges';
   }
 
-  // 2. Upload strictly with { contentType, upsert: true } and await completion
-  const { error: uploadError } = await supabase.storage
-    .from(SUPABASE_BUCKETS.MATERIALS)
+  // 2. Upload strictly with { contentType, upsert: true, cacheControl: '3600' } and await completion
+  // Preserves primary 'materials' bucket and falls back to 'Materials' only if bucket name differs
+  let activeBucket: string = SUPABASE_BUCKETS.MATERIALS;
+  let { error: uploadError } = await supabase.storage
+    .from(activeBucket)
     .upload(storagePath, fileOrBlob, {
       contentType,
+      cacheControl: '3600',
       upsert: true,
     });
+
+  if (uploadError && /bucket.*not found/i.test(uploadError.message || '')) {
+    const fallbackRes = await supabase.storage
+      .from('Materials')
+      .upload(storagePath, fileOrBlob, {
+        contentType,
+        cacheControl: '3600',
+        upsert: true,
+      });
+    if (!fallbackRes.error) {
+      activeBucket = 'Materials';
+      uploadError = null;
+    } else {
+      uploadError = fallbackRes.error;
+    }
+  }
 
   if (uploadError) {
     console.error('[Supabase Materials Upload Error]:', uploadError.message);
@@ -459,7 +479,7 @@ export async function uploadMaterialToSupabaseBucket(
 
   // 3. Fetch absolute public URL
   const { data: publicData } = supabase.storage
-    .from(SUPABASE_BUCKETS.MATERIALS)
+    .from(activeBucket)
     .getPublicUrl(storagePath);
 
   const publicUrl = publicData?.publicUrl;
@@ -472,6 +492,46 @@ export async function uploadMaterialToSupabaseBucket(
     downloadUrl: publicUrl,
     storagePath,
   };
+}
+
+/**
+ * Upload lightweight Page-1 PDF preview image to "materials" bucket so visitors load ~25KB thumbnails
+ * instead of fetching multi-megabyte source PDFs just to render card thumbnails.
+ */
+export async function uploadMaterialThumbnailToBucket(
+  dataUrl: string,
+  materialId: string,
+  uid?: string
+): Promise<string | null> {
+  try {
+    if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
+    const { user } = await getValidatedSession();
+    const ownerUid = uid || user.id;
+
+    const parts = dataUrl.split(',');
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const ext = mimeType.includes('webp') ? 'webp' : mimeType.includes('png') ? 'png' : 'jpg';
+    const binaryStr = atob(parts[1] || '');
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mimeType });
+
+    const thumbPath = `${ownerUid}/thumbs/${materialId}.${ext}`;
+    const { error } = await supabase.storage
+      .from(SUPABASE_BUCKETS.MATERIALS)
+      .upload(thumbPath, blob, {
+        contentType: mimeType,
+        cacheControl: '86400',
+        upsert: true,
+      });
+
+    if (error) return null;
+    const { data: pub } = supabase.storage.from(SUPABASE_BUCKETS.MATERIALS).getPublicUrl(thumbPath);
+    return pub?.publicUrl || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -534,6 +594,7 @@ export async function uploadChatFileToMaterialsBucket(
           .from(bName)
           .upload(filePath, fileOrBlob, {
             contentType,
+            cacheControl: '3600',
             upsert: true,
           });
 
@@ -863,7 +924,7 @@ export async function saveMaterialToSupabaseTable(material: {
     const { user } = await getValidatedSession();
     const ownerUid = uid || user.id;
 
-    const publicUrl = material.downloadUrl || material.fileUrl || material.previewUrl || null;
+    const publicUrl = material.downloadUrl || material.fileUrl || null;
 
     const payload: any = {
       id: material.id,
@@ -874,7 +935,7 @@ export async function saveMaterialToSupabaseTable(material: {
       file_type: material.fileType,
       category: material.category,
       description: material.description,
-      preview_url: material.previewUrl || publicUrl,
+      preview_url: material.previewUrl || null,
       download_url: publicUrl,
       file_url: publicUrl,
       storage_path: material.storagePath || null,
@@ -891,14 +952,15 @@ export async function saveMaterialToSupabaseTable(material: {
     const { error } = await resilientSupabaseUpsert('materials', payload);
 
     if (error) {
-      console.warn('[Supabase DB Materials Upsert Note]:', error.message);
-      return false;
+      console.error('[Supabase DB Materials Upsert Error]:', error.message);
+      throw new Error(`Database error saving "${material.title}": ${error.message}`);
     }
     cachedMaterialsData = null;
+    lastMaterialsFetchTime = 0;
     return true;
   } catch (err: any) {
-    console.warn('[Supabase DB Materials Save Note]:', err?.message || err);
-    return false;
+    console.error('[Supabase DB Materials Save Error]:', err?.message || err);
+    throw err;
   }
 }
 
@@ -951,6 +1013,7 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
       return false;
     }
     cachedMaterialsData = null;
+    lastMaterialsFetchTime = 0;
     return true;
   } catch (err: any) {
     console.warn('[Supabase DB Materials Delete Caught]:', err?.message || err);
@@ -1125,6 +1188,7 @@ export async function uploadVisitorAvatarToSupabaseBucket(
       .from(SUPABASE_BUCKETS.AVATARS)
       .upload(storagePath, uploadBody, {
         contentType,
+        cacheControl: '3600',
         upsert: true,
       });
 
@@ -1421,6 +1485,7 @@ export async function saveMessageAndConversationToSupabase(params: {
       sender_id: isOwnerSender ? ownerId : vId,
       receiver_id: isOwnerSender ? vId : ownerId,
       content: serializedContent,
+      status: message.status || 'unseen',
       created_at: nowIso,
     };
 
@@ -1428,31 +1493,28 @@ export async function saveMessageAndConversationToSupabase(params: {
       basePayload.voice_note = message.voiceNote;
     }
 
-    // 1. Primary Message Insert Task (dispatched concurrently)
+    // 1. Primary Message Insert Task (resilient against optional voice_note / status schema differences)
     const messageInsertPromise = (async () => {
-      let { error: msgError } = await retryDbCall(() => supabase.from('messages').insert(basePayload));
-      if (msgError) {
-        console.warn('[messages insert notice]:', msgError.message || msgError);
-        // Fallback: If voice_note column error (e.g. column missing), insert clean payload with serialized content
-        if (hasVoiceNote && (msgError.message?.includes('voice_note') || msgError.code === '42703')) {
-          const fallbackBody = {
-            id: safeMessageId,
-            conversation_id: targetConvId,
-            sender_id: isOwnerSender ? ownerId : vId,
-            receiver_id: isOwnerSender ? vId : ownerId,
-            content: serializedContent,
-            created_at: nowIso,
-          };
-          const { error: fbErr } = await retryDbCall(() => supabase.from('messages').insert(fallbackBody));
-          if (fbErr) throw fbErr;
-        } else {
-          throw msgError;
+      let currentMsgPayload = { ...basePayload };
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const { error: msgError } = await retryDbCall(() => supabase.from('messages').insert(currentMsgPayload));
+        if (!msgError) return;
+        const missingCol = extractMissingColumnFromError(msgError.message);
+        if (missingCol && Object.prototype.hasOwnProperty.call(currentMsgPayload, missingCol)) {
+          delete currentMsgPayload[missingCol];
+          continue;
         }
+        throw msgError;
       }
     })();
 
-    // 2. Parallel Conversation & Profile Metadata Tasks (run concurrently to avoid 2-second serial waterfall)
+    // 2. Parallel Conversation & Profile Metadata Tasks
     const metaPromises: Promise<any>[] = [];
+    const safeAvatarUrl =
+      avatarUrl && (!avatarUrl.startsWith('data:image/') || avatarUrl.length < 5000)
+        ? avatarUrl
+        : undefined;
+
     if (!isOwnerSender) {
       const profilePayload: any = {
         visitor_id: vId,
@@ -1460,65 +1522,258 @@ export async function saveMessageAndConversationToSupabase(params: {
       };
       if (displayName) profilePayload.display_name = displayName;
       if (roleSubject) profilePayload.role_subject = roleSubject;
-      if (avatarUrl && (!avatarUrl.startsWith('data:image/') || avatarUrl.length < 5000)) {
-        profilePayload.avatar_url = avatarUrl;
-      }
+      if (safeAvatarUrl) profilePayload.avatar_url = safeAvatarUrl;
       if (avatarColor) profilePayload.avatar_color = avatarColor;
 
-      const convPayload = {
+      const convPayload: Record<string, any> = {
+        id: targetConvId,
+        visitor_id: vId,
+        owner_id: ownerId,
+        visitor_name: displayName,
+        default_label: displayName,
+        custom_name: conversationMetadata?.customName || displayName,
+        role_or_company: roleSubject,
+        last_message: lastSnippet,
+        last_message_at: nowIso,
+        last_timestamp: message.timestamp || '',
+        unread: true,
+        unread_count: 1,
+        updated_at: nowIso,
+      };
+      if (safeAvatarUrl) convPayload.avatar_url = safeAvatarUrl;
+
+      metaPromises.push(
+        retryDbCall(() => resilientSupabaseUpsert('visitor_profiles', profilePayload, 'visitor_id')).catch((err) => {
+          console.warn('[visitor_profiles upsert notice]:', err);
+        })
+      );
+      metaPromises.push(
+        retryDbCall(() => resilientSupabaseUpsert('conversations', convPayload, 'id')).catch((err) => {
+          console.warn('[conversations upsert notice]:', err);
+        })
+      );
+    } else {
+      const ownerConvPayload: Record<string, any> = {
         id: targetConvId,
         visitor_id: vId,
         owner_id: ownerId,
         last_message: lastSnippet,
         last_message_at: nowIso,
-        unread_count: 1,
+        last_timestamp: message.timestamp || '',
+        unread: false,
+        unread_count: 0,
+        updated_at: nowIso,
       };
-
-      metaPromises.push(retryDbCall(() => supabase.from('visitor_profiles').upsert(profilePayload, { onConflict: 'visitor_id' })).catch((err) => {
-        console.warn('[visitor_profiles upsert notice]:', err);
-      }));
-      metaPromises.push(retryDbCall(() => supabase.from('conversations').upsert(convPayload, { onConflict: 'id' })).catch((err) => {
-        console.warn('[conversations upsert notice]:', err);
-      }));
-    } else {
-      metaPromises.push(retryDbCall(() =>
-        supabase.from('conversations').upsert({
-          id: targetConvId,
-          visitor_id: vId,
-          owner_id: ownerId,
-          last_message: lastSnippet,
-          last_message_at: nowIso,
-          unread_count: 0,
-        }, { onConflict: 'id' })
-      ).catch((err) => {
-        console.warn('[conversations owner upsert notice]:', err);
-      }));
+      metaPromises.push(
+        retryDbCall(() => resilientSupabaseUpsert('conversations', ownerConvPayload, 'id')).catch((err) => {
+          console.warn('[conversations owner upsert notice]:', err);
+        })
+      );
     }
 
-    // Await all parallel writes together in a single lightning-fast roundtrip
+    // Ensure profile + conversation exist reliably in Supabase before returning
     await Promise.all([messageInsertPromise, ...metaPromises]);
   } catch (err: any) {
     console.warn('[saveMessageAndConversationToSupabase notice]:', err?.message || err);
   }
 
-  // Broadcast across live channels
+  // Broadcast across live channels & refresh local unread counter
   try {
     broadcastSupabaseChatMessage({
-        conversationId: targetConvId,
-        message: {
-          ...message,
-          id: safeMessageId,
-          sender_id: isOwnerSender ? ownerId : vId,
-          receiver_id: isOwnerSender ? vId : ownerId,
-          conversation_id: targetConvId,
-          voiceNote: message.voiceNote,
-          voice_note: message.voiceNote,
-          created_at: nowIso,
-        },
-      });
-    } catch {}
+      conversationId: targetConvId,
+      message: {
+        ...message,
+        id: safeMessageId,
+        sender_id: isOwnerSender ? ownerId : vId,
+        receiver_id: isOwnerSender ? vId : ownerId,
+        conversation_id: targetConvId,
+        status: message.status || 'unseen',
+        voiceNote: message.voiceNote,
+        voice_note: message.voiceNote,
+        created_at: nowIso,
+      },
+    });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fesline_unread_count_changed'));
+    }
+  } catch {}
 
-    return true;
+  return true;
+}
+
+/**
+ * Mark incoming messages in a conversation as 'seen' and clear unread flags when opened.
+ */
+export async function markConversationMessagesAsSeenInSupabase(params: {
+  conversationId: string;
+  readerRole: 'owner' | 'visitor';
+  visitorId?: string;
+}): Promise<void> {
+  const { conversationId, readerRole, visitorId } = params;
+  if (!conversationId || conversationId === 'inbox-empty') return;
+  const targetConvId = conversationId.startsWith('conv_') ? conversationId : `conv_${conversationId}`;
+
+  try {
+    if (readerRole === 'owner') {
+      const ownerId = await getOrFetchOwnerId();
+      await Promise.allSettled([
+        supabase
+          .from('messages')
+          .update({ status: 'seen' })
+          .eq('conversation_id', targetConvId)
+          .neq('sender_id', ownerId)
+          .neq('status', 'seen'),
+        resilientSupabaseUpsert(
+          'conversations',
+          {
+            id: targetConvId,
+            unread: false,
+            unread_count: 0,
+            updated_at: new Date().toISOString(),
+          },
+          'id'
+        ),
+      ]);
+    } else {
+      const rawVId = (visitorId || targetConvId.replace(/^conv_/, '')).trim();
+      if (!rawVId) return;
+      await supabase
+        .from('messages')
+        .update({ status: 'seen' })
+        .in('conversation_id', [targetConvId, rawVId])
+        .neq('sender_id', rawVId)
+        .neq('status', 'seen');
+    }
+  } catch (err) {
+    console.warn('[markConversationMessagesAsSeen note]:', err);
+  } finally {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fesline_unread_count_changed'));
+    }
+  }
+}
+
+/**
+ * Lightweight unread messaging counter for both Owner and Visitors.
+ * Queries minimal metadata columns only (zero heavy content/blob downloads).
+ */
+export async function fetchUnreadMessagingCount(params: {
+  isOwner: boolean;
+  visitorId?: string;
+}): Promise<number> {
+  try {
+    if (params.isOwner) {
+      const ownerId = await getOrFetchOwnerId();
+      const [msgsRes, convsRes] = await Promise.all([
+        supabase
+          .from('messages')
+          .select('id, sender_id, status')
+          .eq('status', 'unseen')
+          .limit(200),
+        supabase
+          .from('conversations')
+          .select('id, unread')
+          .eq('unread', true)
+          .limit(100),
+      ]);
+
+      const unseenVisitorMsgs = Array.isArray(msgsRes.data)
+        ? msgsRes.data.filter(
+            (m: any) => m.sender_id && m.sender_id !== ownerId && m.sender_id !== 'festus'
+          ).length
+        : 0;
+      const unreadConvRows = Array.isArray(convsRes.data) ? convsRes.data.length : 0;
+      return Math.max(unseenVisitorMsgs, unreadConvRows);
+    }
+
+    const storedVId =
+      params.visitorId ||
+      (typeof localStorage !== 'undefined'
+        ? localStorage.getItem('visitor_id') || localStorage.getItem('fesline_visitor_id') || ''
+        : '');
+    const cleanVId = storedVId.replace(/^conv_/, '').trim();
+    if (!cleanVId) return 0;
+
+    const targetConvId = `conv_${cleanVId}`;
+    const { data, error } = await supabase
+      .from('messages')
+      .select('id, sender_id, status')
+      .in('conversation_id', [targetConvId, cleanVId])
+      .eq('status', 'unseen')
+      .limit(100);
+
+    if (error || !Array.isArray(data)) return 0;
+    return data.filter((m: any) => m.sender_id && m.sender_id !== cleanVId).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Single lightweight subscription for the global Navbar Messaging unread count badge.
+ */
+export function subscribeToUnreadMessagingUpdates(params: {
+  isOwner: boolean;
+  visitorId?: string;
+  onCountChange: (count: number) => void;
+}): () => void {
+  let isMounted = true;
+  let debounceTimer: any = null;
+
+  const refreshCount = async () => {
+    if (!isMounted) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const count = await fetchUnreadMessagingCount({
+      isOwner: params.isOwner,
+      visitorId: params.visitorId,
+    });
+    if (isMounted) params.onCountChange(count);
+  };
+
+  const scheduleRefresh = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      refreshCount();
+    }, 180);
+  };
+
+  refreshCount();
+
+  let channel: any = null;
+  try {
+    channel = supabase
+      .channel(`navbar-unread-${params.isOwner ? 'owner' : 'visitor'}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'conversations' }, scheduleRefresh)
+      .on('broadcast', { event: 'new_chat_message' }, scheduleRefresh)
+      .subscribe();
+  } catch {}
+
+  const onLocalEvent = () => scheduleRefresh();
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible') scheduleRefresh();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('fesline_unread_count_changed', onLocalEvent);
+    window.addEventListener('fesline_chats_updated', onLocalEvent);
+    window.addEventListener('storage', onLocalEvent);
+    document.addEventListener('visibilitychange', onVisibility);
+  }
+
+  return () => {
+    isMounted = false;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (channel) {
+      supabase.removeChannel(channel).catch(() => {});
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('fesline_unread_count_changed', onLocalEvent);
+      window.removeEventListener('fesline_chats_updated', onLocalEvent);
+      window.removeEventListener('storage', onLocalEvent);
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
+  };
 }
 
 /**
