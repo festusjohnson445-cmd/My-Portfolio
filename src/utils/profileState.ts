@@ -50,10 +50,15 @@ export interface ProfileBioData {
   academicHonors: string;
   leadership: string;
   skills: string;
+  certifiedSkills?: string[];
+  skillStatuses?: Record<string, 'in progress' | 'verified' | 'licensed' | 'completed'>;
   description: string;
   availabilityStatus?: string;
   workClearance?: string;
   targetLocations?: string;
+  experiences?: any[];
+  publications?: any[];
+  achievements?: any[];
   // Follow Me Social Links
   linkedinUrl?: string;
   facebookUrl?: string;
@@ -71,6 +76,8 @@ export interface DocumentItem {
   credentialId: string;
   date: string;
   category: 'Certification' | 'Accreditation' | 'Technical Report' | 'CAD Specification' | 'Engineering License' | 'Patent' | 'Technical Drawing' | 'Other Document';
+  credentialGroup?: 'Specialization' | 'Courses' | 'Document';
+  parentSpecializationId?: string;
   description: string;
   competencies: string[];
   attachmentName?: string;

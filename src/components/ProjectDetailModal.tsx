@@ -39,16 +39,17 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   if (!isOpen || !project) return null;
 
   // Calculate BOM financial savings
-  const totalProtoCost = project.bom.reduce((sum, item) => sum + item.prototypeCost * item.qty, 0);
-  const totalProdCost1k = project.bom.reduce((sum, item) => sum + item.productionCost1k * item.qty, 0);
+  const bomList = project.bom || [];
+  const totalProtoCost = bomList.reduce((sum, item) => sum + item.prototypeCost * item.qty, 0);
+  const totalProdCost1k = bomList.reduce((sum, item) => sum + item.productionCost1k * item.qty, 0);
   const totalSavingsDollars = totalProtoCost - totalProdCost1k;
-  const overallDfmSavingsPercent = ((totalSavingsDollars / totalProtoCost) * 100).toFixed(1);
+  const overallDfmSavingsPercent = totalProtoCost > 0 ? ((totalSavingsDollars / totalProtoCost) * 100).toFixed(1) : '0';
 
   const filteredBom = bomProcessFilter === 'All'
-    ? project.bom
-    : project.bom.filter((item) => item.process.toLowerCase().includes(bomProcessFilter.toLowerCase()));
+    ? bomList
+    : bomList.filter((item) => item.process.toLowerCase().includes(bomProcessFilter.toLowerCase()));
 
-  const uniqueProcesses = ['All', ...Array.from(new Set(project.bom.map((b) => b.process.split(' ')[0])))];
+  const uniqueProcesses = ['All', ...Array.from(new Set(bomList.map((b) => b.process.split(' ')[0])))];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-md overflow-y-auto">
@@ -136,7 +137,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
             <div className="space-y-6">
               {/* Executive Metrics Bar */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {project.metrics.map((m, idx) => (
+                {(project.metrics || []).map((m, idx) => (
                   <div key={idx} className="p-4 rounded-xl bg-[#f4f7fb] border border-[#cbd5e1] shadow-xs">
                     <span className="text-xs font-sans text-slate-600 block">{m.label}</span>
                     <strong className="text-xl sm:text-2xl font-bold font-sans text-cyan-900 block mt-1">{m.value}</strong>
@@ -154,7 +155,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </h3>
                   <span className="text-xs sm:text-sm font-sans text-slate-600">WebGL 60FPS · Orbit &amp; Explode</span>
                 </div>
-                <Interactive3DViewer modelType={project.modelType} />
+                {project.modelType && <Interactive3DViewer modelType={project.modelType} />}
               </div>
 
               {/* Role & Contributions Summary */}
@@ -172,7 +173,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   </a>
                 )}
                 <ul className="space-y-2.5 mt-2">
-                  {project.individualContributions.map((c, i) => (
+                  {(project.individualContributions || []).map((c, i) => (
                     <li key={i} className="flex items-start gap-2.5 text-sm sm:text-base text-slate-700 leading-relaxed">
                       <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-1" />
                       <span>{c}</span>
@@ -187,7 +188,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                   Verified Engineering Credentials Applied to this Project
                 </h4>
                 <div className="flex flex-wrap gap-2">
-                  {project.verifiedCredentials.map((cred, idx) => (
+                  {(project.verifiedCredentials || []).map((cred, idx) => (
                     <div key={idx} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-[#cbd5e1] text-xs sm:text-sm font-sans text-cyan-900 font-semibold shadow-xs">
                       <Award className="w-4 h-4 text-cyan-800" />
                       <span>{cred}</span>
@@ -216,7 +217,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Envelope &amp; Geometric Clearance
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.envelope}
+                    {project.problemConstraints?.envelope || 'N/A'}
                   </p>
                 </div>
 
@@ -225,7 +226,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Thermal Dissipation &amp; Range
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.thermal}
+                    {project.problemConstraints?.thermal || 'N/A'}
                   </p>
                 </div>
 
@@ -234,7 +235,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Mass Budget &amp; Structural Target
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.massBudget}
+                    {project.problemConstraints?.massBudget || 'N/A'}
                   </p>
                 </div>
 
@@ -243,7 +244,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Dynamic Resonances &amp; Vibration
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.vibrationDynamic}
+                    {project.problemConstraints?.vibrationDynamic || 'N/A'}
                   </p>
                 </div>
 
@@ -252,7 +253,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Factor of Safety (SF) &amp; Fatigue Target
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.factorOfSafety}
+                    {project.problemConstraints?.factorOfSafety || 'N/A'}
                   </p>
                 </div>
 
@@ -261,7 +262,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     Environmental &amp; Corrosion Standards
                   </span>
                   <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-                    {project.problemConstraints.environmental}
+                    {project.problemConstraints?.environmental || 'N/A'}
                   </p>
                 </div>
               </div>
@@ -281,7 +282,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
               </div>
 
               <div className="space-y-6">
-                {project.handCalculations.map((calc, idx) => (
+                {(project.handCalculations || []).map((calc, idx) => (
                   <div key={idx} className="p-5 sm:p-6 rounded-xl bg-[#f4f7fb] border border-[#cbd5e1] space-y-3.5 shadow-xs">
                     <div className="flex items-center justify-between">
                       <h4 className="text-base sm:text-lg font-bold text-slate-950">{calc.title}</h4>
@@ -432,7 +433,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
               {/* Endorsements */}
               <div className="space-y-4">
-                {project.supervisorEndorsements.map((end, idx) => (
+                {(project.supervisorEndorsements || []).map((end, idx) => (
                   <div key={idx} className="p-5 sm:p-6 rounded-xl bg-[#f4f7fb] border border-[#cbd5e1] space-y-3 shadow-xs">
                     <p className="text-base sm:text-lg text-slate-800 italic leading-relaxed font-serif">
                       "{end.quote}"

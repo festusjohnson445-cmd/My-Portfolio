@@ -46,12 +46,22 @@ import {
   Wrench,
   Users,
   Database,
+  BookOpen,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
 import { SkillSelector } from './SkillSelector';
 import { ResumeDownloadModal } from './ResumeDownloadModal';
-import { categorizeSkills, SkillCategoryName } from '../data/skillsData';
+import {
+  categorizeSkills,
+  SkillCategoryName,
+  resolveSkillStatus,
+  formatSkillStatusLabel,
+  SKILL_STATUS_OPTIONS,
+  type SkillStatus,
+} from '../data/skillsData';
 import {
   saveStoredAvatar,
   resetStoredAvatar,
@@ -86,7 +96,25 @@ import {
   getSupabaseProjectUrl,
   withRecordVersion,
   withCacheBuster,
+  isRealOwnerUser,
 } from '../utils/supabase';
+import {
+  fetchExperiencesFromSupabase,
+  upsertExperienceToSupabase,
+  deleteExperienceFromSupabase,
+  fetchPublicationsFromSupabase,
+  upsertPublicationToSupabase,
+  deletePublicationFromSupabase,
+  fetchAchievementsFromSupabase,
+  upsertAchievementToSupabase,
+  deleteAchievementFromSupabase,
+  useWebsiteSettingsSync,
+  type ProfileExperience,
+  type ProfilePublication,
+  type ProfileAchievement,
+  type CustomProfileSection,
+  type BuiltInProfileSectionId,
+} from '../utils/portfolioSupabase';
 
 interface ProfileViewProps {
   onResumeClick?: () => void;
@@ -172,6 +200,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setOwner: syncSetOwner
   } = useProfileSync();
 
+  const websiteSettings = useWebsiteSettingsSync();
+  const profileSectionManager = websiteSettings.appearanceConfig.profileSectionManager;
+  const getBuiltInSection = (id: BuiltInProfileSectionId, fallbackLabel: string) => {
+    const found = profileSectionManager.builtInSections.find((s) => s.id === id);
+    return found || { id, label: fallbackLabel, visible: true };
+  };
+
   const fileInputAvatarRef = useRef<HTMLInputElement>(null);
 
   // 2. Profile Bio Editing State
@@ -232,6 +267,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docCredentialId, setDocCredentialId] = useState('');
   const [docDate, setDocDate] = useState('');
   const [docCategory, setDocCategory] = useState<DocumentItem['category']>('Certification');
+  const [docCredentialGroup, setDocCredentialGroup] = useState<'Specialization' | 'Courses' | 'Document'>('Specialization');
+  const [docParentSpecializationId, setDocParentSpecializationId] = useState<string>('');
   const [docFileType, setDocFileType] = useState<string>('PDF / Document');
   const [docDescription, setDocDescription] = useState('');
   const [docCompetenciesInput, setDocCompetenciesInput] = useState('');
@@ -245,6 +282,37 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docFormError, setDocFormError] = useState<string | null>(null);
   const [isSavingDoc, setIsSavingDoc] = useState(false);
   const docAttachmentInputRef = useRef<HTMLInputElement>(null);
+
+  // Credentials Grouping & Interactive Specialization Selection
+  const [credentialFilterGroup, setCredentialFilterGroup] = useState<'All' | 'Specialization' | 'Courses'>('All');
+  const [selectedSpecializationId, setSelectedSpecializationId] = useState<string | null>(null);
+
+  // Structured Profile Sections State (Experience, Publications, Achievements & Skills)
+  const [experiences, setExperiences] = useState<ProfileExperience[]>([]);
+  const [publications, setPublications] = useState<ProfilePublication[]>([]);
+  const [achievements, setAchievements] = useState<ProfileAchievement[]>([]);
+  const [isEditingSkillsPanel, setIsEditingSkillsPanel] = useState(false);
+  const [skillsDraft, setSkillsDraft] = useState('');
+  const [certifiedSkillsDraft, setCertifiedSkillsDraft] = useState<string[]>([]);
+  const [skillStatusesDraft, setSkillStatusesDraft] = useState<Record<string, SkillStatus>>({});
+
+  useEffect(() => {
+    setSkillsDraft(bioData.skills || '');
+    setCertifiedSkillsDraft(bioData.certifiedSkills || []);
+    setSkillStatusesDraft(bioData.skillStatuses || {});
+  }, [bioData.skills, bioData.certifiedSkills, bioData.skillStatuses]);
+
+  useEffect(() => {
+    fetchExperiencesFromSupabase().then((ex) => {
+      setExperiences(ex.length > 0 ? ex : (bioData.experiences as ProfileExperience[]) || []);
+    });
+    fetchPublicationsFromSupabase().then((pu) => {
+      setPublications(pu.length > 0 ? pu : (bioData.publications as ProfilePublication[]) || []);
+    });
+    fetchAchievementsFromSupabase().then((ac) => {
+      setAchievements(ac.length > 0 ? ac : (bioData.achievements as ProfileAchievement[]) || []);
+    });
+  }, [bioData.experiences, bioData.publications, bioData.achievements]);
 
   // Load persistent documents from IndexedDB on initial mount safely
   useEffect(() => {
@@ -329,14 +397,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         return;
       }
 
-      if (data?.session && data.user) {
+      if (data?.session && data.user && isRealOwnerUser(data.user)) {
         setAuthenticatedUid(data.user.id);
         syncSetOwner(true, data.user.id);
         setIsOwnerAuthenticated(true);
         setIsAuthModalOpen(false);
         setAuthPin('');
         setAuthError(null);
-        showNotification(`Welcome back! Authenticated with Supabase Auth as ${data.user.email} (UID: ${data.user.id.slice(0, 8)}...).`);
+        showNotification(`Authenticated as ${data.user.email}.`);
+      } else if (data?.session) {
+        await supabaseSignOutOwner();
+        setAuthError('This account is not authorized as the portfolio owner.');
       } else {
         setAuthError('Authentication succeeded but no active session was returned.');
       }
@@ -356,21 +427,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     showNotification('Logged out from Supabase Owner mode. Profile is in public visitor view.');
   };
 
-  // Direct Mail Status
-  const [copiedEmail, setCopiedEmail] = useState(false);
   const [copiedAts, setCopiedAts] = useState(false);
-  const [mailSentNotice, setMailSentNotice] = useState<string | null>(() => {
-    try {
-      const notice = sessionStorage.getItem('fesline_direct_mail_sent_notice');
-      if (notice) {
-        sessionStorage.removeItem('fesline_direct_mail_sent_notice');
-        return notice;
-      }
-    } catch {
-      // fallback
-    }
-    return null;
-  });
 
   // Handle Profile Picture Selection (Owner Gated via Supabase Auth Session)
   // No premature compression or resize is performed before positioning
@@ -500,7 +557,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       academicHonors: bioData.academicHonors,
       leadership: bioData.leadership,
       skills: bioData.skills,
+      certifiedSkills: bioData.certifiedSkills,
+      skillStatuses: bioData.skillStatuses,
       description: bioData.description,
+      experiences,
+      publications,
+      achievements,
       documents: documents.length > 0 ? documents.map((d) => ({
         title: d.title,
         issuer: d.issuer,
@@ -508,6 +570,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         date: d.date,
         description: d.description,
         competencies: d.competencies,
+        credentialGroup: d.credentialGroup,
+        parentSpecializationTitle: d.parentSpecializationId
+          ? documents.find((p) => p.id === d.parentSpecializationId)?.title
+          : undefined,
       })) : undefined,
     });
 
@@ -529,6 +595,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setDocCredentialId('');
     setDocDate('Verified ' + new Date().getFullYear());
     setDocCategory('Certification');
+    setDocCredentialGroup('Specialization');
+    setDocParentSpecializationId('');
     setDocFileType('PDF / Document');
     setDocDescription('');
     setDocCompetenciesInput('');
@@ -542,6 +610,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setIsDocumentModalOpen(true);
   };
 
+  const handleOpenAddCourseForSpecialization = (specializationId: string) => {
+    if (!isOwnerAuthenticated) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    handleOpenAddDocument();
+    setDocCredentialGroup('Courses');
+    setDocParentSpecializationId(specializationId);
+  };
+
   const handleOpenEditDocument = (doc: DocumentItem) => {
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
@@ -553,6 +631,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setDocCredentialId(doc.credentialId);
     setDocDate(doc.date);
     setDocCategory(doc.category);
+    setDocCredentialGroup(doc.credentialGroup || 'Specialization');
+    setDocParentSpecializationId(doc.parentSpecializationId || '');
     setDocFileType(doc.fileType || 'PDF / Document');
     setDocDescription(doc.description);
     setDocCompetenciesInput(doc.competencies.join('\n'));
@@ -790,6 +870,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 credentialId: docCredentialId.trim() || 'VERIFIED-DOC',
                 date: docDate.trim() || 'Verified ' + new Date().getFullYear(),
                 category: docCategory,
+                credentialGroup: docCredentialGroup,
+                parentSpecializationId: docCredentialGroup === 'Courses' && docParentSpecializationId ? docParentSpecializationId : undefined,
                 fileType: docFileType,
                 description: effectiveDescription,
                 competencies: compList.length > 0 ? compList : ['Technical competence verified'],
@@ -814,6 +896,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           credentialId: docCredentialId.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
           date: docDate.trim() || 'Verified ' + new Date().getFullYear(),
           category: docCategory,
+          credentialGroup: docCredentialGroup,
+          parentSpecializationId: docCredentialGroup === 'Courses' && docParentSpecializationId ? docParentSpecializationId : undefined,
           fileType: docFileType,
           description: effectiveDescription,
           competencies: compList.length > 0 ? compList : ['Technical competence verified'],
@@ -945,13 +1029,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  const handleCopyEmail = () => {
-    const emailToCopy = bioData.email || 'festusjohnson028@gmail.com';
-    navigator.clipboard.writeText(emailToCopy);
-    setCopiedEmail(true);
-    setTimeout(() => setCopiedEmail(false), 2000);
-  };
-
   const handleCopyAtsResume = () => {
     const emailToUse = bioData.email || 'festusjohnson028@gmail.com';
     const headerToUse = bioData.header || 'Lead Mechanical Design Engineer';
@@ -1016,135 +1093,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
-      {/* ======================================================== */}
-      {/* ======================================================== */}
-      {/* OWNER MODE MANAGEMENT BAR (ONLY SHOWN WHEN OWNER IS LOGGED IN) */}
-      {/* Reduced by 35%+ and formatted row by row per user specification */}
-      {/* ======================================================== */}
-      {isOwnerAuthenticated && (
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="p-2.5 sm:p-3 rounded-xl bg-white border border-cyan-800/40 shadow-xs flex flex-col gap-2 font-sans animate-fade-in">
-            {/* ROW 1: Header - Status, Title, Supabase Auth Badge, and auth.uid() */}
-            <div className="flex flex-wrap items-center justify-between gap-1.5 pb-1.5 border-b border-slate-200/80">
-              <div className="flex items-center gap-1.5">
-                <div className="w-5 h-5 rounded-md bg-emerald-100 border border-emerald-300 flex items-center justify-center shrink-0">
-                  <Unlock className="w-3 h-3 text-emerald-800" />
-                </div>
-                <h2 className="text-xs sm:text-[13px] font-bold text-slate-950 font-serif leading-none">
-                  Owner Admin Mode
-                </h2>
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[9px] font-semibold">
-                  <span className="w-1 h-1 rounded-full bg-emerald-600 animate-pulse" />
-                  Supabase Auth
-                </span>
-              </div>
-
-              {/* auth.uid badge */}
-              <div className="flex items-center gap-1">
-                <span className="text-[9.5px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 truncate max-w-[200px] sm:max-w-none">
-                  auth.uid(): {authenticatedUid || 'owner'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(authenticatedUid || 'owner');
-                    setCopiedUid(true);
-                    setTimeout(() => setCopiedUid(false), 2000);
-                  }}
-                  className="text-slate-400 hover:text-slate-700 p-0.5 cursor-pointer"
-                  title="Copy owner UID"
-                >
-                  {copiedUid ? <Check className="w-2.5 h-2.5 text-emerald-600" /> : <Copy className="w-2.5 h-2.5" />}
-                </button>
-              </div>
-            </div>
-
-            {/* ROW 2: Database, Storage & Policies Controls */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setShowSupabaseSettingsModal(true)}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[10px] font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
-                title="Configure Supabase Database, Buckets, and Storage Settings"
-              >
-                <Database className="w-3 h-3 text-emerald-700" />
-                <span>Supabase Settings</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowRlsModal(true)}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold border border-slate-300 transition-colors cursor-pointer"
-                title="View Supabase Row Level Security (RLS) SQL policies"
-              >
-                <ShieldCheck className="w-3 h-3 text-cyan-700" />
-                <span>RLS Policies</span>
-              </button>
-            </div>
-
-            {/* ROW 3: Profile & Media Management Actions */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => fileInputAvatarRef.current?.click()}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-50 hover:bg-cyan-100 text-cyan-900 text-[10px] font-semibold border border-cyan-200 transition-colors cursor-pointer"
-                title="Upload new profile picture to avatars bucket"
-              >
-                <Camera className="w-3 h-3 text-cyan-700" />
-                <span>Change Photo</span>
-              </button>
-
-              <button
-                onClick={handleOpenAddDocument}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[10px] font-semibold border border-emerald-300 transition-colors cursor-pointer shadow-2xs"
-                title="Upload a new engineering document to materials bucket"
-              >
-                <Plus className="w-3 h-3 text-emerald-700" />
-                <span>+ Upload Material</span>
-              </button>
-
-              <button
-                onClick={() => (isEditingBio ? setIsEditingBio(false) : handleOpenEditBio())}
-                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold shadow-2xs transition-colors cursor-pointer ${
-                  isEditingBio
-                    ? 'bg-slate-800 text-white hover:bg-slate-900'
-                    : 'bg-cyan-800 text-white hover:bg-cyan-900'
-                }`}
-              >
-                {isEditingBio ? (
-                  <>
-                    <X className="w-3 h-3" />
-                    <span>Close Editor</span>
-                  </>
-                ) : (
-                  <>
-                    <Edit3 className="w-3 h-3" />
-                    <span>Edit Bio</span>
-                  </>
-                )}
-              </button>
-
-              {/* Sign Out Button placed neatly at the end of the action row */}
-              <button
-                onClick={handleOwnerLogout}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 text-[10px] font-semibold border border-rose-200 transition-colors cursor-pointer shadow-2xs ml-auto"
-                title="Sign out of Supabase owner session"
-              >
-                <Lock className="w-2.5 h-2.5 text-rose-700" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
+      {/* Top details after owner login intentionally removed per specification */}
 
       {isEditingBio && isOwnerAuthenticated && (
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <form
             onSubmit={handleSaveBio}
-            className="p-5 sm:p-7 rounded-2xl bg-white border-2 border-cyan-800 shadow-xl space-y-6 font-sans animate-fade-in"
+            className="w-full max-w-full overflow-hidden p-5 sm:p-7 rounded-2xl bg-white border-2 border-cyan-800 shadow-xl space-y-6 font-sans animate-fade-in"
           >
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-3.5 border-b border-[#cbd5e1] gap-2">
               <div>
@@ -1415,12 +1370,17 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   />
                 </div>
 
-                {/* 4. Skills Selection (Engineering, IT, Finance) */}
-                <div className="md:col-span-2">
+                {/* 4. Skills Selection (3 Parts: Core Engineering, Handful Skills, IT Skills) */}
+                <div className="md:col-span-2 min-w-0">
                   <SkillSelector
                     value={editBioForm.skills}
                     onChange={(newSkills) => setEditBioForm({ ...editBioForm, skills: newSkills })}
-                    label="Skills & Core Competencies (Engineering, IT, Finance)"
+                    skillStatuses={editBioForm.skillStatuses || {}}
+                    onSkillStatusesChange={(nextStatuses) =>
+                      setEditBioForm({ ...editBioForm, skillStatuses: nextStatuses })
+                    }
+                    certifiedSkills={editBioForm.certifiedSkills || []}
+                    label="Skills & Core Competencies (Core Engineering, Handful Skills & IT Skills)"
                     required
                   />
                 </div>
@@ -1595,7 +1555,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             {/* Profile Picture Frame & Controls */}
             <div className="flex flex-col items-center shrink-0 gap-3">
               <div className="relative group">
-                <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-2xl overflow-hidden border-2 border-white/90 shadow-lg bg-slate-900 relative flex items-center justify-center">
+                <div className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 rounded-full overflow-hidden border-2 border-white/90 shadow-lg bg-slate-900 relative flex items-center justify-center">
                   {(optimisticAvatarUrl || (profileAvatar && !avatarImgError)) ? (
                     <img
                       key={optimisticAvatarUrl || profileAvatar}
@@ -1799,629 +1759,711 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       </section>
 
       {/* ======================================================== */}
-      {/* 2. ABOUT ME & BIOGRAPHY SECTION (JUSTIFY CENTERED)       */}
+      {/* 2. BIO & ABOUT SECTION                                   */}
       {/* ======================================================== */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4">
-          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col sm:flex-row items-center justify-between text-center gap-2">
-            <div className="w-full text-center flex flex-col items-center justify-center">
-              <span className="inline-block text-[9px] sm:text-[10px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs">
-                BIOGRAPHY
-              </span>
-              <h2 className="text-xs sm:text-sm md:text-[14px] font-bold text-slate-950 mt-1 font-serif text-center">
-                About {bioData.fullName}
+      {getBuiltInSection('bio', 'Bio & About').visible && (
+        <section id="profile-bio" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-3">
+            <div className="border-b border-[#cbd5e1] pb-2.5 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center flex-1">
+                {getBuiltInSection('bio', 'Bio & About').label || 'Bio & About'} — {bioData.fullName}
               </h2>
-            </div>
-            {isOwnerAuthenticated && (
-              <button
-                onClick={handleOpenEditBio}
-                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-800 text-xs font-sans font-semibold border border-[#cbd5e1] shadow-xs transition-colors cursor-pointer shrink-0"
-              >
-                <Edit3 className="w-3.5 h-3.5 text-cyan-800" />
-                <span>Edit Biography</span>
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-            {/* Story & Philosophy: Description with Justified Centered Text */}
-            <div className="lg:col-span-2 space-y-3 text-xs sm:text-sm text-slate-700 leading-relaxed font-serif whitespace-pre-line text-justify">
-              <p className="text-justify leading-relaxed">{bioData.description}</p>
-            </div>
-
-            {/* Academic & Professional Snapshot Box - Modern Responsive Structure */}
-            <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200/90 shadow-xs space-y-4 font-sans w-full overflow-hidden">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-800 shrink-0">
-                    <GraduationCap className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 font-serif tracking-tight">
-                    Academic &amp; Core Specs
-                  </h3>
-                </div>
-                <span className="text-[9.5px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 shrink-0">
-                  Verified
-                </span>
-              </div>
-
-              <div className="space-y-3.5 text-xs text-slate-700">
-                {/* Degree & Academic Honors Card */}
-                <div className="p-3 rounded-xl bg-slate-50/80 border border-slate-200/80 space-y-1">
-                  <span className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider block">
-                    Degree Credential:
-                  </span>
-                  <div className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-snug">
-                    {bioData.degree}
-                  </div>
-                  {bioData.academicHonors && (
-                    <div className="text-[10.5px] text-cyan-800 font-medium flex items-center gap-1.5 pt-0.5">
-                      <Award className="w-3 h-3 text-cyan-600 shrink-0" />
-                      <span>{bioData.academicHonors}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Leadership & Key Appointments */}
-                {bioData.leadership && (
-                  <div className="pt-2 border-t border-slate-100 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Leadership &amp; Key Appointments:
-                    </span>
-                    <div className="space-y-1.5">
-                      {bioData.leadership
-                        .split(/\n|•|;|·/)
-                        .map((item) => item.trim())
-                        .filter(Boolean)
-                        .map((leadItem, lIdx) => (
-                          <div
-                            key={lIdx}
-                            className="p-2 rounded-lg bg-slate-50/60 border border-slate-200/60 text-[11px] text-slate-800 flex items-start gap-2 leading-relaxed"
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-700 shrink-0 mt-1.5" />
-                            <span className="font-medium text-slate-800">{leadItem}</span>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Categorized Skills Template */}
-                {bioData.skills && (
-                  <div className="pt-2 border-t border-slate-100 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Categorized Skills &amp; Competencies:
-                    </span>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {(() => {
-                        const categorized = categorizeSkills(bioData.skills);
-                        const categoryMeta: Array<{
-                          name: SkillCategoryName;
-                          label: string;
-                          subLabel: string;
-                          icon: React.ReactNode;
-                          badgeClass: string;
-                          borderClass: string;
-                        }> = [
-                          {
-                            name: 'Generate Skills',
-                            label: 'Generate Skills',
-                            subLabel: 'CAD, FEA & Mechanisms',
-                            icon: <Sparkles className="w-3 h-3 text-cyan-700" />,
-                            badgeClass: 'bg-cyan-100 text-cyan-900 border-cyan-200',
-                            borderClass: 'border-cyan-200/80 bg-cyan-50/40',
-                          },
-                          {
-                            name: 'Educational Skills',
-                            label: 'Educational Skills',
-                            subLabel: 'Academic & Theory',
-                            icon: <GraduationCap className="w-3 h-3 text-blue-700" />,
-                            badgeClass: 'bg-blue-100 text-blue-900 border-blue-200',
-                            borderClass: 'border-blue-200/80 bg-blue-50/40',
-                          },
-                          {
-                            name: 'Handful Skills',
-                            label: 'Handful Skills',
-                            subLabel: '5-Axis CNC & Shop',
-                            icon: <Wrench className="w-3 h-3 text-amber-700" />,
-                            badgeClass: 'bg-amber-100 text-amber-900 border-amber-200',
-                            borderClass: 'border-amber-200/80 bg-amber-50/40',
-                          },
-                          {
-                            name: 'Personal Skills',
-                            label: 'Personal Skills',
-                            subLabel: 'Leadership & DFM',
-                            icon: <Users className="w-3 h-3 text-purple-700" />,
-                            badgeClass: 'bg-purple-100 text-purple-900 border-purple-200',
-                            borderClass: 'border-purple-200/80 bg-purple-50/40',
-                          },
-                          {
-                            name: 'IT Skills',
-                            label: 'IT Skills',
-                            subLabel: 'Code & Software',
-                            icon: <Code className="w-3 h-3 text-emerald-700" />,
-                            badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-200',
-                            borderClass: 'border-emerald-200/80 bg-emerald-50/40',
-                          },
-                        ];
-
-                        const activeCategories = categoryMeta.filter(
-                          (cat) => categorized[cat.name] && categorized[cat.name].length > 0
-                        );
-
-                        const toRender = activeCategories.length > 0 ? activeCategories : categoryMeta;
-
-                        return toRender.map((cat, cIdx) => (
-                          <div
-                            key={cat.name}
-                            className={`p-2 rounded-xl border ${cat.borderClass} space-y-1.5 shadow-2xs ${
-                              toRender.length % 2 !== 0 && cIdx === toRender.length - 1 ? 'sm:col-span-2' : ''
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-1 border-b border-black/5 pb-1">
-                              <div className="flex items-center gap-1.5">
-                                {cat.icon}
-                                <span className="text-[10.5px] font-bold text-slate-800">{cat.label}</span>
-                              </div>
-                              <span className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded border ${cat.badgeClass}`}>
-                                {cat.subLabel}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-wrap gap-1 pt-0.5">
-                              {categorized[cat.name] && categorized[cat.name].length > 0 ? (
-                                categorized[cat.name].map((skill, sIdx) => (
-                                  <span
-                                    key={`${skill}-${sIdx}`}
-                                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-medium bg-white text-slate-700 border border-slate-200 shadow-2xs hover:border-cyan-300 transition-colors"
-                                  >
-                                    {skill}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="text-[9px] text-slate-400 italic">No skills listed</span>
-                              )}
-                            </div>
-                          </div>
-                        ));
-                      })()}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ======================================================== */}
-      {/* 3. DOCUMENTS SECTION (UPLOAD-DRIVEN TEMPLATE DISPLAY)     */}
-      {/* Templates appear ONLY when documents are uploaded.       */}
-      {/* Displays file/image on top; Type & Description below.    */}
-      {/* ======================================================== */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4 w-full overflow-hidden">
-          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col items-center justify-center text-center gap-2">
-            <div className="flex flex-col items-center justify-center max-w-xl mx-auto">
-              <span className="text-[9.5px] sm:text-[10.5px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs inline-block">
-                VERIFIED CREDENTIALS
-              </span>
-              <h2 className="text-[13.5px] sm:text-[15.5px] md:text-[16.5px] font-bold text-slate-950 mt-1 font-serif text-center">
-                Verified Documents &amp; Credentials
-              </h2>
-              <p className="text-[10px] sm:text-[11.5px] text-slate-600 mt-0.5 text-center leading-relaxed max-w-lg">
-                Official certificates, verified credentials, technical files, and CAD blueprints uploaded on file.
-              </p>
-            </div>
-
-            {isOwnerAuthenticated ? (
-              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                <button
-                  onClick={() => (isEditingBio ? setIsEditingBio(false) : handleOpenEditBio())}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-sans font-semibold transition-colors cursor-pointer ${
-                    isEditingBio
-                      ? 'bg-rose-100 text-rose-900 border border-rose-300 hover:bg-rose-200'
-                      : 'bg-white hover:bg-slate-100 text-slate-800 border border-[#cbd5e1] shadow-2xs'
-                  }`}
-                  title={isEditingBio ? 'Exit Edit Mode' : 'Click Edit Profile to activate delete and modification on documents'}
-                >
-                  <Edit3 className="w-3.5 h-3.5 text-cyan-800" />
-                  <span>{isEditingBio ? 'Exit Edit Mode' : 'Edit Profile'}</span>
-                </button>
-
-                <button
-                  onClick={handleOpenAddDocument}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-sans text-xs sm:text-sm font-semibold shadow-xs hover:shadow-sm transition-all cursor-pointer shrink-0"
-                >
-                  <Plus className="w-4 h-4 text-cyan-200" />
-                  <span>+ Upload Document</span>
-                </button>
-              </div>
-            ) : (
-              documents.length > 0 && (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white border border-[#b8c6d4] text-slate-700 font-sans text-xs font-semibold shadow-xs">
-                  <FileCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>{documents.length} Verified Document{documents.length > 1 ? 's' : ''}</span>
-                </div>
-              )
-            )}
-          </div>
-
-          {/* Edit Profile Active Indicator in Documents Section */}
-          {isOwnerAuthenticated && isEditingBio && (
-            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs font-sans animate-fade-in">
-              <div className="flex items-center gap-2">
-                <Trash2 className="w-4 h-4 text-rose-600 shrink-0" />
-                <span><strong>Edit Profile Active:</strong> Document delete and edit actions are now activated on all your uploaded documents below.</span>
-              </div>
-              <button
-                onClick={() => setIsEditingBio(false)}
-                className="text-amber-900 hover:underline font-bold text-xs shrink-0 cursor-pointer"
-              >
-                Done Editing ✕
-              </button>
-            </div>
-          )}
-
-          {/* If NO documents have been uploaded yet */}
-          {documents.length === 0 ? (
-            <div className="p-8 sm:p-12 rounded-2xl bg-white border-2 border-dashed border-[#b8c6d4] text-center space-y-3 font-sans">
-              <div className="w-12 h-12 rounded-2xl bg-cyan-50 border border-cyan-200 flex items-center justify-center mx-auto text-cyan-800">
-                <FileUp className="w-6 h-6" />
-              </div>
-              <div className="space-y-1">
-                <h4 className="text-[13.5px] sm:text-[15.5px] font-bold text-slate-900 font-serif text-center">
-                  No Documents Uploaded Yet
-                </h4>
-                <p className="text-[10px] sm:text-[11px] text-slate-600 max-w-md mx-auto text-center leading-relaxed">
-                  {isOwnerAuthenticated
-                    ? 'Click the button below to upload your certificates, technical reports, or CAD drawing files with details.'
-                    : 'Engineering documents, certifications, and technical files will appear here once published.'}
-                </p>
-              </div>
-
               {isOwnerAuthenticated && (
                 <button
-                  onClick={handleOpenAddDocument}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-800 hover:bg-cyan-900 text-white font-bold text-xs sm:text-sm shadow-sm transition-all cursor-pointer mt-2"
+                  onClick={handleOpenEditBio}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-800 text-xs font-serif font-semibold border border-[#cbd5e1] shadow-2xs transition-colors cursor-pointer shrink-0"
                 >
-                  <Plus className="w-4 h-4" />
-                  <span>Upload Your First Document</span>
+                  <Edit3 className="w-3 h-3 text-cyan-800" />
+                  <span>Edit Bio</span>
                 </button>
               )}
             </div>
-          ) : (
-            <>
-              {/* ======================================================== */}
-              {/* ATTACHMENT SHOWCASE: VISIBLE ONLY TO OWNER FOR UPDATING  */}
-              {/* Hidden for visitors; visible to Festus when updating    */}
-              {/* ======================================================== */}
-              {isOwnerAuthenticated && isEditingBio && documents.some((d) => d.attachmentName || d.attachmentDataUrl) && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-white border border-[#b8c6d4] shadow-sm space-y-3 font-sans">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-cyan-100 border border-cyan-300 flex items-center justify-center text-cyan-800 shrink-0">
-                        <Paperclip className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="text-sm sm:text-base font-bold text-slate-950 font-serif">
-                            Attachment
-                          </h3>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                            Owner Profile Update Mode
-                          </span>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                            {documents.filter((d) => d.attachmentName || d.attachmentDataUrl).length} Attachment{documents.filter((d) => d.attachmentName || d.attachmentDataUrl).length > 1 ? 's' : ''} on Record
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Verified technical files, official certificates, and CAD blueprints uploaded on file (visible to you for updating your profile).
-                        </p>
-                      </div>
+
+            <div className="space-y-2 text-xs text-slate-800 leading-relaxed font-serif whitespace-pre-line text-justify">
+              <p className="text-justify leading-relaxed">{bioData.description}</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ======================================================== */}
+      {/* 2B. EXPERIENCE & CAREER SECTION                          */}
+      {/* ======================================================== */}
+      {getBuiltInSection('experience', 'Experience & Career').visible && (
+        <section id="profile-experience" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-3">
+            <div className="border-b border-[#cbd5e1] pb-2.5 text-center">
+              <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center">
+                {getBuiltInSection('experience', 'Experience & Career').label || 'Experience & Career'}
+              </h2>
+            </div>
+
+            {experiences.length === 0 ? (
+              <div className="p-4 rounded-xl bg-white border border-slate-200 text-center text-xs text-slate-600 space-y-1">
+                {bioData.leadership && (
+                  <p className="font-semibold text-slate-800">{bioData.leadership}</p>
+                )}
+                <p className="text-[11px] text-slate-500">
+                  Career history entries added from the Admin Dashboard appear here and in the Resume PDF.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {experiences.map((exp) => (
+                  <div key={exp.id} className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-1.5 text-xs">
+                    <h3 className="font-bold text-slate-950 text-center">{exp.roleTitle}</h3>
+                    <div className="text-[11px] text-cyan-900 font-semibold text-center">
+                      {exp.organization} {exp.location ? `· ${exp.location}` : ''}
                     </div>
+                    {(exp.startDate || exp.endDate || exp.isCurrent) && (
+                      <div className="text-[10px] text-slate-500 text-center">
+                        {exp.startDate} – {exp.isCurrent ? 'Present' : exp.endDate}
+                      </div>
+                    )}
+                    {exp.summary && <p className="text-[11px] text-slate-700 leading-relaxed text-justify">{exp.summary}</p>}
+                    {exp.highlights && exp.highlights.length > 0 && (
+                      <ul className="list-disc list-inside space-y-0.5 text-[11px] text-slate-700">
+                        {exp.highlights.map((h, i) => (
+                          <li key={i}>{h}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
-                    <div className="text-xs font-sans shrink-0">
-                      <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Owner Unlocked: Direct Download Active</span>
-                      </span>
+      {/* ======================================================== */}
+      {/* 2C. RESEARCH & PUBLICATIONS SECTION                      */}
+      {/* ======================================================== */}
+      {getBuiltInSection('publications', 'Research & Publications').visible && (
+        <section id="profile-publications" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-3">
+            <div className="border-b border-[#cbd5e1] pb-2.5 text-center">
+              <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center">
+                {getBuiltInSection('publications', 'Research & Publications').label || 'Research & Publications'}
+              </h2>
+            </div>
+
+            {publications.length === 0 ? (
+              <div className="p-4 rounded-xl bg-white border border-slate-200 text-center text-xs text-slate-600 space-y-1">
+                <p className="font-semibold text-slate-800">
+                  {bioData.degree} {bioData.academicHonors ? `· ${bioData.academicHonors}` : ''}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Research papers and technical publications managed in the Admin Dashboard appear here and in the Resume PDF.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {publications.map((pub) => (
+                  <div key={pub.id} className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-1.5 text-xs">
+                    <h3 className="font-bold text-slate-950 text-center">{pub.title}</h3>
+                    <div className="text-[11px] text-cyan-900 text-center">
+                      {pub.venueOrJournal} {pub.year ? `(${pub.year})` : ''}
                     </div>
-                  </div>
-
-                  {/* Top Showcase List / Grid */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-                    {documents
-                      .filter((d) => d.attachmentName || d.attachmentDataUrl)
-                      .map((doc) => (
-                        <div
-                          key={`top-showcase-${doc.id}`}
-                          className="p-3 rounded-xl bg-slate-50 border border-slate-200 hover:border-cyan-700 hover:bg-cyan-50/20 transition-all flex items-center justify-between gap-3 group"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            {/* Visual Thumbnail */}
-                            <div
-                              onClick={() => setSelectedPreviewDoc(doc)}
-                              className="w-11 h-11 rounded-lg overflow-hidden border border-slate-300 bg-slate-900 shrink-0 flex items-center justify-center cursor-pointer hover:opacity-90"
-                              title={doc.attachmentName ? `Click to inspect: ${doc.attachmentName}` : doc.title}
-                            >
-                              {isImageAttachment(doc) ? (
-                                <img
-                                  src={doc.attachmentDataUrl}
-                                  alt={doc.title}
-                                  loading="lazy"
-                                  decoding="async"
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : isPdfAttachment(doc) ? (
-                                <div className="w-full h-full bg-rose-950 flex flex-col items-center justify-center text-rose-300">
-                                  <FileCode className="w-5 h-5 text-rose-400" />
-                                  <span className="text-[8px] font-mono font-bold leading-none mt-0.5">PDF</span>
-                                </div>
-                              ) : (
-                                <FileCode className="w-5 h-5 text-cyan-300" />
-                              )}
-                            </div>
-
-                            <div className="min-w-0">
-                              <span className="text-[10px] font-mono font-bold text-cyan-900 uppercase block truncate">
-                                {doc.category}
-                              </span>
-                              <p className="text-xs font-bold text-slate-900 truncate font-serif" title={doc.title}>
-                                {doc.title}
-                              </p>
-                              <p className="text-[11px] text-slate-500 truncate font-mono">
-                                {doc.attachmentName || 'Attachment_File'} {doc.attachmentSize ? `· ${doc.attachmentSize}` : ''}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Action Button: Available for Owner Only */}
-                          {isOwnerAuthenticated && doc.attachmentDataUrl && (
-                            <div className="shrink-0">
-                              <a
-                                href={doc.attachmentDataUrl}
-                                download={doc.attachmentName || doc.title}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-xs transition-colors cursor-pointer shadow-2xs"
-                                title="Download uploaded certificate or document"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                                <span className="hidden sm:inline">Download</span>
-                              </a>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Uploaded Documents Template Grid - Modern Card Structure with 30% Reduced Text */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 w-full">
-                {documents.map((doc) => (
-                  <div 
-                    key={doc.id}
-                    className="rounded-2xl bg-white border border-slate-200/90 shadow-2xs hover:shadow-md hover:border-cyan-500/40 transition-all duration-200 overflow-hidden flex flex-col justify-between group font-sans"
-                  >
-                    {/* TOP: DISPLAY FILE OR IMAGE OF THE DOCUMENT ON DARK COLORED TOP */}
-                    <DocumentTopMedia
-                      doc={doc}
-                      isOwnerAuthenticated={isOwnerAuthenticated}
-                      onOpenPreview={(d) => setSelectedPreviewDoc(d)}
-                      onDownloadAttachment={handleDownloadAttachment}
-                      onRequireAuth={() => setIsAuthModalOpen(true)}
-                      onUpdatePreviewUrl={handleUpdateDocPreview}
-                      onDirectAttachFile={handleDirectAttachFile}
-                    />
-
-                    {/* BELOW THE FILE/IMAGE: TYPE OF DOCUMENT & DESCRIPTION (30% Reduced Text) */}
-                    <div className="p-3.5 sm:p-4 space-y-3 flex-1 flex flex-col justify-between">
-                      <div className="space-y-2">
-                        {/* 1. Type of Document Badge & Date */}
-                        <div className="flex flex-wrap items-center justify-between gap-1.5">
-                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-50 border border-cyan-200 text-cyan-900 text-[9.5px] font-bold shadow-2xs">
-                            <Layers className="w-3 h-3 text-cyan-700" />
-                            <span>Type: {doc.category}</span>
-                          </div>
-
-                          {doc.date && (
-                            <span className="text-[9px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                              {doc.date}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* 2. Document Title & Issuer */}
-                        <div>
-                          <h3 className="text-xs sm:text-[13px] font-bold text-slate-900 font-serif leading-snug group-hover:text-cyan-900 transition-colors text-justify">
-                            {doc.title}
-                          </h3>
-                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5 text-[10px] text-slate-500 text-justify">
-                            <span className="font-semibold text-slate-700">{doc.issuer}</span>
-                          </div>
-                        </div>
-
-                        {/* 3. Description */}
-                        <div className="pt-0.5">
-                          <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">
-                            Description:
-                          </span>
-                          <p className="text-[10px] sm:text-[11px] text-slate-600 leading-relaxed font-serif whitespace-pre-line text-justify">
-                            {doc.description}
-                          </p>
-                        </div>
-
-                        {/* Optional Competencies */}
-                        {doc.competencies && doc.competencies.length > 0 && doc.competencies[0] !== 'Technical competence verified' && (
-                          <div className="pt-1.5 border-t border-slate-100 space-y-1">
-                            <span className="text-[8.5px] font-bold text-slate-400 uppercase block">
-                              Key Competencies:
-                            </span>
-                            <ul className="space-y-0.5 text-[9.5px] text-slate-600">
-                              {doc.competencies.map((comp, cIdx) => (
-                                <li key={cIdx} className="flex items-start gap-1 text-justify leading-relaxed">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0 mt-0.5" />
-                                  <span className="text-justify">{comp}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Footer Actions */}
-                      <div className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {/* Download Button (Only visible to owner; hidden from visitors) */}
-                          {isOwnerAuthenticated && doc.attachmentDataUrl && (
-                            <a
-                              href={doc.attachmentDataUrl}
-                              download={doc.attachmentName || doc.title}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-800 hover:bg-cyan-900 text-white font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
-                              title="Download document attachment (Owner Only)"
-                            >
-                              <Download className="w-3 h-3" />
-                              <span>Download</span>
-                            </a>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => setSelectedPreviewDoc(doc)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
-                            title="Preview document details"
-                          >
-                            <Eye className="w-3 h-3 text-cyan-800" />
-                            <span>Preview</span>
-                          </button>
-
-                          {doc.verifiedLink && (
-                            <a
-                              href={doc.verifiedLink}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-cyan-800 hover:text-cyan-950 hover:underline font-semibold text-[10px]"
-                            >
-                              <span>Verify Credential</span>
-                              <ExternalLink className="w-2.5 h-2.5" />
-                            </a>
-                          )}
-                        </div>
-
-                        {/* Owner Delete & Edit Controls VS Visitor Verified Badge */}
-                        {isOwnerAuthenticated ? (
-                          <div className="flex items-center gap-1 shrink-0 animate-fade-in">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditDocument(doc)}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-colors cursor-pointer text-[10px] font-semibold"
-                              title="Edit document details"
-                            >
-                              <Edit3 className="w-3 h-3 text-cyan-800" />
-                              <span>Edit</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] shadow-2xs transition-colors cursor-pointer"
-                              title="Delete this document permanently"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>Delete</span>
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="inline-flex items-center gap-1 text-[9.5px] text-slate-500 font-sans">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                            <span className="font-medium">ASME / Verified</span>
-                          </div>
-                        )}
-                      </div>
+                    {pub.authors && <div className="text-[10px] text-slate-600 text-center">{pub.authors}</div>}
+                    {pub.abstract && <p className="text-[11px] text-slate-700 leading-relaxed text-justify">{pub.abstract}</p>}
+                    <div className="flex items-center justify-center gap-3 pt-1 text-[10px]">
+                      {pub.doiOrUrl && (
+                        <a href={pub.doiOrUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-800 hover:underline font-semibold">
+                          View Publication
+                        </a>
+                      )}
+                      {pub.attachmentUrl && (
+                        <a href={pub.attachmentUrl} target="_blank" rel="noopener noreferrer" download className="text-cyan-800 hover:underline font-semibold">
+                          Download Paper
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
-          </>
-        )}
-        </div>
-      </section>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* ======================================================== */}
-      {/* 4. CONTACT & INQUIRY CHANNELS                            */}
+      {/* 2D. ACHIEVEMENTS, AWARDS & ALL SKILLS SECTION (3 PARTS)  */}
       {/* ======================================================== */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="p-5 sm:p-6 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4">
-          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col items-center justify-center text-center">
-            <div className="flex flex-col items-center justify-center max-w-xl mx-auto">
-              <span className="text-[9.5px] sm:text-[10.5px] font-sans font-bold text-cyan-900 uppercase tracking-wider bg-cyan-100 border border-cyan-300 px-2.5 py-0.5 rounded-full shadow-2xs inline-block">
-                DIRECT INQUIRY &amp; COMMUNICATION
-              </span>
-              <h2 className="text-[13.5px] sm:text-[15.5px] md:text-[16.5px] font-bold text-slate-950 mt-1 font-serif text-center">
-                Direct Contact &amp; Inquiry Channels
+      {getBuiltInSection('achievements', 'Achievements, Awards & Skills').visible && (
+        <section id="profile-achievements" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4">
+            <div className="border-b border-[#cbd5e1] pb-2.5 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center flex-1">
+                {getBuiltInSection('achievements', 'Achievements, Awards & Skills').label || 'Achievements, Awards & Skills'}
               </h2>
-              <p className="text-[10px] sm:text-[11.5px] text-slate-600 mt-0.5 text-center leading-relaxed max-w-lg">
-                Reach out directly to discuss senior mechanical engineering roles, mechanism design reviews, or technical inquiries.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Primary Email */}
-            <div className="p-3.5 sm:p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-1.5">
-              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-[10.5px] sm:text-[11px] text-justify">
-                <Mail className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
-                <span>Primary Direct Email</span>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <a
-                  href={`mailto:${bioData.email}`}
-                  className="text-xs sm:text-[13.5px] font-bold text-slate-950 hover:text-cyan-900 hover:underline break-all text-justify"
-                >
-                  {bioData.email}
-                </a>
+              {isOwnerAuthenticated && (
                 <button
-                  onClick={handleCopyEmail}
-                  className="p-1.5 rounded-lg bg-[#edf2f8] hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer shrink-0"
-                  title="Copy Email Address"
+                  type="button"
+                  onClick={() => setIsEditingSkillsPanel(!isEditingSkillsPanel)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-800 text-xs font-serif font-semibold border border-[#cbd5e1] cursor-pointer shrink-0"
                 >
-                  {copiedEmail ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  <Edit3 className="w-3 h-3 text-cyan-800" />
+                  <span>{isEditingSkillsPanel ? 'Close Skills Editor' : 'Manage Skills'}</span>
                 </button>
-              </div>
-              <span className="text-[10px] sm:text-[10.5px] font-sans text-slate-500 block text-justify leading-relaxed">
-                Checked daily · Direct line for recruiters &amp; engineering hiring teams.
-              </span>
+              )}
             </div>
 
-            {/* Country & Mobility */}
-            <div className="p-3.5 sm:p-4 rounded-xl bg-white border border-[#cbd5e1] shadow-xs space-y-1.5">
-              <div className="flex items-center gap-1.5 text-cyan-900 font-sans font-bold text-[10.5px] sm:text-[11px] text-justify">
-                <Globe className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
-                <span>Country &amp; Mobility</span>
+            {/* Academic & Leadership Highlights */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 text-center">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Academic Standing</span>
+                <div className="font-bold text-slate-950">{bioData.degree}</div>
+                {bioData.academicHonors && <div className="text-[11px] text-cyan-900">{bioData.academicHonors}</div>}
               </div>
-              <p className="text-xs sm:text-[13.5px] font-bold text-slate-950 font-serif text-justify">
-                {bioData.country}
-              </p>
-              <span className="text-[10px] sm:text-[10.5px] font-sans text-slate-600 block text-justify leading-relaxed">
-                Open to on-site, hybrid, and remote engineering engagements worldwide.
-              </span>
+              <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 text-center">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Leadership &amp; Appointments</span>
+                <div className="text-[11px] text-slate-800">{bioData.leadership}</div>
+              </div>
+            </div>
+
+            {/* Achievements List */}
+            {achievements.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {achievements.map((ach) => (
+                  <div key={ach.id} className="p-3 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-1 text-xs">
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <span className="font-bold text-cyan-900">{ach.category}</span>
+                      <span className={`font-semibold ${ach.verified ? 'text-emerald-800' : 'text-amber-700'}`}>
+                        {ach.verified ? 'Verified Certificate' : 'In Progress'}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-slate-950 text-center">{ach.title}</h3>
+                    <div className="text-[10px] text-slate-500 text-center">
+                      {ach.issuer} {ach.dateStr ? `· ${ach.dateStr}` : ''}
+                    </div>
+                    {ach.description && <p className="text-[11px] text-slate-700 text-justify">{ach.description}</p>}
+                    {ach.certificateUrl && (
+                      <div className="text-center pt-1">
+                        <a href={ach.certificateUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-cyan-800 hover:underline font-semibold">
+                          View Certificate
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Owner Inline Skills & 4-Status Editor */}
+            {isOwnerAuthenticated && isEditingSkillsPanel && (
+              <div className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-white border border-cyan-700 space-y-3 text-xs">
+                <SkillSelector
+                  value={skillsDraft}
+                  onChange={setSkillsDraft}
+                  skillStatuses={skillStatusesDraft}
+                  onSkillStatusesChange={setSkillStatusesDraft}
+                  certifiedSkills={certifiedSkillsDraft}
+                  label="Edit Portfolio Skills (Core Engineering, Handful Skills & IT Skills)"
+                />
+                <div className="space-y-1.5">
+                  <span className="block font-bold text-slate-700 text-[11px]">
+                    Set Status Per Skill (in progress / verified / licensed / completed):
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                    {skillsDraft
+                      .split(',')
+                      .map((s) => s.trim())
+                      .filter(Boolean)
+                      .map((skill) => {
+                        const st = resolveSkillStatus(skill, skillStatusesDraft, certifiedSkillsDraft);
+                        return (
+                          <div
+                            key={skill}
+                            className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-50 border border-slate-300 text-[11px] min-w-0"
+                          >
+                            <span className="truncate font-semibold text-slate-800">{skill}</span>
+                            <select
+                              value={st}
+                              onChange={(e) => {
+                                const val = e.target.value as SkillStatus;
+                                setSkillStatusesDraft((prev) => ({ ...prev, [skill]: val }));
+                              }}
+                              className="px-1.5 py-0.5 rounded border border-slate-300 bg-white text-[10px] font-semibold cursor-pointer shrink-0"
+                            >
+                              {SKILL_STATUS_OPTIONS.map((opt) => (
+                                <option key={opt} value={opt}>
+                                  {formatSkillStatusLabel(opt)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingSkillsPanel(false)}
+                    className="px-3 py-1 rounded bg-slate-200 text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await syncSaveBio({
+                        ...bioData,
+                        skills: skillsDraft,
+                        skillStatuses: skillStatusesDraft,
+                        certifiedSkills: certifiedSkillsDraft,
+                      });
+                      setIsEditingSkillsPanel(false);
+                      showNotification('Skills and credential statuses saved.');
+                    }}
+                    className="px-3 py-1 rounded bg-cyan-900 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Save Skills
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* All Skills Matrix (3 Parts: Core Engineering Skills, Handful Skills, IT Skills) */}
+            {bioData.skills && (
+              <div className="space-y-2.5 pt-1">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+                  Skills Matrix (Core Engineering Skills · Handful Skills · IT Skills)
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {(() => {
+                    const categorized = categorizeSkills(bioData.skills);
+                    const categories: SkillCategoryName[] = [
+                      'Core Engineering Skills',
+                      'Handful Skills',
+                      'IT Skills',
+                    ];
+                    const statusBadgeColor: Record<SkillStatus, string> = {
+                      'in progress': 'bg-amber-50 text-amber-800 border-amber-200',
+                      verified: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+                      licensed: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+                      completed: 'bg-cyan-50 text-cyan-800 border-cyan-200',
+                    };
+                    return categories.map((cat) => (
+                      <div key={cat} className="p-3 rounded-xl bg-white border border-slate-200 space-y-2 text-xs">
+                        <h4 className="font-bold text-slate-950 text-center border-b border-slate-100 pb-1">
+                          {cat}
+                        </h4>
+                        {categorized[cat].length === 0 ? (
+                          <p className="text-[11px] text-slate-400 text-center italic py-2">
+                            No {cat.toLowerCase()} added yet.
+                          </p>
+                        ) : (
+                          <div className="space-y-1">
+                            {categorized[cat].map((skill, idx) => {
+                              const status = resolveSkillStatus(
+                                skill,
+                                bioData.skillStatuses,
+                                bioData.certifiedSkills
+                              );
+                              return (
+                                <div
+                                  key={`${skill}-${idx}`}
+                                  className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-50 border border-slate-200 text-[11px]"
+                                >
+                                  <span className="font-semibold text-slate-800 truncate">{skill}</span>
+                                  <span
+                                    className={`shrink-0 px-1.5 py-0.5 rounded border text-[9.5px] font-bold ${statusBadgeColor[status]}`}
+                                  >
+                                    {formatSkillStatusLabel(status)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ======================================================== */}
+      {/* 3. VERIFIED CREDENTIALS (SPECIALIZATION & COURSES)       */}
+      {/* ======================================================== */}
+      {getBuiltInSection('credentials', 'Verified Documents & Credentials').visible && (
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+        <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-4 w-full overflow-hidden">
+          <div className="border-b border-[#cbd5e1] pb-3 flex flex-col items-center justify-center text-center gap-2">
+            <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center">
+              {getBuiltInSection('credentials', 'Verified Documents & Credentials').label || 'Verified Documents & Credentials'}
+            </h2>
+
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+              {(['All', 'Specialization', 'Courses'] as const).map((grp) => (
+                <button
+                  key={grp}
+                  type="button"
+                  onClick={() => {
+                    setCredentialFilterGroup(grp);
+                    setSelectedSpecializationId(null);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer border ${
+                    credentialFilterGroup === grp
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  {grp}
+                </button>
+              ))}
+
+              {isOwnerAuthenticated && (
+                <button
+                  type="button"
+                  onClick={handleOpenAddDocument}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Upload Document</span>
+                </button>
+              )}
             </div>
           </div>
+
+          {documents.length === 0 ? (
+            <div className="p-6 rounded-xl bg-white border border-dashed border-[#b8c6d4] text-center space-y-2.5">
+              <p className="text-xs text-slate-600 text-center">No documents or credentials uploaded yet.</p>
+              {isOwnerAuthenticated && (
+                <button
+                  type="button"
+                  onClick={handleOpenAddDocument}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-semibold text-xs cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Upload Document</span>
+                </button>
+              )}
+            </div>
+          ) : (() => {
+            const specDocs = documents.filter((d) => d.credentialGroup === 'Specialization');
+            const courseDocs = documents.filter((d) => d.credentialGroup === 'Courses');
+            const otherDocs = documents.filter(
+              (d) => !d.credentialGroup || d.credentialGroup === 'Document'
+            );
+
+            const renderDocCard = (doc: DocumentItem, isCompactSub = false) => (
+              <div
+                key={doc.id}
+                className={`rounded-xl bg-white border border-slate-200 shadow-2xs overflow-hidden flex flex-col justify-between ${
+                  isCompactSub ? 'border-cyan-200/80' : ''
+                }`}
+              >
+                <DocumentTopMedia
+                  doc={doc}
+                  isOwnerAuthenticated={isOwnerAuthenticated}
+                  onOpenPreview={(d) => setSelectedPreviewDoc(d)}
+                  onDownloadAttachment={handleDownloadAttachment}
+                  onRequireAuth={() => setIsAuthModalOpen(true)}
+                  onUpdatePreviewUrl={handleUpdateDocPreview}
+                  onDirectAttachFile={handleDirectAttachFile}
+                />
+                <div className="p-3 space-y-1.5 text-xs flex-1 flex flex-col justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
+                      <span className="font-bold text-cyan-900">
+                        {doc.credentialGroup || doc.category}
+                      </span>
+                      {doc.date && <span>{doc.date}</span>}
+                    </div>
+                    <h3 className="text-xs font-bold text-slate-950 text-center">{doc.title}</h3>
+                    <div className="text-[10.5px] text-slate-600 text-center">{doc.issuer}</div>
+                    <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
+                      {doc.description}
+                    </p>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPreviewDoc(doc)}
+                        className="px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-800 font-semibold cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                      {isOwnerAuthenticated && doc.attachmentDataUrl && (
+                        <a
+                          href={doc.attachmentDataUrl}
+                          download={doc.attachmentName || doc.title}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2 py-0.5 rounded bg-cyan-900 text-white font-semibold"
+                        >
+                          Download
+                        </a>
+                      )}
+                      {doc.verifiedLink && (
+                        <a
+                          href={doc.verifiedLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-cyan-800 hover:underline font-semibold"
+                        >
+                          Verify
+                        </a>
+                      )}
+                    </div>
+                    {isOwnerAuthenticated && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditDocument(doc)}
+                          className="px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-800 cursor-pointer"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
+                          className="px-2 py-0.5 rounded bg-rose-600 text-white cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+
+            return (
+              <div className="space-y-4">
+                {/* SPECIALIZATION CERTIFICATES + LINKED SUB-COURSES */}
+                {(credentialFilterGroup === 'All' || credentialFilterGroup === 'Specialization') &&
+                  specDocs.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+                        Specialization Certificates
+                      </h3>
+                      <div className="space-y-3">
+                        {specDocs.map((spec) => {
+                          const linkedCourses = courseDocs.filter(
+                            (c) => c.parentSpecializationId === spec.id
+                          );
+                          const isExpanded = selectedSpecializationId === spec.id;
+                          return (
+                            <div
+                              key={spec.id}
+                              className="p-3 rounded-xl bg-white border border-[#b8c6d4] space-y-3"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedSpecializationId(isExpanded ? null : spec.id)
+                                  }
+                                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left"
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="w-4 h-4 text-cyan-800 shrink-0" />
+                                  ) : (
+                                    <ChevronRight className="w-4 h-4 text-cyan-800 shrink-0" />
+                                  )}
+                                  <span>{spec.title}</span>
+                                  <span className="text-[10px] font-normal text-slate-500">
+                                    ({linkedCourses.length} Course{linkedCourses.length === 1 ? '' : 's'})
+                                  </span>
+                                </button>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedSpecializationId(isExpanded ? null : spec.id)
+                                    }
+                                    className="px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-semibold text-slate-800 cursor-pointer"
+                                  >
+                                    {isExpanded ? 'Hide Details' : 'View Certificate & Courses'}
+                                  </button>
+                                  {isOwnerAuthenticated && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenAddCourseForSpecialization(spec.id)}
+                                      className="px-2 py-0.5 rounded bg-cyan-900 text-white text-[10px] font-semibold cursor-pointer"
+                                    >
+                                      + Add Course
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {isExpanded && (
+                                <div className="space-y-3 pt-2 border-t border-slate-200">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {renderDocCard(spec)}
+                                  </div>
+                                  {linkedCourses.length > 0 && (
+                                    <div className="space-y-2 pl-2 sm:pl-4 border-t border-slate-100 pt-2">
+                                      <h4 className="text-xs font-bold text-slate-900 text-center">
+                                        Courses Under This Specialization ({linkedCourses.length})
+                                      </h4>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {linkedCourses.map((course) => renderDocCard(course, true))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                {/* COURSES CERTIFICATES */}
+                {(credentialFilterGroup === 'All' || credentialFilterGroup === 'Courses') &&
+                  courseDocs.length > 0 && (
+                    <div className="space-y-2.5">
+                      <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+                        Course Certificates
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {courseDocs.map((c) => renderDocCard(c))}
+                      </div>
+                    </div>
+                  )}
+
+                {/* STANDALONE OTHER DOCUMENTS */}
+                {credentialFilterGroup === 'All' && otherDocs.length > 0 && (
+                  <div className="space-y-2.5">
+                    <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+                      Additional Technical Documents
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {otherDocs.map((d) => renderDocCard(d))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </section>
+      )}
+
+      {/* ======================================================== */}
+      {/* 4. CUSTOM PROFILE SECTIONS (ADMIN PROFILE SECTION MANAGER)*/}
+      {/* ======================================================== */}
+      {profileSectionManager.customSections
+        .filter((sec) => sec.visible !== false)
+        .map((sec: CustomProfileSection) => (
+          <section key={sec.id} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-serif">
+            <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-3">
+              <div className="border-b border-[#cbd5e1] pb-2 text-center space-y-0.5">
+                <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center">
+                  {sec.title}
+                </h2>
+                {sec.subtitle && (
+                  <p className="text-[11px] text-cyan-900 font-semibold text-center">{sec.subtitle}</p>
+                )}
+              </div>
+
+              {sec.template === 'rich-essay' && (
+                <div className="p-3.5 rounded-xl bg-white border border-slate-200 text-xs text-slate-800 leading-relaxed text-justify whitespace-pre-line">
+                  {sec.body}
+                </div>
+              )}
+
+              {sec.template === 'two-col-cards' && (
+                <div className="space-y-2.5">
+                  {sec.body && <p className="text-xs text-slate-700 text-center">{sec.body}</p>}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {(sec.items || []).map((it, idx) => (
+                      <div key={idx} className="p-3.5 rounded-xl bg-white border border-slate-200 space-y-1 text-xs">
+                        <h3 className="font-bold text-slate-950 text-center">{it.heading}</h3>
+                        {it.subheading && <p className="text-[10.5px] text-cyan-900 font-semibold text-center">{it.subheading}</p>}
+                        <p className="text-[11px] text-slate-700 leading-relaxed text-justify">{it.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sec.template === 'timeline' && (
+                <div className="space-y-2.5">
+                  {sec.body && <p className="text-xs text-slate-700 text-center">{sec.body}</p>}
+                  <div className="space-y-2 border-l-2 border-cyan-800 pl-3 ml-2">
+                    {(sec.items || []).map((it, idx) => (
+                      <div key={idx} className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="font-bold text-slate-950">{it.heading}</h3>
+                          {it.subheading && (
+                            <span className="text-[10px] font-bold text-cyan-900 bg-cyan-50 px-2 py-0.5 rounded border border-cyan-200">
+                              {it.subheading}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-700 text-justify">{it.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sec.template === 'metrics-grid' && (
+                <div className="space-y-2.5">
+                  {sec.body && <p className="text-xs text-slate-700 text-center">{sec.body}</p>}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-center">
+                    {(sec.items || []).map((it, idx) => (
+                      <div key={idx} className="p-3 rounded-xl bg-white border border-slate-200 space-y-1">
+                        <div className="text-base font-bold text-cyan-900">{it.heading}</div>
+                        {it.subheading && <div className="text-[10px] font-bold text-slate-500 uppercase">{it.subheading}</div>}
+                        <p className="text-[11px] text-slate-700">{it.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sec.template === 'media-showcase' && (
+                <div className="space-y-3">
+                  {sec.mediaUrl && (
+                    <div className="rounded-xl overflow-hidden border border-slate-200 bg-white flex justify-center">
+                      <img src={sec.mediaUrl} alt={sec.title} className="max-h-64 object-contain" />
+                    </div>
+                  )}
+                  {sec.body && <p className="text-xs text-slate-800 text-justify">{sec.body}</p>}
+                  {(sec.items || []).length > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {sec.items.map((it, idx) => (
+                        <div key={idx} className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5 text-xs">
+                          {it.mediaUrl && (
+                            <img src={it.mediaUrl} alt={it.heading} className="w-full h-36 object-cover rounded border border-slate-100" />
+                          )}
+                          <h3 className="font-bold text-slate-950 text-center">{it.heading}</h3>
+                          {it.subheading && <p className="text-[10px] text-cyan-900 text-center">{it.subheading}</p>}
+                          <p className="text-[11px] text-slate-700 text-justify">{it.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        ))}
 
       {/* ======================================================== */}
       {/* 5. FOLLOW ME                                             */}
       {/* ======================================================== */}
+      {getBuiltInSection('followMe', 'Follow Me').visible && (
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs text-center space-y-3">
           <div>
             <h2 className="text-base sm:text-lg font-bold text-slate-950 font-serif tracking-tight">
-              Follow Me
+              {getBuiltInSection('followMe', 'Follow Me').label || 'Follow Me'}
             </h2>
           </div>
 
@@ -2528,6 +2570,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           </div>
         </div>
       </section>
+      )}
 
       {/* ======================================================== */}
       {/* MODAL: FULL ATS RESUME PREVIEW & DOWNLOAD                */}
@@ -2659,7 +2702,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             </div>
 
             {/* Form Body */}
-            <form onSubmit={(e) => handleSaveDocument(e, false)} className="p-6 sm:p-8 space-y-4 max-h-[75vh] overflow-y-auto">
+            <form onSubmit={(e) => handleSaveDocument(e, false)} className="w-full max-w-full overflow-x-hidden p-5 sm:p-7 space-y-4 max-h-[75vh] overflow-y-auto">
               {docFormError && (
                 <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs sm:text-sm flex items-center gap-2">
                   <Info className="w-4 h-4 text-rose-600 shrink-0" />
@@ -2820,6 +2863,50 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <option value="Other Document">Other Document</option>
                   </select>
                 </div>
+              </div>
+
+              {/* 2B. CREDENTIAL GROUP (SPECIALIZATION vs COURSES) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                    Credential Group *
+                  </label>
+                  <select
+                    value={docCredentialGroup}
+                    onChange={(e) => {
+                      const val = e.target.value as 'Specialization' | 'Courses' | 'Document';
+                      setDocCredentialGroup(val);
+                      if (val !== 'Courses') setDocParentSpecializationId('');
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 text-xs sm:text-sm font-semibold cursor-pointer"
+                  >
+                    <option value="Specialization">Specialization</option>
+                    <option value="Courses">Courses</option>
+                    <option value="Document">Document</option>
+                  </select>
+                </div>
+
+                {docCredentialGroup === 'Courses' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                      Link Under Specialization (Optional)
+                    </label>
+                    <select
+                      value={docParentSpecializationId}
+                      onChange={(e) => setDocParentSpecializationId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 text-xs sm:text-sm font-semibold cursor-pointer"
+                    >
+                      <option value="">Standalone Course Certificate</option>
+                      {documents
+                        .filter((d) => d.credentialGroup === 'Specialization' && d.id !== editingDocId)
+                        .map((sp) => (
+                          <option key={sp.id} value={sp.id}>
+                            {sp.title}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* 3. DOCUMENT TITLE */}

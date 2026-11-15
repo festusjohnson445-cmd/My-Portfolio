@@ -4,14 +4,31 @@
   :root {
     --font-serif: "Times New Roman", Times, "Tinos", "Liberation Serif", serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    /* Dynamic CSS Variables defaults */
+    --primary-color: #164e63;
+    --secondary-color: #0891b2;
+    --bg-primary: #dce1e8;
+    --surface-bg: #edf2f8;
+    --card-bg: rgba(255, 255, 255, 0.9);
+    --text-primary: #0f172a;
+    --text-muted: #475569;
+    --border-subtle: #b8c6d4;
+    --footer-bg: #d2d8e1;
+    --button-radius: 0.75rem;
+    --button-padding-y: 0.45rem;
+    --button-padding-x: 0.85rem;
+    --button-font-size: 0.78rem;
+    --navbar-bg: rgba(214, 220, 228, 0.95);
+    --navbar-height: 4rem;
   }
   
   html {
     font-family: "Times New Roman", Times, "Tinos", "Liberation Serif", serif;
-    font-size: 16.5px; /* Elevated to medium reading size */
+    font-size: 15px; /* Compact sleek typography baseline */
     scroll-behavior: smooth;
-    background-color: #dce1e8;
-    color: #0f172a;
+    background-color: var(--bg-primary, #dce1e8);
+    color: var(--text-primary, #0f172a);
     width: 100%;
     min-height: 100%;
     overflow-x: hidden;
@@ -19,10 +36,10 @@
 
   body {
     font-family: "Times New Roman", Times, "Tinos", "Liberation Serif", serif;
-    background-color: #dce1e8;
-    color: #0f172a;
-    font-size: 1rem;
-    line-height: 1.6;
+    background-color: var(--bg-primary, #dce1e8);
+    color: var(--text-primary, #0f172a);
+    font-size: 0.92rem;
+    line-height: 1.5;
     width: 100%;
     min-height: 100%;
     overflow-x: hidden;
@@ -37,19 +54,106 @@
     flex-direction: column;
   }
 
-  p, span, a, button, input, textarea, label, li, td, th, h1, h2, h3, h4, h5, h6 {
+  /* Universal typography requirement: Times New Roman across body text, buttons, inputs, cards, headings */
+  p, span, a, button, input, textarea, select, label, li, td, th, h1, h2, h3, h4, h5, h6 {
     font-family: "Times New Roman", Times, "Tinos", "Liberation Serif", serif;
   }
 
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
+
+  /* Heading alignment requirement: Center justify all primary section and page headings */
+  .section-heading-primary,
+  .page-heading-primary {
+    text-align: center;
+    justify-content: center;
+  }
+
+  /* Compact button helper class */
+  .btn-dynamic-custom {
+    border-radius: var(--button-radius, 0.75rem);
+    padding-top: var(--button-padding-y, 0.45rem);
+    padding-bottom: var(--button-padding-y, 0.45rem);
+    padding-left: var(--button-padding-x, 0.85rem);
+    padding-right: var(--button-padding-x, 0.85rem);
+    font-size: var(--button-font-size, 0.78rem);
+    font-family: "Times New Roman", Times, serif;
+    transition: all 0.15s ease-in-out;
+  }
 }
 
-/* Silver-toned scrollbars */
+/* Dark mode styling overrides */
+html.dark {
+  background-color: var(--bg-primary, #0b111e);
+  color: var(--text-primary, #f1f5f9);
+}
+
+html.dark body {
+  background-color: var(--bg-primary, #0b111e);
+  color: var(--text-primary, #f1f5f9);
+}
+
+/* Stored Hero Animations (3 selectable presets) */
+@keyframes precisionGridDrift {
+  0% {
+    background-position: 0px 0px;
+  }
+  100% {
+    background-position: 40px 40px;
+  }
+}
+
+@keyframes orbitalPulseGlow {
+  0%, 100% {
+    transform: translate(-50%, 0) scale(1);
+    opacity: 0.25;
+  }
+  50% {
+    transform: translate(-50%, -14px) scale(1.18);
+    opacity: 0.45;
+  }
+}
+
+@keyframes blueprintScanLine {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  15%, 85% {
+    opacity: 0.35;
+  }
+  100% {
+    transform: translateY(450%);
+    opacity: 0;
+  }
+}
+
+.hero-anim-precision-grid {
+  animation: precisionGridDrift 12s linear infinite;
+}
+
+.hero-anim-orbital-pulse {
+  animation: orbitalPulseGlow 7s ease-in-out infinite;
+}
+
+.hero-anim-blueprint-scan {
+  animation: blueprintScanLine 6s ease-in-out infinite;
+}
+
+/* Card hover animation toggle class */
+.card-anim-enabled {
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.24s ease, border-color 0.24s ease;
+}
+
+.card-anim-enabled:hover {
+  transform: translateY(-4px);
+}
+
+/* Silver-toned compact scrollbars */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: #cbd5e1;
@@ -60,4 +164,11 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #64748b;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: #475569;
 }

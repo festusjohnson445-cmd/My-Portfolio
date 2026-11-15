@@ -1,46 +1,66 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, ArrowUp, Lock } from 'lucide-react';
-import { PROJECTS } from './data/projectsData';
-import { Project, ProjectCategory } from './types/portfolio';
 import { Navbar, PortfolioPart } from './components/Navbar';
 import { LandingHomeView } from './components/LandingHomeView';
 import { ProfileView } from './components/ProfileView';
 import { HomeView } from './components/HomeView';
+import { ProjectsView } from './components/ProjectsView';
+import { ArticlesView } from './components/ArticlesView';
+import { AdminDashboardView } from './components/AdminDashboardView';
 import { ResumeDownloadModal } from './components/ResumeDownloadModal';
-import { ProjectDetailModal } from './components/ProjectDetailModal';
-import { WhitepaperModal } from './components/WhitepaperModal';
 import { MessagingSection } from './components/MessagingSection';
 import { generateAndDownloadResume } from './utils/generateResumePdf';
-import { getStoredBio, getStoredDocuments, syncGlobalProfileWithServer, setOwnerAuthenticated } from './utils/profileState';
-import { supabase, onSupabaseAuthStateChange } from './utils/supabase';
+import {
+  getStoredBio,
+  getStoredDocuments,
+  syncGlobalProfileWithServer,
+  setOwnerAuthenticated,
+} from './utils/profileState';
+import {
+  supabase,
+  onSupabaseAuthStateChange,
+  isRealOwnerUser,
+} from './utils/supabase';
+import {
+  useWebsiteSettingsSync,
+  BUILT_IN_THEMES,
+} from './utils/portfolioSupabase';
 
 export default function App() {
   const [activePart, setActivePart] = useState<PortfolioPart>('home');
-  const [selectedCategory, setSelectedCategory] = useState<ProjectCategory>('All');
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [whitepaperProject, setWhitepaperProject] = useState<Project | null>(null);
   const [isResumeOpen, setIsResumeOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
-  // Top-level onAuthStateChange session listener to sync owner state with Supabase across refreshes
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session }, error }) => {
-      if (error) {
-        console.warn('[Supabase Initial Session Check]:', error.message);
-      }
-      if (session?.user) {
-        setOwnerAuthenticated(true, session.user.id);
-      } else {
-        setOwnerAuthenticated(false);
-      }
-    }).catch(() => {
-      setOwnerAuthenticated(false);
-    });
+  const websiteSettings = useWebsiteSettingsSync();
+  const appearance = websiteSettings.appearanceConfig;
+  const activeTheme =
+    appearance.storedThemes.find((t) => t.id === appearance.activeThemeId) || BUILT_IN_THEMES[0];
+  const footerCfg = appearance.footerConfig;
 
-    const { data: { subscription } } = onSupabaseAuthStateChange((event, session) => {
-      if (session?.user) {
-        setOwnerAuthenticated(true, session.user.id);
+  // Top-level onAuthStateChange session listener — ignore anonymous / public visitor chat sessions
+  useEffect(() => {
+    supabase.auth
+      .getSession()
+      .then(({ data: { session }, error }) => {
+        if (error) {
+          console.warn('[Supabase Initial Session Check]:', error.message);
+        }
+        if (isRealOwnerUser(session?.user)) {
+          setOwnerAuthenticated(true, session?.user?.id);
+        } else {
+          setOwnerAuthenticated(false);
+        }
+      })
+      .catch(() => {
+        setOwnerAuthenticated(false);
+      });
+
+    const {
+      data: { subscription },
+    } = onSupabaseAuthStateChange((_event, session) => {
+      if (isRealOwnerUser(session?.user)) {
+        setOwnerAuthenticated(true, session?.user?.id);
       } else {
         setOwnerAuthenticated(false);
       }
@@ -59,7 +79,7 @@ export default function App() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // When activePart is messaging, lock outer html and body scrolling so only the inner chat contents scroll
+  // Lock outer scrolling when Messaging is active
   useEffect(() => {
     if (activePart === 'messaging') {
       const prevBodyOverflow = document.body.style.overflow;
@@ -81,7 +101,9 @@ export default function App() {
 
       generateAndDownloadResume({
         fullName: bio.fullName || 'Festus, Olorunsogo Johnson',
-        header: bio.header || 'Lead Mechanical Design Engineer · Precision Mechanisms, Flight Gimbals & FEA Topology',
+        header:
+          bio.header ||
+          'Lead Mechanical Design Engineer · Precision Mechanisms, Flight Gimbals & FEA Topology',
         email: bio.email || 'festusjohnson028@gmail.com',
         country: bio.country || 'United States',
         discipline: bio.discipline || 'Mechanical & Optomechanical Design Engineering',
@@ -89,16 +111,30 @@ export default function App() {
         degree: bio.degree || 'B.S. in Mechanical Engineering (BSME)',
         academicHonors: bio.academicHonors || 'ABET Accredited · Honors (GPA 3.84 / 4.00)',
         leadership: bio.leadership || 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead',
-        skills: bio.skills || 'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, Design Calculation, CNC Machine, Laser Engraver/Cutter, 3D Animation, 3D Maxs, React.js & Full-Stack Web Development, Web Developer, C/C++, IT, AI & Machine Learning, Cybersecurity, Graphic Design, Microsoft Office',
-        description: bio.description || 'Lead Mechanical Design Engineer with 6+ years of specialized experience in high-precision hardware mechanisms, complex flight-rated assemblies, and mission-critical robotic systems.',
-        documents: docs.length > 0 ? docs.map((d: any) => ({
-          title: d.title,
-          issuer: d.issuer,
-          id: d.credentialId || d.id,
-          date: d.date,
-          description: d.description,
-          competencies: d.competencies || [],
-        })) : undefined,
+        skills:
+          bio.skills ||
+          'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, Design Calculation, CNC Machine, Laser Engraver/Cutter, 3D Animation, 3D Maxs, React.js & Full-Stack Web Development, Web Developer, C/C++, IT, AI & Machine Learning, Cybersecurity, Graphic Design, Microsoft Office',
+        certifiedSkills: bio.certifiedSkills || [],
+        skillStatuses: bio.skillStatuses || {},
+        experiences: bio.experiences || [],
+        publications: bio.publications || [],
+        achievements: bio.achievements || [],
+        description:
+          bio.description ||
+          'Lead Mechanical Design Engineer with 6+ years of specialized experience in high-precision hardware mechanisms, complex flight-rated assemblies, and mission-critical robotic systems.',
+        documents:
+          docs.length > 0
+            ? docs.map((d) => ({
+                title: d.title,
+                issuer: d.issuer,
+                id: d.credentialId || d.id,
+                date: d.date,
+                description: d.description,
+                competencies: d.competencies || [],
+                credentialGroup: d.credentialGroup,
+                parentSpecializationId: d.parentSpecializationId,
+              }))
+            : undefined,
       });
     } catch (e) {
       console.error('Error generating PDF resume', e);
@@ -110,38 +146,76 @@ export default function App() {
   useEffect(() => {
     syncGlobalProfileWithServer().catch(() => {});
     const hash = window.location.hash.replace('#', '');
-    if (hash === 'profile') {
+    if (
+      hash === 'profile' ||
+      hash === 'profile-bio' ||
+      hash === 'profile-experience' ||
+      hash === 'profile-publications' ||
+      hash === 'profile-achievements'
+    ) {
       setActivePart('profile');
-    } else if (hash === 'overview' || hash === 'hub' || hash === 'projects' || hash === 'case-studies') {
+      if (hash !== 'profile') {
+        setTimeout(() => {
+          document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 120);
+      }
+    } else if (hash === 'overview' || hash === 'hub') {
       setActivePart('overview');
-    } else if (hash === 'metrology' || hash === 'cad-comparison' || hash === 'gdt-drawings' || hash === 'messaging' || hash === 'toolbox' || hash === 'chat' || hash === 'credentials' || hash === 'contact') {
+    } else if (hash === 'projects') {
+      setActivePart('projects');
+    } else if (hash === 'articles' || hash === 'blog') {
+      setActivePart('articles');
+    } else if (hash === 'admin') {
+      setActivePart('admin');
+    } else if (
+      hash === 'metrology' ||
+      hash === 'cad-comparison' ||
+      hash === 'gdt-drawings' ||
+      hash === 'messaging' ||
+      hash === 'toolbox' ||
+      hash === 'chat' ||
+      hash === 'credentials' ||
+      hash === 'contact'
+    ) {
       setActivePart('messaging');
     } else {
       setActivePart('home');
     }
   }, []);
 
-  const handleSelectPart = (part: PortfolioPart) => {
+  const handleSelectPart = (part: PortfolioPart, sectionId?: string) => {
     setActivePart(part);
-    window.history.replaceState(null, '', `#${part}`);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.history.replaceState(null, '', `#${sectionId || part}`);
+    if (sectionId) {
+      setTimeout(() => {
+        const el = document.getElementById(sectionId);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, 60);
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
-
-  const filteredProjects = selectedCategory === 'All'
-    ? PROJECTS
-    : PROJECTS.filter((p) => p.category === selectedCategory);
 
   const handleResumeDownload = () => {
     setResumeDownloadCount((c) => c + 1);
   };
 
-  const handleSelectProjectById = (id: string) => {
-    const proj = PROJECTS.find((p) => p.id === id);
-    if (proj) setActiveProject(proj);
-  };
-
   return (
-    <div className={`w-full max-w-full bg-[#dce1e8] text-slate-900 flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden ${activePart === 'messaging' ? 'h-screen h-[100dvh] max-h-[100dvh] overflow-hidden' : 'min-h-screen'}`}>
+    <div
+      style={{
+        backgroundColor: activeTheme.pageBg,
+        color: activeTheme.textColor,
+      }}
+      className={`w-full max-w-full flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden transition-colors duration-200 ${
+        activePart === 'messaging'
+          ? 'h-screen h-[100dvh] max-h-[100dvh] overflow-hidden'
+          : 'min-h-screen'
+      }`}
+    >
       {/* 1. Sticky Navigation Bar */}
       <Navbar
         activePart={activePart}
@@ -150,21 +224,31 @@ export default function App() {
         resumeDownloadCount={resumeDownloadCount}
       />
 
-      <main className={`flex-1 w-full flex flex-col ${activePart === 'messaging' ? 'min-h-0 overflow-hidden' : ''}`}>
-        {/* ======================================================== */}
-        {/* 01. LANDING HOME VIEW (HERO & WELCOMING MESSAGE & CTA)  */}
-        {/* ======================================================== */}
-        <section id="home" className={`relative flex-1 w-full flex-col ${activePart === 'home' ? 'flex' : 'hidden'}`}>
+      <main
+        className={`flex-1 w-full flex flex-col ${
+          activePart === 'messaging' ? 'min-h-0 overflow-hidden' : ''
+        }`}
+      >
+        {/* HOME */}
+        <section
+          id="home"
+          className={`relative flex-1 w-full flex-col ${
+            activePart === 'home' ? 'flex' : 'hidden'
+          }`}
+        >
           <LandingHomeView
             onNavigatePart={handleSelectPart}
             onResumeClick={handleOneClickResumeDownload}
           />
         </section>
 
-        {/* ======================================================== */}
-        {/* 02. MY PROFILE VIEW (BIO, RESUME, CERTIFICATIONS, FORM)  */}
-        {/* ======================================================== */}
-        <section id="profile" className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${activePart === 'profile' ? 'flex' : 'hidden'}`}>
+        {/* PROFILE */}
+        <section
+          id="profile"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'profile' ? 'flex' : 'hidden'
+          }`}
+        >
           <ProfileView
             onResumeClick={handleOneClickResumeDownload}
             onNavigatePart={handleSelectPart}
@@ -175,9 +259,10 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14 mt-auto">
             <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="text-[11px] sm:text-[13px] text-slate-700">
-                <span className="text-cyan-900 font-bold font-sans">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
+                <span className="text-cyan-900 font-bold">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
               </div>
               <button
+                type="button"
                 onClick={() => handleSelectPart('overview')}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
               >
@@ -188,77 +273,164 @@ export default function App() {
           </div>
         </section>
 
-        {/* ======================================================== */}
-        {/* 03. ENGINEERING HUB (DOCUMENT REPOSITORY & DEVICE UPLOAD)*/}
-        {/* ======================================================== */}
-        <section id="overview" className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${activePart === 'overview' ? 'flex' : 'hidden'}`}>
-          <HomeView
-            onNavigatePart={handleSelectPart}
+        {/* MESSAGING */}
+        <section
+          id="messaging"
+          className={`flex-1 min-h-0 h-full w-full bg-[#dce1e8] flex-col overflow-hidden ${
+            activePart === 'messaging' ? 'flex' : 'hidden'
+          }`}
+        >
+          <MessagingSection
+            onBack={() => handleSelectPart('home')}
+            isActive={activePart === 'messaging'}
           />
+        </section>
+
+        {/* ENGINEERING HUB */}
+        <section
+          id="overview"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'overview' ? 'flex' : 'hidden'
+          }`}
+        >
+          <HomeView onNavigatePart={handleSelectPart} />
 
           {/* Bottom Sequential Navigator */}
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
             <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
               <div className="text-[11px] sm:text-[13px] text-slate-700">
-                <span className="text-cyan-900 font-bold font-sans">OVERVIEW COMPLETE:</span> Have questions or want to discuss technical proposals or engineering services?
+                <span className="text-cyan-900 font-bold">NEXT:</span> Explore published mechanical projects, CAD studies, and engineering reports.
               </div>
               <button
-                onClick={() => handleSelectPart('messaging')}
+                type="button"
+                onClick={() => handleSelectPart('projects')}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
               >
-                <span>Proceed to Messaging (Part 04)</span>
+                <span>Explore Projects</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
         </section>
 
-        {/* ======================================================== */}
-        {/* 04. FULL PAGE MESSAGING SECTION ONLY                     */}
-        {/* ======================================================== */}
-        <section id="messaging" className={`flex-1 min-h-0 h-full w-full bg-[#dce1e8] flex-col overflow-hidden ${activePart === 'messaging' ? 'flex' : 'hidden'}`}>
-          <MessagingSection onBack={() => handleSelectPart('home')} isActive={activePart === 'messaging'} />
+        {/* PROJECTS (ENGINEERING PORTFOLIO) */}
+        <section
+          id="projects"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'projects' ? 'flex' : 'hidden'
+          }`}
+        >
+          {activePart === 'projects' && <ProjectsView />}
+        </section>
+
+        {/* BLOG / ARTICLES (ENGINEERING ARTICLES) */}
+        <section
+          id="articles"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'articles' ? 'flex' : 'hidden'
+          }`}
+        >
+          {activePart === 'articles' && <ArticlesView />}
+        </section>
+
+        {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER) */}
+        <section
+          id="admin"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'admin' ? 'flex' : 'hidden'
+          }`}
+        >
+          {activePart === 'admin' && (
+            <AdminDashboardView onNavigatePart={handleSelectPart} />
+          )}
         </section>
       </main>
 
-      {/* Footer (Hidden on messaging page) */}
-      {activePart !== 'messaging' && (
-        <footer className="shrink-0 w-full py-4 border-t border-[#b8c6d4] bg-[#d2d8e1] text-xs text-slate-700 font-sans text-center mt-auto">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-center">
-            <p className="text-xs text-slate-700 inline-flex items-center justify-center gap-1.5 flex-wrap">
-              <span className="italic text-[10.8px] sm:text-[11px] text-slate-600">© 2026 Festus, Olorunsogo Johnson · Fesline Mechanical Engineering</span>
-              {/* Only put the lock icon which will pop out the form after a double click on it. The lock login form should only be on the footer section of the profile page and not others. */}
-              {activePart === 'profile' && (
-                <button
-                  type="button"
-                  onDoubleClick={() => {
-                    window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
-                  }}
-                  className="p-1 rounded text-slate-500 hover:text-slate-800 transition-colors cursor-pointer select-none"
-                  title="Double-click for Owner Portal"
-                  aria-label="Owner Access"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                </button>
+      {/* Footer (Hidden on messaging page; double-click Lock retained exclusively on Profile footer with configurable position) */}
+      {activePart !== 'messaging' && (() => {
+        const justifyClass =
+          footerCfg.justifyContent === 'start'
+            ? 'justify-start'
+            : footerCfg.justifyContent === 'between'
+            ? 'justify-between'
+            : footerCfg.justifyContent === 'around'
+            ? 'justify-around'
+            : 'justify-center';
+        const alignClass =
+          footerCfg.textAlign === 'left'
+            ? 'text-left'
+            : footerCfg.textAlign === 'right'
+            ? 'text-right'
+            : 'text-center';
+
+        const lockButton =
+          activePart === 'profile' ? (
+            <button
+              type="button"
+              onDoubleClick={() => {
+                window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+              }}
+              className="p-1 rounded text-slate-500 hover:text-slate-800 transition-colors cursor-pointer select-none inline-flex items-center"
+              title="Double-click for Owner Portal"
+              aria-label="Owner Access"
+            >
+              <Lock className="w-3.5 h-3.5" />
+            </button>
+          ) : null;
+
+        return (
+          <footer
+            style={{
+              backgroundColor: activeTheme.footerBg,
+              borderColor: activeTheme.borderColor,
+              color: activeTheme.textColor,
+              fontSize: footerCfg.fontSize || '11px',
+            }}
+            className={`shrink-0 w-full py-4 border-t font-serif mt-auto relative transition-colors duration-200 ${alignClass}`}
+          >
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-2.5">
+              {footerCfg.customSections && footerCfg.customSections.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pb-2.5 border-b border-black/10">
+                  {footerCfg.customSections.map((fs) => (
+                    <div key={fs.id} className={`space-y-0.5 ${alignClass}`}>
+                      {fs.heading && (
+                        <h4 className="font-bold text-slate-900 text-xs">{fs.heading}</h4>
+                      )}
+                      {fs.content && (
+                        <p className="text-[11px] opacity-85 whitespace-pre-line">{fs.content}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
-            </p>
-          </div>
-        </footer>
-      )}
 
-      {/* Modals & Drawers */}
-      <ProjectDetailModal
-        project={activeProject}
-        isOpen={activeProject !== null}
-        onClose={() => setActiveProject(null)}
-        onOpenWhitepaper={(p) => setWhitepaperProject(p)}
-      />
+              <div className={`flex flex-wrap items-center gap-2 ${justifyClass}`}>
+                <p
+                  style={{ fontSize: footerCfg.fontSize || '11px' }}
+                  className="inline-flex items-center gap-1.5 flex-wrap"
+                >
+                  {footerCfg.lockIconPosition === 'inline-start' && lockButton}
+                  <span className="italic opacity-85">
+                    {footerCfg.copyrightText ||
+                      '© 2026 Festus, Olorunsogo Johnson · Fesline Mechanical Engineering'}
+                  </span>
+                  {footerCfg.lockIconPosition === 'inline-end' && lockButton}
+                </p>
 
-      <WhitepaperModal
-        project={whitepaperProject}
-        isOpen={whitepaperProject !== null}
-        onClose={() => setWhitepaperProject(null)}
-      />
+                {footerCfg.lockIconPosition === 'bottom-left' && (
+                  <div className="w-full flex justify-start pt-0.5">{lockButton}</div>
+                )}
+                {footerCfg.lockIconPosition === 'bottom-right' && (
+                  <div className="w-full flex justify-end pt-0.5">{lockButton}</div>
+                )}
+                {footerCfg.lockIconPosition === 'center-below' && (
+                  <div className="w-full flex justify-center pt-0.5">{lockButton}</div>
+                )}
+              </div>
+            </div>
+          </footer>
+        );
+      })()}
 
       <ResumeDownloadModal
         isOpen={isResumeOpen}

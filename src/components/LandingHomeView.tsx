@@ -5,10 +5,13 @@ import {
   Layers,
   Zap,
   MessageSquare,
+  FolderKanban,
+  BookOpen,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
 import { withRecordVersion } from '../utils/supabase';
+import { useWebsiteSettingsSync, BUILT_IN_THEMES } from '../utils/portfolioSupabase';
 
 interface LandingHomeViewProps {
   onNavigatePart: (part: PortfolioPart) => void;
@@ -20,26 +23,72 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   onResumeClick,
 }) => {
   const { bio, documents, avatar, updatedAt } = useProfileSync();
+  const websiteSettings = useWebsiteSettingsSync();
+  const appearance = websiteSettings.appearanceConfig;
+  const activeTheme =
+    appearance.storedThemes.find((t) => t.id === appearance.activeThemeId) || BUILT_IN_THEMES[0];
+  const cardAnimClass = appearance.cardAnimationEnabled ? 'card-anim-enabled' : '';
+
   const heroMessage = bio.header || "Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.";
   const dynamicCertifications = getRightBadgeCertifications(bio, documents);
 
   return (
-    <div className="flex-1 w-full flex flex-col font-serif text-slate-800 text-[0.95em]">
+    <div className="flex-1 w-full flex flex-col font-serif text-[0.95em]" style={{ color: activeTheme.textColor }}>
       {/* ======================================================== */}
       {/* 1. HERO SECTION WITH MODERN ENGINEERING STYLING          */}
       {/* ======================================================== */}
-      <section className="relative overflow-hidden pt-8 pb-14 sm:pt-12 sm:pb-20 border-b border-[#b0bece] bg-gradient-to-b from-[#f0f4f9] via-[#e4ecf5] to-[#d6e0ec]">
-        {/* Engineering precision grid background */}
-        <div 
-          className="absolute inset-0 opacity-20 pointer-events-none"
+      <section
+        className="relative overflow-hidden pt-8 pb-14 sm:pt-12 sm:pb-20 border-b"
+        style={{
+          borderColor: activeTheme.borderColor,
+          backgroundColor: activeTheme.surfaceBg,
+        }}
+      >
+        {/* Optional Hero Background Image */}
+        {appearance.heroBackgroundImageUrl && (
+          <>
+            <img
+              src={appearance.heroBackgroundImageUrl}
+              alt="Hero Background"
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            />
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                background: activeTheme.isDark
+                  ? 'rgba(11, 17, 30, 0.72)'
+                  : 'rgba(240, 244, 249, 0.78)',
+              }}
+            />
+          </>
+        )}
+
+        {/* Engineering precision grid background + stored Hero Animation 1 */}
+        <div
+          className={`absolute inset-0 opacity-20 pointer-events-none ${
+            appearance.heroAnimationEnabled && appearance.heroAnimationEffect === 'precision-grid'
+              ? 'hero-anim-precision-grid'
+              : ''
+          }`}
           style={{
             backgroundImage: `radial-gradient(#334155 1px, transparent 1px)`,
-            backgroundSize: '20px 20px'
+            backgroundSize: '20px 20px',
           }}
         />
 
-        {/* Ambient subtle glow */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-cyan-400/10 rounded-full blur-3xl pointer-events-none" />
+        {/* Ambient subtle glow + stored Hero Animation 2 */}
+        <div
+          className={`absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-cyan-400/15 rounded-full blur-3xl pointer-events-none ${
+            appearance.heroAnimationEnabled && appearance.heroAnimationEffect === 'orbital-pulse'
+              ? 'hero-anim-orbital-pulse'
+              : ''
+          }`}
+        />
+
+        {/* Blueprint Scan Overlay + stored Hero Animation 3 */}
+        {appearance.heroAnimationEnabled && appearance.heroAnimationEffect === 'blueprint-scan' && (
+          <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent pointer-events-none hero-anim-blueprint-scan" />
+        )}
 
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col items-center text-center max-w-4xl mx-auto">
@@ -107,7 +156,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
       {/* ======================================================== */}
       {/* 2. WEBSITE SECTIONS DIRECT ACCESS HUB                     */}
       {/* ======================================================== */}
-      <section className="py-12 sm:py-16 bg-[#d6dce4]">
+      <section className="py-12 sm:py-16" style={{ backgroundColor: activeTheme.pageBg }}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           
           <div className="text-center max-w-2xl mx-auto mb-10">
@@ -122,11 +171,11 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-6xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 max-w-6xl mx-auto">
             {/* Card 1: My Profile */}
             <div 
               onClick={() => onNavigatePart('profile')}
-              className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
+              className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
               <div>
                 <div className="flex items-center justify-between mb-3">
@@ -172,7 +221,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             {/* Card 2: Engineering Hub */}
             <div 
               onClick={() => onNavigatePart('overview')}
-              className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
+              className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
               <div>
                 <div className="flex items-center justify-between mb-3">
@@ -198,7 +247,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             {/* Card 3: Direct Messaging & Inquiry Channel */}
             <div 
               onClick={() => onNavigatePart('messaging')}
-              className="p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between"
+              className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
               <div>
                 <div className="flex items-center justify-between mb-3">
@@ -220,6 +269,58 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
                 <span>Open Direct Chat</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
+            </div>
+
+            {/* Card 4: Engineering Portfolio (Projects) */}
+            <div
+              onClick={() => onNavigatePart('projects')}
+              className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
+            >
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
+                    <FolderKanban className="w-5 h-5 text-cyan-800" />
+                  </div>
+                </div>
+
+                <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
+                  Engineering Portfolio
+                </h3>
+                <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
+                  Published mechanical systems, CAD assemblies, engineering specifications, media galleries, and downloadable project PDF reports.
+                </p>
+              </div>
+
+              <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
+                <span>Explore Projects</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
+            </div>
+
+            {/* Card 5: Engineering Articles (Blog / Articles) */}
+            <div
+              onClick={() => onNavigatePart('articles')}
+              className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
+            >
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
+                    <BookOpen className="w-5 h-5 text-cyan-800" />
+                  </div>
+                </div>
+
+                <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
+                  Engineering Articles
+                </h3>
+                <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
+                  Technical articles, analytical notes, BOM breakdowns, schematics, and community contributions across engineering disciplines.
+                </p>
+              </div>
+
+              <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
+                <span>Read &amp; Post Articles</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>

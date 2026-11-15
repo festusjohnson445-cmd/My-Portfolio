@@ -1,0 +1,1261 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Search,
+  ArrowLeft,
+  Clock,
+  Heart,
+  Share2,
+  Download,
+  Copy,
+  Check,
+  MessageSquare,
+  Edit3,
+  Trash2,
+  Send,
+  FileText,
+  Compass,
+  BarChart3,
+  Table as TableIcon,
+  ShieldCheck,
+} from 'lucide-react';
+import {
+  fetchArticlesFromSupabase,
+  deleteArticleFromSupabase,
+  incrementArticleLikesInSupabase,
+  fetchCommentsForArticle,
+  submitArticleComment,
+  moderateCommentInSupabase,
+  deleteCommentFromSupabase,
+  useWebsiteSettingsSync,
+  type PortfolioArticle,
+  type ArticleComment,
+} from '../utils/portfolioSupabase';
+import { useProfileSync } from '../utils/profileState';
+import { Interactive3DViewer } from './Interactive3DViewer';
+import { ArticleFormPanel } from './ArticleFormPanel';
+
+function slugHeadingId(heading: string, idx: number): string {
+  const clean = heading
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `sec-${idx}-${clean || 'section'}`;
+}
+
+function renderInlineMarkdown(text: string): React.ReactNode {
+  // Handle **bold**, `code`, and inline links [label](url) safely
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g);
+  return tokens.map((tok, i) => {
+    if (tok.startsWith('**') && tok.endsWith('**')) {
+      return <strong key={i} className="font-bold text-slate-950">{tok.slice(2, -2)}</strong>;
+    }
+    if (tok.startsWith('`') && tok.endsWith('`')) {
+      return (
+        <code key={i} className="px-1 py-0.5 rounded bg-slate-100 border border-slate-200 font-mono text-[11px] text-cyan-900">
+          {tok.slice(1, -1)}
+        </code>
+      );
+    }
+    const linkMatch = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (linkMatch) {
+      return (
+        <a
+          key={i}
+          href={linkMatch[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-cyan-800 underline hover:text-cyan-950"
+        >
+          {linkMatch[1]}
+        </a>
+      );
+    }
+    return <React.Fragment key={i}>{tok}</React.Fragment>;
+  });
+}
+
+const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
+  const blocks = useMemo(() => {
+    const lines = content.split('\n');
+    const out: Array<
+      | { type: 'heading'; level: number; text: string; id: string }
+      | { type: 'code'; lang: string; code: string }
+      | { type: 'equation'; expr: string }
+      | { type: 'table'; headers: string[]; rows: string[][] }
+      | { type: 'list'; ordered: boolean; items: string[] }
+      | { type: 'paragraph'; text: string }
+    > = [];
+
+    let i = 0;
+    let headingCounter = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        i++;
+        continue;
+      }
+
+      // Fenced code block
+      if (trimmed.startsWith('```')) {
+        const lang = trimmed.slice(3).trim();
+        const codeLines: string[] = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        i++;
+        out.push({ type: 'code', lang, code: codeLines.join('\n') });
+        continue;
+      }
+
+      // Block equation $$ ... $$
+      if (trimmed.startsWith('$$')) {
+        if (trimmed.endsWith('$$') && trimmed.length > 4) {
+          out.push({ type: 'equation', expr: trimmed.slice(2, -2).trim() });
+          i++;
+          continue;
+        }
+        const eqLines: string[] = [trimmed.slice(2)];
+        i++;
+        while (i < lines.length && !lines[i].trim().endsWith('$$')) {
+          eqLines.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) {
+          eqLines.push(lines[i].trim().slice(0, -2));
+          i++;
+        }
+        out.push({ type: 'equation', expr: eqLines.join('\n').trim() });
+        continue;
+      }
+
+      // Heading
+      const hMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+      if (hMatch) {
+        const level = hMatch[1].length;
+        const hText = hMatch[2].trim();
+        out.push({ type: 'heading', level, text: hText, id: slugHeadingId(hText, headingCounter++) });
+        i++;
+        continue;
+      }
+
+      // Markdown table
+      if (trimmed.startsWith('|') && i + 1 < lines.length && lines[i + 1].trim().startsWith('|') && lines[i + 1].includes('-')) {
+        const parseRow = (r: string) =>
+          r
+            .trim()
+            .replace(/^\|/, '')
+            .replace(/\|$/, '')
+            .split('|')
+            .map((c) => c.trim());
+        const headers = parseRow(trimmed);
+        i += 2;
+        const rows: string[][] = [];
+        while (i < lines.length && lines[i].trim().startsWith('|')) {
+          rows.push(parseRow(lines[i]));
+          i++;
+        }
+        out.push({ type: 'table', headers, rows });
+        continue;
+      }
+
+      // Unordered / Ordered list
+      if (/^[-*•]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
+        const ordered = /^\d+\.\s+/.test(trimmed);
+        const items: string[] = [];
+        while (
+          i < lines.length &&
+          (ordered ? /^\d+\.\s+/.test(lines[i].trim()) : /^[-*•]\s+/.test(lines[i].trim()))
+        ) {
+          items.push(lines[i].trim().replace(/^([-*•]|\d+\.)\s+/, ''));
+          i++;
+        }
+        out.push({ type: 'list', ordered, items });
+        continue;
+      }
+
+      // Paragraph accumulation
+      const pLines: string[] = [trimmed];
+      i++;
+      while (
+        i < lines.length &&
+        lines[i].trim() &&
+        !/^(#{1,3}\s+|```|\$\$|\||[-*•]\s+|\d+\.\s+)/.test(lines[i].trim())
+      ) {
+        pLines.push(lines[i].trim());
+        i++;
+      }
+      out.push({ type: 'paragraph', text: pLines.join(' ') });
+    }
+    return out;
+  }, [content]);
+
+  return (
+    <div className="space-y-3 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif">
+      {blocks.map((blk, idx) => {
+        if (blk.type === 'heading') {
+          return (
+            <h2
+              key={idx}
+              id={blk.id}
+              className={`font-bold text-slate-950 text-center pt-2 border-b border-slate-200 pb-1 ${
+                blk.level === 1 ? 'text-base sm:text-lg' : 'text-sm sm:text-base'
+              }`}
+            >
+              {blk.text}
+            </h2>
+          );
+        }
+        if (blk.type === 'code') {
+          return (
+            <div key={idx} className="rounded-lg overflow-hidden border border-slate-700 bg-slate-900 text-slate-100">
+              {blk.lang && (
+                <div className="px-3 py-1 bg-slate-950 text-[10px] font-mono text-cyan-300 border-b border-slate-800">
+                  {blk.lang}
+                </div>
+              )}
+              <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed">{blk.code}</pre>
+            </div>
+          );
+        }
+        if (blk.type === 'equation') {
+          return (
+            <div
+              key={idx}
+              className="p-3 rounded-lg bg-[#edf2f8] border border-[#b8c6d4] text-center font-mono text-xs text-slate-900 overflow-x-auto"
+            >
+              {blk.expr}
+            </div>
+          );
+        }
+        if (blk.type === 'table') {
+          return (
+            <div key={idx} className="overflow-x-auto border border-slate-200 rounded-lg">
+              <table className="w-full text-xs text-left border-collapse">
+                <thead className="bg-[#edf2f8] text-slate-900 font-bold">
+                  <tr>
+                    {blk.headers.map((h, hi) => (
+                      <th key={hi} className="px-3 py-1.5 border-b border-slate-200">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {blk.rows.map((r, ri) => (
+                    <tr key={ri}>
+                      {r.map((cell, ci) => (
+                        <td key={ci} className="px-3 py-1.5 text-slate-700">
+                          {renderInlineMarkdown(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        if (blk.type === 'list') {
+          return blk.ordered ? (
+            <ol key={idx} className="list-decimal list-inside space-y-1 pl-2 text-xs">
+              {blk.items.map((it, ii) => (
+                <li key={ii}>{renderInlineMarkdown(it)}</li>
+              ))}
+            </ol>
+          ) : (
+            <ul key={idx} className="list-disc list-inside space-y-1 pl-2 text-xs">
+              {blk.items.map((it, ii) => (
+                <li key={ii}>{renderInlineMarkdown(it)}</li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={idx} className="text-xs leading-relaxed text-justify">
+            {renderInlineMarkdown(blk.text)}
+          </p>
+        );
+      })}
+    </div>
+  );
+};
+
+export const ArticlesView: React.FC = () => {
+  const { isOwner } = useProfileSync();
+  const websiteSettings = useWebsiteSettingsSync();
+  const { projectsArticlesConfig, cardAnimationEnabled, commentStyleConfig } =
+    websiteSettings.appearanceConfig;
+  const { customSections, innerLayout, videoCardControls } = projectsArticlesConfig;
+  const cardAnimClass = cardAnimationEnabled ? 'card-anim-enabled' : '';
+  const visibleCustomSections = useMemo(
+    () =>
+      (customSections || []).filter(
+        (s) => s.visible !== false && (s.targetPage === 'articles' || s.targetPage === 'both')
+      ),
+    [customSections]
+  );
+
+  const [articles, setArticles] = useState<PortfolioArticle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedArticle, setSelectedArticle] = useState<PortfolioArticle | null>(null);
+
+  const [isPostOpen, setIsPostOpen] = useState(false);
+  const [editingArticle, setEditingArticle] = useState<PortfolioArticle | null>(null);
+  const [submissionNotice, setSubmissionNotice] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('All');
+
+  // Detail Reading State
+  const [comments, setComments] = useState<ArticleComment[]>([]);
+  const [commentAuthor, setCommentAuthor] = useState('');
+  const [commentText, setCommentText] = useState('');
+  const [commentNotice, setCommentNotice] = useState<string | null>(null);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
+  const [copiedShare, setCopiedShare] = useState(false);
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+
+  const loadArticles = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchArticlesFromSupabase(isOwner);
+      setArticles(data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadArticles();
+  }, [isOwner]);
+
+  useEffect(() => {
+    if (!selectedArticle) {
+      setComments([]);
+      return;
+    }
+    fetchCommentsForArticle(selectedArticle.id, isOwner).then(setComments);
+  }, [selectedArticle, isOwner]);
+
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    articles.forEach((a) => {
+      if ((isOwner || a.status === 'published') && a.category) {
+        set.add(a.category);
+      }
+    });
+    return ['All', ...Array.from(set)];
+  }, [articles, isOwner]);
+
+  const searchSuggestions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    const pool = new Set<string>();
+    articles.forEach((a) => {
+      if (!isOwner && a.status !== 'published') return;
+      if (a.title.toLowerCase().includes(q)) pool.add(a.title);
+      if (a.category.toLowerCase().includes(q)) pool.add(a.category);
+      if (a.authorName.toLowerCase().includes(q)) pool.add(a.authorName);
+      a.tags.forEach((t) => {
+        if (t.toLowerCase().includes(q)) pool.add(t);
+      });
+    });
+    return Array.from(pool).slice(0, 6);
+  }, [articles, isOwner, searchQuery]);
+
+  const filteredArticles = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return articles.filter((a) => {
+      if (!isOwner && a.status !== 'published') return false;
+      if (selectedCategory !== 'All' && a.category !== selectedCategory) return false;
+      if (!q) return true;
+      return (
+        a.title.toLowerCase().includes(q) ||
+        a.summary.toLowerCase().includes(q) ||
+        a.category.toLowerCase().includes(q) ||
+        a.authorName.toLowerCase().includes(q) ||
+        a.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    });
+  }, [articles, isOwner, selectedCategory, searchQuery]);
+
+  const relatedArticles = useMemo(() => {
+    if (!selectedArticle) return [];
+    return articles
+      .filter(
+        (a) =>
+          a.id !== selectedArticle.id &&
+          a.status === 'published' &&
+          (a.category === selectedArticle.category ||
+            a.tags.some((t) => selectedArticle.tags.includes(t)))
+      )
+      .slice(0, 3);
+  }, [articles, selectedArticle]);
+
+  const tocHeadings = useMemo(() => {
+    if (!selectedArticle) return [];
+    let counter = 0;
+    const headings = selectedArticle.content
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^#{1,3}\s+/.test(l))
+      .map((l) => {
+        const clean = l.replace(/^#{1,3}\s+/, '').trim();
+        return { label: clean, id: slugHeadingId(clean, counter++) };
+      });
+    return headings;
+  }, [selectedArticle]);
+
+  const handleLike = async (article: PortfolioArticle) => {
+    if (likedIds.has(article.id)) return;
+    setLikedIds((prev) => new Set(prev).add(article.id));
+    const optimistic = article.likesCount + 1;
+    setArticles((prev) => prev.map((a) => (a.id === article.id ? { ...a, likesCount: optimistic } : a)));
+    if (selectedArticle?.id === article.id) {
+      setSelectedArticle({ ...selectedArticle, likesCount: optimistic });
+    }
+    const serverCount = await incrementArticleLikesInSupabase(article.id);
+    if (serverCount > 0) {
+      setArticles((prev) => prev.map((a) => (a.id === article.id ? { ...a, likesCount: serverCount } : a)));
+      if (selectedArticle?.id === article.id) {
+        setSelectedArticle({ ...selectedArticle, likesCount: serverCount });
+      }
+    }
+  };
+
+  const handleSubmitComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedArticle || !commentAuthor.trim() || !commentText.trim()) return;
+    setSubmittingComment(true);
+    setCommentNotice(null);
+    try {
+      const created = await submitArticleComment({
+        articleId: selectedArticle.id,
+        authorName: commentAuthor.trim(),
+        contentMarkdown: commentText.trim(),
+        isOwnerPosting: isOwner,
+      });
+      if (created.status === 'approved' || isOwner) {
+        setComments((prev) => [created, ...prev]);
+        setCommentNotice('Comment published.');
+      } else {
+        setCommentNotice('Comment submitted and awaiting Chief Admin moderation.');
+      }
+      setCommentAuthor('');
+      setCommentText('');
+    } catch (err: any) {
+      setCommentNotice(err?.message || 'Unable to post comment.');
+    } finally {
+      setSubmittingComment(false);
+    }
+  };
+
+  const handleDeleteArticle = async (art: PortfolioArticle) => {
+    try {
+      await deleteArticleFromSupabase(art.id);
+      setArticles((prev) => prev.filter((a) => a.id !== art.id));
+      if (selectedArticle?.id === art.id) setSelectedArticle(null);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // =========================================================================
+  // FULL ARTICLE DETAIL READING VIEW
+  // =========================================================================
+  if (selectedArticle) {
+    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const shareTitle = encodeURIComponent(selectedArticle.title);
+    const shareHref = encodeURIComponent(shareUrl);
+
+    return (
+      <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-16 space-y-5 font-serif text-slate-900">
+        {/* Top Control Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3.5 py-2 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setSelectedArticle(null)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to Articles</span>
+          </button>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleLike(selectedArticle)}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                likedIds.has(selectedArticle.id)
+                  ? 'bg-rose-50 border-rose-300 text-rose-700'
+                  : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50'
+              }`}
+            >
+              <Heart className={`w-3.5 h-3.5 ${likedIds.has(selectedArticle.id) ? 'fill-rose-600 text-rose-600' : ''}`} />
+              <span>{selectedArticle.likesCount}</span>
+            </button>
+
+            <a
+              href={`https://www.linkedin.com/sharing/share-offsite/?url=${shareHref}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700"
+            >
+              LinkedIn
+            </a>
+            <a
+              href={`https://x.com/intent/tweet?text=${shareTitle}&url=${shareHref}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700"
+            >
+              X
+            </a>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(shareUrl);
+                setCopiedShare(true);
+                setTimeout(() => setCopiedShare(false), 2000);
+              }}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700 cursor-pointer"
+            >
+              {copiedShare ? <Check className="w-3 h-3 text-emerald-700" /> : <Share2 className="w-3 h-3" />}
+              <span>{copiedShare ? 'Copied' : 'Share'}</span>
+            </button>
+
+            {isOwner && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingArticle(selectedArticle);
+                    setIsPostOpen(true);
+                    setSelectedArticle(null);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+                >
+                  <Edit3 className="w-3 h-3 text-cyan-800" />
+                  <span>Edit</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteArticle(selectedArticle)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Delete</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Metadata Header */}
+        <article className="bg-white border border-[#b8c6d4] rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
+          <header className="text-center space-y-2 border-b border-slate-200 pb-4">
+            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px]">
+              <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                {selectedArticle.category}
+              </span>
+              {selectedArticle.difficultyLevel && (
+                <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
+                  {selectedArticle.difficultyLevel}
+                </span>
+              )}
+              {selectedArticle.isAdminAuthor && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-bold">
+                  <ShieldCheck className="w-3 h-3 text-cyan-300" />
+                  <span>Chief Admin</span>
+                </span>
+              )}
+            </div>
+
+            <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center">
+              {selectedArticle.title}
+            </h1>
+
+            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-600">
+              <span>By {selectedArticle.authorName}</span>
+              <span>·</span>
+              <span>{new Date(selectedArticle.publishedAt || selectedArticle.createdAt).toLocaleDateString()}</span>
+              <span>·</span>
+              <span className="inline-flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                <span>{selectedArticle.readingTime}</span>
+              </span>
+            </div>
+          </header>
+
+          {/* Flexible Visual Hero */}
+          {selectedArticle.heroMedia && selectedArticle.heroMedia.type !== 'none' ? (
+            <div className="space-y-1.5">
+              {selectedArticle.heroMedia.type === 'cad3d' ? (
+                <Interactive3DViewer modelType={selectedArticle.heroMedia.cadModelType || 'harmonic_actuator'} />
+              ) : selectedArticle.heroMedia.type === 'video' && selectedArticle.heroMedia.url ? (
+                <div
+                  className="rounded-xl overflow-hidden border border-slate-200 bg-slate-950 flex items-center justify-center"
+                  style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
+                >
+                  <video
+                    src={selectedArticle.heroMedia.url}
+                    controls
+                    className="w-full h-full transition-transform duration-200"
+                    style={{
+                      objectFit: videoCardControls.objectFit || 'cover',
+                      transform: `scale(${videoCardControls.zoomLevel || 1})`,
+                    }}
+                  />
+                </div>
+              ) : selectedArticle.heroMedia.url ? (
+                <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
+                  <img
+                    src={selectedArticle.heroMedia.url}
+                    alt={selectedArticle.heroMedia.caption || selectedArticle.title}
+                    className="max-h-[380px] object-contain"
+                  />
+                </div>
+              ) : null}
+              {selectedArticle.heroMedia.caption && (
+                <p className="text-[11px] text-slate-500 text-center italic">{selectedArticle.heroMedia.caption}</p>
+              )}
+            </div>
+          ) : selectedArticle.thumbnailUrl ? (
+            <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
+              <img
+                src={selectedArticle.thumbnailUrl}
+                alt={selectedArticle.title}
+                className="max-h-[340px] object-contain"
+              />
+            </div>
+          ) : null}
+
+          {/* TL;DR Summary Box */}
+          {selectedArticle.tldr && (
+            <div className="p-3.5 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] space-y-1">
+              <h2 className="text-xs font-bold text-slate-950 text-center uppercase tracking-wider">TL;DR</h2>
+              <p className="text-xs text-slate-800 leading-relaxed text-justify">{selectedArticle.tldr}</p>
+            </div>
+          )}
+
+          {/* Layout: Sticky ToC + Body */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-5 items-start">
+            <aside className="lg:col-span-1 lg:sticky lg:top-20 p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+              <h3 className="font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
+                Table of Contents
+              </h3>
+              <nav className="space-y-1 text-[11px]">
+                {tocHeadings.map((h) => (
+                  <a
+                    key={h.id}
+                    href={`#${h.id}`}
+                    className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline truncate"
+                  >
+                    {h.label}
+                  </a>
+                ))}
+                {selectedArticle.diagrams.length > 0 && (
+                  <a href="#article-schematics" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
+                    Vector Schematics
+                  </a>
+                )}
+                {selectedArticle.chartData.length > 0 && (
+                  <a href="#article-charts" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
+                    Data Visualizations
+                  </a>
+                )}
+                {selectedArticle.bomItems.length > 0 && (
+                  <a href="#article-bom" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
+                    Bill of Materials (BOM)
+                  </a>
+                )}
+                {selectedArticle.attachments.length > 0 && (
+                  <a href="#article-attachments" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
+                    Technical Attachments
+                  </a>
+                )}
+                <a href="#article-comments" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
+                  Discussion &amp; Comments ({comments.length})
+                </a>
+              </nav>
+            </aside>
+
+            <div className="lg:col-span-3 space-y-5">
+              {/* Rich Markdown Content */}
+              <ArticleMarkdownRenderer content={selectedArticle.content} />
+
+              {/* Explicit Code Blocks */}
+              {selectedArticle.codeBlocks.length > 0 && (
+                <div className="space-y-3">
+                  {selectedArticle.codeBlocks.map((cb, idx) => (
+                    <div key={idx} className="rounded-xl overflow-hidden border border-slate-700 bg-slate-900 text-slate-100">
+                      <div className="px-3 py-1.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-cyan-300">
+                          {cb.title || 'Code Listing'} {cb.language ? `(${cb.language})` : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(cb.code);
+                            setCopiedCodeIdx(idx);
+                            setTimeout(() => setCopiedCodeIdx(null), 1500);
+                          }}
+                          className="inline-flex items-center gap-1 text-slate-300 hover:text-white cursor-pointer"
+                        >
+                          {copiedCodeIdx === idx ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedCodeIdx === idx ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+                      <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed">{cb.code}</pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Vector Schematics & Technical Illustrations */}
+              {selectedArticle.diagrams.length > 0 && (
+                <section id="article-schematics" className="space-y-2.5 pt-2 border-t border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
+                    <Compass className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>Vector Schematics &amp; Technical Illustrations</span>
+                  </h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {selectedArticle.diagrams.map((diag, idx) => (
+                      <div key={idx} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                        <img src={diag.url} alt={diag.title} className="w-full h-48 object-contain rounded bg-white" />
+                        {diag.title && <p className="text-[11px] text-slate-700 text-center font-semibold">{diag.title}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Embedded Article Images & Videos */}
+              {selectedArticle.images.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                  {selectedArticle.images.map((im, idx) => (
+                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
+                      <img src={im.url} alt={im.title} className="w-full h-48 object-cover" />
+                      {im.title && <p className="px-2 py-1 text-[11px] text-center text-slate-700">{im.title}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedArticle.videos.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                  {selectedArticle.videos.map((v, idx) => (
+                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-900">
+                      <div
+                        className="w-full overflow-hidden bg-slate-950 flex items-center justify-center"
+                        style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
+                      >
+                        <video
+                          src={v.url}
+                          controls
+                          className="w-full h-full transition-transform duration-200"
+                          style={{
+                            objectFit: videoCardControls.objectFit || 'cover',
+                            transform: `scale(${videoCardControls.zoomLevel || 1})`,
+                          }}
+                        />
+                      </div>
+                      {v.title && <p className="px-2 py-1 text-[11px] text-center text-slate-200">{v.title}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Data Charts & Visualizations */}
+              {selectedArticle.chartData.length > 0 && (
+                <section id="article-charts" className="space-y-3 pt-2 border-t border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
+                    <BarChart3 className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>Data Charts &amp; Visualizations</span>
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {selectedArticle.chartData.map((ch, cIdx) => {
+                      const maxVal = Math.max(1, ...ch.items.map((x) => Math.abs(x.value)));
+                      return (
+                        <div key={cIdx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                          <h3 className="text-xs font-bold text-slate-900 text-center">
+                            {ch.title || 'Engineering Data'} {ch.unit ? `(${ch.unit})` : ''}
+                          </h3>
+                          <div className="space-y-1.5">
+                            {ch.items.map((pt, pIdx) => {
+                              const pct = Math.max(4, Math.round((Math.abs(pt.value) / maxVal) * 100));
+                              return (
+                                <div key={pIdx} className="space-y-0.5 text-[11px]">
+                                  <div className="flex justify-between text-slate-700">
+                                    <span>{pt.label}</span>
+                                    <span className="font-mono font-bold">
+                                      {pt.value} {ch.unit || ''}
+                                    </span>
+                                  </div>
+                                  <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-cyan-800 rounded-full" style={{ width: `${pct}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {/* Optional Bill of Materials (BOM) */}
+              {selectedArticle.bomItems.length > 0 && (
+                <section id="article-bom" className="space-y-2 pt-2 border-t border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
+                    <TableIcon className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>Bill of Materials (BOM)</span>
+                  </h2>
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-xs text-left border-collapse">
+                      <thead className="bg-[#edf2f8] text-slate-950 font-bold">
+                        <tr>
+                          <th className="px-3 py-1.5 border-b border-slate-200">Part #</th>
+                          <th className="px-3 py-1.5 border-b border-slate-200">Component</th>
+                          <th className="px-3 py-1.5 border-b border-slate-200">Material</th>
+                          <th className="px-3 py-1.5 border-b border-slate-200">Qty</th>
+                          <th className="px-3 py-1.5 border-b border-slate-200">Specification</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {selectedArticle.bomItems.map((b, i) => (
+                          <tr key={i}>
+                            <td className="px-3 py-1.5 font-mono">{b.partNo}</td>
+                            <td className="px-3 py-1.5 font-semibold">{b.name}</td>
+                            <td className="px-3 py-1.5">{b.material}</td>
+                            <td className="px-3 py-1.5 font-mono">{b.qty}</td>
+                            <td className="px-3 py-1.5">{b.specification}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+
+              {/* Downloadable Technical Attachments */}
+              {selectedArticle.attachments.length > 0 && (
+                <section id="article-attachments" className="space-y-2 pt-2 border-t border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-cyan-800" />
+                    <span>Project Files &amp; Technical Attachments</span>
+                  </h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {selectedArticle.attachments.map((att, idx) => (
+                      <a
+                        key={idx}
+                        href={att.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download
+                        className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 hover:border-cyan-700 text-xs text-slate-800"
+                      >
+                        <span className="truncate font-semibold">{att.title || att.fileName}</span>
+                        <Download className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Related Articles */}
+              {relatedArticles.length > 0 && (
+                <section className="space-y-2.5 pt-3 border-t border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-950 text-center">Related Articles</h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {relatedArticles.map((rel) => (
+                      <div
+                        key={rel.id}
+                        onClick={() => setSelectedArticle(rel)}
+                        className="p-3 rounded-xl bg-slate-50 border border-slate-200 hover:border-cyan-700 cursor-pointer space-y-1"
+                      >
+                        <span className="text-[10px] font-bold text-cyan-900">{rel.category}</span>
+                        <h3 className="text-xs font-bold text-slate-950 line-clamp-2">{rel.title}</h3>
+                        <span className="text-[10px] text-slate-500 block">{rel.readingTime}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Markdown-Supported Comment Section */}
+              <section id="article-comments" className="space-y-3 pt-3 border-t border-slate-200">
+                <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-cyan-800" />
+                  <span>Comments &amp; Technical Discussion ({comments.length})</span>
+                </h2>
+
+                <form onSubmit={handleSubmitComment} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+                  {commentNotice && (
+                    <div className="p-2 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 text-[11px]">
+                      {commentNotice}
+                    </div>
+                  )}
+                  <input
+                    type="text"
+                    required
+                    value={commentAuthor}
+                    onChange={(e) => setCommentAuthor(e.target.value)}
+                    placeholder="Your name"
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                  />
+                  <textarea
+                    rows={3}
+                    required
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    placeholder="Write a comment (Markdown supported: **bold**, `code`, lists)..."
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={submittingComment}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      <Send className="w-3 h-3" />
+                      <span>{submittingComment ? 'Posting...' : 'Post Comment'}</span>
+                    </button>
+                  </div>
+                </form>
+
+                <div className="space-y-2">
+                  {comments.map((cmt) => (
+                    <div
+                      key={cmt.id}
+                      style={{
+                        fontFamily: commentStyleConfig.fontFamily || '"Times New Roman", Times, serif',
+                        fontSize: commentStyleConfig.fontSize || '12px',
+                      }}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-950">{cmt.authorName}</span>
+                          {cmt.authorRole === 'Chief Admin' && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white text-[9px] font-bold">
+                              Chief Admin
+                            </span>
+                          )}
+                          {cmt.status !== 'approved' && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-bold uppercase">
+                              {cmt.status}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(cmt.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: commentStyleConfig.fontFamily || '"Times New Roman", Times, serif',
+                          fontSize: commentStyleConfig.fontSize || '12px',
+                        }}
+                      >
+                        <ArticleMarkdownRenderer content={cmt.contentMarkdown} />
+                      </div>
+                      {isOwner && (
+                        <div className="flex items-center gap-2 pt-1 text-[10px]">
+                          {cmt.status !== 'approved' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await moderateCommentInSupabase(cmt.id, 'approved');
+                                setComments((prev) =>
+                                  prev.map((c) => (c.id === cmt.id ? { ...c, status: 'approved' } : c))
+                                );
+                              }}
+                              className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                            >
+                              Approve
+                            </button>
+                          )}
+                          {cmt.status !== 'archived' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await moderateCommentInSupabase(cmt.id, 'archived');
+                                setComments((prev) =>
+                                  prev.map((c) => (c.id === cmt.id ? { ...c, status: 'archived' } : c))
+                                );
+                              }}
+                              className="text-amber-700 font-bold hover:underline cursor-pointer"
+                            >
+                              Archive
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await deleteCommentFromSupabase(cmt.id);
+                              setComments((prev) => prev.filter((c) => c.id !== cmt.id));
+                            }}
+                            className="text-rose-700 font-bold hover:underline cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </div>
+        </article>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // MAIN BLOG / ARTICLES LIST PAGE
+  // =========================================================================
+  return (
+    <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-16 space-y-5 font-serif text-slate-900">
+      {/* Small, well-designed div container for heading */}
+      <div className="max-w-xs mx-auto px-4 py-2 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs text-center">
+        <h1 className="text-base sm:text-lg font-bold text-slate-950 tracking-tight text-center">
+          Engineering Articles
+        </h1>
+      </div>
+
+      {/* Toolbar: Search with suggestions, Category Dropdown, Small "Post" button */}
+      <div className="p-3 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 text-xs">
+        <div className="flex flex-1 flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 180)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setShowSuggestions(true);
+              }}
+              placeholder="Search articles by title, category, author, or tag..."
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
+            />
+            {showSuggestions && searchSuggestions.length > 0 && (
+              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-300 rounded-lg shadow-lg z-20 divide-y divide-slate-100">
+                {searchSuggestions.map((sug) => (
+                  <button
+                    key={sug}
+                    type="button"
+                    onMouseDown={() => {
+                      setSearchQuery(sug);
+                      setShowSuggestions(false);
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-xs text-slate-800 hover:bg-[#edf2f8] cursor-pointer"
+                  >
+                    {sug}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <select
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs cursor-pointer"
+          >
+            {categories.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat === 'All' ? 'All Categories' : cat}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Small "Post" button for creating new articles */}
+        <button
+          type="button"
+          onClick={() => {
+            setEditingArticle(null);
+            setIsPostOpen(!isPostOpen);
+          }}
+          className="px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer shrink-0"
+        >
+          Post
+        </button>
+      </div>
+
+      {submissionNotice && (
+        <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs text-center flex items-center justify-between">
+          <span className="flex-1 text-center">{submissionNotice}</span>
+          <button
+            type="button"
+            onClick={() => setSubmissionNotice(null)}
+            className="text-emerald-700 font-bold ml-2 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Article Creation / Editing Form */}
+      {isPostOpen && (
+        <ArticleFormPanel
+          initialArticle={editingArticle}
+          isOwner={isOwner}
+          existingCategories={categories.filter((c) => c !== 'All')}
+          onSaved={(saved, wasPendingVisitor) => {
+            setIsPostOpen(false);
+            setEditingArticle(null);
+            if (wasPendingVisitor) {
+              setSubmissionNotice(
+                'Thank you! Your article was submitted and is awaiting Chief Admin approval before publication.'
+              );
+            } else {
+              setArticles((prev) => {
+                const exists = prev.some((a) => a.id === saved.id);
+                return exists ? prev.map((a) => (a.id === saved.id ? saved : a)) : [saved, ...prev];
+              });
+              setSubmissionNotice('Article saved to Engineering Articles.');
+            }
+          }}
+          onCancel={() => {
+            setIsPostOpen(false);
+            setEditingArticle(null);
+          }}
+        />
+      )}
+
+      {/* Custom Content Sections configured via Admin Dashboard */}
+      {visibleCustomSections.length > 0 && (
+        <div className="space-y-3">
+          {visibleCustomSections.map((sec) => (
+            <div
+              key={sec.id}
+              className={`p-4 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs space-y-1.5 ${
+                sec.textAlign === 'left'
+                  ? 'text-left'
+                  : sec.textAlign === 'right'
+                  ? 'text-right'
+                  : 'text-center'
+              }`}
+            >
+              {sec.badgeText && (
+                <span className="inline-block px-2 py-0.5 rounded bg-cyan-100 border border-cyan-300 text-cyan-900 text-[10px] font-bold">
+                  {sec.badgeText}
+                </span>
+              )}
+              <h2 className="text-sm font-bold text-slate-950">{sec.title}</h2>
+              {sec.subtitle && <p className="text-[11px] text-cyan-900 font-semibold">{sec.subtitle}</p>}
+              {sec.body && (
+                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line">{sec.body}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Articles Grid — Empty by default when 0 rows exist in Supabase */}
+      {loading ? (
+        <div className="p-8 text-center text-xs text-slate-500">Loading articles...</div>
+      ) : filteredArticles.length === 0 ? (
+        <div className="p-8 rounded-xl bg-white/80 border border-dashed border-[#b8c6d4] text-center">
+          <p className="text-xs text-slate-600">No articles published yet.</p>
+        </div>
+      ) : (() => {
+        const gridColsClass =
+          innerLayout.gridColumns === 2
+            ? 'grid-cols-1 sm:grid-cols-2'
+            : innerLayout.gridColumns === 4
+            ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+            : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+        const gapClass =
+          innerLayout.cardSpacing === 'compact'
+            ? 'gap-2.5'
+            : innerLayout.cardSpacing === 'relaxed'
+            ? 'gap-6'
+            : 'gap-4';
+        const padClass =
+          innerLayout.cardSpacing === 'compact'
+            ? 'p-2.5'
+            : innerLayout.cardSpacing === 'relaxed'
+            ? 'p-5'
+            : 'p-3.5';
+        const summaryAlignClass =
+          innerLayout.cardTextAlign === 'left'
+            ? 'text-left'
+            : innerLayout.cardTextAlign === 'center'
+            ? 'text-center'
+            : 'text-justify';
+
+        return (
+          <div className={`grid ${gridColsClass} ${gapClass}`}>
+            {filteredArticles.map((art) => (
+              <article
+                key={art.id}
+                onClick={() => setSelectedArticle(art)}
+                className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
+              >
+                <div>
+                  {art.thumbnailUrl && (
+                    <div className="w-full h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                      <img
+                        src={art.thumbnailUrl}
+                        alt={art.title}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  )}
+                  <div className={`${padClass} space-y-2`}>
+                    <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
+                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                        {art.category}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {art.isAdminAuthor && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white text-[9px] font-bold">
+                            Chief Admin
+                          </span>
+                        )}
+                        {art.status !== 'published' && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
+                            {art.status}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <h3 className="text-sm font-bold text-slate-950 text-center leading-snug">
+                      {art.title}
+                    </h3>
+                    <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${summaryAlignClass}`}>
+                      {art.summary}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="px-3.5 pb-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
+                  <span className="truncate font-semibold text-slate-700">{art.authorName}</span>
+                  <span className="inline-flex items-center gap-1 shrink-0">
+                    <Clock className="w-3 h-3" />
+                    <span>{art.readingTime}</span>
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+};

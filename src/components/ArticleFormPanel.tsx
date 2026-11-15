@@ -1,0 +1,1041 @@
+import React, { useState } from 'react';
+import {
+  Upload,
+  Plus,
+  Trash2,
+  Save,
+  X,
+  Loader2,
+  Code,
+  BarChart3,
+  Table as TableIcon,
+  FileText,
+  Image as ImageIcon,
+  Video,
+  Compass,
+} from 'lucide-react';
+import {
+  uploadFileToBucket,
+  submitOrSaveArticleToSupabase,
+  estimateReadingTime,
+  type PortfolioArticle,
+  type ArticleHeroMedia,
+  type ArticleCodeBlock,
+  type ArticleChartData,
+  type ArticleBomItem,
+  type MediaAssetItem,
+} from '../utils/portfolioSupabase';
+
+interface ArticleFormPanelProps {
+  initialArticle?: PortfolioArticle | null;
+  isOwner: boolean;
+  existingCategories?: string[];
+  onSaved: (saved: PortfolioArticle, wasPendingVisitor: boolean) => void;
+  onCancel: () => void;
+}
+
+export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
+  initialArticle,
+  isOwner,
+  existingCategories = [],
+  onSaved,
+  onCancel,
+}) => {
+  // Strictly empty defaults on create — never auto-populate text fields
+  const [title, setTitle] = useState(initialArticle?.title || '');
+  const [authorName, setAuthorName] = useState(initialArticle?.authorName || '');
+  const [category, setCategory] = useState(initialArticle?.category || '');
+  const [difficultyLevel, setDifficultyLevel] = useState(initialArticle?.difficultyLevel || '');
+  const [readingTime, setReadingTime] = useState(initialArticle?.readingTime || '');
+  const [summary, setSummary] = useState(initialArticle?.summary || '');
+  const [tldr, setTldr] = useState(initialArticle?.tldr || '');
+  const [content, setContent] = useState(initialArticle?.content || '');
+  const [tagsText, setTagsText] = useState(initialArticle?.tags?.join(', ') || '');
+  const [thumbnailUrl, setThumbnailUrl] = useState(initialArticle?.thumbnailUrl || '');
+
+  const [heroMedia, setHeroMedia] = useState<ArticleHeroMedia>(
+    initialArticle?.heroMedia || { type: 'none', url: '', caption: '', cadModelType: undefined }
+  );
+
+  const [images, setImages] = useState<MediaAssetItem[]>(initialArticle?.images || []);
+  const [videos, setVideos] = useState<MediaAssetItem[]>(initialArticle?.videos || []);
+  const [diagrams, setDiagrams] = useState<MediaAssetItem[]>(initialArticle?.diagrams || []);
+  const [attachments, setAttachments] = useState<MediaAssetItem[]>(initialArticle?.attachments || []);
+  const [codeBlocks, setCodeBlocks] = useState<ArticleCodeBlock[]>(initialArticle?.codeBlocks || []);
+  const [chartData, setChartData] = useState<ArticleChartData[]>(initialArticle?.chartData || []);
+  const [bomItems, setBomItems] = useState<ArticleBomItem[]>(initialArticle?.bomItems || []);
+
+  const [status, setStatus] = useState<PortfolioArticle['status']>(
+    initialArticle?.status || (isOwner ? 'published' : 'pending')
+  );
+
+  // Quick URL inputs (empty by default)
+  const [newImgTitle, setNewImgTitle] = useState('');
+  const [newImgUrl, setNewImgUrl] = useState('');
+  const [newVidTitle, setNewVidTitle] = useState('');
+  const [newVidUrl, setNewVidUrl] = useState('');
+  const [newDiagTitle, setNewDiagTitle] = useState('');
+  const [newDiagUrl, setNewDiagUrl] = useState('');
+  const [newAttTitle, setNewAttTitle] = useState('');
+  const [newAttUrl, setNewAttUrl] = useState('');
+
+  const [uploadingField, setUploadingField] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStage, setUploadStage] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const handleBucketUpload = async (
+    files: FileList | null,
+    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
+  ) => {
+    if (!files || files.length === 0) return;
+    setUploadingField(target);
+    setUploadProgress(5);
+    setUploadStage('Preparing media pipeline...');
+    setErrorMsg(null);
+    try {
+      for (const file of Array.from(files)) {
+        const res = await uploadFileToBucket('articles', file, target, (pct, stage) => {
+          setUploadProgress(pct);
+          setUploadStage(stage);
+        });
+        const asset: MediaAssetItem = {
+          title: file.name.replace(/\.[^/.]+$/, ''),
+          url: res.publicUrl,
+          fileName: res.fileName,
+          fileSize: res.fileSize,
+          fileType: file.type,
+        };
+        if (target === 'thumbnail') {
+          setThumbnailUrl(res.publicUrl);
+        } else if (target === 'hero') {
+          const isVid = file.type.startsWith('video/');
+          setHeroMedia((prev) => ({
+            ...prev,
+            type: isVid ? 'video' : prev.type === 'none' ? 'image' : prev.type,
+            url: res.publicUrl,
+          }));
+        } else if (target === 'image') {
+          setImages((prev) => [...prev, asset]);
+        } else if (target === 'video') {
+          setVideos((prev) => [...prev, asset]);
+        } else if (target === 'diagram') {
+          setDiagrams((prev) => [...prev, asset]);
+        } else if (target === 'attachment') {
+          setAttachments((prev) => [...prev, asset]);
+        }
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Upload to "articles" bucket failed.');
+    } finally {
+      setUploadingField(null);
+      setUploadProgress(0);
+      setUploadStage('');
+    }
+  };
+
+  const extractHeadingsForToc = (markdown: string): string[] => {
+    return markdown
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^#{1,3}\s+/.test(line))
+      .map((line) => line.replace(/^#{1,3}\s+/, '').trim());
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !summary.trim() || !content.trim() || !category.trim() || !authorName.trim()) {
+      setErrorMsg('Title, Author, Category, Summary, and Article Contents are required.');
+      return;
+    }
+
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      const toc = extractHeadingsForToc(content);
+      const effectiveThumbnail =
+        thumbnailUrl.trim() ||
+        images[0]?.url ||
+        diagrams[0]?.url ||
+        (heroMedia.type === 'image' || heroMedia.type === 'diagram' ? heroMedia.url || '' : '');
+
+      const saved = await submitOrSaveArticleToSupabase(
+        {
+          id: initialArticle?.id,
+          slug: initialArticle?.slug,
+          title: title.trim(),
+          summary: summary.trim(),
+          content: content.trim(),
+          category: category.trim(),
+          difficultyLevel: difficultyLevel.trim() || 'Intermediate',
+          readingTime: readingTime.trim() || estimateReadingTime(content),
+          authorName: authorName.trim(),
+          isAdminAuthor: isOwner,
+          thumbnailUrl: effectiveThumbnail,
+          heroMedia,
+          tldr: tldr.trim(),
+          toc,
+          images,
+          videos,
+          diagrams,
+          codeBlocks: codeBlocks.filter((c) => c.code.trim()),
+          chartData: chartData.filter((ch) => ch.items.length > 0),
+          bomItems: bomItems.filter((b) => b.name.trim() || b.partNo.trim()),
+          attachments,
+          tags: tagsText
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean),
+          status: isOwner ? status : 'pending',
+          publishedAt: initialArticle?.publishedAt,
+        },
+        isOwner
+      );
+
+      onSaved(saved, !isOwner);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Unable to submit article.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const categorySuggestions = Array.from(
+    new Set([
+      ...existingCategories,
+      'Mechanical Design',
+      'Finite Element Analysis',
+      'CAD & GD&T',
+      'Robotics & Actuators',
+      'Thermal Systems',
+      'Manufacturing & CNC',
+      'Full-Stack Engineering',
+    ])
+  ).filter(Boolean);
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="w-full max-w-full overflow-hidden box-border bg-white border border-[#b8c6d4] rounded-xl p-4 sm:p-5 shadow-xs space-y-4 font-serif text-slate-900"
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2 min-w-0">
+        <h3 className="text-sm font-bold text-slate-950 text-center flex-1 truncate">
+          {initialArticle
+            ? 'Edit Engineering Article'
+            : isOwner
+            ? 'Post New Article (Chief Admin)'
+            : 'Post Engineering Article'}
+        </h3>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="p-1 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer shrink-0"
+          aria-label="Close article form"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      {uploadingField && (
+        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 space-y-1 text-xs">
+          <div className="flex items-center justify-between gap-2 text-cyan-950 font-semibold">
+            <span className="truncate flex items-center gap-1.5">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span className="truncate">{uploadStage || 'Optimizing & uploading media...'}</span>
+            </span>
+            <span className="font-mono shrink-0">{uploadProgress}%</span>
+          </div>
+          <div className="w-full h-1.5 bg-cyan-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-cyan-800 transition-all duration-300"
+              style={{ width: `${Math.max(5, Math.min(100, uploadProgress))}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs break-words">
+          {errorMsg}
+        </div>
+      )}
+
+      {/* Row 1: Title, Author */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs min-w-0">
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Article Title *</label>
+          <input
+            type="text"
+            required
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Enter article title"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+          />
+        </div>
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Author Name *</label>
+          <input
+            type="text"
+            required
+            value={authorName}
+            onChange={(e) => setAuthorName(e.target.value)}
+            placeholder="Enter author name"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+          />
+        </div>
+      </div>
+
+      {/* Row 2: Discipline/Category, Difficulty, Reading Time, Tags */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs min-w-0">
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Category / Discipline *</label>
+          <input
+            type="text"
+            required
+            list="article-category-list"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="Input or select category"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+          />
+          <datalist id="article-category-list">
+            {categorySuggestions.map((cat) => (
+              <option key={cat} value={cat} />
+            ))}
+          </datalist>
+        </div>
+
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Difficulty Level</label>
+          <select
+            value={difficultyLevel}
+            onChange={(e) => setDifficultyLevel(e.target.value)}
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 cursor-pointer"
+          >
+            <option value="">Select difficulty</option>
+            <option value="Introductory">Introductory</option>
+            <option value="Intermediate">Intermediate</option>
+            <option value="Advanced">Advanced</option>
+            <option value="Research / Deep Dive">Research / Deep Dive</option>
+          </select>
+        </div>
+
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Reading Time</label>
+          <input
+            type="text"
+            value={readingTime}
+            onChange={(e) => setReadingTime(e.target.value)}
+            placeholder="e.g. 6 min read (auto if blank)"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50"
+          />
+        </div>
+
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Tags (comma-separated)</label>
+          <input
+            type="text"
+            value={tagsText}
+            onChange={(e) => setTagsText(e.target.value)}
+            placeholder="e.g. FEA, GD&T, SolidWorks"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50"
+          />
+        </div>
+      </div>
+
+      {/* Card Image Upload + URL */}
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+        <label className="block font-bold text-slate-700">Card Image</label>
+        <div className="flex flex-col sm:flex-row gap-2 min-w-0">
+          <label className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0">
+            {uploadingField === 'thumbnail' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Upload className="w-3.5 h-3.5" />
+            )}
+            <span>Upload Image</span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => handleBucketUpload(e.target.files, 'thumbnail')}
+              className="hidden"
+            />
+          </label>
+          <input
+            type="url"
+            value={thumbnailUrl}
+            onChange={(e) => setThumbnailUrl(e.target.value)}
+            placeholder="Or paste image URL (https://...)"
+            className="flex-1 min-w-0 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
+          />
+        </div>
+        {thumbnailUrl && (
+          <img
+            src={thumbnailUrl}
+            alt="Article card image preview"
+            className="h-24 w-auto max-w-full rounded-md border border-slate-300 object-cover"
+          />
+        )}
+      </div>
+
+      {/* Hero Media */}
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+        <label className="block font-bold text-slate-700">Hero Media</label>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-0">
+          <select
+            value={heroMedia.type}
+            onChange={(e) =>
+              setHeroMedia((prev) => ({ ...prev, type: e.target.value as ArticleHeroMedia['type'] }))
+            }
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white cursor-pointer"
+          >
+            <option value="none">No Separate Hero</option>
+            <option value="image">Image Hero</option>
+            <option value="diagram">Technical Diagram Hero</option>
+            <option value="video">Video Hero</option>
+            <option value="cad3d">Interactive 3D CAD Embed</option>
+          </select>
+
+          {heroMedia.type === 'cad3d' ? (
+            <select
+              value={heroMedia.cadModelType || 'harmonic_actuator'}
+              onChange={(e) =>
+                setHeroMedia((prev) => ({
+                  ...prev,
+                  cadModelType: e.target.value as ArticleHeroMedia['cadModelType'],
+                }))
+              }
+              className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white cursor-pointer sm:col-span-2"
+            >
+              <option value="harmonic_actuator">Harmonic Drive Actuator Assembly</option>
+              <option value="gimbal_bracket">Optical Gimbal Yoke Assembly</option>
+              <option value="planetary_gearbox">Planetary Gearbox</option>
+              <option value="chassis_suspension">Chassis Suspension</option>
+            </select>
+          ) : heroMedia.type !== 'none' ? (
+            <div className="sm:col-span-2 flex flex-col sm:flex-row gap-2 min-w-0">
+              <label className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 text-white text-xs cursor-pointer shrink-0">
+                {uploadingField === 'hero' ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Upload className="w-3 h-3" />
+                )}
+                <span>Upload</span>
+                <input
+                  type="file"
+                  accept={heroMedia.type === 'video' ? 'video/*' : 'image/*,.svg'}
+                  onChange={(e) => handleBucketUpload(e.target.files, 'hero')}
+                  className="hidden"
+                />
+              </label>
+              <input
+                type="url"
+                value={heroMedia.url || ''}
+                onChange={(e) => setHeroMedia((prev) => ({ ...prev, url: e.target.value }))}
+                placeholder="Hero media URL"
+                className="flex-1 min-w-0 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+              />
+            </div>
+          ) : null}
+        </div>
+        {heroMedia.type !== 'none' && (
+          <input
+            type="text"
+            value={heroMedia.caption || ''}
+            onChange={(e) => setHeroMedia((prev) => ({ ...prev, caption: e.target.value }))}
+            placeholder="Hero figure caption (optional)"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
+          />
+        )}
+      </div>
+
+      {/* Summary & Key Takeaway */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs min-w-0">
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Short Summary *</label>
+          <textarea
+            rows={2}
+            required
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            placeholder="Brief card summary"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50"
+          />
+        </div>
+        <div className="min-w-0">
+          <label className="block font-bold text-slate-700 mb-1">Key Takeaway</label>
+          <textarea
+            rows={2}
+            value={tldr}
+            onChange={(e) => setTldr(e.target.value)}
+            placeholder="Concise key takeaway for readers"
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50"
+          />
+        </div>
+      </div>
+
+      {/* Article Contents */}
+      <div className="text-xs min-w-0">
+        <label className="block font-bold text-slate-700 mb-1">Article Contents</label>
+        <textarea
+          rows={8}
+          required
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          placeholder="Add your Article here... Ensure it is well written and formatted"
+          className="w-full min-w-0 px-2.5 py-2 rounded-lg border border-slate-300 bg-slate-50 leading-relaxed"
+        />
+      </div>
+
+      {/* Media & Attachments Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs min-w-0">
+        {/* Vector Schematics & Technical Illustrations */}
+        <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="font-bold text-slate-700 flex items-center gap-1 min-w-0">
+              <Compass className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
+              <span className="truncate">Schematics &amp; Illustrations ({diagrams.length})</span>
+            </span>
+            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+              <Upload className="w-3 h-3" />
+              <span>Upload</span>
+              <input
+                type="file"
+                multiple
+                accept="image/*,.svg"
+                onChange={(e) => handleBucketUpload(e.target.files, 'diagram')}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
+            <input
+              type="text"
+              placeholder="Title"
+              value={newDiagTitle}
+              onChange={(e) => setNewDiagTitle(e.target.value)}
+              className="w-full sm:w-24 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <input
+              type="url"
+              placeholder="Diagram URL"
+              value={newDiagUrl}
+              onChange={(e) => setNewDiagUrl(e.target.value)}
+              className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newDiagUrl.trim()) return;
+                setDiagrams((prev) => [...prev, { title: newDiagTitle.trim() || 'Schematic', url: newDiagUrl.trim() }]);
+                setNewDiagUrl('');
+                setNewDiagTitle('');
+              }}
+              className="px-2.5 py-1 rounded bg-slate-800 text-white cursor-pointer shrink-0"
+            >
+              Add
+            </button>
+          </div>
+          {diagrams.map((d, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
+              <span className="truncate flex-1 min-w-0">{d.title || d.url}</span>
+              <button
+                type="button"
+                onClick={() => setDiagrams((prev) => prev.filter((_, idx) => idx !== i))}
+                className="text-rose-600 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Supporting Images */}
+        <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="font-bold text-slate-700 flex items-center gap-1 min-w-0">
+              <ImageIcon className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
+              <span className="truncate">Images ({images.length})</span>
+            </span>
+            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+              <Upload className="w-3 h-3" />
+              <span>Upload</span>
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={(e) => handleBucketUpload(e.target.files, 'image')}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
+            <input
+              type="text"
+              placeholder="Caption"
+              value={newImgTitle}
+              onChange={(e) => setNewImgTitle(e.target.value)}
+              className="w-full sm:w-24 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <input
+              type="url"
+              placeholder="Image URL"
+              value={newImgUrl}
+              onChange={(e) => setNewImgUrl(e.target.value)}
+              className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newImgUrl.trim()) return;
+                setImages((prev) => [...prev, { title: newImgTitle.trim() || 'Figure', url: newImgUrl.trim() }]);
+                setNewImgUrl('');
+                setNewImgTitle('');
+              }}
+              className="px-2.5 py-1 rounded bg-slate-800 text-white cursor-pointer shrink-0"
+            >
+              Add
+            </button>
+          </div>
+          {images.map((im, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
+              <span className="truncate flex-1 min-w-0">{im.title || im.url}</span>
+              <button
+                type="button"
+                onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                className="text-rose-600 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Embedded Videos */}
+        <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="font-bold text-slate-700 flex items-center gap-1 min-w-0">
+              <Video className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
+              <span className="truncate">Videos ({videos.length})</span>
+            </span>
+            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+              <Upload className="w-3 h-3" />
+              <span>Upload</span>
+              <input
+                type="file"
+                multiple
+                accept="video/*"
+                onChange={(e) => handleBucketUpload(e.target.files, 'video')}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
+            <input
+              type="text"
+              placeholder="Title"
+              value={newVidTitle}
+              onChange={(e) => setNewVidTitle(e.target.value)}
+              className="w-full sm:w-24 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <input
+              type="url"
+              placeholder="Video URL"
+              value={newVidUrl}
+              onChange={(e) => setNewVidUrl(e.target.value)}
+              className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newVidUrl.trim()) return;
+                setVideos((prev) => [...prev, { title: newVidTitle.trim() || 'Video', url: newVidUrl.trim() }]);
+                setNewVidUrl('');
+                setNewVidTitle('');
+              }}
+              className="px-2.5 py-1 rounded bg-slate-800 text-white cursor-pointer shrink-0"
+            >
+              Add
+            </button>
+          </div>
+          {videos.map((v, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
+              <span className="truncate flex-1 min-w-0">{v.title || v.url}</span>
+              <button
+                type="button"
+                onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
+                className="text-rose-600 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Technical File Attachments */}
+        <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="font-bold text-slate-700 flex items-center gap-1 min-w-0">
+              <FileText className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
+              <span className="truncate">Technical Files ({attachments.length})</span>
+            </span>
+            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+              <Upload className="w-3 h-3" />
+              <span>Upload</span>
+              <input
+                type="file"
+                multiple
+                onChange={(e) => handleBucketUpload(e.target.files, 'attachment')}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
+            <input
+              type="text"
+              placeholder="File label"
+              value={newAttTitle}
+              onChange={(e) => setNewAttTitle(e.target.value)}
+              className="w-full sm:w-24 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <input
+              type="url"
+              placeholder="File URL"
+              value={newAttUrl}
+              onChange={(e) => setNewAttUrl(e.target.value)}
+              className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!newAttUrl.trim()) return;
+                setAttachments((prev) => [...prev, { title: newAttTitle.trim() || 'Attachment', url: newAttUrl.trim() }]);
+                setNewAttUrl('');
+                setNewAttTitle('');
+              }}
+              className="px-2.5 py-1 rounded bg-slate-800 text-white cursor-pointer shrink-0"
+            >
+              Add
+            </button>
+          </div>
+          {attachments.map((att, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
+              <span className="truncate flex-1 min-w-0">{att.title || att.fileName || att.url}</span>
+              <button
+                type="button"
+                onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                className="text-rose-600 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Code Blocks */}
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-bold text-slate-700 flex items-center gap-1">
+            <Code className="w-3.5 h-3.5 text-cyan-800" />
+            <span>Code Blocks ({codeBlocks.length})</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setCodeBlocks((prev) => [...prev, { title: '', language: '', code: '' }])}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold cursor-pointer"
+          >
+            <Plus className="w-3 h-3" />
+            <span>Add Code</span>
+          </button>
+        </div>
+        {codeBlocks.map((cb, idx) => (
+          <div key={idx} className="p-2.5 rounded bg-white border border-slate-200 space-y-2 min-w-0">
+            <div className="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+              <input
+                type="text"
+                placeholder="Snippet title"
+                value={cb.title}
+                onChange={(e) =>
+                  setCodeBlocks((prev) => prev.map((c, i) => (i === idx ? { ...c, title: e.target.value } : c)))
+                }
+                className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
+              />
+              <input
+                type="text"
+                placeholder="Language (e.g. python, cpp)"
+                value={cb.language}
+                onChange={(e) =>
+                  setCodeBlocks((prev) => prev.map((c, i) => (i === idx ? { ...c, language: e.target.value } : c)))
+                }
+                className="w-full sm:w-36 min-w-0 px-2 py-1 rounded border border-slate-300"
+              />
+              <button
+                type="button"
+                onClick={() => setCodeBlocks((prev) => prev.filter((_, i) => i !== idx))}
+                className="text-rose-600 p-1 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <textarea
+              rows={3}
+              placeholder="Paste code here"
+              value={cb.code}
+              onChange={(e) =>
+                setCodeBlocks((prev) => prev.map((c, i) => (i === idx ? { ...c, code: e.target.value } : c)))
+              }
+              className="w-full min-w-0 px-2 py-1.5 rounded border border-slate-300 font-mono text-[11px] bg-slate-50"
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Data Charts & Visualizations */}
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-bold text-slate-700 flex items-center gap-1">
+            <BarChart3 className="w-3.5 h-3.5 text-cyan-800" />
+            <span>Data Charts ({chartData.length})</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setChartData((prev) => [...prev, { title: '', unit: '', items: [{ label: '', value: 0 }] }])}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold cursor-pointer"
+          >
+            <Plus className="w-3 h-3" />
+            <span>Add Chart</span>
+          </button>
+        </div>
+        {chartData.map((ch, cIdx) => (
+          <div key={cIdx} className="p-2.5 rounded bg-white border border-slate-200 space-y-2 min-w-0">
+            <div className="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+              <input
+                type="text"
+                placeholder="Chart title"
+                value={ch.title}
+                onChange={(e) =>
+                  setChartData((prev) => prev.map((x, i) => (i === cIdx ? { ...x, title: e.target.value } : x)))
+                }
+                className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
+              />
+              <input
+                type="text"
+                placeholder="Unit (e.g. MPa, Hz)"
+                value={ch.unit || ''}
+                onChange={(e) =>
+                  setChartData((prev) => prev.map((x, i) => (i === cIdx ? { ...x, unit: e.target.value } : x)))
+                }
+                className="w-full sm:w-28 min-w-0 px-2 py-1 rounded border border-slate-300"
+              />
+              <button
+                type="button"
+                onClick={() => setChartData((prev) => prev.filter((_, i) => i !== cIdx))}
+                className="text-rose-600 p-1 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {ch.items.map((pt, pIdx) => (
+                <div key={pIdx} className="flex flex-wrap sm:flex-nowrap gap-2 items-center min-w-0">
+                  <input
+                    type="text"
+                    placeholder="Data label"
+                    value={pt.label}
+                    onChange={(e) =>
+                      setChartData((prev) =>
+                        prev.map((x, i) =>
+                          i === cIdx
+                            ? {
+                                ...x,
+                                items: x.items.map((it, j) => (j === pIdx ? { ...it, label: e.target.value } : it)),
+                              }
+                            : x
+                        )
+                      )
+                    }
+                    className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="Value"
+                    value={pt.value}
+                    onChange={(e) =>
+                      setChartData((prev) =>
+                        prev.map((x, i) =>
+                          i === cIdx
+                            ? {
+                                ...x,
+                                items: x.items.map((it, j) =>
+                                  j === pIdx ? { ...it, value: Number(e.target.value) || 0 } : it
+                                ),
+                              }
+                            : x
+                        )
+                      )
+                    }
+                    className="w-24 min-w-0 px-2 py-1 rounded border border-slate-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChartData((prev) =>
+                        prev.map((x, i) =>
+                          i === cIdx ? { ...x, items: x.items.filter((_, j) => j !== pIdx) } : x
+                        )
+                      )
+                    }
+                    className="text-rose-600 p-1 cursor-pointer shrink-0"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setChartData((prev) =>
+                    prev.map((x, i) =>
+                      i === cIdx ? { ...x, items: [...x.items, { label: '', value: 0 }] } : x
+                    )
+                  )
+                }
+                className="text-[11px] text-cyan-800 hover:underline font-semibold cursor-pointer"
+              >
+                + Add Data Point
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Optional Bill of Materials (BOM) Table */}
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-bold text-slate-700 flex items-center gap-1">
+            <TableIcon className="w-3.5 h-3.5 text-cyan-800" />
+            <span>Optional Bill of Materials (BOM) ({bomItems.length})</span>
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              setBomItems((prev) => [
+                ...prev,
+                { partNo: '', name: '', material: '', qty: '', specification: '', notes: '' },
+              ])
+            }
+            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold cursor-pointer"
+          >
+            <Plus className="w-3 h-3" />
+            <span>Add BOM Row</span>
+          </button>
+        </div>
+        {bomItems.map((row, idx) => (
+          <div key={idx} className="grid grid-cols-2 sm:grid-cols-6 gap-1.5 items-center bg-white p-2 rounded border border-slate-200 min-w-0">
+            <input
+              type="text"
+              placeholder="Part #"
+              value={row.partNo}
+              onChange={(e) =>
+                setBomItems((prev) => prev.map((b, i) => (i === idx ? { ...b, partNo: e.target.value } : b)))
+              }
+              className="min-w-0 w-full px-2 py-1 rounded border border-slate-300"
+            />
+            <input
+              type="text"
+              placeholder="Component"
+              value={row.name}
+              onChange={(e) =>
+                setBomItems((prev) => prev.map((b, i) => (i === idx ? { ...b, name: e.target.value } : b)))
+              }
+              className="min-w-0 w-full px-2 py-1 rounded border border-slate-300"
+            />
+            <input
+              type="text"
+              placeholder="Material"
+              value={row.material}
+              onChange={(e) =>
+                setBomItems((prev) => prev.map((b, i) => (i === idx ? { ...b, material: e.target.value } : b)))
+              }
+              className="min-w-0 w-full px-2 py-1 rounded border border-slate-300"
+            />
+            <input
+              type="text"
+              placeholder="Qty"
+              value={row.qty}
+              onChange={(e) =>
+                setBomItems((prev) => prev.map((b, i) => (i === idx ? { ...b, qty: e.target.value } : b)))
+              }
+              className="min-w-0 w-full px-2 py-1 rounded border border-slate-300"
+            />
+            <input
+              type="text"
+              placeholder="Specification"
+              value={row.specification}
+              onChange={(e) =>
+                setBomItems((prev) =>
+                  prev.map((b, i) => (i === idx ? { ...b, specification: e.target.value } : b))
+                )
+              }
+              className="min-w-0 w-full px-2 py-1 rounded border border-slate-300"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setBomItems((prev) => prev.filter((_, i) => i !== idx))}
+                className="text-rose-600 p-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Owner Status + Actions */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 text-xs">
+        {isOwner ? (
+          <div className="flex items-center gap-2 min-w-0">
+            <label className="font-bold text-slate-700 shrink-0">Status:</label>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as PortfolioArticle['status'])}
+              className="px-2.5 py-1 rounded-lg border border-slate-300 bg-slate-50 cursor-pointer"
+            >
+              <option value="published">Published (Chief Admin)</option>
+              <option value="draft">Draft</option>
+              <option value="archived">Archived</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+        ) : (
+          <div />
+        )}
+
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving || uploadingField !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            <span>
+              {initialArticle ? 'Update Article' : isOwner ? 'Publish Article' : 'Submit Article'}
+            </span>
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+};

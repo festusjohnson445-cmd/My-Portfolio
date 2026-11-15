@@ -70,6 +70,8 @@ export function updateCustomSupabaseConfig(url: string, anonKey: string): void {
 export const SUPABASE_BUCKETS = {
   AVATARS: 'avatars',
   MATERIALS: 'materials',
+  PROJECTS: 'projects',
+  ARTICLES: 'articles',
 } as const;
 
 // Cache active owner user ID
@@ -216,12 +218,24 @@ export function getAuthenticatedOwnerUid(): string {
 }
 
 /**
- * Check if active session exists
+ * Verify that a Supabase User object belongs to a real authenticated owner
+ * (and NOT an anonymous or shared public visitor guest account).
+ */
+export function isRealOwnerUser(user?: User | null): boolean {
+  if (!user) return false;
+  if ((user as any).is_anonymous) return false;
+  const email = (user.email || '').trim().toLowerCase();
+  if (!email || email === 'public_visitor@feslineguest.com') return false;
+  return true;
+}
+
+/**
+ * Check if active session exists for a real owner
  */
 export async function hasActiveOwnerSession(): Promise<boolean> {
   try {
     const { data } = await supabase.auth.getSession();
-    return Boolean(data?.session?.user);
+    return isRealOwnerUser(data?.session?.user);
   } catch {
     return false;
   }
@@ -2107,4 +2121,9 @@ USING (auth.uid() = owner_id);
 -- 4. Real-time Publications
 ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+
+-- 5. Projects & Articles Buckets + Tables + Profile Extensions (See supabase_projects_articles_storage.sql)
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('projects', 'projects', true), ('articles', 'articles', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
 `;

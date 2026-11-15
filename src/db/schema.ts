@@ -128,3 +128,143 @@ export const learningSessions = pgTable('learning_sessions', {
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
+
+// Projects Table (3D CAD, Hardware, Methodology, Technical Specs)
+export const projects = pgTable('projects', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  slug: text('slug'),
+  tagline: text('tagline'),
+  description: text('description'),
+  category: text('category').default('CAD'),
+  status: text('status').default('Validated Prototype'),
+  featured: boolean('featured').default(false),
+  thumbnailUrl: text('thumbnail_url'),
+  overview: text('overview'),
+  objectives: text('objectives'),
+  methodology: text('methodology'),
+  technicalSpecifications: jsonb('technical_specifications').default({}),
+  cadDrawings: jsonb('cad_drawings').default([]),
+  images: jsonb('images').default([]),
+  videos: jsonb('videos').default([]),
+  toolsUsed: jsonb('tools_used').default([]),
+  results: text('results'),
+  demonstrationLinks: jsonb('demonstration_links').default([]),
+  downloadableDocuments: jsonb('downloadable_documents').default([]),
+  viewsCount: integer('views_count').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Project Media Gallery
+export const projectMedia = pgTable('project_media', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  mediaType: text('media_type').default('image'),
+  title: text('title'),
+  fileName: text('file_name'),
+  fileUrl: text('file_url').notNull(),
+  fileSize: text('file_size'),
+  thumbnailUrl: text('thumbnail_url'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Article Categories
+export const articleCategories = pgTable('article_categories', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  slug: text('slug'),
+  description: text('description'),
+  displayOrder: integer('display_order').default(0),
+});
+
+// Blog / Articles
+export const articles = pgTable('articles', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  slug: text('slug'),
+  category: text('category').default('Mechanical Engineering'),
+  authorName: text('author_name').default('Festus, Olorunsogo Johnson'),
+  authorRole: text('author_role').default('Chief Admin'),
+  isChiefAdmin: boolean('is_chief_admin').default(true),
+  coverImage: text('cover_image'),
+  excerpt: text('excerpt'),
+  content: text('content').notNull(),
+  readingTime: text('reading_time').default('5 min read'),
+  tags: jsonb('tags').default([]),
+  status: text('status').default('published'),
+  submittedBy: text('submitted_by').default('owner'),
+  visitorEmail: text('visitor_email'),
+  likesCount: integer('likes_count').default(0),
+  viewsCount: integer('views_count').default(0),
+  commentsCount: integer('comments_count').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Article Comments
+export const articleComments = pgTable('article_comments', {
+  id: text('id').primaryKey(),
+  articleId: text('article_id').notNull(),
+  authorName: text('author_name').notNull(),
+  authorEmail: text('author_email'),
+  authorAvatar: text('author_avatar'),
+  content: text('content').notNull(),
+  status: text('status').default('approved'),
+  parentCommentId: text('parent_comment_id'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Article Likes
+export const articleLikes = pgTable('article_likes', {
+  id: text('id').primaryKey(),
+  articleId: text('article_id').notNull(),
+  visitorId: text('visitor_id').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Career Experience
+export const experience = pgTable('experience', {
+  id: text('id').primaryKey(),
+  role: text('role').notNull(),
+  company: text('company').notNull(),
+  location: text('location'),
+  period: text('period').notNull(),
+  current: boolean('current').default(false),
+  description: text('description'),
+  responsibilities: jsonb('responsibilities').default([]),
+  technologies: jsonb('technologies').default([]),
+  displayOrder: integer('display_order').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Research Publications
+export const publications = pgTable('publications', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  authors: text('authors'),
+  journalOrConference: text('journal_or_conference'),
+  publicationDate: text('publication_date'),
+  doiOrUrl: text('doi_or_url'),
+  description: text('description'),
+  pdfUrl: text('pdf_url'),
+  displayOrder: integer('display_order').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Achievements & Honors
+export const achievements = pgTable('achievements', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  issuer: text('issuer'),
+  date: text('date'),
+  credentialId: text('credential_id'),
+  category: text('category').default('Award'),
+  description: text('description'),
+  verificationUrl: text('verification_url'),
+  displayOrder: integer('display_order').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});

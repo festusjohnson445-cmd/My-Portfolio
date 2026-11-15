@@ -2,8 +2,14 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
 import compression from 'compression';
 import crypto from 'crypto';
+import sharp from 'sharp';
+import multer from 'multer';
+import ffmpegStatic from 'ffmpeg-static';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   getGlobalProfileFromDb,
@@ -1123,6 +1129,459 @@ The output must be a valid JSON object matching the requested schema with:
     const fallbackStoryboard = generateFallbackStoryboard(req.body?.prompt || 'Engineering Masterclass', req.body?.category);
     res.json({ success: true, animation: fallbackStoryboard });
   }
+});
+
+// =================================================================
+// 9. PRODUCTION MEDIA OPTIMIZATION PIPELINE (SHARP AVIF & FFMPEG AV1)
+// =================================================================
+const execFileAsync = promisify(execFile);
+
+const DEFAULT_SUPABASE_URL = 'https://teszyojnwaedjvqaqake.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex';
+
+const MEDIA_TEMP_DIR = path.join(os.tmpdir(), 'fesline_media_jobs');
+try {
+  fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true });
+} catch {}
+
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      try { fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true }); } catch {}
+      cb(null, MEDIA_TEMP_DIR);
+    },
+    filename: (_req, file, cb) => {
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `img_${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${safe}`);
+    },
+  }),
+  limits: { fileSize: 60 * 1024 * 1024 },
+});
+
+const videoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      try { fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true }); } catch {}
+      cb(null, MEDIA_TEMP_DIR);
+    },
+    filename: (_req, file, cb) => {
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `vid_${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${safe}`);
+    },
+  }),
+  limits: { fileSize: 550 * 1024 * 1024 },
+});
+
+interface VideoOptimizationJob {
+  jobId: string;
+  bucket: string;
+  status: 'queued' | 'processing' | 'uploading' | 'completed' | 'failed';
+  progress: number;
+  stage: string;
+  publicUrl?: string;
+  storagePath?: string;
+  fileName?: string;
+  fileSize?: string;
+  bytes?: number;
+  originalBytes?: number;
+  error?: string;
+  createdAt: number;
+}
+
+const videoJobs = new Map<string, VideoOptimizationJob>();
+
+// Prune completed/failed job metadata older than 2 hours
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, job] of videoJobs.entries()) {
+    if (job.createdAt < cutoff) videoJobs.delete(id);
+  }
+}, 15 * 60 * 1000).unref?.();
+
+function formatMediaBytes(bytes: number): string {
+  if (!bytes || bytes < 1024) return `${bytes || 0} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+let cachedFfmpegInfo: { bin: string; ffprobeBin: string; hasSvtAv1: boolean; hasAomAv1: boolean } | null = null;
+async function getFfmpegCapabilities() {
+  if (cachedFfmpegInfo) return cachedFfmpegInfo;
+  const bin = ffmpegStatic && fs.existsSync(ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
+  const ffprobeBin = 'ffprobe';
+  let hasSvtAv1 = false;
+  let hasAomAv1 = false;
+  try {
+    const { stdout } = await execFileAsync(bin, ['-encoders'], { timeout: 10000 });
+    hasSvtAv1 = /\blibsvtav1\b/.test(stdout);
+    hasAomAv1 = /\blibaom-av1\b/.test(stdout);
+  } catch {}
+  cachedFfmpegInfo = { bin, ffprobeBin, hasSvtAv1, hasAomAv1 };
+  return cachedFfmpegInfo;
+}
+
+async function safeUnlink(filePath?: string | null) {
+  if (!filePath) return;
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {}
+}
+
+async function cleanupPassLogs(prefix: string) {
+  try {
+    const dir = path.dirname(prefix);
+    const base = path.basename(prefix);
+    const entries = await fs.promises.readdir(dir);
+    await Promise.all(
+      entries
+        .filter((f) => f.startsWith(base))
+        .map((f) => safeUnlink(path.join(dir, f)))
+    );
+  } catch {}
+}
+
+function resolveSupabaseHeaders(req: express.Request) {
+  const supabaseUrl = (
+    (req.headers['x-supabase-url'] as string) ||
+    process.env.VITE_SUPABASE_URL ||
+    DEFAULT_SUPABASE_URL
+  ).replace(/\/+$/, '');
+
+  const anonKey =
+    (req.headers['x-supabase-anon-key'] as string) ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    DEFAULT_SUPABASE_ANON_KEY;
+
+  const incomingAuth = req.headers.authorization;
+  const authHeader =
+    incomingAuth && incomingAuth.startsWith('Bearer ')
+      ? incomingAuth
+      : `Bearer ${anonKey}`;
+
+  return { supabaseUrl, anonKey, authHeader };
+}
+
+async function uploadMediaToSupabaseStorage(params: {
+  supabaseUrl: string;
+  anonKey: string;
+  authHeader: string;
+  bucket: string;
+  storagePath: string;
+  data: Buffer;
+  contentType: string;
+}): Promise<string> {
+  const encodedPath = params.storagePath
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+
+  const uploadEndpoint = `${params.supabaseUrl}/storage/v1/object/${encodeURIComponent(params.bucket)}/${encodedPath}`;
+  const resp = await fetch(uploadEndpoint, {
+    method: 'POST',
+    headers: {
+      apikey: params.anonKey,
+      Authorization: params.authHeader,
+      'Content-Type': params.contentType,
+      'x-upsert': 'true',
+    },
+    body: new Uint8Array(params.data),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => resp.statusText);
+    throw new Error(`Supabase storage upload (${params.bucket}) failed (${resp.status}): ${errText}`);
+  }
+
+  return `${params.supabaseUrl}/storage/v1/object/public/${encodeURIComponent(params.bucket)}/${encodedPath}`;
+}
+
+function runProcess(bin: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderrTail = '';
+    proc.stderr?.on('data', (chunk) => {
+      stderrTail = (stderrTail + chunk.toString()).slice(-3000);
+    });
+    proc.on('error', (err) => reject(err));
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg exited with code ${code}: ${stderrTail.slice(-600)}`));
+    });
+  });
+}
+
+async function probeVideoMetadata(
+  ffprobeBin: string,
+  inputPath: string
+): Promise<{ width: number; height: number; durationSec: number; hasAudio: boolean }> {
+  try {
+    const { stdout } = await execFileAsync(ffprobeBin, [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_streams',
+      '-show_format',
+      inputPath,
+    ]);
+    const parsed = JSON.parse(stdout || '{}');
+    const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+    const videoStream = streams.find((s: any) => s.codec_type === 'video');
+    const audioStream = streams.find((s: any) => s.codec_type === 'audio');
+    return {
+      width: Number(videoStream?.width) || 1280,
+      height: Number(videoStream?.height) || 720,
+      durationSec: Number(parsed?.format?.duration) || 0,
+      hasAudio: Boolean(audioStream),
+    };
+  } catch {
+    return { width: 1280, height: 720, durationSec: 0, hasAudio: false };
+  }
+}
+
+async function processVideoJobAsync(params: {
+  jobId: string;
+  rawPath: string;
+  originalName: string;
+  originalSize: number;
+  bucket: 'projects' | 'articles';
+  folderPrefix: string;
+  maxHeight: 720 | 1080;
+  supabaseUrl: string;
+  anonKey: string;
+  authHeader: string;
+}) {
+  const job = videoJobs.get(params.jobId);
+  if (!job) {
+    await safeUnlink(params.rawPath);
+    return;
+  }
+
+  const baseStem = params.originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const outPath = path.join(MEDIA_TEMP_DIR, `out_${params.jobId}.mp4`);
+  const passLogPrefix = path.join(MEDIA_TEMP_DIR, `passlog_${params.jobId}`);
+
+  try {
+    job.status = 'processing';
+    job.progress = 12;
+    job.stage = 'Inspecting video stream geometry...';
+
+    const { bin, ffprobeBin, hasSvtAv1, hasAomAv1 } = await getFfmpegCapabilities();
+    const meta = await probeVideoMetadata(ffprobeBin, params.rawPath);
+
+    const maxW = params.maxHeight === 720 ? 1280 : 1920;
+    const maxH = params.maxHeight === 720 ? 720 : 1080;
+    // Scale down to max 720p/1080p without upscaling, keeping even pixel dimensions, + light perceptual denoising & subtle sharpening
+    const vfChain = [
+      `scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease`,
+      `scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+      'hqdn3d=1.5:1.5:6:6',
+      'unsharp=5:5:0.35:5:5:0.0',
+    ].join(',');
+
+    const encoderArgs = hasSvtAv1
+      ? ['-c:v', 'libsvtav1', '-crf', '34', '-preset', '5', '-pix_fmt', 'yuv420p']
+      : hasAomAv1
+      ? ['-c:v', 'libaom-av1', '-crf', '34', '-b:v', '0', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt', 'yuv420p']
+      : ['-c:v', 'libx264', '-crf', '28', '-preset', 'medium', '-pix_fmt', 'yuv420p'];
+
+    job.progress = 28;
+    job.stage = hasSvtAv1
+      ? 'Encoding Pass 1/2 (SVT-AV1 perceptual analysis)...'
+      : 'Encoding Pass 1/2 (AV1 perceptual analysis)...';
+
+    // 2-Pass Encoding — Pass 1
+    await runProcess(bin, [
+      '-y',
+      '-i', params.rawPath,
+      '-vf', vfChain,
+      ...encoderArgs,
+      '-pass', '1',
+      '-passlogfile', passLogPrefix,
+      '-an',
+      '-f', 'mp4',
+      '/dev/null',
+    ]);
+
+    job.progress = 62;
+    job.stage = 'Encoding Pass 2/2 (AV1 + 80kbps Opus audio)...';
+
+    const audioArgs = meta.hasAudio ? ['-c:a', 'libopus', '-b:a', '80k'] : ['-an'];
+
+    // 2-Pass Encoding — Pass 2
+    await runProcess(bin, [
+      '-y',
+      '-i', params.rawPath,
+      '-vf', vfChain,
+      ...encoderArgs,
+      '-pass', '2',
+      '-passlogfile', passLogPrefix,
+      ...audioArgs,
+      '-movflags', '+faststart',
+      outPath,
+    ]);
+
+    job.status = 'uploading';
+    job.progress = 88;
+    job.stage = `Uploading compressed AV1 MP4 to "${params.bucket}" bucket...`;
+
+    const finalBuffer = await fs.promises.readFile(outPath);
+    const finalFileName = `${baseStem}.mp4`;
+    const storagePath = `${params.folderPrefix || 'videos'}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
+
+    const publicUrl = await uploadMediaToSupabaseStorage({
+      supabaseUrl: params.supabaseUrl,
+      anonKey: params.anonKey,
+      authHeader: params.authHeader,
+      bucket: params.bucket,
+      storagePath,
+      data: finalBuffer,
+      contentType: 'video/mp4',
+    });
+
+    job.status = 'completed';
+    job.progress = 100;
+    job.stage = 'Completed';
+    job.publicUrl = publicUrl;
+    job.storagePath = storagePath;
+    job.fileName = finalFileName;
+    job.bytes = finalBuffer.length;
+    job.originalBytes = params.originalSize;
+    job.fileSize = formatMediaBytes(finalBuffer.length);
+  } catch (err: any) {
+    console.error(`[Video Pipeline Error Job ${params.jobId}]:`, err);
+    job.status = 'failed';
+    job.stage = 'Optimization failed';
+    job.error = err?.message || 'Video transcoding or upload failed.';
+  } finally {
+    await safeUnlink(params.rawPath);
+    await safeUnlink(outPath);
+    await cleanupPassLogs(passLogPrefix);
+  }
+}
+
+// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1920px, AVIF q=75 -> upload to Supabase bucket
+app.post('/api/media/optimize-image', imageUpload.single('file'), async (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ success: false, message: 'No image file provided.' });
+  }
+
+  const bucket = req.body?.bucket === 'articles' ? 'articles' : 'projects';
+  const folderPrefix = String(req.body?.folderPrefix || 'images').replace(/[^a-zA-Z0-9_/-]/g, '_');
+  const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
+
+  try {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const isSvg = file.mimetype === 'image/svg+xml' || ext === '.svg';
+    const rawBuffer = await fs.promises.readFile(file.path);
+
+    let outBuffer: Buffer;
+    let outMime = 'image/avif';
+    let outExt = '.avif';
+
+    if (isSvg) {
+      outBuffer = rawBuffer;
+      outMime = 'image/svg+xml';
+      outExt = '.svg';
+    } else {
+      // Auto-rotate per EXIF, strip EXIF metadata (default when withMetadata() is not called), resize max 1920w without upscaling, convert to AVIF q75
+      outBuffer = await sharp(rawBuffer)
+        .rotate()
+        .resize({ width: 1920, withoutEnlargement: true })
+        .avif({ quality: 75 })
+        .toBuffer();
+    }
+
+    const baseStem = file.originalname.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const finalFileName = `${baseStem}${outExt}`;
+    const storagePath = `${folderPrefix}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
+
+    const publicUrl = await uploadMediaToSupabaseStorage({
+      supabaseUrl,
+      anonKey,
+      authHeader,
+      bucket,
+      storagePath,
+      data: outBuffer,
+      contentType: outMime,
+    });
+
+    res.json({
+      success: true,
+      publicUrl,
+      storagePath,
+      fileName: finalFileName,
+      fileSize: formatMediaBytes(outBuffer.length),
+      mimeType: outMime,
+      originalBytes: file.size,
+      optimizedBytes: outBuffer.length,
+    });
+  } catch (err: any) {
+    console.error('[Image Optimization Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || 'Image optimization failed.',
+    });
+  } finally {
+    await safeUnlink(file.path);
+  }
+});
+
+// Enqueue background AV1 + Opus video optimization job so request never times out
+app.post('/api/media/optimize-video', videoUpload.single('file'), async (req, res) => {
+  const file = req.file;
+  if (!file) {
+    return res.status(400).json({ success: false, message: 'No video file provided.' });
+  }
+
+  const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
+  const folderPrefix = String(req.body?.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_');
+  const maxHeight: 720 | 1080 = req.body?.maxHeight === '720' ? 720 : 1080;
+  const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
+
+  const jobId = `vjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const job: VideoOptimizationJob = {
+    jobId,
+    bucket,
+    status: 'queued',
+    progress: 5,
+    stage: 'Queued for background AV1 optimization...',
+    originalBytes: file.size,
+    createdAt: Date.now(),
+  };
+  videoJobs.set(jobId, job);
+
+  // Run asynchronously in background without awaiting completion in HTTP handler
+  setImmediate(() => {
+    void processVideoJobAsync({
+      jobId,
+      rawPath: file.path,
+      originalName: file.originalname,
+      originalSize: file.size,
+      bucket,
+      folderPrefix,
+      maxHeight,
+      supabaseUrl,
+      anonKey,
+      authHeader,
+    });
+  });
+
+  res.status(202).json({
+    success: true,
+    jobId,
+    status: job.status,
+    progress: job.progress,
+    stage: job.stage,
+  });
+});
+
+// Poll background video optimization job status
+app.get('/api/media/jobs/:jobId', (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, message: 'Video processing job not found or expired.' });
+  }
+  res.json({ success: true, job });
 });
 
 async function startServer() {
