@@ -68,6 +68,7 @@ import {
   uploadMaterialThumbnailToBucket,
   saveMaterialToSupabaseTable,
   fetchMaterialsFromSupabaseTable,
+  fetchMaterialsFromSupabaseTableWithStatus,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
   subscribeToSupabaseMaterialsChanges,
@@ -263,6 +264,96 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
   );
 };
 
+const EngineeringHubModalPreview: React.FC<{ doc: PublicEngineeringDocument }> = ({ doc }) => {
+  const initialImg =
+    (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf')
+      ? doc.previewUrl
+      : null) || getCachedThumb(doc.id);
+
+  const pdfSource =
+    doc.dataUrl ||
+    doc.downloadUrl ||
+    (doc as any).fileUrl ||
+    (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
+
+  const isPdfDoc =
+    doc.fileType?.toUpperCase() === 'PDF' ||
+    Boolean(doc.fileName && /\.pdf$/i.test(doc.fileName)) ||
+    Boolean(pdfSource && /\.pdf(\?|$)/i.test(String(pdfSource)));
+
+  const [imgSrc, setImgSrc] = useState<string | null>(initialImg);
+  const [isRendering, setIsRendering] = useState<boolean>(
+    () => !initialImg && isPdfDoc && Boolean(pdfSource)
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    const cached =
+      (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf')
+        ? doc.previewUrl
+        : null) || getCachedThumb(doc.id);
+
+    if (cached) {
+      setImgSrc(cached);
+      setIsRendering(false);
+      return;
+    }
+
+    if (isPdfDoc && pdfSource) {
+      setIsRendering(true);
+      renderPdfFirstPageToImage(pdfSource, 1000)
+        .then((img) => {
+          if (!mounted) return;
+          if (img) {
+            setImgSrc(img);
+            inMemoryThumbCache.set(doc.id, img);
+            try {
+              localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, img);
+            } catch {}
+          }
+          setIsRendering(false);
+        })
+        .catch(() => {
+          if (mounted) setIsRendering(false);
+        });
+    } else {
+      setImgSrc(null);
+      setIsRendering(false);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [doc.id, doc.previewUrl, pdfSource, isPdfDoc]);
+
+  if (imgSrc) {
+    return (
+      <img
+        src={imgSrc}
+        alt={doc.title}
+        decoding="async"
+        className="max-h-[60vh] max-w-full object-contain rounded-lg bg-white"
+      />
+    );
+  }
+
+  if (isRendering) {
+    return (
+      <div className="text-center p-8 space-y-2">
+        <Loader2 className="w-8 h-8 text-cyan-600 animate-spin mx-auto" />
+        <p className="text-xs font-mono text-slate-600">Loading document preview...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-center p-8 space-y-2">
+      <FileText className="w-16 h-16 text-cyan-600 mx-auto opacity-70" />
+      <p className="text-sm font-mono text-slate-600">{doc.fileName}</p>
+    </div>
+  );
+};
+
 export interface EngineeringDocumentHubProps {
   onNavigatePart?: (part: PortfolioPart) => void;
 }
@@ -421,6 +512,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   const modalFileInputRef = useRef<HTMLInputElement>(null);
   const addMoreInputRef = useRef<HTMLInputElement>(null);
   const isSyncingRef = useRef(false);
+  const hasAuthoritativeSupabaseRef = useRef(false);
 
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMsg({ text, type });
@@ -429,42 +521,114 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     }, 4000);
   };
 
-  // Load documents from Firestore & cache first, then sync with server
+  // Load documents with Supabase "materials" as single authoritative source of truth
+  // so cards deleted on one browser/device never resurrect from stale Firestore/SQL/local caches.
   const loadDocuments = useCallback(async (force = false) => {
     if (isSyncingRef.current) return;
     if (!force && globalHubDocsMemoryCache && Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS) {
-      setDocuments(globalHubDocsMemoryCache);
+      const deleted = getDeletedDocIds();
+      setDocuments(globalHubDocsMemoryCache.filter((d) => d && d.id && !deleted.has(d.id)));
       setIsLoadingDocs(false);
       return;
     }
     isSyncingRef.current = true;
 
     try {
-      // 1. Load from IndexedDB / LocalStorage cache with tombstone check
-      const cached = await loadHubDocumentsPersistently<PublicEngineeringDocument>();
       const deletedIds = getDeletedDocIds();
+      const cached = await loadHubDocumentsPersistently<PublicEngineeringDocument>();
       const cleanCached = sortDocumentsDescending(
         cached.filter((d) => d && d.id && !deletedIds.has(d.id))
       );
 
-      const docsMap = new Map<string, PublicEngineeringDocument>();
+      // Build cache lookup map for preserving inline preview/dataUrl if still live in Supabase
+      const cacheLookup = new Map<string, PublicEngineeringDocument>();
+      cleanCached.forEach((d) => cacheLookup.set(d.id, d));
 
-      // Seed with local cached documents
-      cleanCached.forEach((d) => {
-        if (d && d.id && !deletedIds.has(d.id)) {
-          docsMap.set(d.id, d);
-        }
-      });
-
-      // Show cached immediately so UI is instantly responsive
-      if (cleanCached.length > 0) {
+      // Show cached immediately if memory cache was empty
+      if (cleanCached.length > 0 && !hasAuthoritativeSupabaseRef.current) {
         setDocuments(cleanCached);
       }
 
-      // 2. Fetch latest from Firestore database
+      // 1. Fetch authoritative live records from Supabase "materials" table
+      const supaResult = await fetchMaterialsFromSupabaseTableWithStatus(force);
+
+      if (supaResult.ok) {
+        hasAuthoritativeSupabaseRef.current = true;
+        const supaDocsMap = new Map<string, PublicEngineeringDocument>();
+        const activeSupaIds = new Set<string>();
+
+        supaResult.data.forEach((m: any) => {
+          if (m && m.id && !deletedIds.has(m.id)) {
+            activeSupaIds.add(m.id);
+            const existing = cacheLookup.get(m.id);
+            const resolvedDownloadUrl =
+              m.download_url ||
+              m.file_url ||
+              (existing?.downloadUrl && String(existing.downloadUrl).startsWith('http')
+                ? existing.downloadUrl
+                : `/api/documents/files/${m.id}`);
+            const validPreview =
+              m.preview_url && !isMockDrawingPreview(m.preview_url)
+                ? m.preview_url
+                : existing?.previewUrl && !isMockDrawingPreview(existing.previewUrl)
+                ? existing.previewUrl
+                : undefined;
+
+            supaDocsMap.set(m.id, {
+              id: m.id,
+              title: m.title || existing?.title || 'Engineering Document',
+              fileName: m.file_name || existing?.fileName || 'document.pdf',
+              fileSize: m.file_size || existing?.fileSize || 'Standard',
+              fileType: m.file_type || existing?.fileType || 'PDF',
+              category: m.category || existing?.category || 'Technical Drawing',
+              description: sanitizeDocumentDescription(m.description || existing?.description || ''),
+              author: m.author || existing?.author || 'Festus, Olorunsogo Johnson (Owner)',
+              uploaderName: m.author || existing?.uploaderName || 'Festus, Olorunsogo Johnson (Owner)',
+              uploaderType: 'owner',
+              status: 'approved',
+              uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
+              downloadCount: m.download_count || existing?.downloadCount || 0,
+              tags: Array.isArray(m.tags) && m.tags.length > 0 ? m.tags : ['Engineering'],
+              previewUrl: validPreview,
+              downloadUrl: resolvedDownloadUrl,
+              dataUrl: existing?.dataUrl,
+              hasServerFile: true,
+              isCustomUpload: true,
+              ...(m.storage_path ? { storagePath: m.storage_path } : {}),
+            });
+          }
+        });
+
+        // Clean up stale orphaned cards in Firestore in background when owner is signed in
+        if (isOwner) {
+          fetchHubDocumentsFromFirestore()
+            .then((firestoreDocs) => {
+              if (!Array.isArray(firestoreDocs)) return;
+              firestoreDocs.forEach((fDoc) => {
+                if (fDoc && fDoc.id && (!activeSupaIds.has(fDoc.id) || deletedIds.has(fDoc.id))) {
+                  deleteHubDocumentFromFirestore(fDoc.id, (fDoc as any)?.storagePath).catch(() => {});
+                }
+              });
+            })
+            .catch(() => {});
+        }
+
+        const finalSorted = sortDocumentsDescending(Array.from(supaDocsMap.values()));
+        globalHubDocsMemoryCache = finalSorted;
+        lastHubDocsFetchTimestamp = Date.now();
+        setDocuments(finalSorted);
+        saveHubDocumentsPersistently(finalSorted).catch(() => {});
+        try {
+          localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(finalSorted));
+        } catch {}
+        return;
+      }
+
+      // 2. Offline / Supabase-error fallback ONLY (strictly filtered by deletedIds)
+      const docsMap = new Map<string, PublicEngineeringDocument>(cacheLookup);
       try {
         const firestoreDocs = await fetchHubDocumentsFromFirestore();
-        if (Array.isArray(firestoreDocs) && firestoreDocs.length > 0) {
+        if (Array.isArray(firestoreDocs)) {
           firestoreDocs.forEach((fDoc) => {
             if (fDoc && fDoc.id && !deletedIds.has(fDoc.id)) {
               const existing = docsMap.get(fDoc.id);
@@ -485,7 +649,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         console.warn('Firestore documents fetch note:', fErr);
       }
 
-      // 3. Sync with server fallback (PostgreSQL Cloud SQL)
       try {
         const res = await fetch('/api/documents?all=true');
         if (res.ok) {
@@ -517,49 +680,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         console.warn('Server documents sync note:', sErr);
       }
 
-      // 4. Sync with Supabase "materials" table (public read for unauthenticated visitors — source of truth)
-      try {
-        const supaMaterials = await fetchMaterialsFromSupabaseTable(force);
-        if (Array.isArray(supaMaterials) && supaMaterials.length > 0) {
-          const currentDeleted = getDeletedDocIds();
-          supaMaterials.forEach((m: any) => {
-            if (m && m.id && !currentDeleted.has(m.id)) {
-              const existing = docsMap.get(m.id);
-              const resolvedDownloadUrl =
-                m.download_url ||
-                m.file_url ||
-                (existing?.downloadUrl && String(existing.downloadUrl).startsWith('http')
-                  ? existing.downloadUrl
-                  : `/api/documents/files/${m.id}`);
-              docsMap.set(m.id, {
-                id: m.id,
-                title: m.title || existing?.title || 'Engineering Document',
-                fileName: m.file_name || existing?.fileName || 'document.pdf',
-                fileSize: m.file_size || existing?.fileSize || 'Standard',
-                fileType: m.file_type || existing?.fileType || 'PDF',
-                category: m.category || existing?.category || 'Technical Drawing',
-                description: sanitizeDocumentDescription(m.description || existing?.description || ''),
-                author: m.author || existing?.author || 'Festus, Olorunsogo Johnson (Owner)',
-                uploaderName: m.author || existing?.uploaderName || 'Festus, Olorunsogo Johnson (Owner)',
-                uploaderType: 'owner',
-                status: 'approved',
-                uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
-                downloadCount: m.download_count || 0,
-                tags: Array.isArray(m.tags) && m.tags.length > 0 ? m.tags : ['Engineering'],
-                previewUrl: m.preview_url || existing?.previewUrl,
-                downloadUrl: resolvedDownloadUrl,
-                dataUrl: existing?.dataUrl,
-                hasServerFile: true,
-                isCustomUpload: true,
-                ...(m.storage_path ? { storagePath: m.storage_path } : {}),
-              });
-            }
-          });
-        }
-      } catch (supaErr) {
-        console.warn('Supabase materials sync note:', supaErr);
-      }
-
       const activeDeleted = getDeletedDocIds();
       const combined = Array.from(docsMap.values()).filter((d) => d && d.id && !activeDeleted.has(d.id));
       const sorted = sortDocumentsDescending(combined);
@@ -581,12 +701,37 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   useEffect(() => {
     loadDocuments();
 
-    // Attach Firestore real-time listener for instant synchronization across all visitors
+    // Attach Firestore real-time listener (never resurrects docs removed from authoritative Supabase table)
     const unsubscribeFirestore = subscribeToHubDocuments(
       (firestoreDocs) => {
         if (Array.isArray(firestoreDocs)) {
           const currentDeleted = getDeletedDocIds();
           setDocuments((prev) => {
+            if (hasAuthoritativeSupabaseRef.current) {
+              // Only update metadata (like downloadCount) for documents that are currently live
+              const fMap = new Map<string, PublicEngineeringDocument>();
+              firestoreDocs.forEach((fDoc) => {
+                if (fDoc && fDoc.id && !currentDeleted.has(fDoc.id)) {
+                  fMap.set(fDoc.id, fDoc);
+                }
+              });
+              const updated = prev
+                .filter((d) => d && d.id && !currentDeleted.has(d.id))
+                .map((existing) => {
+                  const fDoc = fMap.get(existing.id);
+                  if (!fDoc) return existing;
+                  return {
+                    ...existing,
+                    downloadCount: Math.max(existing.downloadCount || 0, fDoc.downloadCount || 0),
+                  };
+                });
+              globalHubDocsMemoryCache = updated;
+              try {
+                localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(updated));
+              } catch {}
+              return updated;
+            }
+
             const map = new Map<string, PublicEngineeringDocument>();
             firestoreDocs.forEach((fDoc) => {
               if (fDoc && fDoc.id && !currentDeleted.has(fDoc.id)) {
@@ -607,6 +752,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             globalHubDocsMemoryCache = merged;
             lastHubDocsFetchTimestamp = Date.now();
             saveHubDocumentsPersistently(merged).catch(() => {});
+            try {
+              localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(merged));
+            } catch {}
             return merged;
           });
         }
@@ -643,10 +791,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   }, [previewModalDoc]);
 
   const saveDocumentsToStorage = (updatedDocs: PublicEngineeringDocument[]) => {
-    const sorted = sortDocumentsDescending(updatedDocs);
+    const deleted = getDeletedDocIds();
+    const sorted = sortDocumentsDescending(
+      updatedDocs.filter((d) => d && d.id && !deleted.has(d.id))
+    );
     globalHubDocsMemoryCache = sorted;
     lastHubDocsFetchTimestamp = Date.now();
     setDocuments(sorted);
+    try {
+      localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(sorted));
+    } catch {}
     saveHubDocumentsPersistently(sorted).catch(() => {});
     window.dispatchEvent(new CustomEvent('fesline_hub_docs_updated'));
   };
@@ -951,51 +1105,57 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       showToast('Only the repository owner has permission to delete documents.', 'error');
       return;
     }
+    setIsDeleting(true);
     const targetDoc = documents.find((d) => d.id === id);
     const title = targetDoc?.title || 'Document';
+    const uuidAlias = ensureValidUuid(id);
 
     // 0. Record in persistent deleted set so real-time listeners and refetches never re-add it
     recordDeletedDocId(id);
+    if (uuidAlias && uuidAlias !== id) {
+      recordDeletedDocId(uuidAlias);
+    }
 
-    // 1. Immediately update state
-    const updated = documents.filter((d) => d.id !== id);
+    inMemoryThumbCache.delete(id);
+    try {
+      localStorage.removeItem(`${THUMB_CACHE_PREFIX}${id}`);
+    } catch {}
+
+    // 1. Immediately update state and HUB_CACHE_KEY in localStorage
+    const updated = documents.filter((d) => d.id !== id && d.id !== uuidAlias);
     setDocuments(updated);
     saveDocumentsToStorage(updated);
 
-    // 2. Delete from Firestore and Firebase Storage safely
-    try {
-      deleteHubDocumentFromFirestore(id, (targetDoc as any)?.storagePath).catch((err) => {
-        console.warn('Firestore delete error:', err);
-      });
-    } catch {}
-
-    // 2b. Delete from Supabase materials table and storage bucket safely
-    try {
-      deleteMaterialFromSupabaseTable(id).catch(() => {});
-      if ((targetDoc as any)?.storagePath) {
-        deleteMaterialFromSupabaseBucket((targetDoc as any).storagePath).catch(() => {});
-      }
-    } catch {}
-
-    // 3. Immediately delete from persistent cache
-    try {
-      deleteHubDocumentPersistently(id).catch(() => {});
-    } catch {}
-
-    // 4. Immediately close preview if open
+    // 2. Immediately close preview if open
     if (previewModalDoc?.id === id) {
       setPreviewModalDoc(null);
     }
 
-    // 5. Send delete to backend
+    // 3. Await deletion across Supabase, Firestore, IndexedDB, and CloudSQL backend
     try {
-      fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch((err) => {
-        console.warn('Backend delete note:', err);
-      });
-    } catch {}
+      const storagePath = (targetDoc as any)?.storagePath;
+      const deleteTasks: Promise<any>[] = [
+        deleteMaterialFromSupabaseTable(id),
+        deleteHubDocumentFromFirestore(id, storagePath),
+        deleteHubDocumentPersistently(id),
+        fetch(`/api/documents/${id}`, { method: 'DELETE' }),
+      ];
+      if (storagePath) {
+        deleteTasks.push(deleteMaterialFromSupabaseBucket(storagePath));
+      }
+      const ownerUid = getAuthenticatedOwnerUid();
+      if (ownerUid) {
+        deleteTasks.push(deleteMaterialFromSupabaseBucket(`${ownerUid}/thumbs/${id}.jpg`));
+        deleteTasks.push(deleteMaterialFromSupabaseBucket(`${ownerUid}/thumbs/${id}.webp`));
+        deleteTasks.push(deleteMaterialFromSupabaseBucket(`${ownerUid}/thumbs/${id}.png`));
+      }
+      await Promise.allSettled(deleteTasks);
+    } finally {
+      setIsDeleting(false);
+    }
 
-    // 6. Notify user immediately
-    showToast(`"${title}" deleted successfully.`, 'info');
+    // 4. Notify user
+    showToast(`"${title}" permanently deleted.`, 'info');
   };
 
   const confirmDeleteDocument = async () => {
@@ -1262,45 +1422,54 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative"
                 >
                   {/* Card Top: Full-Fit First Page Preview Thumbnail & Format Badge */}
-                  <div
-                    onClick={() => {
-                      if (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) {
-                        setPreviewModalDoc(doc);
-                      }
-                    }}
-                    className={`relative w-full h-64 sm:h-72 bg-white overflow-hidden border-b border-slate-200 flex items-center justify-center ${
-                      doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) ? 'cursor-pointer' : ''
-                    }`}
-                  >
-                    <EngineeringHubPdfCardThumbnail doc={doc} />
-
-                    {/* Format & Size Badge */}
-                    <div className="absolute top-2 left-2 flex items-center gap-1">
-                      <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
-                        {doc.fileType}
-                      </span>
-                      <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
-                        {doc.fileSize}
-                      </span>
-                    </div>
-
-                    {/* Preview Button */}
-                    <div className="absolute top-2 right-2 flex items-center gap-1">
-                      {doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
+                  {(() => {
+                    const isPdfFile =
+                      doc.fileType?.toUpperCase() === 'PDF' ||
+                      Boolean(doc.fileName && /\.pdf$/i.test(doc.fileName));
+                    const canPreview =
+                      Boolean(doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) || isPdfFile;
+                    return (
+                      <div
+                        onClick={() => {
+                          if (canPreview) {
                             setPreviewModalDoc(doc);
-                          }}
-                          className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
-                          title="View Full Resolution Preview"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                          }
+                        }}
+                        className={`relative w-full h-64 sm:h-72 bg-white overflow-hidden border-b border-slate-200 flex items-center justify-center ${
+                          canPreview ? 'cursor-pointer' : ''
+                        }`}
+                      >
+                        <EngineeringHubPdfCardThumbnail doc={doc} />
+
+                        {/* Format & Size Badge */}
+                        <div className="absolute top-2 left-2 flex items-center gap-1">
+                          <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
+                            {doc.fileType}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
+                            {doc.fileSize}
+                          </span>
+                        </div>
+
+                        {/* Preview Button */}
+                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                          {canPreview && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPreviewModalDoc(doc);
+                              }}
+                              className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
+                              title="View Full Resolution Preview"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Card Middle: Content & Metadata */}
                   <div className="p-4 sm:p-5 space-y-2.5 flex-1 flex flex-col justify-between">
@@ -1698,20 +1867,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             </div>
 
             <div className="flex-1 overflow-auto bg-slate-50 rounded-2xl border border-slate-200 p-2 flex items-center justify-center min-h-[360px]">
-              {previewModalDoc.previewUrl ? (
-                <img
-                  src={previewModalDoc.previewUrl}
-                  alt={previewModalDoc.title}
-                  loading="lazy"
-                  decoding="async"
-                  className="max-h-[60vh] max-w-full object-contain rounded-lg"
-                />
-              ) : (
-                <div className="text-center p-8 space-y-2">
-                  <FileText className="w-16 h-16 text-cyan-600 mx-auto opacity-70" />
-                  <p className="text-sm font-mono text-slate-600">{previewModalDoc.fileName}</p>
-                </div>
-              )}
+              <EngineeringHubModalPreview doc={previewModalDoc} />
             </div>
 
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">

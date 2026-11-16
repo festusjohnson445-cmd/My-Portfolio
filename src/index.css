@@ -264,3 +264,14 @@ html.user-dark-mode .bg-cyan-800 {
   color: #ffffff !important;
 }
 
+html.user-dark-mode .fesline-logo-svg,
+html.dark .fesline-logo-svg {
+  color: #f8fafc !important;
+}
+
+html.user-dark-mode .fesline-logo-subtitle,
+html.dark .fesline-logo-subtitle {
+  color: #38bdf8 !important;
+  border-color: #475569 !important;
+}
+

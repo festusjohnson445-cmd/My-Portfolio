@@ -784,6 +784,8 @@ export async function saveProfileToSupabaseTable(profileData: {
       console.warn('[Supabase DB Profiles Upsert Note]:', error.message);
       return false;
     }
+    cachedProfileData = null;
+    lastProfileFetchTime = 0;
     return true;
   } catch (err: any) {
     console.warn('[Supabase DB Profiles Save Note]:', err?.message || err);
@@ -971,12 +973,14 @@ let lastMaterialsFetchTime = 0;
 const MATERIALS_CACHE_TTL_MS = 3 * 60 * 1000;
 
 /**
- * Fetch public materials from Supabase "materials" table (public for unauthenticated visitors)
- * Cached in-memory to prevent high internet data consumption on repeated navigation
+ * Fetch public materials from Supabase "materials" table with explicit status
+ * so callers can distinguish an authoritative empty list from a network error.
  */
-export async function fetchMaterialsFromSupabaseTable(force = false): Promise<any[]> {
+export async function fetchMaterialsFromSupabaseTableWithStatus(
+  force = false
+): Promise<{ data: any[]; ok: boolean }> {
   if (!force && cachedMaterialsData && Date.now() - lastMaterialsFetchTime < MATERIALS_CACHE_TTL_MS) {
-    return cachedMaterialsData;
+    return { data: cachedMaterialsData, ok: true };
   }
 
   try {
@@ -986,14 +990,23 @@ export async function fetchMaterialsFromSupabaseTable(force = false): Promise<an
       .order('created_at', { ascending: false });
 
     if (error || !data) {
-      return cachedMaterialsData || [];
+      return { data: cachedMaterialsData || [], ok: false };
     }
     cachedMaterialsData = data;
     lastMaterialsFetchTime = Date.now();
-    return data;
+    return { data, ok: true };
   } catch {
-    return cachedMaterialsData || [];
+    return { data: cachedMaterialsData || [], ok: false };
   }
+}
+
+/**
+ * Fetch public materials from Supabase "materials" table (public for unauthenticated visitors)
+ * Cached in-memory to prevent high internet data consumption on repeated navigation
+ */
+export async function fetchMaterialsFromSupabaseTable(force = false): Promise<any[]> {
+  const res = await fetchMaterialsFromSupabaseTableWithStatus(force);
+  return res.data;
 }
 
 /**
@@ -1009,6 +1022,15 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
       .from('materials')
       .delete()
       .eq('id', safeUuid);
+
+    // Also attempt raw ID deletion in case legacy row used non-UUID primary key
+    if (safeUuid !== materialId) {
+      await supabase
+        .from('materials')
+        .delete()
+        .eq('id', materialId)
+        .then(() => {}, () => {});
+    }
 
     if (error) {
       console.warn('[Supabase DB Materials Delete Note]:', error.message);

@@ -82,8 +82,8 @@ import {
 import { ProfilePictureRepositionModal } from './ProfilePictureRepositionModal';
 import { loadAndValidateImageFile, type LoadedImageDetails } from '../utils/imagePipeline';
 import { DocumentTopMedia } from './DocumentTopMedia';
-import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
-import { loadDocumentsPersistently, deleteDocumentPersistently } from '../utils/documentStorage';
+import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
+import { loadDocumentsPersistently, deleteDocumentPersistently, recordDeletedDocId } from '../utils/documentStorage';
 import { SupabaseSettingsModal } from './SupabaseSettingsModal';
 import {
   supabase,
@@ -92,6 +92,7 @@ import {
   getAuthenticatedOwnerUid,
   uploadAvatarToSupabaseBucket,
   uploadMaterialToSupabaseBucket,
+  uploadMaterialThumbnailToBucket,
   SUPABASE_RLS_SCHEMA_SQL,
   isSupabaseConfigured,
   getSupabaseProjectUrl,
@@ -185,6 +186,129 @@ export const ENGINEERING_DEGREES_LIST = [
   'Other Engineering Course / Degree'
 ];
 
+const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
+  const isPdfDoc =
+    Boolean(doc.fileType?.toLowerCase().includes('pdf')) ||
+    Boolean(doc.attachmentDataUrl?.startsWith('data:application/pdf')) ||
+    Boolean(doc.attachmentName && /\.pdf$/i.test(doc.attachmentName)) ||
+    Boolean(doc.attachmentDataUrl && /\.pdf(\?|$)/i.test(doc.attachmentDataUrl));
+
+  const getCachedThumb = () => {
+    if (
+      doc.previewImageDataUrl &&
+      !isMockDrawingPreview(doc.previewImageDataUrl) &&
+      !doc.previewImageDataUrl.endsWith('.pdf')
+    ) {
+      return doc.previewImageDataUrl;
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem(`fesline_profile_thumb_v2_${doc.id}`);
+        if (cached && !isMockDrawingPreview(cached) && !cached.endsWith('.pdf')) {
+          return cached;
+        }
+      } catch {}
+    }
+    if (!isPdfDoc && doc.attachmentDataUrl && !isMockDrawingPreview(doc.attachmentDataUrl)) {
+      return doc.attachmentDataUrl;
+    }
+    return null;
+  };
+
+  const [imgSrc, setImgSrc] = useState<string | null>(getCachedThumb);
+  const [isRendering, setIsRendering] = useState<boolean>(
+    () => !getCachedThumb() && isPdfDoc && Boolean(doc.attachmentDataUrl)
+  );
+  const [renderFailed, setRenderFailed] = useState<boolean>(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const initial = getCachedThumb();
+    if (initial) {
+      setImgSrc(initial);
+      setIsRendering(false);
+      setRenderFailed(false);
+      return;
+    }
+
+    if (isPdfDoc && doc.attachmentDataUrl) {
+      setIsRendering(true);
+      setRenderFailed(false);
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 1100)
+        .then((rendered) => {
+          if (!mounted) return;
+          if (rendered) {
+            setImgSrc(rendered);
+            try {
+              localStorage.setItem(`fesline_profile_thumb_v2_${doc.id}`, rendered);
+            } catch {}
+          } else {
+            setRenderFailed(true);
+          }
+          setIsRendering(false);
+        })
+        .catch(() => {
+          if (mounted) {
+            setRenderFailed(true);
+            setIsRendering(false);
+          }
+        });
+    } else {
+      setImgSrc(null);
+      setIsRendering(false);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, doc.attachmentName, doc.fileType]);
+
+  if (isPdfDoc) {
+    return (
+      <div className="w-full flex flex-col items-center gap-3">
+        {imgSrc ? (
+          <div className="max-h-[68vh] max-w-full overflow-auto rounded-lg shadow-2xl bg-white border border-slate-700 p-2">
+            <img
+              src={imgSrc}
+              alt={doc.title}
+              decoding="async"
+              className="max-h-[64vh] max-w-full object-contain mx-auto"
+            />
+          </div>
+        ) : isRendering ? (
+          <div className="w-full max-w-xl h-72 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-200">
+            <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
+            <span className="text-xs font-sans">Loading document preview...</span>
+          </div>
+        ) : renderFailed || !doc.attachmentDataUrl ? (
+          <div className="w-full max-w-xl h-56 rounded-xl bg-slate-800/60 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-300 p-6 text-center">
+            <FileText className="w-10 h-10 text-cyan-400 opacity-80" />
+            <span className="text-xs">Preview unavailable for this document.</span>
+          </div>
+        ) : null}
+        <span className="text-xs text-slate-400 font-mono">
+          PDF Document · {doc.attachmentName || doc.title}
+        </span>
+      </div>
+    );
+  }
+
+  if (imgSrc) {
+    return (
+      <div className="max-h-[68vh] max-w-full overflow-auto rounded-lg shadow-2xl bg-white border border-slate-700 p-2">
+        <img
+          src={imgSrc}
+          alt={doc.title}
+          decoding="async"
+          className="max-h-[64vh] max-w-full object-contain mx-auto"
+        />
+      </div>
+    );
+  }
+
+  return <div className="p-8 text-slate-400 text-sm">No preview available for this document.</div>;
+};
+
 export const ProfileView: React.FC<ProfileViewProps> = ({
   onResumeClick,
   resumeDownloadCount: initialResumeDownloadCount,
@@ -198,7 +322,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     saveAvatar: syncSaveAvatar,
     resetAvatar: syncResetAvatar,
     saveBio: syncSaveBio,
-    saveDocuments: saveSyncDocuments,
     isOwner: syncIsOwner,
     ownerUid: syncOwnerUid,
     setOwner: syncSetOwner
@@ -254,11 +377,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setEditAvatar(profileAvatar);
     }
   }, [bioData, profileAvatar, isEditingBio]);
-
-  const setDocuments = (updater: DocumentItem[] | ((prev: DocumentItem[]) => DocumentItem[])) => {
-    const current = typeof updater === 'function' ? updater(documents) : updater;
-    saveSyncDocuments(current);
-  };
 
   // Lightbox preview for full image/document view
   const [selectedPreviewDoc, setSelectedPreviewDoc] = useState<DocumentItem | null>(null);
@@ -791,13 +909,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
       if (isPdf) {
         try {
-          const reader = new FileReader();
-          const dataUrl = await new Promise<string>((res) => {
-            reader.onload = (e) => res(e.target?.result as string);
-            reader.readAsDataURL(file);
-          });
-          const resImg = await renderPdfFirstPageToImage(dataUrl, 900);
-          previewImg = resImg || undefined;
+          const buffer = await file.arrayBuffer();
+          const resImg = await renderPdfFirstPageToImage(buffer, 900);
+          if (resImg) {
+            const uploadedThumb = await uploadMaterialThumbnailToBucket(resImg, docId, activeSession.user.id);
+            previewImg = uploadedThumb || resImg;
+            try {
+              localStorage.setItem(`fesline_profile_thumb_v2_${docId}`, previewImg);
+            } catch {}
+          }
         } catch {}
       } else if (isImg) {
         previewImg = publicUrl;
@@ -816,7 +936,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           : d
       );
 
-      setDocuments(updated);
       await saveStoredDocuments(updated);
       showNotification(`File uploaded to Supabase materials bucket and attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
     } catch (err: any) {
@@ -827,13 +946,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleUpdateDocPreview = (docId: string, previewUrl: string) => {
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === docId && !d.previewImageDataUrl
-          ? { ...d, previewImageDataUrl: previewUrl }
-          : d
-      )
-    );
+    // Cache rendered preview locally without firing redundant remote writes
+    try {
+      localStorage.setItem(`fesline_profile_thumb_v2_${docId}`, previewUrl);
+    } catch {}
   };
 
   const handleSaveDocument = async (e: React.FormEvent, uploadAnother = false) => {
@@ -858,6 +974,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       .map((c) => c.trim())
       .filter(Boolean);
 
+    const targetDocId = editingDocId || `doc-${Date.now()}`;
     let finalAttachmentUrl = docAttachmentDataUrl;
     let finalPreviewUrl = docPreviewImageDataUrl;
 
@@ -874,8 +991,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
         if (uploadRes && uploadRes.publicUrl) {
           finalAttachmentUrl = uploadRes.publicUrl;
-          if (docSelectedFile.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(docSelectedFile.name)) {
+          const lowerName = docSelectedFile.name.toLowerCase();
+          if (docSelectedFile.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(lowerName)) {
             finalPreviewUrl = uploadRes.publicUrl;
+          } else if (docSelectedFile.type === 'application/pdf' || lowerName.endsWith('.pdf')) {
+            if (!finalPreviewUrl || !finalPreviewUrl.startsWith('data:image/')) {
+              try {
+                const buf = await docSelectedFile.arrayBuffer();
+                finalPreviewUrl = (await renderPdfFirstPageToImage(buf, 900)) || undefined;
+              } catch {}
+            }
           }
         } else {
           throw new Error('Supabase Storage did not return a public download URL.');
@@ -886,6 +1011,27 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         setDocFormError(`Upload to Supabase Storage failed: ${err?.message || 'Storage error'}`);
         return;
       }
+    }
+
+    // Upload lightweight Page-1 thumbnail to Supabase "materials" bucket so visitors on any device
+    // immediately get an https:// thumbnail URL instead of stripped inline base64.
+    if (finalPreviewUrl && finalPreviewUrl.startsWith('data:image/')) {
+      try {
+        const uploadedThumb = await uploadMaterialThumbnailToBucket(
+          finalPreviewUrl,
+          targetDocId,
+          activeSession.user.id
+        );
+        if (uploadedThumb) {
+          finalPreviewUrl = uploadedThumb;
+        }
+      } catch {}
+    }
+
+    if (finalPreviewUrl && !isMockDrawingPreview(finalPreviewUrl)) {
+      try {
+        localStorage.setItem(`fesline_profile_thumb_v2_${targetDocId}`, finalPreviewUrl);
+      } catch {}
     }
 
     // Avoid persisting oversized base64 binary blobs when a remote URL exists
@@ -918,14 +1064,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               }
             : d
         );
-        setDocuments(updated);
         await saveStoredDocuments(updated);
         showNotification(`Document "${effectiveTitle}" updated successfully!`);
         setIsDocumentModalOpen(false);
       } else {
         // Create new document
         const newDoc: DocumentItem = {
-          id: `doc-${Date.now()}`,
+          id: targetDocId,
           title: effectiveTitle,
           issuer: effectiveIssuer,
           credentialId: docCredentialId.trim() || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -943,8 +1088,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           verifiedLink: docVerifiedLink.trim() || undefined,
         };
 
-        const updated = [newDoc, ...documents];
-        setDocuments(updated);
+        const updated = [newDoc, ...documents.filter((d) => d.id !== targetDocId)];
         await saveStoredDocuments(updated);
         showNotification(`Document "${newDoc.title}" uploaded and saved to Supabase!`);
 
@@ -974,21 +1118,26 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
   };
 
-  const handleDeleteDocument = (id: string, title: string) => {
+  const handleDeleteDocument = async (id: string, title: string) => {
     if (!isOwnerAuthenticated) {
       setIsAuthModalOpen(true);
       return;
     }
+    recordDeletedDocId(id);
+    try {
+      localStorage.removeItem(`fesline_profile_thumb_v2_${id}`);
+    } catch {}
     const updated = documents.filter((d) => d.id !== id);
-    setDocuments(updated);
-    saveStoredDocuments(updated);
-    deleteDocumentPersistently(id).catch(() => {});
-    fetch(`/api/documents/${id}`, { method: 'DELETE' }).catch(() => {});
-    fetch(`/api/profile/documents/${id}`, { method: 'DELETE' }).catch(() => {});
     if (selectedPreviewDoc?.id === id) {
       setSelectedPreviewDoc(null);
     }
-    showNotification(`"${title}" deleted immediately.`);
+    await Promise.allSettled([
+      saveStoredDocuments(updated, [id]),
+      deleteDocumentPersistently(id),
+      fetch(`/api/documents/${id}`, { method: 'DELETE' }),
+      fetch(`/api/profile/documents/${id}`, { method: 'DELETE' }),
+    ]);
+    showNotification(`"${title}" deleted permanently.`);
   };
 
   const isImageAttachment = (doc: DocumentItem) => {
@@ -2338,18 +2487,33 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     </div>
                   )}
 
-                {/* COURSES CERTIFICATES */}
-                {(credentialFilterGroup === 'All' || credentialFilterGroup === 'Courses') &&
-                  courseDocs.length > 0 && (
+                {/* COURSES CERTIFICATES (Only standalone courses in All view, or all courses when Courses tab is active) */}
+                {(() => {
+                  const visibleCourseSectionDocs =
+                    credentialFilterGroup === 'Courses'
+                      ? courseDocs
+                      : courseDocs.filter(
+                          (c) =>
+                            !c.parentSpecializationId ||
+                            !specDocs.some((s) => s.id === c.parentSpecializationId)
+                        );
+                  if (
+                    (credentialFilterGroup !== 'All' && credentialFilterGroup !== 'Courses') ||
+                    visibleCourseSectionDocs.length === 0
+                  ) {
+                    return null;
+                  }
+                  return (
                     <div className="space-y-2.5">
                       <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
                         Course Certificates
                       </h3>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {courseDocs.map((c) => renderDocCard(c))}
+                        {visibleCourseSectionDocs.map((c) => renderDocCard(c))}
                       </div>
                     </div>
-                  )}
+                  );
+                })()}
 
                 {/* STANDALONE OTHER DOCUMENTS */}
                 {credentialFilterGroup === 'All' && otherDocs.length > 0 && (
@@ -2623,42 +2787,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             </div>
 
             <div className="w-full max-h-[75vh] flex items-center justify-center py-4 overflow-auto">
-              {selectedPreviewDoc.previewImageDataUrl || selectedPreviewDoc.attachmentDataUrl ? (
-                isPdfAttachment(selectedPreviewDoc) ? (
-                  <div className="w-full flex flex-col items-center gap-3">
-                    {selectedPreviewDoc.previewImageDataUrl ? (
-                      <div className="max-h-[68vh] max-w-full overflow-auto rounded-lg shadow-2xl bg-white border border-slate-700 p-2">
-                        <img
-                          src={selectedPreviewDoc.previewImageDataUrl}
-                          alt={selectedPreviewDoc.title}
-                          loading="lazy"
-                          decoding="async"
-                          className="max-h-[64vh] max-w-full object-contain mx-auto"
-                        />
-                      </div>
-                    ) : (
-                      <iframe
-                        src={`${selectedPreviewDoc.attachmentDataUrl}#toolbar=1`}
-                        title={selectedPreviewDoc.title}
-                        className="w-full h-[70vh] rounded-xl border border-slate-700 bg-white"
-                      />
-                    )}
-                    <span className="text-xs text-slate-400 font-mono">
-                      PDF Document · {selectedPreviewDoc.attachmentName || selectedPreviewDoc.title}
-                    </span>
-                  </div>
-                ) : (
-                  <img
-                    src={selectedPreviewDoc.previewImageDataUrl || selectedPreviewDoc.attachmentDataUrl}
-                    alt={selectedPreviewDoc.title}
-                    loading="lazy"
-                    decoding="async"
-                    className="max-h-[68vh] max-w-full object-contain rounded-lg shadow-md"
-                  />
-                )
-              ) : (
-                <div className="p-8 text-slate-400 text-sm">No preview available for this document.</div>
-              )}
+              <ProfileDocModalPreview doc={selectedPreviewDoc} />
             </div>
 
             <div className="w-full pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
@@ -3377,7 +3506,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   if (!docToDelete) return;
                   try {
                     setIsDeletingDoc(true);
-                    handleDeleteDocument(docToDelete.id, docToDelete.title);
+                    await handleDeleteDocument(docToDelete.id, docToDelete.title);
                     setDocToDelete(null);
                   } finally {
                     setIsDeletingDoc(false);

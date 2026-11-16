@@ -8,13 +8,44 @@ const DB_VERSION = 2;
 const STORE_NAME = 'documents';
 const HUB_STORE_NAME = 'hub_documents';
 
-// In-memory deleted IDs tombstone set
+// Persistent deleted IDs tombstone set (backed by localStorage + memory)
+const DELETED_DOCS_STORAGE_KEY = 'fesline_deleted_doc_ids_v1';
 const inMemoryDeletedDocIds = new Set<string>();
+let deletedIdsHydrated = false;
+
+function hydrateDeletedDocIds(): void {
+  if (deletedIdsHydrated || typeof window === 'undefined') return;
+  deletedIdsHydrated = true;
+  try {
+    const raw = localStorage.getItem(DELETED_DOCS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((id) => {
+          if (typeof id === 'string' && id.trim()) {
+            inMemoryDeletedDocIds.add(id.trim());
+          }
+        });
+      }
+    }
+  } catch {}
+}
+
+function persistDeletedDocIds(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(
+      DELETED_DOCS_STORAGE_KEY,
+      JSON.stringify(Array.from(inMemoryDeletedDocIds))
+    );
+  } catch {}
+}
 
 /**
- * Retrieve the set of permanently deleted document IDs (in-memory)
+ * Retrieve the set of permanently deleted document IDs
  */
 export function getDeletedDocIds(): Set<string> {
+  hydrateDeletedDocIds();
   return inMemoryDeletedDocIds;
 }
 
@@ -22,7 +53,30 @@ export function getDeletedDocIds(): Set<string> {
  * Record a deleted document ID so it can never be reloaded or resurrected
  */
 export function recordDeletedDocId(id: string): void {
-  inMemoryDeletedDocIds.add(id);
+  if (!id || typeof id !== 'string') return;
+  hydrateDeletedDocIds();
+  const cleanId = id.trim();
+  if (!cleanId) return;
+  if (!inMemoryDeletedDocIds.has(cleanId)) {
+    inMemoryDeletedDocIds.add(cleanId);
+    persistDeletedDocIds();
+  }
+}
+
+/**
+ * Record multiple deleted document IDs in a single persistence pass
+ */
+export function recordDeletedDocIds(ids: string[]): void {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  hydrateDeletedDocIds();
+  let changed = false;
+  ids.forEach((id) => {
+    if (typeof id === 'string' && id.trim() && !inMemoryDeletedDocIds.has(id.trim())) {
+      inMemoryDeletedDocIds.add(id.trim());
+      changed = true;
+    }
+  });
+  if (changed) persistDeletedDocIds();
 }
 
 /**

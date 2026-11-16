@@ -157,7 +157,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             {isRenderingPdf && (
               <span className="inline-flex items-center gap-1 text-[10px] text-cyan-800 font-mono bg-white px-2.5 py-0.5 rounded-full border border-cyan-200 shadow-2xs">
                 <Loader2 className="w-2.5 h-2.5 text-cyan-700 animate-spin" />
-                <span>uploading...</span>
+                <span>Page 1</span>
               </span>
             )}
           </div>

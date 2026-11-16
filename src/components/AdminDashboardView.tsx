@@ -93,7 +93,9 @@ import {
   setOwnerAuthenticated,
   type DocumentItem,
 } from '../utils/profileState';
-import { deleteDocumentPersistently } from '../utils/documentStorage';
+import { deleteDocumentPersistently, recordDeletedDocId } from '../utils/documentStorage';
+import { uploadMaterialThumbnailToBucket, getAuthenticatedOwnerUid } from '../utils/supabase';
+import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import {
   resolveSkillStatus,
   formatSkillStatusLabel,
@@ -571,6 +573,32 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     if (!credTitle.trim()) return;
     const isUpdate = Boolean(credEditingId);
     const id = credEditingId || `doc-${Date.now()}`;
+    const cleanAttachmentUrl = credAttachmentUrl.trim();
+    const isPdfUrl =
+      /\.pdf(\?|$)/i.test(cleanAttachmentUrl) ||
+      /\.pdf$/i.test(credAttachmentName || '');
+    const isImgUrl = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(cleanAttachmentUrl);
+
+    let resolvedPreviewUrl: string | undefined = isImgUrl ? cleanAttachmentUrl : undefined;
+
+    if (isPdfUrl && cleanAttachmentUrl) {
+      try {
+        const rendered = await renderPdfFirstPageToImage(cleanAttachmentUrl, 900);
+        if (rendered) {
+          const ownerUid = getAuthenticatedOwnerUid();
+          const uploadedThumb = await uploadMaterialThumbnailToBucket(
+            rendered,
+            id,
+            ownerUid || undefined
+          );
+          resolvedPreviewUrl = uploadedThumb || rendered;
+          try {
+            localStorage.setItem(`fesline_profile_thumb_v2_${id}`, resolvedPreviewUrl);
+          } catch {}
+        }
+      } catch {}
+    }
+
     const item: DocumentItem = {
       id,
       title: credTitle.trim(),
@@ -580,19 +608,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       category: credCategory,
       credentialGroup: credGroup,
       parentSpecializationId: credGroup === 'Courses' && credParentId ? credParentId : undefined,
+      fileType: isPdfUrl ? 'PDF / Document' : isImgUrl ? 'Image / Scan' : undefined,
       description: credDescription.trim() || credTitle.trim(),
       competencies: [],
-      attachmentDataUrl: credAttachmentUrl.trim() || undefined,
+      attachmentDataUrl: cleanAttachmentUrl || undefined,
       attachmentName: credAttachmentName || undefined,
-      previewImageDataUrl: /\.(png|jpe?g|webp|gif|svg)$/i.test(credAttachmentUrl)
-        ? credAttachmentUrl.trim()
-        : undefined,
+      previewImageDataUrl: resolvedPreviewUrl,
       verifiedLink: credVerifiedLink.trim() || undefined,
     };
 
     const nextDocs = isUpdate
       ? documents.map((d) => (d.id === id ? { ...d, ...item } : d))
-      : [item, ...documents];
+      : [item, ...documents.filter((d) => d.id !== id)];
     await saveDocuments(nextDocs);
     setCredOpen(false);
     setCredEditingId(null);
@@ -1838,9 +1865,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <button
                           type="button"
                           onClick={async () => {
-                            await deleteDocumentPersistently(doc.id).catch(() => {});
-                            await saveDocuments(documents.filter((d) => d.id !== doc.id));
-                            showNotice('Credential removed.');
+                            recordDeletedDocId(doc.id);
+                            try {
+                              localStorage.removeItem(`fesline_profile_thumb_v2_${doc.id}`);
+                            } catch {}
+                            await Promise.allSettled([
+                              deleteDocumentPersistently(doc.id),
+                              saveDocuments(
+                                documents.filter((d) => d.id !== doc.id),
+                                [doc.id]
+                              ),
+                              fetch(`/api/documents/${doc.id}`, { method: 'DELETE' }),
+                              fetch(`/api/profile/documents/${doc.id}`, { method: 'DELETE' }),
+                            ]);
+                            showNotice('Credential permanently deleted.');
                           }}
                           className="p-1 text-rose-600 cursor-pointer"
                         >

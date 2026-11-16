@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { 
   saveDocumentsPersistently, 
   getDeletedDocIds, 
+  recordDeletedDocId,
+  recordDeletedDocIds,
   sortDocumentsDescending 
 } from './documentStorage';
 import {
@@ -59,6 +61,7 @@ export interface ProfileBioData {
   experiences?: any[];
   publications?: any[];
   achievements?: any[];
+  deletedDocIds?: string[];
   // Follow Me Social Links
   linkedinUrl?: string;
   facebookUrl?: string;
@@ -239,6 +242,7 @@ let memoryUpdatedAt: string = '';
 let isSyncingWithServer = false;
 let isRealtimeListenerAttached = false;
 let isProfileHydrated = false;
+let hasAuthoritativeSupabaseProfile = false;
 
 /**
  * Helper to push profile updates to server endpoint as redundant backup
@@ -277,16 +281,21 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
       let firestoreHasData = false;
       let serverPayload: { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] } | null = null;
 
-      // Launch Supabase, Firestore, and server API fetches in parallel so the fastest source renders immediately
-      const supaTask = fetchProfileFromSupabaseTable()
+      // Launch Supabase, Firestore, and server API fetches in parallel
+      const supaTask = fetchProfileFromSupabaseTable(force)
         .then((supaProfile) => {
-          if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length)) {
-            applyPersistentProfile({
-              avatar: supaProfile.avatar_url || dbProfileAvatar(),
-              bio: supaProfile.bio || dbProfileBio(),
-              documents: supaProfile.documents || [],
-              updatedAt: supaProfile.updated_at || new Date().toISOString(),
-            });
+          if (supaProfile) {
+            hasAuthoritativeSupabaseProfile = true;
+            applyPersistentProfile(
+              {
+                avatar: supaProfile.avatar_url || dbProfileAvatar(),
+                bio: supaProfile.bio || dbProfileBio(),
+                documents: Array.isArray(supaProfile.documents) ? supaProfile.documents : [],
+                updatedAt: supaProfile.updated_at || new Date().toISOString(),
+              },
+              true,
+              true
+            );
           }
         })
         .catch((supaFetchErr) => {
@@ -297,7 +306,7 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
         .then((dbProfile) => {
           if (dbProfile && (dbProfile.avatar || dbProfile.bio || (dbProfile.documents && dbProfile.documents.length > 0))) {
             firestoreHasData = true;
-            applyPersistentProfile(dbProfile);
+            applyPersistentProfile(dbProfile, true, false);
           }
         })
         .catch((e) => {
@@ -312,12 +321,16 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
             const { avatar, bio, documents } = json.profile;
             if (avatar || bio || (documents && documents.length > 0)) {
               serverPayload = { avatar, bio, documents };
-              applyPersistentProfile({
-                avatar: avatar || dbProfileAvatar(),
-                bio: bio || dbProfileBio(),
-                documents: documents || [],
-                updatedAt: json.profile.updatedAt || new Date().toISOString(),
-              });
+              applyPersistentProfile(
+                {
+                  avatar: avatar || dbProfileAvatar(),
+                  bio: bio || dbProfileBio(),
+                  documents: documents || [],
+                  updatedAt: json.profile.updatedAt || new Date().toISOString(),
+                },
+                true,
+                false
+              );
             }
           }
         })
@@ -344,7 +357,7 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
         subscribeToProfile(
           (updatedRecord) => {
             if (updatedRecord) {
-              applyPersistentProfile(updatedRecord);
+              applyPersistentProfile(updatedRecord, true, false);
             }
           },
           (err) => console.warn('Realtime subscription notice:', err)
@@ -352,12 +365,23 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
 
         subscribeToSupabaseProfileChanges((supaPayload) => {
           if (supaPayload) {
-            applyPersistentProfile({
-              avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
-              bio: typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio,
-              documents: typeof supaPayload.documents === 'string' ? JSON.parse(supaPayload.documents) : supaPayload.documents,
-              updatedAt: supaPayload.updated_at || new Date().toISOString(),
-            });
+            hasAuthoritativeSupabaseProfile = true;
+            const parsedBio =
+              typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio;
+            const rawDocs =
+              supaPayload.documents !== undefined ? supaPayload.documents : parsedBio?.documents;
+            const parsedDocs =
+              typeof rawDocs === 'string' ? JSON.parse(rawDocs) : rawDocs;
+            applyPersistentProfile(
+              {
+                avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
+                bio: parsedBio,
+                documents: Array.isArray(parsedDocs) ? parsedDocs : [],
+                updatedAt: supaPayload.updated_at || new Date().toISOString(),
+              },
+              true,
+              true
+            );
           }
         });
       }
@@ -409,18 +433,28 @@ function writeDocsToLocalStorageSafe(docs: DocumentItem[]) {
  */
 export function mergeLocalIndexedDbDocuments(localDocs: DocumentItem[]): void {
   if (!Array.isArray(localDocs) || localDocs.length === 0) return;
-  applyPersistentProfile({ documents: localDocs }, true);
+  applyPersistentProfile({ documents: localDocs }, true, false);
 }
 
 /**
- * Apply fetched persistent record to local browser storage and notify subscribers
+ * Apply fetched persistent record to local browser storage and notify subscribers.
+ * When `isAuthoritative` is true (Supabase profiles table), its documents array is
+ * treated as the single source of truth so deleted cards are never resurrected by
+ * stale local caches, Firestore, or local SQL backups.
  */
 function applyPersistentProfile(
   record: PersistentProfileRecord | { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] },
-  shouldNotify = true
+  shouldNotify = true,
+  isAuthoritative = false
 ) {
   let updatedLocally = false;
   const { bio, documents, avatar } = record as any;
+
+  // Sync any cross-browser deleted doc tombstones stored in bio.deletedDocIds
+  if (bio && Array.isArray(bio.deletedDocIds) && bio.deletedDocIds.length > 0) {
+    recordDeletedDocIds(bio.deletedDocIds);
+  }
+  const deletedIds = getDeletedDocIds();
 
   if (avatar !== undefined && typeof avatar === 'string') {
     const cleanAvatar = avatar.trim();
@@ -438,10 +472,18 @@ function applyPersistentProfile(
   }
 
   if (bio && typeof bio === 'object') {
+    const combinedDeleted = Array.from(
+      new Set([
+        ...(memoryBio?.deletedDocIds || []),
+        ...(Array.isArray(bio.deletedDocIds) ? bio.deletedDocIds : []),
+        ...Array.from(deletedIds),
+      ])
+    );
     const mergedBio: ProfileBioData = {
       ...DEFAULT_BIO_DATA,
       ...(memoryBio || {}),
       ...bio,
+      ...(combinedDeleted.length > 0 ? { deletedDocIds: combinedDeleted } : {}),
     };
     if (JSON.stringify(memoryBio) !== JSON.stringify(mergedBio)) {
       memoryBio = mergedBio;
@@ -449,46 +491,95 @@ function applyPersistentProfile(
     }
     try {
       localStorage.setItem(STORAGE_KEY_BIO, JSON.stringify(mergedBio));
-    } catch (e) {
+    } catch {
       // Ignore quota exceeded error
     }
   }
 
   if (Array.isArray(documents)) {
     const currentLocalDocs = getStoredDocuments();
-    const deletedIds = getDeletedDocIds();
-    const mergedMap = new Map<string, DocumentItem>();
-
-    // 1. Add incoming remote docs
-    documents.forEach((d) => {
+    const localMap = new Map<string, DocumentItem>();
+    currentLocalDocs.forEach((d) => {
       if (d && d.id && !deletedIds.has(d.id)) {
-        mergedMap.set(d.id, d);
+        localMap.set(d.id, d);
       }
     });
 
-    // 2. Merge existing local docs
-    currentLocalDocs.forEach((d) => {
-      if (d && d.id && !deletedIds.has(d.id)) {
-        if (!mergedMap.has(d.id)) {
+    const mergedMap = new Map<string, DocumentItem>();
+
+    if (isAuthoritative) {
+      // Supabase is authoritative: only keep documents returned by Supabase (excluding deleted tombstones),
+      // while preserving inline cached attachment/preview data for matching IDs.
+      documents.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id)) {
+          const localMatch = localMap.get(d.id);
+          mergedMap.set(d.id, {
+            ...d,
+            attachmentDataUrl: d.attachmentDataUrl || localMatch?.attachmentDataUrl,
+            previewImageDataUrl: d.previewImageDataUrl || localMatch?.previewImageDataUrl,
+            attachmentName: d.attachmentName || localMatch?.attachmentName,
+            attachmentSize: d.attachmentSize || localMatch?.attachmentSize,
+          });
+        }
+      });
+    } else if (hasAuthoritativeSupabaseProfile) {
+      // Supabase already loaded authoritatively: never allow Firestore / server / IndexedDB
+      // to resurrect cards deleted from Supabase. Only enrich existing documents.
+      currentLocalDocs.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id)) {
           mergedMap.set(d.id, d);
-        } else {
+        }
+      });
+      documents.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id) && mergedMap.has(d.id)) {
           const existing = mergedMap.get(d.id)!;
           mergedMap.set(d.id, {
             ...existing,
-            attachmentDataUrl: d.attachmentDataUrl || existing.attachmentDataUrl,
-            previewImageDataUrl: d.previewImageDataUrl || existing.previewImageDataUrl,
+            attachmentDataUrl: existing.attachmentDataUrl || d.attachmentDataUrl,
+            previewImageDataUrl: existing.previewImageDataUrl || d.previewImageDataUrl,
             attachmentName: existing.attachmentName || d.attachmentName,
             attachmentSize: existing.attachmentSize || d.attachmentSize,
           });
         }
-      }
-    });
+      });
+    } else {
+      // Fallback before Supabase responds or when offline: merge cleanly minus tombstones
+      documents.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id)) {
+          mergedMap.set(d.id, d);
+        }
+      });
+      currentLocalDocs.forEach((d) => {
+        if (d && d.id && !deletedIds.has(d.id)) {
+          if (!mergedMap.has(d.id)) {
+            mergedMap.set(d.id, d);
+          } else {
+            const existing = mergedMap.get(d.id)!;
+            mergedMap.set(d.id, {
+              ...existing,
+              attachmentDataUrl: d.attachmentDataUrl || existing.attachmentDataUrl,
+              previewImageDataUrl: d.previewImageDataUrl || existing.previewImageDataUrl,
+              attachmentName: existing.attachmentName || d.attachmentName,
+              attachmentSize: existing.attachmentSize || d.attachmentSize,
+            });
+          }
+        }
+      });
+    }
 
     const finalDocs = sortDocumentsDescending(Array.from(mergedMap.values()));
     memoryDocuments = finalDocs;
     writeDocsToLocalStorageSafe(finalDocs);
     saveDocumentsPersistently(finalDocs).catch(() => {});
     updatedLocally = true;
+  } else if (deletedIds.size > 0 && Array.isArray(memoryDocuments)) {
+    const filteredMem = memoryDocuments.filter((d) => d && d.id && !deletedIds.has(d.id));
+    if (filteredMem.length !== memoryDocuments.length) {
+      memoryDocuments = filteredMem;
+      writeDocsToLocalStorageSafe(filteredMem);
+      saveDocumentsPersistently(filteredMem).catch(() => {});
+      updatedLocally = true;
+    }
   }
 
   if (updatedLocally && shouldNotify) {
@@ -738,16 +829,18 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
  * Get documents list (Public read for unauthenticated visitors)
  */
 export function getStoredDocuments(): DocumentItem[] {
+  const deletedIds = getDeletedDocIds();
   if (memoryDocuments && Array.isArray(memoryDocuments)) {
-    return memoryDocuments;
+    return memoryDocuments.filter((d) => d && d.id && !deletedIds.has(d.id));
   }
   try {
     const saved = localStorage.getItem(STORAGE_KEY_DOCS);
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        memoryDocuments = parsed;
-        return parsed;
+        const clean = parsed.filter((d: any) => d && d.id && !deletedIds.has(d.id));
+        memoryDocuments = clean;
+        return clean;
       }
     }
   } catch {}
@@ -757,32 +850,64 @@ export function getStoredDocuments(): DocumentItem[] {
 /**
  * Save documents list permanently to Supabase Database (Owner Gated via Supabase Session)
  */
-export async function saveStoredDocuments(docs: DocumentItem[]): Promise<void> {
+export async function saveStoredDocuments(docs: DocumentItem[], extraDeletedIds: string[] = []): Promise<void> {
   // Validate active session
   const { user } = await getValidatedSession();
   const ownerUid = user.id;
 
-  memoryDocuments = docs;
+  if (extraDeletedIds.length > 0) {
+    recordDeletedDocIds(extraDeletedIds);
+  }
+  const deletedIds = getDeletedDocIds();
+
+  // Deduplicate by id and exclude deleted tombstones
+  const uniqueMap = new Map<string, DocumentItem>();
+  (Array.isArray(docs) ? docs : []).forEach((d) => {
+    if (d && d.id && !deletedIds.has(d.id)) {
+      uniqueMap.set(d.id, d);
+    }
+  });
+  const cleanDocs = sortDocumentsDescending(Array.from(uniqueMap.values()));
+
+  memoryDocuments = cleanDocs;
+
+  // Persist tombstone list in bio so all visitor browsers filter deleted IDs cleanly
+  const currentBio = getStoredBio();
+  const mergedDeletedIds = Array.from(
+    new Set([...(currentBio.deletedDocIds || []), ...Array.from(deletedIds), ...extraDeletedIds])
+  );
+  const updatedBio: ProfileBioData = {
+    ...currentBio,
+    deletedDocIds: mergedDeletedIds,
+  };
+  memoryBio = updatedBio;
+  try {
+    localStorage.setItem(STORAGE_KEY_BIO, JSON.stringify(updatedBio));
+  } catch {}
 
   // 1. Optimistic instant local update
-  try {
-    localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(docs));
-  } catch (err) {
-    console.warn('LocalStorage save quota note for docs:', err);
-  }
-  
+  writeDocsToLocalStorageSafe(cleanDocs);
+
   // Persist to IndexedDB asynchronously for large attachments
-  saveDocumentsPersistently(docs).catch((e) => console.warn('Persistent storage failed:', e));
+  saveDocumentsPersistently(cleanDocs).catch((e) => console.warn('Persistent storage failed:', e));
   notifyProfileUpdated();
 
   // 2. Persist to Supabase with owner UID
-  await saveProfileToSupabaseTable({ documents: docs }, ownerUid);
+  await saveProfileToSupabaseTable(
+    {
+      fullName: updatedBio.fullName,
+      header: updatedBio.header,
+      bioData: updatedBio,
+      documents: cleanDocs,
+    },
+    ownerUid
+  );
 
   // 3. Backup to Firestore & Server
   try {
     await Promise.allSettled([
-      saveProfileToFirestore({ documents: docs }),
-      pushProfileToServer({ documents: docs }),
+      saveProfileToFirestore({ bio: updatedBio, documents: cleanDocs }),
+      pushProfileToServer({ bio: updatedBio, documents: cleanDocs }),
     ]);
   } catch (err) {
     console.warn('Backup database save note:', err);
