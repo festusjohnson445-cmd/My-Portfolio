@@ -24,6 +24,7 @@ import {
 import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
+  prewarmPortfolioCaches,
 } from './utils/portfolioSupabase';
 
 export default function App() {
@@ -46,24 +47,29 @@ export default function App() {
         if (error) {
           console.warn('[Supabase Initial Session Check]:', error.message);
         }
-        if (isRealOwnerUser(session?.user)) {
+        const ownerActive = isRealOwnerUser(session?.user);
+        if (ownerActive) {
           setOwnerAuthenticated(true, session?.user?.id);
         } else {
           setOwnerAuthenticated(false);
         }
+        prewarmPortfolioCaches(ownerActive).catch(() => {});
       })
       .catch(() => {
         setOwnerAuthenticated(false);
+        prewarmPortfolioCaches(false).catch(() => {});
       });
 
     const {
       data: { subscription },
     } = onSupabaseAuthStateChange((_event, session) => {
-      if (isRealOwnerUser(session?.user)) {
+      const ownerActive = isRealOwnerUser(session?.user);
+      if (ownerActive) {
         setOwnerAuthenticated(true, session?.user?.id);
       } else {
         setOwnerAuthenticated(false);
       }
+      prewarmPortfolioCaches(ownerActive).catch(() => {});
     });
 
     return () => {
@@ -320,7 +326,7 @@ export default function App() {
             activePart === 'projects' ? 'flex' : 'hidden'
           }`}
         >
-          {activePart === 'projects' && <ProjectsView />}
+          <ProjectsView />
         </section>
 
         {/* BLOG / ARTICLES (ENGINEERING ARTICLES) */}
@@ -330,7 +336,7 @@ export default function App() {
             activePart === 'articles' ? 'flex' : 'hidden'
           }`}
         >
-          {activePart === 'articles' && <ArticlesView />}
+          <ArticlesView />
         </section>
 
         {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER) */}
@@ -340,9 +346,7 @@ export default function App() {
             activePart === 'admin' ? 'flex' : 'hidden'
           }`}
         >
-          {activePart === 'admin' && (
-            <AdminDashboardView onNavigatePart={handleSelectPart} />
-          )}
+          <AdminDashboardView onNavigatePart={handleSelectPart} />
         </section>
       </main>
 

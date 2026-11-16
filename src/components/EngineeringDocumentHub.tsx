@@ -72,6 +72,7 @@ import {
   deleteMaterialFromSupabaseTable,
   subscribeToSupabaseMaterialsChanges,
   getAuthenticatedOwnerUid,
+  ensureValidUuid,
 } from '../utils/supabase';
 import { PortfolioPart } from './Navbar';
 
@@ -785,7 +786,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             .map((t) => t.trim())
             .filter(Boolean);
 
-          const docId = `doc-${Date.now()}-${i}`;
+          const docId =
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : ensureValidUuid(`doc-${Date.now()}-${i}-${item.file.name}`);
           const timestamp = Date.now() + i;
 
           // Upload lightweight PDF Page-1 thumbnail (~25KB) to bucket so visitors avoid downloading full PDFs just to view cards

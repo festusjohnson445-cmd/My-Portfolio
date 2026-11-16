@@ -7,9 +7,7 @@ import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import compression from 'compression';
 import crypto from 'crypto';
-import sharp from 'sharp';
 import multer from 'multer';
-import ffmpegStatic from 'ffmpeg-static';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   getGlobalProfileFromDb,
@@ -38,6 +36,11 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Instant health check endpoint
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, status: 'ok', port: Number(PORT), timestamp: new Date().toISOString() });
+});
 
 // Enable Gzip and Brotli compression for fast loading and reduced bandwidth
 app.use(compression({
@@ -1181,11 +1184,13 @@ const videoUpload = multer({
 interface VideoOptimizationJob {
   jobId: string;
   bucket: string;
-  status: 'queued' | 'processing' | 'uploading' | 'completed' | 'failed';
+  storagePath?: string;
+  status: 'queued' | 'processing' | 'uploading' | 'ready_for_client_upload' | 'completed' | 'failed';
   progress: number;
   stage: string;
   publicUrl?: string;
-  storagePath?: string;
+  directUploadUrl?: string;
+  localOutPath?: string;
   fileName?: string;
   fileSize?: string;
   bytes?: number;
@@ -1200,7 +1205,12 @@ const videoJobs = new Map<string, VideoOptimizationJob>();
 setInterval(() => {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
   for (const [id, job] of videoJobs.entries()) {
-    if (job.createdAt < cutoff) videoJobs.delete(id);
+    if (job.createdAt < cutoff) {
+      if (job.localOutPath) {
+        safeUnlink(job.localOutPath).catch(() => {});
+      }
+      videoJobs.delete(id);
+    }
   }
 }, 15 * 60 * 1000).unref?.();
 
@@ -1213,16 +1223,24 @@ function formatMediaBytes(bytes: number): string {
 let cachedFfmpegInfo: { bin: string; ffprobeBin: string; hasSvtAv1: boolean; hasAomAv1: boolean } | null = null;
 async function getFfmpegCapabilities() {
   if (cachedFfmpegInfo) return cachedFfmpegInfo;
-  const bin = ffmpegStatic && fs.existsSync(ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
+  let ffmpegPath = 'ffmpeg';
+  try {
+    const mod = await import('ffmpeg-static');
+    const candidate = mod.default || (mod as any);
+    if (typeof candidate === 'string' && fs.existsSync(candidate)) {
+      ffmpegPath = candidate;
+    }
+  } catch {}
+
   const ffprobeBin = 'ffprobe';
   let hasSvtAv1 = false;
   let hasAomAv1 = false;
   try {
-    const { stdout } = await execFileAsync(bin, ['-encoders'], { timeout: 10000 });
+    const { stdout } = await execFileAsync(ffmpegPath, ['-encoders'], { timeout: 10000 });
     hasSvtAv1 = /\blibsvtav1\b/.test(stdout);
     hasAomAv1 = /\blibaom-av1\b/.test(stdout);
   } catch {}
-  cachedFfmpegInfo = { bin, ffprobeBin, hasSvtAv1, hasAomAv1 };
+  cachedFfmpegInfo = { bin: ffmpegPath, ffprobeBin, hasSvtAv1, hasAomAv1 };
   return cachedFfmpegInfo;
 }
 
@@ -1244,6 +1262,30 @@ async function cleanupPassLogs(prefix: string) {
         .map((f) => safeUnlink(path.join(dir, f)))
     );
   } catch {}
+}
+
+function runMulterSingle(
+  uploadMw: express.RequestHandler,
+  req: express.Request,
+  res: express.Response
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    uploadMw(req, res, (err: any) => {
+      if (err) {
+        console.error('[Media Multer Upload Error]:', err);
+        const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+        if (!res.headersSent) {
+          res.status(status).json({
+            success: false,
+            message: err?.message || 'Multipart upload failed.',
+          });
+        }
+        resolve(false);
+        return;
+      }
+      resolve(true);
+    });
+  });
 }
 
 function resolveSupabaseHeaders(req: express.Request) {
@@ -1295,7 +1337,10 @@ async function uploadMediaToSupabaseStorage(params: {
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => resp.statusText);
-    throw new Error(`Supabase storage upload (${params.bucket}) failed (${resp.status}): ${errText}`);
+    const err: any = new Error(`Supabase storage upload (${params.bucket}) failed (${resp.status}): ${errText}`);
+    err.statusCode = resp.status;
+    err.isRlsOrAuth = resp.status === 400 || resp.status === 401 || resp.status === 403 || /row-level security|unauthorized|accessdenied/i.test(errText);
+    throw err;
   }
 
   return `${params.supabaseUrl}/storage/v1/object/public/${encodeURIComponent(params.bucket)}/${encodedPath}`;
@@ -1364,6 +1409,7 @@ async function processVideoJobAsync(params: {
   const baseStem = params.originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
   const outPath = path.join(MEDIA_TEMP_DIR, `out_${params.jobId}.mp4`);
   const passLogPrefix = path.join(MEDIA_TEMP_DIR, `passlog_${params.jobId}`);
+  let keepOutFileForClient = false;
 
   try {
     job.status = 'processing';
@@ -1383,47 +1429,72 @@ async function processVideoJobAsync(params: {
       'unsharp=5:5:0.35:5:5:0.0',
     ].join(',');
 
-    const encoderArgs = hasSvtAv1
+    const audioArgs = meta.hasAudio ? ['-c:a', 'libopus', '-b:a', '80k'] : ['-an'];
+
+    const primaryEncoderArgs = hasSvtAv1
       ? ['-c:v', 'libsvtav1', '-crf', '34', '-preset', '5', '-pix_fmt', 'yuv420p']
       : hasAomAv1
-      ? ['-c:v', 'libaom-av1', '-crf', '34', '-b:v', '0', '-cpu-used', '6', '-row-mt', '1', '-pix_fmt', 'yuv420p']
+      ? ['-c:v', 'libaom-av1', '-crf', '34', '-b:v', '0', '-cpu-used', '8', '-row-mt', '1', '-tiles', '2x2', '-pix_fmt', 'yuv420p']
       : ['-c:v', 'libx264', '-crf', '28', '-preset', 'medium', '-pix_fmt', 'yuv420p'];
 
     job.progress = 28;
     job.stage = hasSvtAv1
       ? 'Encoding Pass 1/2 (SVT-AV1 perceptual analysis)...'
-      : 'Encoding Pass 1/2 (AV1 perceptual analysis)...';
+      : hasAomAv1
+      ? 'Encoding Pass 1/2 (AV1 perceptual analysis)...'
+      : 'Encoding Pass 1/2 (video perceptual analysis)...';
 
-    // 2-Pass Encoding — Pass 1
-    await runProcess(bin, [
-      '-y',
-      '-i', params.rawPath,
-      '-vf', vfChain,
-      ...encoderArgs,
-      '-pass', '1',
-      '-passlogfile', passLogPrefix,
-      '-an',
-      '-f', 'mp4',
-      '/dev/null',
-    ]);
+    let encodedOk = false;
+    try {
+      // 2-Pass Encoding — Pass 1
+      await runProcess(bin, [
+        '-y',
+        '-i', params.rawPath,
+        '-vf', vfChain,
+        ...primaryEncoderArgs,
+        '-pass', '1',
+        '-passlogfile', passLogPrefix,
+        '-an',
+        '-f', 'mp4',
+        process.platform === 'win32' ? 'NUL' : '/dev/null',
+      ]);
 
-    job.progress = 62;
-    job.stage = 'Encoding Pass 2/2 (AV1 + 80kbps Opus audio)...';
+      job.progress = 62;
+      job.stage = 'Encoding Pass 2/2 (AV1 + 80kbps Opus audio)...';
 
-    const audioArgs = meta.hasAudio ? ['-c:a', 'libopus', '-b:a', '80k'] : ['-an'];
+      // 2-Pass Encoding — Pass 2
+      await runProcess(bin, [
+        '-y',
+        '-i', params.rawPath,
+        '-vf', vfChain,
+        ...primaryEncoderArgs,
+        '-pass', '2',
+        '-passlogfile', passLogPrefix,
+        ...audioArgs,
+        '-movflags', '+faststart',
+        outPath,
+      ]);
+      encodedOk = true;
+    } catch (twoPassErr: any) {
+      console.warn(`[Video Pipeline] 2-pass retry note for job ${params.jobId}:`, twoPassErr?.message);
+    }
 
-    // 2-Pass Encoding — Pass 2
-    await runProcess(bin, [
-      '-y',
-      '-i', params.rawPath,
-      '-vf', vfChain,
-      ...encoderArgs,
-      '-pass', '2',
-      '-passlogfile', passLogPrefix,
-      ...audioArgs,
-      '-movflags', '+faststart',
-      outPath,
-    ]);
+    if (!encodedOk) {
+      job.progress = 48;
+      job.stage = 'Optimizing video stream (adaptive fallback)...';
+      await runProcess(bin, [
+        '-y',
+        '-i', params.rawPath,
+        '-vf', vfChain,
+        '-c:v', 'libx264',
+        '-crf', '28',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
+        ...(meta.hasAudio ? ['-c:a', 'aac', '-b:a', '96k'] : ['-an']),
+        '-movflags', '+faststart',
+        outPath,
+      ]);
+    }
 
     job.status = 'uploading';
     job.progress = 88;
@@ -1433,25 +1504,41 @@ async function processVideoJobAsync(params: {
     const finalFileName = `${baseStem}.mp4`;
     const storagePath = `${params.folderPrefix || 'videos'}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
 
-    const publicUrl = await uploadMediaToSupabaseStorage({
-      supabaseUrl: params.supabaseUrl,
-      anonKey: params.anonKey,
-      authHeader: params.authHeader,
-      bucket: params.bucket,
-      storagePath,
-      data: finalBuffer,
-      contentType: 'video/mp4',
-    });
+    try {
+      const publicUrl = await uploadMediaToSupabaseStorage({
+        supabaseUrl: params.supabaseUrl,
+        anonKey: params.anonKey,
+        authHeader: params.authHeader,
+        bucket: params.bucket,
+        storagePath,
+        data: finalBuffer,
+        contentType: 'video/mp4',
+      });
 
-    job.status = 'completed';
-    job.progress = 100;
-    job.stage = 'Completed';
-    job.publicUrl = publicUrl;
-    job.storagePath = storagePath;
-    job.fileName = finalFileName;
-    job.bytes = finalBuffer.length;
-    job.originalBytes = params.originalSize;
-    job.fileSize = formatMediaBytes(finalBuffer.length);
+      job.status = 'completed';
+      job.progress = 100;
+      job.stage = 'Completed';
+      job.publicUrl = publicUrl;
+      job.storagePath = storagePath;
+      job.fileName = finalFileName;
+      job.bytes = finalBuffer.length;
+      job.originalBytes = params.originalSize;
+      job.fileSize = formatMediaBytes(finalBuffer.length);
+    } catch (storageErr: any) {
+      // Hand off compressed MP4 to authenticated client session if server-side storage upload hit RLS
+      keepOutFileForClient = true;
+      job.localOutPath = outPath;
+      job.storagePath = storagePath;
+      job.fileName = finalFileName;
+      job.bytes = finalBuffer.length;
+      job.originalBytes = params.originalSize;
+      job.fileSize = formatMediaBytes(finalBuffer.length);
+      job.directUploadUrl = `/api/media/job-file/${encodeURIComponent(params.jobId)}`;
+      job.status = 'ready_for_client_upload';
+      job.progress = 94;
+      job.stage = `Optimized (${job.fileSize}). Finalizing storage upload...`;
+      console.info(`[Video Pipeline Job ${params.jobId}] Handing off compressed video to authenticated client:`, storageErr?.message);
+    }
   } catch (err: any) {
     console.error(`[Video Pipeline Error Job ${params.jobId}]:`, err);
     job.status = 'failed';
@@ -1459,13 +1546,18 @@ async function processVideoJobAsync(params: {
     job.error = err?.message || 'Video transcoding or upload failed.';
   } finally {
     await safeUnlink(params.rawPath);
-    await safeUnlink(outPath);
+    if (!keepOutFileForClient) {
+      await safeUnlink(outPath);
+    }
     await cleanupPassLogs(passLogPrefix);
   }
 }
 
 // Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1920px, AVIF q=75 -> upload to Supabase bucket
-app.post('/api/media/optimize-image', imageUpload.single('file'), async (req, res) => {
+app.post('/api/media/optimize-image', async (req, res) => {
+  const ok = await runMulterSingle(imageUpload.single('file'), req, res);
+  if (!ok) return;
+
   const file = req.file;
   if (!file) {
     return res.status(400).json({ success: false, message: 'No image file provided.' });
@@ -1489,8 +1581,10 @@ app.post('/api/media/optimize-image', imageUpload.single('file'), async (req, re
       outMime = 'image/svg+xml';
       outExt = '.svg';
     } else {
+      const sharpMod = await import('sharp');
+      const sharpFn = sharpMod.default || (sharpMod as any);
       // Auto-rotate per EXIF, strip EXIF metadata (default when withMetadata() is not called), resize max 1920w without upscaling, convert to AVIF q75
-      outBuffer = await sharp(rawBuffer)
+      outBuffer = await sharpFn(rawBuffer)
         .rotate()
         .resize({ width: 1920, withoutEnlargement: true })
         .avif({ quality: 75 })
@@ -1501,29 +1595,45 @@ app.post('/api/media/optimize-image', imageUpload.single('file'), async (req, re
     const finalFileName = `${baseStem}${outExt}`;
     const storagePath = `${folderPrefix}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
 
-    const publicUrl = await uploadMediaToSupabaseStorage({
-      supabaseUrl,
-      anonKey,
-      authHeader,
-      bucket,
-      storagePath,
-      data: outBuffer,
-      contentType: outMime,
-    });
+    try {
+      const publicUrl = await uploadMediaToSupabaseStorage({
+        supabaseUrl,
+        anonKey,
+        authHeader,
+        bucket,
+        storagePath,
+        data: outBuffer,
+        contentType: outMime,
+      });
 
-    res.json({
-      success: true,
-      publicUrl,
-      storagePath,
-      fileName: finalFileName,
-      fileSize: formatMediaBytes(outBuffer.length),
-      mimeType: outMime,
-      originalBytes: file.size,
-      optimizedBytes: outBuffer.length,
-    });
+      return res.json({
+        success: true,
+        publicUrl,
+        storagePath,
+        fileName: finalFileName,
+        fileSize: formatMediaBytes(outBuffer.length),
+        mimeType: outMime,
+        originalBytes: file.size,
+        optimizedBytes: outBuffer.length,
+      });
+    } catch (storageErr: any) {
+      // Return optimized AVIF bytes so authenticated frontend client completes Supabase bucket upload directly
+      return res.json({
+        success: true,
+        directUploadRequired: true,
+        optimizedBase64: outBuffer.toString('base64'),
+        mimeType: outMime,
+        storagePath,
+        fileName: finalFileName,
+        fileSize: formatMediaBytes(outBuffer.length),
+        originalBytes: file.size,
+        optimizedBytes: outBuffer.length,
+        serverNotice: storageErr?.message || 'Client storage upload handoff',
+      });
+    }
   } catch (err: any) {
     console.error('[Image Optimization Error]:', err);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: err?.message || 'Image optimization failed.',
     });
@@ -1533,7 +1643,10 @@ app.post('/api/media/optimize-image', imageUpload.single('file'), async (req, re
 });
 
 // Enqueue background AV1 + Opus video optimization job so request never times out
-app.post('/api/media/optimize-video', videoUpload.single('file'), async (req, res) => {
+app.post('/api/media/optimize-video', async (req, res) => {
+  const ok = await runMulterSingle(videoUpload.single('file'), req, res);
+  if (!ok) return;
+
   const file = req.file;
   if (!file) {
     return res.status(400).json({ success: false, message: 'No video file provided.' });
@@ -1587,7 +1700,36 @@ app.get('/api/media/jobs/:jobId', (req, res) => {
   if (!job) {
     return res.status(404).json({ success: false, message: 'Video processing job not found or expired.' });
   }
-  res.json({ success: true, job });
+  const { localOutPath: _omit, ...publicJob } = job;
+  res.json({ success: true, job: publicJob });
+});
+
+// Stream optimized AV1 video to authenticated client when server-side storage handoff is needed
+app.get('/api/media/job-file/:jobId', async (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job || !job.localOutPath || !fs.existsSync(job.localOutPath)) {
+    return res.status(404).json({ success: false, message: 'Optimized video file not found.' });
+  }
+  const filePath = job.localOutPath;
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(job.fileName || 'video.mp4')}"`);
+  const stream = fs.createReadStream(filePath);
+  stream.on('close', () => {
+    safeUnlink(filePath).catch(() => {});
+    job.localOutPath = undefined;
+  });
+  stream.pipe(res);
+});
+
+// Global JSON error handler for all /api/* routes so Express never emits HTML 500 pages
+app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[API Error Handler]:', err);
+  if (res.headersSent) return;
+  const status = err?.statusCode || err?.status || 500;
+  res.status(status >= 400 && status < 600 ? status : 500).json({
+    success: false,
+    message: err?.message || 'Internal server error.',
+  });
 });
 
 async function startServer() {
@@ -1626,7 +1768,7 @@ async function startServer() {
   } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, host: '0.0.0.0', port: 3000 },
+      server: { middlewareMode: true, hmr: false, watch: null },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1634,15 +1776,21 @@ async function startServer() {
 
   // Only start listening if not running under Vercel serverless runtime
   if (process.env.VERCEL !== '1') {
-    app.listen(Number(PORT), '0.0.0.0', () => {
+    const httpServer = app.listen(Number(PORT), '0.0.0.0', () => {
       console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    });
+    httpServer.on('error', (err: any) => {
+      console.error(`[HTTP Server Error on port ${PORT}]:`, err?.message || err);
     });
   }
 }
 
 // Auto-start in non-serverless environments
 if (process.env.VERCEL !== '1') {
-  startServer();
+  startServer().catch((err) => {
+    console.error('[Failed to start server]:', err);
+    process.exit(1);
+  });
 }
 
 export default app;

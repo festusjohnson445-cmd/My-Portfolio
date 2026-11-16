@@ -925,9 +925,10 @@ export async function saveMaterialToSupabaseTable(material: {
     const ownerUid = uid || user.id;
 
     const publicUrl = material.downloadUrl || material.fileUrl || null;
+    const safeMaterialUuid = ensureValidUuid(material.id);
 
     const payload: any = {
-      id: material.id,
+      id: safeMaterialUuid,
       owner_id: ownerUid,
       title: material.title,
       file_name: material.fileName,
@@ -1003,10 +1004,11 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
     try {
       await getValidatedSession();
     } catch {}
+    const safeUuid = ensureValidUuid(materialId);
     const { error } = await supabase
       .from('materials')
       .delete()
-      .eq('id', materialId);
+      .eq('id', safeUuid);
 
     if (error) {
       console.warn('[Supabase DB Materials Delete Note]:', error.message);

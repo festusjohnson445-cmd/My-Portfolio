@@ -67,6 +67,7 @@ import {
   resetStoredAvatar,
   saveStoredBio,
   saveStoredDocuments,
+  mergeLocalIndexedDbDocuments,
   setOwnerAuthenticated,
   compressImage,
   notifyProfileUpdated,
@@ -100,12 +101,15 @@ import {
 } from '../utils/supabase';
 import {
   fetchExperiencesFromSupabase,
+  getCachedExperiences,
   upsertExperienceToSupabase,
   deleteExperienceFromSupabase,
   fetchPublicationsFromSupabase,
+  getCachedPublications,
   upsertPublicationToSupabase,
   deletePublicationFromSupabase,
   fetchAchievementsFromSupabase,
+  getCachedAchievements,
   upsertAchievementToSupabase,
   deleteAchievementFromSupabase,
   useWebsiteSettingsSync,
@@ -288,9 +292,18 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [selectedSpecializationId, setSelectedSpecializationId] = useState<string | null>(null);
 
   // Structured Profile Sections State (Experience, Publications, Achievements & Skills)
-  const [experiences, setExperiences] = useState<ProfileExperience[]>([]);
-  const [publications, setPublications] = useState<ProfilePublication[]>([]);
-  const [achievements, setAchievements] = useState<ProfileAchievement[]>([]);
+  const [experiences, setExperiences] = useState<ProfileExperience[]>(() => {
+    const cached = getCachedExperiences();
+    return cached.length > 0 ? cached : (bioData.experiences as ProfileExperience[]) || [];
+  });
+  const [publications, setPublications] = useState<ProfilePublication[]>(() => {
+    const cached = getCachedPublications();
+    return cached.length > 0 ? cached : (bioData.publications as ProfilePublication[]) || [];
+  });
+  const [achievements, setAchievements] = useState<ProfileAchievement[]>(() => {
+    const cached = getCachedAchievements();
+    return cached.length > 0 ? cached : (bioData.achievements as ProfileAchievement[]) || [];
+  });
   const [isEditingSkillsPanel, setIsEditingSkillsPanel] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState('');
   const [certifiedSkillsDraft, setCertifiedSkillsDraft] = useState<string[]>([]);
@@ -303,23 +316,25 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   }, [bioData.skills, bioData.certifiedSkills, bioData.skillStatuses]);
 
   useEffect(() => {
-    fetchExperiencesFromSupabase().then((ex) => {
-      setExperiences(ex.length > 0 ? ex : (bioData.experiences as ProfileExperience[]) || []);
-    });
-    fetchPublicationsFromSupabase().then((pu) => {
-      setPublications(pu.length > 0 ? pu : (bioData.publications as ProfilePublication[]) || []);
-    });
-    fetchAchievementsFromSupabase().then((ac) => {
-      setAchievements(ac.length > 0 ? ac : (bioData.achievements as ProfileAchievement[]) || []);
-    });
+    Promise.allSettled([
+      fetchExperiencesFromSupabase().then((ex) => {
+        setExperiences(ex.length > 0 ? ex : (bioData.experiences as ProfileExperience[]) || []);
+      }),
+      fetchPublicationsFromSupabase().then((pu) => {
+        setPublications(pu.length > 0 ? pu : (bioData.publications as ProfilePublication[]) || []);
+      }),
+      fetchAchievementsFromSupabase().then((ac) => {
+        setAchievements(ac.length > 0 ? ac : (bioData.achievements as ProfileAchievement[]) || []);
+      }),
+    ]);
   }, [bioData.experiences, bioData.publications, bioData.achievements]);
 
-  // Load persistent documents from IndexedDB on initial mount safely
+  // Load persistent documents from IndexedDB on initial mount without attempting owner-only remote writes
   useEffect(() => {
     loadDocumentsPersistently()
       .then((savedDocs) => {
         if (savedDocs && savedDocs.length > 0) {
-          saveSyncDocuments(savedDocs);
+          mergeLocalIndexedDbDocuments(savedDocs);
         }
       })
       .catch((e) => console.warn('Could not load persistent documents:', e));
@@ -2657,26 +2672,33 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
             <div className="w-full pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-300">
               <span>{selectedPreviewDoc.issuer} · {selectedPreviewDoc.date}</span>
-              {selectedPreviewDoc.attachmentDataUrl ? (
-                <a
-                  href={selectedPreviewDoc.attachmentDataUrl}
-                  download={selectedPreviewDoc.attachmentName || selectedPreviewDoc.title}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download</span>
-                </a>
+              {isOwnerAuthenticated ? (
+                selectedPreviewDoc.attachmentDataUrl ? (
+                  <a
+                    href={selectedPreviewDoc.attachmentDataUrl}
+                    download={selectedPreviewDoc.attachmentName || selectedPreviewDoc.title}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadAttachment(selectedPreviewDoc)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </button>
+                )
               ) : (
-                <button
-                  type="button"
-                  onClick={() => handleDownloadAttachment(selectedPreviewDoc)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-semibold transition-colors cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download</span>
-                </button>
+                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Verified Credential</span>
+                </span>
               )}
             </div>
           </div>

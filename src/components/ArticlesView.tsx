@@ -27,6 +27,9 @@ import {
   moderateCommentInSupabase,
   deleteCommentFromSupabase,
   useWebsiteSettingsSync,
+  getCachedArticles,
+  hasArticlesCacheHydrated,
+  EVENT_ARTICLES_UPDATED,
   type PortfolioArticle,
   type ArticleComment,
 } from '../utils/portfolioSupabase';
@@ -300,8 +303,8 @@ export const ArticlesView: React.FC = () => {
     [customSections]
   );
 
-  const [articles, setArticles] = useState<PortfolioArticle[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [articles, setArticles] = useState<PortfolioArticle[]>(() => getCachedArticles(isOwner));
+  const [loading, setLoading] = useState(() => !hasArticlesCacheHydrated() && getCachedArticles(isOwner).length === 0);
   const [selectedArticle, setSelectedArticle] = useState<PortfolioArticle | null>(null);
 
   const [isPostOpen, setIsPostOpen] = useState(false);
@@ -323,7 +326,9 @@ export const ArticlesView: React.FC = () => {
   const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
 
   const loadArticles = async () => {
-    setLoading(true);
+    if (!hasArticlesCacheHydrated() && articles.length === 0) {
+      setLoading(true);
+    }
     try {
       const data = await fetchArticlesFromSupabase(isOwner);
       setArticles(data);
@@ -334,6 +339,12 @@ export const ArticlesView: React.FC = () => {
 
   useEffect(() => {
     loadArticles();
+    const onUpdated = () => {
+      setArticles(getCachedArticles(isOwner));
+      setLoading(false);
+    };
+    window.addEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
+    return () => window.removeEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
   }, [isOwner]);
 
   useEffect(() => {

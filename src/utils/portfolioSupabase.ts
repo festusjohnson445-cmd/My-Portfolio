@@ -492,7 +492,11 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
     'x-supabase-anon-key': cfg.anonKey,
   };
   try {
-    const { data } = await supabase.auth.getSession();
+    let { data } = await supabase.auth.getSession();
+    if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 60_000) {
+      const refreshed = await supabase.auth.refreshSession().catch(() => null);
+      if (refreshed?.data?.session) data = refreshed.data;
+    }
     if (data?.session?.access_token) {
       headers['Authorization'] = `Bearer ${data.session.access_token}`;
     }
@@ -500,96 +504,117 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-export async function uploadFileToBucket(
-  bucket: 'projects' | 'articles' | 'materials' | 'avatars',
-  file: File,
-  folderPrefix = '',
-  onProgress?: UploadProgressCallback
-): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string }> {
-  // Route Projects & Articles raster images through Sharp AVIF pipeline
-  if ((bucket === 'projects' || bucket === 'articles') && isOptimizableRasterImage(file)) {
-    onProgress?.(25, 'Optimizing image (auto-rotate, strip EXIF, max 1920px, AVIF q=75)...');
-    const authHeaders = await getPipelineAuthHeaders();
-    const formData = new FormData();
-    formData.append('bucket', bucket);
-    formData.append('folderPrefix', folderPrefix || 'images');
-    formData.append('file', file);
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binStr = atob(base64);
+  const len = binStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
 
-    const resp = await fetch('/api/media/optimize-image', {
-      method: 'POST',
-      headers: authHeaders,
-      body: formData,
-    });
-    const json = await resp.json().catch(() => null);
-    if (!resp.ok || !json?.success || !json?.publicUrl) {
-      throw new Error(json?.message || `Image optimization failed (${resp.status}).`);
+async function optimizeImageInBrowserCanvas(
+  file: File
+): Promise<{ blob: Blob; mimeType: string; fileName: string }> {
+  let bitmap: ImageBitmap | HTMLImageElement;
+  let width = 0;
+  let height = 0;
+  let needsCloseBitmap = false;
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      bitmap = bmp;
+      width = bmp.width;
+      height = bmp.height;
+      needsCloseBitmap = true;
+    } catch {
+      const img = await loadHtmlImageFromFile(file);
+      bitmap = img;
+      width = img.naturalWidth || img.width;
+      height = img.naturalHeight || img.height;
     }
-    onProgress?.(100, `Saved optimized AVIF (${json.fileSize})`);
-    return {
-      publicUrl: json.publicUrl,
-      storagePath: json.storagePath,
-      fileName: json.fileName,
-      fileSize: json.fileSize,
+  } else {
+    const img = await loadHtmlImageFromFile(file);
+    bitmap = img;
+    width = img.naturalWidth || img.width;
+    height = img.naturalHeight || img.height;
+  }
+
+  try {
+    if (!width || !height) {
+      return { blob: file, mimeType: file.type || 'image/jpeg', fileName: file.name };
+    }
+    const maxW = 1920;
+    const scale = width > maxW ? maxW / width : 1;
+    const targetW = Math.max(1, Math.round(width * scale));
+    const targetH = Math.max(1, Math.round(height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return { blob: file, mimeType: file.type || 'image/jpeg', fileName: file.name };
+    }
+    ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+
+    // Strip EXIF inherently via canvas redraw; prefer AVIF -> WebP -> JPEG at q=0.75
+    const tryExport = (mime: string) =>
+      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.75));
+
+    const stem = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const avifBlob = await tryExport('image/avif');
+    if (avifBlob && avifBlob.type === 'image/avif' && avifBlob.size > 0) {
+      return { blob: avifBlob, mimeType: 'image/avif', fileName: `${stem}.avif` };
+    }
+    const webpBlob = await tryExport('image/webp');
+    if (webpBlob && webpBlob.type === 'image/webp' && webpBlob.size > 0) {
+      return { blob: webpBlob, mimeType: 'image/webp', fileName: `${stem}.webp` };
+    }
+    const jpegBlob = await tryExport('image/jpeg');
+    if (jpegBlob && jpegBlob.size > 0) {
+      return { blob: jpegBlob, mimeType: 'image/jpeg', fileName: `${stem}.jpg` };
+    }
+    return { blob: file, mimeType: file.type || 'image/jpeg', fileName: file.name };
+  } finally {
+    if (needsCloseBitmap && typeof (bitmap as ImageBitmap).close === 'function') {
+      try {
+        (bitmap as ImageBitmap).close();
+      } catch {}
+    }
+  }
+}
+
+function loadHtmlImageFromFile(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objUrl);
+      resolve(img);
     };
-  }
+    img.onerror = (e) => {
+      URL.revokeObjectURL(objUrl);
+      reject(e);
+    };
+    img.src = objUrl;
+  });
+}
 
-  // Route Projects & Articles videos through Background FFmpeg 2-Pass AV1 + Opus pipeline
-  if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
-    onProgress?.(5, 'Uploading source video for background AV1 optimization...');
-    const authHeaders = await getPipelineAuthHeaders();
-    const formData = new FormData();
-    formData.append('bucket', bucket);
-    formData.append('folderPrefix', folderPrefix || 'videos');
-    formData.append('maxHeight', '1080');
-    formData.append('file', file);
-
-    const startResp = await fetch('/api/media/optimize-video', {
-      method: 'POST',
-      headers: authHeaders,
-      body: formData,
-    });
-    const startJson = await startResp.json().catch(() => null);
-    if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-      throw new Error(startJson?.message || `Failed to queue video optimization (${startResp.status}).`);
-    }
-
-    const jobId: string = startJson.jobId;
-    onProgress?.(startJson.progress || 10, startJson.stage || 'Queued for background AV1 transcode...');
-
-    // Poll background job until completed or failed (no HTTP timeout)
-    const maxWaitMs = 45 * 60 * 1000;
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < maxWaitMs) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`);
-      const statusJson = await statusResp.json().catch(() => null);
-      if (!statusResp.ok || !statusJson?.job) {
-        throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
-      }
-      const job = statusJson.job;
-      onProgress?.(job.progress || 50, job.stage || 'Processing AV1 video...');
-
-      if (job.status === 'completed' && job.publicUrl) {
-        return {
-          publicUrl: job.publicUrl,
-          storagePath: job.storagePath,
-          fileName: job.fileName || file.name,
-          fileSize: job.fileSize || formatBytes(file.size),
-        };
-      }
-      if (job.status === 'failed') {
-        throw new Error(job.error || 'Background video optimization failed.');
-      }
-    }
-    throw new Error('Video optimization job exceeded maximum wait duration.');
-  }
-
-  // Direct Supabase Storage upload for non-raster/non-video assets (PDF, CAD, SVG, materials, avatars)
-  onProgress?.(35, `Uploading ${file.name}...`);
-  const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+async function uploadBlobDirectToBucket(params: {
+  bucket: 'projects' | 'articles' | 'materials' | 'avatars';
+  blob: Blob;
+  fileName: string;
+  contentType: string;
+  folderPrefix?: string;
+  explicitStoragePath?: string;
+}): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string }> {
+  const cleanName = params.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const uniquePrefix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  let ownerPrefix = folderPrefix;
+  let ownerPrefix = params.folderPrefix || '';
   try {
     const { data } = await supabase.auth.getSession();
     if (data?.session?.user && isRealOwnerUser(data.session.user)) {
@@ -598,31 +623,203 @@ export async function uploadFileToBucket(
   } catch {}
 
   const pathParts = [ownerPrefix || 'submissions', `${uniquePrefix}_${cleanName}`].filter(Boolean);
-  const storagePath = pathParts.join('/');
+  const storagePath = params.explicitStoragePath || pathParts.join('/');
 
   const { error: uploadError } = await supabase.storage
-    .from(bucket)
-    .upload(storagePath, file, {
-      contentType: file.type || 'application/octet-stream',
+    .from(params.bucket)
+    .upload(storagePath, params.blob, {
+      contentType: params.contentType || 'application/octet-stream',
       upsert: true,
     });
 
   if (uploadError) {
-    throw new Error(`Storage upload to "${bucket}" failed: ${uploadError.message}`);
+    throw new Error(`Storage upload to "${params.bucket}" failed: ${uploadError.message}`);
   }
 
-  const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+  const { data: pub } = supabase.storage.from(params.bucket).getPublicUrl(storagePath);
   if (!pub?.publicUrl) {
-    throw new Error(`Could not resolve public URL in bucket "${bucket}"`);
+    throw new Error(`Could not resolve public URL in bucket "${params.bucket}"`);
   }
 
-  onProgress?.(100, 'Uploaded');
   return {
     publicUrl: pub.publicUrl,
     storagePath,
-    fileName: file.name,
-    fileSize: formatBytes(file.size),
+    fileName: params.fileName,
+    fileSize: formatBytes(params.blob.size),
   };
+}
+
+export async function uploadFileToBucket(
+  bucket: 'projects' | 'articles' | 'materials' | 'avatars',
+  file: File,
+  folderPrefix = '',
+  onProgress?: UploadProgressCallback
+): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string }> {
+  // Route Projects & Articles raster images through Sharp AVIF pipeline with resilient client handoff & canvas fallback
+  if ((bucket === 'projects' || bucket === 'articles') && isOptimizableRasterImage(file)) {
+    onProgress?.(25, 'Optimizing image (auto-rotate, strip EXIF, max 1920px, AVIF q=75)...');
+    try {
+      const authHeaders = await getPipelineAuthHeaders();
+      const formData = new FormData();
+      formData.append('bucket', bucket);
+      formData.append('folderPrefix', folderPrefix || 'images');
+      formData.append('file', file);
+
+      const resp = await fetch('/api/media/optimize-image', {
+        method: 'POST',
+        headers: authHeaders,
+        body: formData,
+      });
+      const json = await resp.json().catch(() => null);
+
+      if (resp.ok && json?.success) {
+        if (json.publicUrl) {
+          onProgress?.(100, `Saved optimized AVIF (${json.fileSize})`);
+          return {
+            publicUrl: json.publicUrl,
+            storagePath: json.storagePath,
+            fileName: json.fileName,
+            fileSize: json.fileSize,
+          };
+        }
+        if (json.directUploadRequired && json.optimizedBase64) {
+          onProgress?.(75, `Uploading optimized AVIF (${json.fileSize}) to "${bucket}"...`);
+          const avifBlob = base64ToBlob(json.optimizedBase64, json.mimeType || 'image/avif');
+          const uploaded = await uploadBlobDirectToBucket({
+            bucket,
+            blob: avifBlob,
+            fileName: json.fileName || `${file.name}.avif`,
+            contentType: json.mimeType || 'image/avif',
+            folderPrefix: folderPrefix || 'images',
+            explicitStoragePath: json.storagePath,
+          });
+          onProgress?.(100, `Saved optimized AVIF (${uploaded.fileSize})`);
+          return uploaded;
+        }
+      }
+    } catch (serverImgErr) {
+      console.warn('[Image Pipeline] Server optimization unavailable, using client optimizer fallback:', serverImgErr);
+    }
+
+    // Resilient Client-Side EXIF-stripped 1920px Optimization Fallback
+    onProgress?.(55, 'Optimizing image (1920px, EXIF stripped)...');
+    const optimized = await optimizeImageInBrowserCanvas(file);
+    onProgress?.(82, `Uploading optimized image to "${bucket}"...`);
+    const directRes = await uploadBlobDirectToBucket({
+      bucket,
+      blob: optimized.blob,
+      fileName: optimized.fileName,
+      contentType: optimized.mimeType,
+      folderPrefix: folderPrefix || 'images',
+    });
+    onProgress?.(100, `Saved optimized image (${directRes.fileSize})`);
+    return directRes;
+  }
+
+  // Route Projects & Articles videos through Background FFmpeg 2-Pass AV1 + Opus pipeline with resilient fallback
+  if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
+    onProgress?.(8, 'Uploading source video for background AV1 optimization...');
+    try {
+      const authHeaders = await getPipelineAuthHeaders();
+      const formData = new FormData();
+      formData.append('bucket', bucket);
+      formData.append('folderPrefix', folderPrefix || 'videos');
+      formData.append('maxHeight', '1080');
+      formData.append('file', file);
+
+      const startResp = await fetch('/api/media/optimize-video', {
+        method: 'POST',
+        headers: authHeaders,
+        body: formData,
+      });
+      const startJson = await startResp.json().catch(() => null);
+
+      if (startResp.ok && startJson?.success && startJson?.jobId) {
+        const jobId: string = startJson.jobId;
+        onProgress?.(startJson.progress || 10, startJson.stage || 'Queued for background AV1 transcode...');
+
+        const maxWaitMs = 45 * 60 * 1000;
+        const startedAt = Date.now();
+        let consecutivePollErrors = 0;
+
+        while (Date.now() - startedAt < maxWaitMs) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`);
+          const statusJson = await statusResp.json().catch(() => null);
+
+          if (!statusResp.ok || !statusJson?.job) {
+            consecutivePollErrors++;
+            if (consecutivePollErrors >= 4) {
+              throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
+            }
+            continue;
+          }
+          consecutivePollErrors = 0;
+
+          const job = statusJson.job;
+          onProgress?.(job.progress || 50, job.stage || 'Processing AV1 video...');
+
+          if (job.status === 'completed' && job.publicUrl) {
+            return {
+              publicUrl: job.publicUrl,
+              storagePath: job.storagePath,
+              fileName: job.fileName || file.name,
+              fileSize: job.fileSize || formatBytes(file.size),
+            };
+          }
+
+          if (job.status === 'ready_for_client_upload' && job.directUploadUrl) {
+            onProgress?.(95, `Uploading compressed video (${job.fileSize || ''}) to "${bucket}"...`);
+            const blobResp = await fetch(job.directUploadUrl);
+            if (!blobResp.ok) {
+              throw new Error('Failed to retrieve transcoded video from server.');
+            }
+            const compressedBlob = await blobResp.blob();
+            const uploaded = await uploadBlobDirectToBucket({
+              bucket,
+              blob: compressedBlob,
+              fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
+              contentType: 'video/mp4',
+              folderPrefix: folderPrefix || 'videos',
+              explicitStoragePath: job.storagePath,
+            });
+            onProgress?.(100, `Saved compressed AV1 video (${uploaded.fileSize})`);
+            return uploaded;
+          }
+
+          if (job.status === 'failed') {
+            throw new Error(job.error || 'Background video optimization failed.');
+          }
+        }
+      }
+    } catch (videoPipeErr) {
+      console.warn('[Video Pipeline] Background optimization unavailable, falling back to direct bucket upload:', videoPipeErr);
+    }
+
+    // Resilient direct storage upload fallback so valid videos always publish
+    onProgress?.(60, `Uploading "${file.name}" directly to "${bucket}" storage...`);
+    const directVid = await uploadBlobDirectToBucket({
+      bucket,
+      blob: file,
+      fileName: file.name,
+      contentType: file.type || 'video/mp4',
+      folderPrefix: folderPrefix || 'videos',
+    });
+    onProgress?.(100, `Uploaded (${directVid.fileSize})`);
+    return directVid;
+  }
+
+  // Direct Supabase Storage upload for non-raster/non-video assets (PDF, CAD, SVG, materials, avatars)
+  onProgress?.(35, `Uploading ${file.name}...`);
+  const uploadedAsset = await uploadBlobDirectToBucket({
+    bucket,
+    blob: file,
+    fileName: file.name,
+    contentType: file.type || 'application/octet-stream',
+    folderPrefix,
+  });
+  onProgress?.(100, 'Uploaded');
+  return uploadedAsset;
 }
 
 // ============================================================================
@@ -659,6 +856,44 @@ function mapDbRowToProject(row: any): PortfolioProject {
   };
 }
 
+const STORAGE_KEY_PROJECTS_CACHE = 'fesline_projects_cache_v1';
+let memoryProjectsCache: PortfolioProject[] | null = null;
+let hasFetchedProjectsOnce = false;
+
+export const EVENT_PROJECTS_UPDATED = 'fesline_projects_updated';
+
+export function getCachedProjects(includeAllForOwner = false): PortfolioProject[] {
+  let list: PortfolioProject[] = memoryProjectsCache || [];
+  if (!memoryProjectsCache) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          memoryProjectsCache = parsed;
+          list = parsed;
+        }
+      }
+    } catch {}
+  }
+  return includeAllForOwner ? list : list.filter((p) => p.status === 'published');
+}
+
+export function hasProjectsCacheHydrated(): boolean {
+  return hasFetchedProjectsOnce || (memoryProjectsCache !== null && memoryProjectsCache.length > 0);
+}
+
+function setCachedProjects(list: PortfolioProject[]) {
+  memoryProjectsCache = list;
+  hasFetchedProjectsOnce = true;
+  try {
+    localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(list));
+  } catch {}
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(EVENT_PROJECTS_UPDATED, { detail: list }));
+  }
+}
+
 export async function fetchProjectsFromSupabase(includeAllForOwner = false): Promise<PortfolioProject[]> {
   try {
     let query = supabase
@@ -673,11 +908,13 @@ export async function fetchProjectsFromSupabase(includeAllForOwner = false): Pro
 
     const { data, error } = await query;
     if (error || !Array.isArray(data)) {
-      return [];
+      return getCachedProjects(includeAllForOwner);
     }
-    return data.map(mapDbRowToProject);
+    const mapped = data.map(mapDbRowToProject);
+    setCachedProjects(mapped);
+    return mapped;
   } catch {
-    return [];
+    return getCachedProjects(includeAllForOwner);
   }
 }
 
@@ -729,7 +966,13 @@ export async function upsertProjectToSupabase(
   if (error) {
     throw new Error(error.message || 'Failed to save project to Supabase.');
   }
-  return mapDbRowToProject(data);
+  const saved = mapDbRowToProject(data);
+  const current = getCachedProjects(true);
+  const updated = current.some((p) => p.id === saved.id)
+    ? current.map((p) => (p.id === saved.id ? saved : p))
+    : [saved, ...current];
+  setCachedProjects(updated);
+  return saved;
 }
 
 export async function deleteProjectFromSupabase(projectId: string): Promise<void> {
@@ -741,6 +984,8 @@ export async function deleteProjectFromSupabase(projectId: string): Promise<void
   if (error) {
     throw new Error(error.message || 'Failed to delete project.');
   }
+  const current = getCachedProjects(true);
+  setCachedProjects(current.filter((p) => p.id !== projectId));
 }
 
 // ============================================================================
@@ -780,6 +1025,44 @@ function mapDbRowToArticle(row: any): PortfolioArticle {
   };
 }
 
+const STORAGE_KEY_ARTICLES_CACHE = 'fesline_articles_cache_v1';
+let memoryArticlesCache: PortfolioArticle[] | null = null;
+let hasFetchedArticlesOnce = false;
+
+export const EVENT_ARTICLES_UPDATED = 'fesline_articles_updated';
+
+export function getCachedArticles(includeAllForOwner = false): PortfolioArticle[] {
+  let list: PortfolioArticle[] = memoryArticlesCache || [];
+  if (!memoryArticlesCache) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_ARTICLES_CACHE);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          memoryArticlesCache = parsed;
+          list = parsed;
+        }
+      }
+    } catch {}
+  }
+  return includeAllForOwner ? list : list.filter((a) => a.status === 'published');
+}
+
+export function hasArticlesCacheHydrated(): boolean {
+  return hasFetchedArticlesOnce || (memoryArticlesCache !== null && memoryArticlesCache.length > 0);
+}
+
+function setCachedArticles(list: PortfolioArticle[]) {
+  memoryArticlesCache = list;
+  hasFetchedArticlesOnce = true;
+  try {
+    localStorage.setItem(STORAGE_KEY_ARTICLES_CACHE, JSON.stringify(list));
+  } catch {}
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(EVENT_ARTICLES_UPDATED, { detail: list }));
+  }
+}
+
 export async function fetchArticlesFromSupabase(includeAllForOwner = false): Promise<PortfolioArticle[]> {
   try {
     let query = supabase
@@ -793,11 +1076,13 @@ export async function fetchArticlesFromSupabase(includeAllForOwner = false): Pro
 
     const { data, error } = await query;
     if (error || !Array.isArray(data)) {
-      return [];
+      return getCachedArticles(includeAllForOwner);
     }
-    return data.map(mapDbRowToArticle);
+    const mapped = data.map(mapDbRowToArticle);
+    setCachedArticles(mapped);
+    return mapped;
   } catch {
-    return [];
+    return getCachedArticles(includeAllForOwner);
   }
 }
 
@@ -864,7 +1149,13 @@ export async function submitOrSaveArticleToSupabase(
     if (error) {
       throw new Error(error.message || 'Failed to save article.');
     }
-    return mapDbRowToArticle(data);
+    const saved = mapDbRowToArticle(data);
+    const current = getCachedArticles(true);
+    const updated = current.some((a) => a.id === saved.id)
+      ? current.map((a) => (a.id === saved.id ? saved : a))
+      : [saved, ...current];
+    setCachedArticles(updated);
+    return saved;
   } else {
     const { error } = await supabase.from('articles').insert(dbPayload);
     if (error) {
@@ -890,6 +1181,12 @@ export async function updateArticleStatusInSupabase(
     })
     .eq('id', articleId);
   if (error) throw new Error(error.message);
+  const current = getCachedArticles(true);
+  setCachedArticles(
+    current.map((a) =>
+      a.id === articleId ? { ...a, status, publishedAt: status === 'published' ? now : a.publishedAt } : a
+    )
+  );
 }
 
 export async function deleteArticleFromSupabase(articleId: string): Promise<void> {
@@ -897,6 +1194,8 @@ export async function deleteArticleFromSupabase(articleId: string): Promise<void
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('articles').delete().eq('id', articleId);
   if (error) throw new Error(error.message);
+  const current = getCachedArticles(true);
+  setCachedArticles(current.filter((a) => a.id !== articleId));
 }
 
 export async function incrementArticleLikesInSupabase(articleId: string): Promise<number> {
@@ -914,6 +1213,11 @@ export async function incrementArticleLikesInSupabase(articleId: string): Promis
 // ============================================================================
 // COMMENTS CRUD & MODERATION
 // ============================================================================
+
+let memoryCommentsCache: ArticleComment[] | null = null;
+export function getCachedCommentsForAdmin(): ArticleComment[] {
+  return memoryCommentsCache || [];
+}
 
 function mapDbRowToComment(row: any): ArticleComment {
   return {
@@ -951,10 +1255,12 @@ export async function fetchAllCommentsForAdmin(): Promise<ArticleComment[]> {
       .from('article_comments')
       .select('*')
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return [];
-    return data.map(mapDbRowToComment);
+    if (error || !Array.isArray(data)) return memoryCommentsCache || [];
+    const mapped = data.map(mapDbRowToComment);
+    memoryCommentsCache = mapped;
+    return mapped;
   } catch {
-    return [];
+    return memoryCommentsCache || [];
   }
 }
 
@@ -981,7 +1287,11 @@ export async function submitArticleComment(params: {
   if (error) {
     throw new Error(error.message || 'Failed to submit comment.');
   }
-  return mapDbRowToComment(payload);
+  const mapped = mapDbRowToComment(payload);
+  if (memoryCommentsCache) {
+    memoryCommentsCache = [mapped, ...memoryCommentsCache];
+  }
+  return mapped;
 }
 
 export async function moderateCommentInSupabase(
@@ -995,6 +1305,9 @@ export async function moderateCommentInSupabase(
     .update({ status })
     .eq('id', commentId);
   if (error) throw new Error(error.message);
+  if (memoryCommentsCache) {
+    memoryCommentsCache = memoryCommentsCache.map((c) => (c.id === commentId ? { ...c, status } : c));
+  }
 }
 
 export async function deleteCommentFromSupabase(commentId: string): Promise<void> {
@@ -1002,11 +1315,28 @@ export async function deleteCommentFromSupabase(commentId: string): Promise<void
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('article_comments').delete().eq('id', commentId);
   if (error) throw new Error(error.message);
+  if (memoryCommentsCache) {
+    memoryCommentsCache = memoryCommentsCache.filter((c) => c.id !== commentId);
+  }
 }
 
 // ============================================================================
 // PROFILE EXTENDED SECTIONS (EXPERIENCE, PUBLICATIONS, ACHIEVEMENTS, SETTINGS)
 // ============================================================================
+
+let memoryExperiencesCache: ProfileExperience[] | null = null;
+let memoryPublicationsCache: ProfilePublication[] | null = null;
+let memoryAchievementsCache: ProfileAchievement[] | null = null;
+
+export function getCachedExperiences(): ProfileExperience[] {
+  return memoryExperiencesCache || [];
+}
+export function getCachedPublications(): ProfilePublication[] {
+  return memoryPublicationsCache || [];
+}
+export function getCachedAchievements(): ProfileAchievement[] {
+  return memoryAchievementsCache || [];
+}
 
 export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[]> {
   try {
@@ -1015,8 +1345,8 @@ export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return [];
-    return data.map((r: any) => ({
+    if (error || !Array.isArray(data)) return memoryExperiencesCache || [];
+    const mapped = data.map((r: any) => ({
       id: r.id,
       roleTitle: r.role_title || '',
       organization: r.organization || '',
@@ -1028,8 +1358,10 @@ export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[
       highlights: Array.isArray(r.highlights) ? r.highlights : [],
       sortOrder: r.sort_order || 0,
     }));
+    memoryExperiencesCache = mapped;
+    return mapped;
   } catch {
-    return [];
+    return memoryExperiencesCache || [];
   }
 }
 
@@ -1053,7 +1385,13 @@ export async function upsertExperienceToSupabase(item: ProfileExperience): Promi
   };
   const { error } = await supabase.from('profile_experiences').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
-  return { ...item, id };
+  const saved = { ...item, id };
+  if (memoryExperiencesCache) {
+    memoryExperiencesCache = memoryExperiencesCache.some((x) => x.id === id)
+      ? memoryExperiencesCache.map((x) => (x.id === id ? saved : x))
+      : [saved, ...memoryExperiencesCache];
+  }
+  return saved;
 }
 
 export async function deleteExperienceFromSupabase(id: string): Promise<void> {
@@ -1061,6 +1399,9 @@ export async function deleteExperienceFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_experiences').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  if (memoryExperiencesCache) {
+    memoryExperiencesCache = memoryExperiencesCache.filter((x) => x.id !== id);
+  }
 }
 
 export async function fetchPublicationsFromSupabase(): Promise<ProfilePublication[]> {
@@ -1070,8 +1411,8 @@ export async function fetchPublicationsFromSupabase(): Promise<ProfilePublicatio
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return [];
-    return data.map((r: any) => ({
+    if (error || !Array.isArray(data)) return memoryPublicationsCache || [];
+    const mapped = data.map((r: any) => ({
       id: r.id,
       title: r.title || '',
       venueOrJournal: r.venue_or_journal || '',
@@ -1083,8 +1424,10 @@ export async function fetchPublicationsFromSupabase(): Promise<ProfilePublicatio
       attachmentUrl: r.attachment_url || '',
       sortOrder: r.sort_order || 0,
     }));
+    memoryPublicationsCache = mapped;
+    return mapped;
   } catch {
-    return [];
+    return memoryPublicationsCache || [];
   }
 }
 
@@ -1108,7 +1451,13 @@ export async function upsertPublicationToSupabase(item: ProfilePublication): Pro
   };
   const { error } = await supabase.from('profile_publications').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
-  return { ...item, id };
+  const saved = { ...item, id };
+  if (memoryPublicationsCache) {
+    memoryPublicationsCache = memoryPublicationsCache.some((x) => x.id === id)
+      ? memoryPublicationsCache.map((x) => (x.id === id ? saved : x))
+      : [saved, ...memoryPublicationsCache];
+  }
+  return saved;
 }
 
 export async function deletePublicationFromSupabase(id: string): Promise<void> {
@@ -1116,6 +1465,9 @@ export async function deletePublicationFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_publications').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  if (memoryPublicationsCache) {
+    memoryPublicationsCache = memoryPublicationsCache.filter((x) => x.id !== id);
+  }
 }
 
 export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievement[]> {
@@ -1125,8 +1477,8 @@ export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievemen
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return [];
-    return data.map((r: any) => ({
+    if (error || !Array.isArray(data)) return memoryAchievementsCache || [];
+    const mapped = data.map((r: any) => ({
       id: r.id,
       title: r.title || '',
       issuer: r.issuer || '',
@@ -1137,8 +1489,10 @@ export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievemen
       verified: Boolean(r.verified),
       sortOrder: r.sort_order || 0,
     }));
+    memoryAchievementsCache = mapped;
+    return mapped;
   } catch {
-    return [];
+    return memoryAchievementsCache || [];
   }
 }
 
@@ -1161,7 +1515,13 @@ export async function upsertAchievementToSupabase(item: ProfileAchievement): Pro
   };
   const { error } = await supabase.from('profile_achievements').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
-  return { ...item, id };
+  const saved = { ...item, id };
+  if (memoryAchievementsCache) {
+    memoryAchievementsCache = memoryAchievementsCache.some((x) => x.id === id)
+      ? memoryAchievementsCache.map((x) => (x.id === id ? saved : x))
+      : [saved, ...memoryAchievementsCache];
+  }
+  return saved;
 }
 
 export async function deleteAchievementFromSupabase(id: string): Promise<void> {
@@ -1169,6 +1529,21 @@ export async function deleteAchievementFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_achievements').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  if (memoryAchievementsCache) {
+    memoryAchievementsCache = memoryAchievementsCache.filter((x) => x.id !== id);
+  }
+}
+
+export async function prewarmPortfolioCaches(isOwner = false): Promise<void> {
+  await Promise.allSettled([
+    fetchProjectsFromSupabase(isOwner),
+    fetchArticlesFromSupabase(isOwner),
+    fetchWebsiteSettingsFromSupabase(),
+    fetchExperiencesFromSupabase(),
+    fetchPublicationsFromSupabase(),
+    fetchAchievementsFromSupabase(),
+    ...(isOwner ? [fetchAllCommentsForAdmin()] : []),
+  ]);
 }
 
 // ============================================================================

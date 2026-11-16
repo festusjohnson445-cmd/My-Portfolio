@@ -58,6 +58,16 @@ import {
   deleteBucketMediaFile,
   uploadFileToBucket,
   applyWebsiteSettingsLocally,
+  getCachedWebsiteSettings,
+  getCachedProjects,
+  getCachedArticles,
+  getCachedCommentsForAdmin,
+  getCachedExperiences,
+  getCachedPublications,
+  getCachedAchievements,
+  hasProjectsCacheHydrated,
+  EVENT_PROJECTS_UPDATED,
+  EVENT_ARTICLES_UPDATED,
   BUILT_IN_THEMES,
   DEFAULT_WEBSITE_SETTINGS,
   type PortfolioProject,
@@ -117,15 +127,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Collections
-  const [projects, setProjects] = useState<PortfolioProject[]>([]);
-  const [articles, setArticles] = useState<PortfolioArticle[]>([]);
-  const [comments, setComments] = useState<ArticleComment[]>([]);
-  const [experiences, setExperiences] = useState<ProfileExperience[]>([]);
-  const [publications, setPublications] = useState<ProfilePublication[]>([]);
-  const [achievements, setAchievements] = useState<ProfileAchievement[]>([]);
-  const [siteSettings, setSiteSettings] = useState<WebsiteSettings>(DEFAULT_WEBSITE_SETTINGS);
-  const [loading, setLoading] = useState(true);
+  // Collections hydrated synchronously from caches to eliminate stale/default flash
+  const [projects, setProjects] = useState<PortfolioProject[]>(() => getCachedProjects(true));
+  const [articles, setArticles] = useState<PortfolioArticle[]>(() => getCachedArticles(true));
+  const [comments, setComments] = useState<ArticleComment[]>(() => getCachedCommentsForAdmin());
+  const [experiences, setExperiences] = useState<ProfileExperience[]>(() => {
+    const c = getCachedExperiences();
+    return c.length > 0 ? c : (bio.experiences as ProfileExperience[]) || [];
+  });
+  const [publications, setPublications] = useState<ProfilePublication[]>(() => {
+    const c = getCachedPublications();
+    return c.length > 0 ? c : (bio.publications as ProfilePublication[]) || [];
+  });
+  const [achievements, setAchievements] = useState<ProfileAchievement[]>(() => {
+    const c = getCachedAchievements();
+    return c.length > 0 ? c : (bio.achievements as ProfileAchievement[]) || [];
+  });
+  const [siteSettings, setSiteSettings] = useState<WebsiteSettings>(() => getCachedWebsiteSettings());
+  const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(true).length === 0);
 
   // Forms open state
   const [projectFormOpen, setProjectFormOpen] = useState(false);
@@ -294,7 +313,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   };
 
   const loadAllAdminData = async () => {
-    setLoading(true);
+    if (!hasProjectsCacheHydrated() && projects.length === 0) {
+      setLoading(true);
+    }
     try {
       const [projs, arts, cmts, exps, pubs, achs, settings] = await Promise.all([
         fetchProjectsFromSupabase(true),
@@ -321,6 +342,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     if (isOwner) {
       loadAllAdminData();
     }
+    const onProjUpdate = () => setProjects(getCachedProjects(true));
+    const onArtUpdate = () => setArticles(getCachedArticles(true));
+    window.addEventListener(EVENT_PROJECTS_UPDATED, onProjUpdate);
+    window.addEventListener(EVENT_ARTICLES_UPDATED, onArtUpdate);
+    return () => {
+      window.removeEventListener(EVENT_PROJECTS_UPDATED, onProjUpdate);
+      window.removeEventListener(EVENT_ARTICLES_UPDATED, onArtUpdate);
+    };
   }, [isOwner]);
 
   const loadMedia = async (bucket: 'projects' | 'articles' | 'materials' | 'avatars') => {

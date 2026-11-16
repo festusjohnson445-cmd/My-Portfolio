@@ -18,6 +18,9 @@ import {
   fetchProjectsFromSupabase,
   deleteProjectFromSupabase,
   useWebsiteSettingsSync,
+  getCachedProjects,
+  hasProjectsCacheHydrated,
+  EVENT_PROJECTS_UPDATED,
   type PortfolioProject,
 } from '../utils/portfolioSupabase';
 import { downloadProjectAsPdf } from '../utils/projectPdf';
@@ -39,8 +42,8 @@ export const ProjectsView: React.FC = () => {
     [customSections]
   );
 
-  const [projects, setProjects] = useState<PortfolioProject[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<PortfolioProject[]>(() => getCachedProjects(isOwner));
+  const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(isOwner).length === 0);
   const [selectedProject, setSelectedProject] = useState<PortfolioProject | null>(null);
 
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -51,7 +54,9 @@ export const ProjectsView: React.FC = () => {
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'title' | 'featured'>('featured');
 
   const loadProjects = async () => {
-    setLoading(true);
+    if (!hasProjectsCacheHydrated() && projects.length === 0) {
+      setLoading(true);
+    }
     try {
       const data = await fetchProjectsFromSupabase(isOwner);
       setProjects(data);
@@ -62,6 +67,12 @@ export const ProjectsView: React.FC = () => {
 
   useEffect(() => {
     loadProjects();
+    const onUpdated = () => {
+      setProjects(getCachedProjects(isOwner));
+      setLoading(false);
+    };
+    window.addEventListener(EVENT_PROJECTS_UPDATED, onUpdated);
+    return () => window.removeEventListener(EVENT_PROJECTS_UPDATED, onUpdated);
   }, [isOwner]);
 
   const categories = useMemo(() => {

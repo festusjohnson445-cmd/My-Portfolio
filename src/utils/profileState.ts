@@ -261,103 +261,116 @@ export async function pushProfileToServer(payload: { avatar?: string; bio?: Prof
   }
 }
 
+let syncInFlightPromise: Promise<void> | null = null;
+
 /**
- * Fetch global persistent profile from Firestore database & server so all visitors on any device receive permanent changes
+ * Fetch global persistent profile concurrently from Supabase, Firestore, & backend server
+ * so all visitors on any device receive uploaded cards & bio changes immediately.
  */
 export async function syncGlobalProfileWithServer(force = false): Promise<void> {
-  if (isSyncingWithServer || (!force && isProfileHydrated)) return;
+  if (!force && isProfileHydrated) return;
+  if (syncInFlightPromise && !force) return syncInFlightPromise;
+
   isSyncingWithServer = true;
-
-  try {
-    let remoteLoaded = false;
-
-    // 1. Primary Persistent Source: Firestore Database
+  const runSync = async () => {
     try {
-      const dbProfile = await fetchProfileFromFirestore();
-      if (dbProfile && (dbProfile.avatar || dbProfile.bio || (dbProfile.documents && dbProfile.documents.length > 0))) {
-        applyPersistentProfile(dbProfile);
-        remoteLoaded = true;
-      }
-    } catch (e) {
-      console.warn('Firestore direct fetch attempt:', e);
-    }
+      let firestoreHasData = false;
+      let serverPayload: { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] } | null = null;
 
-    // 2. Secondary Sync / Cloud SQL Server Endpoint
-    try {
-      const res = await fetch('/api/profile');
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.success && json.profile) {
-          const { avatar, bio, documents } = json.profile;
-          if (avatar || bio || (documents && documents.length > 0)) {
+      // Launch Supabase, Firestore, and server API fetches in parallel so the fastest source renders immediately
+      const supaTask = fetchProfileFromSupabaseTable()
+        .then((supaProfile) => {
+          if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length)) {
             applyPersistentProfile({
-              avatar: avatar || dbProfileAvatar(),
-              bio: bio || dbProfileBio(),
-              documents: documents || [],
-              updatedAt: json.profile.updatedAt || new Date().toISOString(),
+              avatar: supaProfile.avatar_url || dbProfileAvatar(),
+              bio: supaProfile.bio || dbProfileBio(),
+              documents: supaProfile.documents || [],
+              updatedAt: supaProfile.updated_at || new Date().toISOString(),
             });
-            remoteLoaded = true;
           }
+        })
+        .catch((supaFetchErr) => {
+          console.warn('Supabase profile fetch note:', supaFetchErr);
+        });
 
-          // If Firestore was empty but server had data, seed Firestore
-          if (!remoteLoaded && (avatar || bio)) {
-            saveProfileToFirestore({
-              avatar: avatar || undefined,
-              bio: bio || DEFAULT_BIO_DATA,
-              documents: documents || [],
-            }).catch(() => {});
+      const firestoreTask = fetchProfileFromFirestore()
+        .then((dbProfile) => {
+          if (dbProfile && (dbProfile.avatar || dbProfile.bio || (dbProfile.documents && dbProfile.documents.length > 0))) {
+            firestoreHasData = true;
+            applyPersistentProfile(dbProfile);
           }
-        }
+        })
+        .catch((e) => {
+          console.warn('Firestore direct fetch attempt:', e);
+        });
+
+      const serverTask = fetch('/api/profile')
+        .then(async (res) => {
+          if (!res.ok) return;
+          const json = await res.json();
+          if (json && json.success && json.profile) {
+            const { avatar, bio, documents } = json.profile;
+            if (avatar || bio || (documents && documents.length > 0)) {
+              serverPayload = { avatar, bio, documents };
+              applyPersistentProfile({
+                avatar: avatar || dbProfileAvatar(),
+                bio: bio || dbProfileBio(),
+                documents: documents || [],
+                updatedAt: json.profile.updatedAt || new Date().toISOString(),
+              });
+            }
+          }
+        })
+        .catch((serverErr) => {
+          console.warn('Server profile fetch note:', serverErr);
+        });
+
+      await Promise.allSettled([supaTask, firestoreTask, serverTask]);
+
+      // Seed Firestore in background if Firestore was empty and server returned data
+      if (!firestoreHasData && serverPayload && ((serverPayload as any).avatar || (serverPayload as any).bio)) {
+        saveProfileToFirestore({
+          avatar: (serverPayload as any).avatar || undefined,
+          bio: (serverPayload as any).bio || DEFAULT_BIO_DATA,
+          documents: (serverPayload as any).documents || [],
+        }).catch(() => {});
       }
-    } catch (serverErr) {
-      console.warn('Server profile fetch note:', serverErr);
-    }
 
-    // 2b. Supabase Profiles Table Sync (Public read for unauthenticated visitors)
-    try {
-      const supaProfile = await fetchProfileFromSupabaseTable();
-      if (supaProfile && (supaProfile.avatar_url || supaProfile.bio || supaProfile.documents?.length)) {
-        applyPersistentProfile({
-          avatar: supaProfile.avatar_url || dbProfileAvatar(),
-          bio: supaProfile.bio || dbProfileBio(),
-          documents: supaProfile.documents || [],
-          updatedAt: supaProfile.updated_at || new Date().toISOString(),
+      isProfileHydrated = true;
+
+      // Attach real-time listeners once
+      if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
+        isRealtimeListenerAttached = true;
+        subscribeToProfile(
+          (updatedRecord) => {
+            if (updatedRecord) {
+              applyPersistentProfile(updatedRecord);
+            }
+          },
+          (err) => console.warn('Realtime subscription notice:', err)
+        );
+
+        subscribeToSupabaseProfileChanges((supaPayload) => {
+          if (supaPayload) {
+            applyPersistentProfile({
+              avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
+              bio: typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio,
+              documents: typeof supaPayload.documents === 'string' ? JSON.parse(supaPayload.documents) : supaPayload.documents,
+              updatedAt: supaPayload.updated_at || new Date().toISOString(),
+            });
+          }
         });
       }
-    } catch (supaFetchErr) {
-      console.warn('Supabase profile fetch note:', supaFetchErr);
+    } catch (err) {
+      console.warn('Could not sync global profile from persistent storage:', err);
+    } finally {
+      isSyncingWithServer = false;
+      syncInFlightPromise = null;
     }
+  };
 
-    isProfileHydrated = true;
-
-    // 3. Attach real-time listeners if not already active
-    if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
-      isRealtimeListenerAttached = true;
-      subscribeToProfile(
-        (updatedRecord) => {
-          if (updatedRecord) {
-            applyPersistentProfile(updatedRecord);
-          }
-        },
-        (err) => console.warn('Realtime subscription notice:', err)
-      );
-
-      subscribeToSupabaseProfileChanges((supaPayload) => {
-        if (supaPayload) {
-          applyPersistentProfile({
-            avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
-            bio: typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio,
-            documents: typeof supaPayload.documents === 'string' ? JSON.parse(supaPayload.documents) : supaPayload.documents,
-            updatedAt: supaPayload.updated_at || new Date().toISOString(),
-          });
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('Could not sync global profile from persistent storage:', err);
-  } finally {
-    isSyncingWithServer = false;
-  }
+  syncInFlightPromise = runSync();
+  return syncInFlightPromise;
 }
 
 function dbProfileAvatar(): string {
@@ -366,6 +379,37 @@ function dbProfileAvatar(): string {
 
 function dbProfileBio(): ProfileBioData {
   return memoryBio || DEFAULT_BIO_DATA;
+}
+
+function writeDocsToLocalStorageSafe(docs: DocumentItem[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(docs));
+  } catch {
+    // QuotaExceededError when inline data URLs are large — store lightweight metadata + http URLs
+    // so cards still hydrate in 0ms on page load while IndexedDB fills large blobs.
+    try {
+      const compact = docs.map((d) => ({
+        ...d,
+        attachmentDataUrl:
+          d.attachmentDataUrl && d.attachmentDataUrl.startsWith('data:') && d.attachmentDataUrl.length > 40000
+            ? undefined
+            : d.attachmentDataUrl,
+        previewImageDataUrl:
+          d.previewImageDataUrl && d.previewImageDataUrl.startsWith('data:') && d.previewImageDataUrl.length > 40000
+            ? undefined
+            : d.previewImageDataUrl,
+      }));
+      localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(compact));
+    } catch {}
+  }
+}
+
+/**
+ * Safely merge IndexedDB documents into local memory state without triggering owner-gated remote writes
+ */
+export function mergeLocalIndexedDbDocuments(localDocs: DocumentItem[]): void {
+  if (!Array.isArray(localDocs) || localDocs.length === 0) return;
+  applyPersistentProfile({ documents: localDocs }, true);
 }
 
 /**
@@ -442,9 +486,7 @@ function applyPersistentProfile(
 
     const finalDocs = sortDocumentsDescending(Array.from(mergedMap.values()));
     memoryDocuments = finalDocs;
-    try {
-      localStorage.setItem(STORAGE_KEY_DOCS, JSON.stringify(finalDocs));
-    } catch (e) {}
+    writeDocsToLocalStorageSafe(finalDocs);
     saveDocumentsPersistently(finalDocs).catch(() => {});
     updatedLocally = true;
   }
