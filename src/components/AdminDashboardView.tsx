@@ -91,10 +91,15 @@ import {
 import {
   useProfileSync,
   setOwnerAuthenticated,
+  getStoredDocuments,
   type DocumentItem,
 } from '../utils/profileState';
 import { deleteDocumentPersistently, recordDeletedDocId } from '../utils/documentStorage';
-import { uploadMaterialThumbnailToBucket, getAuthenticatedOwnerUid } from '../utils/supabase';
+import {
+  uploadMaterialToSupabaseBucket,
+  uploadMaterialThumbnailToBucket,
+  getAuthenticatedOwnerUid,
+} from '../utils/supabase';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import {
   resolveSkillStatus,
@@ -290,8 +295,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const [credDescription, setCredDescription] = useState('');
   const [credAttachmentUrl, setCredAttachmentUrl] = useState('');
   const [credAttachmentName, setCredAttachmentName] = useState('');
+  const [credAttachmentSize, setCredAttachmentSize] = useState('');
+  const [credPreviewDataUrl, setCredPreviewDataUrl] = useState('');
   const [credVerifiedLink, setCredVerifiedLink] = useState('');
   const [credUploading, setCredUploading] = useState(false);
+  const [credSaving, setCredSaving] = useState(false);
+  const [credError, setCredError] = useState<string | null>(null);
 
   // Media Library
   const [mediaBucket, setMediaBucket] = useState<'projects' | 'articles' | 'materials' | 'avatars'>('projects');
@@ -570,60 +579,80 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   const handleSaveCredential = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!credTitle.trim()) return;
-    const isUpdate = Boolean(credEditingId);
-    const id = credEditingId || `doc-${Date.now()}`;
-    const cleanAttachmentUrl = credAttachmentUrl.trim();
-    const isPdfUrl =
-      /\.pdf(\?|$)/i.test(cleanAttachmentUrl) ||
-      /\.pdf$/i.test(credAttachmentName || '');
-    const isImgUrl = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(cleanAttachmentUrl);
+    if (!credTitle.trim() || credSaving || credUploading) return;
+    setCredError(null);
+    setCredSaving(true);
 
-    let resolvedPreviewUrl: string | undefined = isImgUrl ? cleanAttachmentUrl : undefined;
+    try {
+      const isUpdate = Boolean(credEditingId);
+      const id = credEditingId || `doc-${Date.now()}`;
+      const cleanAttachmentUrl = credAttachmentUrl.trim();
+      const isPdfUrl =
+        /\.pdf(\?|$)/i.test(cleanAttachmentUrl) ||
+        /\.pdf$/i.test(credAttachmentName || '');
+      const isImgUrl = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(cleanAttachmentUrl);
 
-    if (isPdfUrl && cleanAttachmentUrl) {
-      try {
-        const rendered = await renderPdfFirstPageToImage(cleanAttachmentUrl, 900);
-        if (rendered) {
-          const ownerUid = getAuthenticatedOwnerUid();
-          const uploadedThumb = await uploadMaterialThumbnailToBucket(
-            rendered,
-            id,
-            ownerUid || undefined
-          );
-          resolvedPreviewUrl = uploadedThumb || rendered;
-          try {
-            localStorage.setItem(`fesline_profile_thumb_v2_${id}`, resolvedPreviewUrl);
-          } catch {}
-        }
-      } catch {}
+      let resolvedPreviewUrl: string | undefined = isImgUrl ? cleanAttachmentUrl : undefined;
+
+      if (isPdfUrl) {
+        try {
+          const rendered =
+            credPreviewDataUrl ||
+            (cleanAttachmentUrl ? await renderPdfFirstPageToImage(cleanAttachmentUrl, 900) : null);
+          if (rendered) {
+            const ownerUid = getAuthenticatedOwnerUid();
+            const uploadedThumb = await uploadMaterialThumbnailToBucket(
+              rendered,
+              id,
+              ownerUid || undefined
+            );
+            resolvedPreviewUrl = uploadedThumb || (rendered.length <= 180000 ? rendered : undefined);
+            if (resolvedPreviewUrl) {
+              try {
+                localStorage.setItem(`fesline_profile_thumb_v2_${id}`, resolvedPreviewUrl);
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      const item: DocumentItem = {
+        id,
+        title: credTitle.trim(),
+        issuer: credIssuer.trim() || 'Issuing Authority',
+        credentialId: `CRED-${Math.floor(1000 + Math.random() * 9000)}`,
+        date: credDate.trim() || String(new Date().getFullYear()),
+        category: credCategory,
+        credentialGroup: credGroup,
+        parentSpecializationId: credGroup === 'Courses' && credParentId ? credParentId : undefined,
+        fileType: isPdfUrl ? 'PDF / Document' : isImgUrl ? 'Image / Scan' : undefined,
+        description: credDescription.trim() || credTitle.trim(),
+        competencies: [],
+        attachmentDataUrl: cleanAttachmentUrl || undefined,
+        attachmentName: credAttachmentName || undefined,
+        attachmentSize: credAttachmentSize || undefined,
+        previewImageDataUrl: resolvedPreviewUrl,
+        verifiedLink: credVerifiedLink.trim() || undefined,
+      };
+
+      const latestDocs = getStoredDocuments();
+      const nextDocs = isUpdate
+        ? latestDocs.map((d) => (d.id === id ? { ...d, ...item } : d))
+        : [item, ...latestDocs.filter((d) => d.id !== id)];
+
+      await saveDocuments(nextDocs);
+      setCredOpen(false);
+      setCredEditingId(null);
+      setCredPreviewDataUrl('');
+      setCredAttachmentSize('');
+      showNotice('Credential saved and synced.');
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to save credential.';
+      setCredError(msg);
+      showNotice(msg);
+    } finally {
+      setCredSaving(false);
     }
-
-    const item: DocumentItem = {
-      id,
-      title: credTitle.trim(),
-      issuer: credIssuer.trim() || 'Issuing Authority',
-      credentialId: `CRED-${Math.floor(1000 + Math.random() * 9000)}`,
-      date: credDate.trim() || String(new Date().getFullYear()),
-      category: credCategory,
-      credentialGroup: credGroup,
-      parentSpecializationId: credGroup === 'Courses' && credParentId ? credParentId : undefined,
-      fileType: isPdfUrl ? 'PDF / Document' : isImgUrl ? 'Image / Scan' : undefined,
-      description: credDescription.trim() || credTitle.trim(),
-      competencies: [],
-      attachmentDataUrl: cleanAttachmentUrl || undefined,
-      attachmentName: credAttachmentName || undefined,
-      previewImageDataUrl: resolvedPreviewUrl,
-      verifiedLink: credVerifiedLink.trim() || undefined,
-    };
-
-    const nextDocs = isUpdate
-      ? documents.map((d) => (d.id === id ? { ...d, ...item } : d))
-      : [item, ...documents.filter((d) => d.id !== id)];
-    await saveDocuments(nextDocs);
-    setCredOpen(false);
-    setCredEditingId(null);
-    showNotice('Credential saved.');
   };
 
   return (
@@ -1706,7 +1735,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         setCredDescription('');
                         setCredAttachmentUrl('');
                         setCredAttachmentName('');
+                        setCredAttachmentSize('');
+                        setCredPreviewDataUrl('');
                         setCredVerifiedLink('');
+                        setCredError(null);
                         setCredOpen(!credOpen);
                       }}
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-xs font-semibold cursor-pointer"
@@ -1718,6 +1750,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
                   {credOpen && (
                     <form onSubmit={handleSaveCredential} className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5 text-xs">
+                      {credError && (
+                        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium">
+                          {credError}
+                        </div>
+                      )}
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                         <div className="min-w-0">
                           <label className="block font-bold text-slate-700 mb-0.5">Group *</label>
@@ -1802,12 +1839,40 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                             accept="image/*,.pdf"
                             onChange={async (e) => {
                               const f = e.target.files?.[0];
+                              e.target.value = '';
                               if (!f) return;
+                              setCredError(null);
                               setCredUploading(true);
                               try {
-                                const res = await uploadFileToBucket('materials', f, 'credentials');
-                                setCredAttachmentUrl(res.publicUrl);
-                                setCredAttachmentName(res.fileName);
+                                const ownerUid = getAuthenticatedOwnerUid();
+                                const uploadRes = await uploadMaterialToSupabaseBucket(
+                                  f,
+                                  f.name,
+                                  ownerUid || undefined
+                                );
+                                setCredAttachmentUrl(uploadRes.publicUrl);
+                                setCredAttachmentName(f.name);
+                                const sz =
+                                  f.size < 1024
+                                    ? `${f.size} B`
+                                    : f.size < 1024 * 1024
+                                    ? `${(f.size / 1024).toFixed(1)} KB`
+                                    : `${(f.size / (1024 * 1024)).toFixed(1)} MB`;
+                                setCredAttachmentSize(sz);
+                                if (!credTitle.trim()) {
+                                  setCredTitle(f.name.replace(/\.[^/.]+$/, '').replace(/[_.-]/g, ' '));
+                                }
+                                if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
+                                  try {
+                                    const buf = await f.arrayBuffer();
+                                    const previewImg = await renderPdfFirstPageToImage(buf, 900);
+                                    if (previewImg) setCredPreviewDataUrl(previewImg);
+                                  } catch {}
+                                }
+                              } catch (uploadErr: any) {
+                                const msg = uploadErr?.message || 'File upload failed.';
+                                setCredError(msg);
+                                showNotice(msg);
                               } finally {
                                 setCredUploading(false);
                               }
@@ -1819,7 +1884,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           type="url"
                           placeholder={isSupabaseStorageUrl(credAttachmentUrl) ? 'File uploaded' : 'Or paste File URL'}
                           value={isSupabaseStorageUrl(credAttachmentUrl) ? '' : credAttachmentUrl}
-                          onChange={(e) => setCredAttachmentUrl(e.target.value)}
+                          onChange={(e) => {
+                            setCredAttachmentUrl(e.target.value);
+                            setCredPreviewDataUrl('');
+                          }}
                           className="w-full min-w-0 flex-1 px-2.5 py-1.5 rounded border border-slate-300 bg-white"
                         />
                         {credAttachmentUrl && (
@@ -1828,6 +1896,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                             onClick={() => {
                               setCredAttachmentUrl('');
                               setCredAttachmentName('');
+                              setCredAttachmentSize('');
+                              setCredPreviewDataUrl('');
                             }}
                             className="px-2.5 py-1.5 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
                           >
@@ -1846,8 +1916,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <button type="button" onClick={() => setCredOpen(false)} className="px-3 py-1 rounded bg-slate-200 text-xs cursor-pointer">
                           Cancel
                         </button>
-                        <button type="submit" disabled={credUploading} className="px-3 py-1 rounded bg-cyan-900 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer">
-                          Save Credential
+                        <button type="submit" disabled={credUploading || credSaving} className="inline-flex items-center gap-1 px-3 py-1 rounded bg-cyan-900 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer">
+                          {credSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                          <span>{credSaving ? 'Saving...' : 'Save Credential'}</span>
                         </button>
                       </div>
                     </form>
@@ -1869,12 +1940,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                             try {
                               localStorage.removeItem(`fesline_profile_thumb_v2_${doc.id}`);
                             } catch {}
+                            const latestDocs = getStoredDocuments().filter((d) => d.id !== doc.id);
                             await Promise.allSettled([
                               deleteDocumentPersistently(doc.id),
-                              saveDocuments(
-                                documents.filter((d) => d.id !== doc.id),
-                                [doc.id]
-                              ),
+                              saveDocuments(latestDocs, [doc.id]),
                               fetch(`/api/documents/${doc.id}`, { method: 'DELETE' }),
                               fetch(`/api/profile/documents/${doc.id}`, { method: 'DELETE' }),
                             ]);

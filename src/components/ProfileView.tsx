@@ -67,6 +67,7 @@ import {
   resetStoredAvatar,
   saveStoredBio,
   saveStoredDocuments,
+  getStoredDocuments,
   mergeLocalIndexedDbDocuments,
   setOwnerAuthenticated,
   compressImage,
@@ -732,6 +733,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setIsAuthModalOpen(true);
       return;
     }
+    setDocSelectedFile(null);
     setEditingDocId(null);
     setDocTitle('');
     setDocIssuer('');
@@ -768,6 +770,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setIsAuthModalOpen(true);
       return;
     }
+    setDocSelectedFile(null);
     setEditingDocId(doc.id);
     setDocTitle(doc.title);
     setDocIssuer(doc.issuer);
@@ -791,6 +794,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const handleDocumentAttachmentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
     setDocSelectedFile(file);
@@ -923,7 +927,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         previewImg = publicUrl;
       }
 
-      const updated = documents.map((d) =>
+      const latestDocs = getStoredDocuments();
+      const updated = latestDocs.map((d) =>
         d.id === docId
           ? {
               ...d,
@@ -937,7 +942,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       );
 
       await saveStoredDocuments(updated);
-      showNotification(`File uploaded to Supabase materials bucket and attached to "${documents.find((d) => d.id === docId)?.title || 'document'}"!`);
+      showNotification(`File uploaded to Supabase materials bucket and attached to "${latestDocs.find((d) => d.id === docId)?.title || 'document'}"!`);
     } catch (err: any) {
       console.error('[Direct Attach Error]:', err);
       // Explicit UI error logging - Halt state updates!
@@ -1040,9 +1045,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
 
     try {
+      const latestDocs = getStoredDocuments();
       if (editingDocId) {
         // Update existing document
-        const updated = documents.map((d) =>
+        const updated = latestDocs.map((d) =>
           d.id === editingDocId
             ? {
                 ...d,
@@ -1088,7 +1094,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           verifiedLink: docVerifiedLink.trim() || undefined,
         };
 
-        const updated = [newDoc, ...documents.filter((d) => d.id !== targetDocId)];
+        const updated = [newDoc, ...latestDocs.filter((d) => d.id !== targetDocId)];
         await saveStoredDocuments(updated);
         showNotification(`Document "${newDoc.title}" uploaded and saved to Supabase!`);
 
@@ -1127,7 +1133,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     try {
       localStorage.removeItem(`fesline_profile_thumb_v2_${id}`);
     } catch {}
-    const updated = documents.filter((d) => d.id !== id);
+    const updated = getStoredDocuments().filter((d) => d.id !== id);
     if (selectedPreviewDoc?.id === id) {
       setSelectedPreviewDoc(null);
     }

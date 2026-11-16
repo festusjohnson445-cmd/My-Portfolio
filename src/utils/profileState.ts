@@ -22,6 +22,7 @@ import {
   deleteAvatarFromSupabaseBucket,
   saveProfileToSupabaseTable,
   fetchProfileFromSupabaseTable,
+  resolveSupabaseProfileDocuments,
   subscribeToSupabaseProfileChanges,
   getAuthenticatedOwnerUid,
   getValidatedSession,
@@ -243,6 +244,8 @@ let isSyncingWithServer = false;
 let isRealtimeListenerAttached = false;
 let isProfileHydrated = false;
 let hasAuthoritativeSupabaseProfile = false;
+let docWriteInFlight = false;
+let lastLocalDocSaveTimestamp = 0;
 
 /**
  * Helper to push profile updates to server endpoint as redundant backup
@@ -366,17 +369,36 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
         subscribeToSupabaseProfileChanges((supaPayload) => {
           if (supaPayload) {
             hasAuthoritativeSupabaseProfile = true;
-            const parsedBio =
-              typeof supaPayload.bio === 'string' ? JSON.parse(supaPayload.bio) : supaPayload.bio;
-            const rawDocs =
-              supaPayload.documents !== undefined ? supaPayload.documents : parsedBio?.documents;
-            const parsedDocs =
-              typeof rawDocs === 'string' ? JSON.parse(rawDocs) : rawDocs;
+            let parsedBio: any = supaPayload.bio;
+            if (typeof parsedBio === 'string') {
+              try {
+                parsedBio = JSON.parse(parsedBio);
+              } catch {
+                parsedBio = undefined;
+              }
+            }
+            const hasExplicitColDocs = supaPayload.documents !== undefined;
+            const hasExplicitBioDocs = parsedBio && parsedBio.documents !== undefined;
+            let resolvedDocs: DocumentItem[] | undefined = undefined;
+
+            if (hasExplicitColDocs || hasExplicitBioDocs) {
+              resolvedDocs = resolveSupabaseProfileDocuments(
+                supaPayload.documents,
+                parsedBio?.documents
+              );
+            }
+
+            const cleanBio =
+              parsedBio && typeof parsedBio === 'object' ? { ...parsedBio } : undefined;
+            if (cleanBio) {
+              delete cleanBio.documents;
+            }
+
             applyPersistentProfile(
               {
                 avatar: supaPayload.avatar_url || supaPayload.avatarUrl,
-                bio: parsedBio,
-                documents: Array.isArray(parsedDocs) ? parsedDocs : [],
+                bio: cleanBio,
+                documents: resolvedDocs,
                 updatedAt: supaPayload.updated_at || new Date().toISOString(),
               },
               true,
@@ -472,19 +494,22 @@ function applyPersistentProfile(
   }
 
   if (bio && typeof bio === 'object') {
+    const { documents: _ignoredNestedDocs, ...cleanIncomingBio } = bio as any;
     const combinedDeleted = Array.from(
       new Set([
         ...(memoryBio?.deletedDocIds || []),
-        ...(Array.isArray(bio.deletedDocIds) ? bio.deletedDocIds : []),
+        ...(Array.isArray(cleanIncomingBio.deletedDocIds) ? cleanIncomingBio.deletedDocIds : []),
         ...Array.from(deletedIds),
       ])
     );
     const mergedBio: ProfileBioData = {
       ...DEFAULT_BIO_DATA,
       ...(memoryBio || {}),
-      ...bio,
+      ...cleanIncomingBio,
       ...(combinedDeleted.length > 0 ? { deletedDocIds: combinedDeleted } : {}),
     };
+    delete (mergedBio as any).documents;
+
     if (JSON.stringify(memoryBio) !== JSON.stringify(mergedBio)) {
       memoryBio = mergedBio;
       updatedLocally = true;
@@ -497,7 +522,25 @@ function applyPersistentProfile(
   }
 
   if (Array.isArray(documents)) {
+    const isWithinLocalSaveGrace =
+      docWriteInFlight || (lastLocalDocSaveTimestamp > 0 && Date.now() - lastLocalDocSaveTimestamp < 5000);
     const currentLocalDocs = getStoredDocuments();
+
+    // During or immediately after an owner document save, never let an out-of-order
+    // remote fetch or Realtime payload drop newly saved local documents.
+    if (isWithinLocalSaveGrace && currentLocalDocs.length > 0) {
+      const incomingIds = new Set(documents.map((d) => d?.id).filter(Boolean));
+      const missingOptimisticDoc = currentLocalDocs.some(
+        (d) => d && d.id && !deletedIds.has(d.id) && !incomingIds.has(d.id)
+      );
+      if (missingOptimisticDoc) {
+        if (updatedLocally && shouldNotify) {
+          notifyProfileUpdated();
+        }
+        return;
+      }
+    }
+
     const localMap = new Map<string, DocumentItem>();
     currentLocalDocs.forEach((d) => {
       if (d && d.id && !deletedIds.has(d.id)) {
@@ -771,11 +814,32 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
   const { user } = await getValidatedSession();
   const ownerUid = user.id;
 
+  const { documents: _ignoredNestedDocs, ...cleanBioInput } = (bio || {}) as any;
+  const deletedIds = getDeletedDocIds();
+  const combinedDeletedIds = Array.from(
+    new Set([
+      ...(memoryBio?.deletedDocIds || []),
+      ...(Array.isArray(cleanBioInput.deletedDocIds) ? cleanBioInput.deletedDocIds : []),
+      ...Array.from(deletedIds),
+    ])
+  );
+
   const mergedBio: ProfileBioData = {
     ...DEFAULT_BIO_DATA,
-    ...bio,
+    ...cleanBioInput,
+    ...(combinedDeletedIds.length > 0 ? { deletedDocIds: combinedDeletedIds } : {}),
   };
+  delete (mergedBio as any).documents;
   memoryBio = mergedBio;
+
+  // Preserve current documents when hydrated so editing Bio/Skills/Experience never wipes credentials
+  let hasKnownDocs = memoryDocuments !== null;
+  if (!hasKnownDocs) {
+    try {
+      hasKnownDocs = localStorage.getItem(STORAGE_KEY_DOCS) !== null;
+    } catch {}
+  }
+  const currentDocs = hasKnownDocs ? getStoredDocuments() : undefined;
 
   // Only update avatar if explicitly supplied as non-empty or empty string (never if undefined)
   if (avatar !== undefined && avatar !== null) {
@@ -807,13 +871,17 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
     header: mergedBio.header,
     bioData: mergedBio,
     avatarUrl: avatar,
+    ...(currentDocs !== undefined ? { documents: currentDocs } : {}),
   }, ownerUid);
 
   // 3. Backup write to Firestore & Server
   try {
-    const payload: { bio: ProfileBioData; avatar?: string } = { bio: mergedBio };
+    const payload: { bio: ProfileBioData; avatar?: string; documents?: DocumentItem[] } = { bio: mergedBio };
     if (avatar !== undefined && avatar !== null) {
       payload.avatar = avatar;
+    }
+    if (currentDocs !== undefined) {
+      payload.documents = currentDocs;
     }
 
     await Promise.allSettled([
@@ -855,6 +923,9 @@ export async function saveStoredDocuments(docs: DocumentItem[], extraDeletedIds:
   const { user } = await getValidatedSession();
   const ownerUid = user.id;
 
+  const previousDocs = getStoredDocuments();
+  const previousBio = memoryBio ? { ...memoryBio } : null;
+
   if (extraDeletedIds.length > 0) {
     recordDeletedDocIds(extraDeletedIds);
   }
@@ -869,15 +940,18 @@ export async function saveStoredDocuments(docs: DocumentItem[], extraDeletedIds:
   });
   const cleanDocs = sortDocumentsDescending(Array.from(uniqueMap.values()));
 
+  docWriteInFlight = true;
+  lastLocalDocSaveTimestamp = Date.now();
   memoryDocuments = cleanDocs;
 
   // Persist tombstone list in bio so all visitor browsers filter deleted IDs cleanly
   const currentBio = getStoredBio();
+  const { documents: _ignoredNestedDocs, ...cleanCurrentBio } = currentBio as any;
   const mergedDeletedIds = Array.from(
-    new Set([...(currentBio.deletedDocIds || []), ...Array.from(deletedIds), ...extraDeletedIds])
+    new Set([...(cleanCurrentBio.deletedDocIds || []), ...Array.from(deletedIds), ...extraDeletedIds])
   );
   const updatedBio: ProfileBioData = {
-    ...currentBio,
+    ...cleanCurrentBio,
     deletedDocIds: mergedDeletedIds,
   };
   memoryBio = updatedBio;
@@ -892,25 +966,44 @@ export async function saveStoredDocuments(docs: DocumentItem[], extraDeletedIds:
   saveDocumentsPersistently(cleanDocs).catch((e) => console.warn('Persistent storage failed:', e));
   notifyProfileUpdated();
 
-  // 2. Persist to Supabase with owner UID
-  await saveProfileToSupabaseTable(
-    {
-      fullName: updatedBio.fullName,
-      header: updatedBio.header,
-      bioData: updatedBio,
-      documents: cleanDocs,
-    },
-    ownerUid
-  );
-
-  // 3. Backup to Firestore & Server
   try {
-    await Promise.allSettled([
-      saveProfileToFirestore({ bio: updatedBio, documents: cleanDocs }),
-      pushProfileToServer({ bio: updatedBio, documents: cleanDocs }),
-    ]);
-  } catch (err) {
-    console.warn('Backup database save note:', err);
+    // 2. Persist to Supabase with owner UID (throws on failure so UI catches it cleanly)
+    await saveProfileToSupabaseTable(
+      {
+        fullName: updatedBio.fullName,
+        header: updatedBio.header,
+        bioData: updatedBio,
+        documents: cleanDocs,
+      },
+      ownerUid
+    );
+
+    lastLocalDocSaveTimestamp = Date.now();
+
+    // 3. Backup to Firestore & Server
+    try {
+      await Promise.allSettled([
+        saveProfileToFirestore({ bio: updatedBio, documents: cleanDocs }),
+        pushProfileToServer({ bio: updatedBio, documents: cleanDocs }),
+      ]);
+    } catch (err) {
+      console.warn('Backup database save note:', err);
+    }
+  } catch (supaErr) {
+    // Roll back optimistic state if authoritative Supabase write failed
+    memoryDocuments = previousDocs;
+    if (previousBio) {
+      memoryBio = previousBio;
+      try {
+        localStorage.setItem(STORAGE_KEY_BIO, JSON.stringify(previousBio));
+      } catch {}
+    }
+    writeDocsToLocalStorageSafe(previousDocs);
+    notifyProfileUpdated();
+    throw supaErr;
+  } finally {
+    docWriteInFlight = false;
+    lastLocalDocSaveTimestamp = Date.now();
   }
 }
 

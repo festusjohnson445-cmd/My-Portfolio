@@ -748,7 +748,8 @@ export async function resilientSupabaseUpsert(
 
 /**
  * Upsert owner profile in Supabase "profiles" table with auth.uid() enforcement.
- * Stores documents inside bio to conform with standard profiles table schema.
+ * Keeps both the `documents` column and `bio.documents` synchronized so Realtime
+ * and initial fetches always resolve the latest documents list cleanly.
  */
 export async function saveProfileToSupabaseTable(profileData: {
   fullName?: string;
@@ -757,45 +758,76 @@ export async function saveProfileToSupabaseTable(profileData: {
   avatarUrl?: string;
   documents?: any[];
 }, uid?: string): Promise<boolean> {
-  try {
-    const { user } = await getValidatedSession();
-    const ownerUid = uid || user.id;
+  const { user } = await getValidatedSession();
+  const ownerUid = uid || user.id;
 
-    const mergedBio = {
-      ...(profileData.bioData || {}),
-      ...(profileData.documents !== undefined ? { documents: profileData.documents } : {}),
-    };
-
-    const payload: any = {
-      id: ownerUid,
-      full_name: profileData.fullName || 'Festus, Olorunsogo Johnson',
-      header: profileData.header || 'Lead Mechanical Design Engineer',
-      bio: mergedBio,
-      updated_at: new Date().toISOString(),
-    };
-
-    if (profileData.avatarUrl !== undefined) {
-      payload.avatar_url = profileData.avatarUrl;
-    }
-
-    const { error } = await resilientSupabaseUpsert('profiles', payload);
-
-    if (error) {
-      console.warn('[Supabase DB Profiles Upsert Note]:', error.message);
-      return false;
-    }
-    cachedProfileData = null;
-    lastProfileFetchTime = 0;
-    return true;
-  } catch (err: any) {
-    console.warn('[Supabase DB Profiles Save Note]:', err?.message || err);
-    return false;
+  const baseBio = { ...(profileData.bioData || {}) };
+  if (profileData.documents !== undefined) {
+    baseBio.documents = profileData.documents;
   }
+
+  const payload: any = {
+    id: ownerUid,
+    full_name: profileData.fullName || 'Festus, Olorunsogo Johnson',
+    header: profileData.header || 'Lead Mechanical Design Engineer',
+    bio: baseBio,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (profileData.documents !== undefined) {
+    payload.documents = profileData.documents;
+  }
+
+  if (profileData.avatarUrl !== undefined) {
+    payload.avatar_url = profileData.avatarUrl;
+  }
+
+  const { error } = await resilientSupabaseUpsert('profiles', payload);
+
+  if (error) {
+    console.error('[Supabase DB Profiles Upsert Error]:', error.message || error);
+    throw new Error(error.message || 'Failed to save profile to Supabase database.');
+  }
+
+  cachedProfileData = null;
+  lastProfileFetchTime = 0;
+  return true;
 }
 
 let cachedProfileData: any | null = null;
 let lastProfileFetchTime = 0;
 const PROFILE_CACHE_TTL_MS = 3 * 60 * 1000;
+
+/**
+ * Resolve documents array from Supabase row without letting an empty default `[]`
+ * in `data.documents` shadow populated `bio.documents`.
+ */
+export function resolveSupabaseProfileDocuments(rawColDocs: any, rawBioDocs: any): any[] {
+  let colDocs = rawColDocs;
+  if (typeof colDocs === 'string') {
+    try {
+      colDocs = JSON.parse(colDocs);
+    } catch {
+      colDocs = undefined;
+    }
+  }
+  let bioDocs = rawBioDocs;
+  if (typeof bioDocs === 'string') {
+    try {
+      bioDocs = JSON.parse(bioDocs);
+    } catch {
+      bioDocs = undefined;
+    }
+  }
+
+  if (Array.isArray(bioDocs) && Array.isArray(colDocs)) {
+    if (bioDocs.length > 0 && colDocs.length === 0) return bioDocs;
+    return bioDocs.length >= colDocs.length ? bioDocs : colDocs;
+  }
+  if (Array.isArray(bioDocs)) return bioDocs;
+  if (Array.isArray(colDocs)) return colDocs;
+  return [];
+}
 
 /**
  * Fetch owner profile from Supabase "profiles" table (public read for visitors)
@@ -824,12 +856,10 @@ export async function fetchProfileFromSupabaseTable(force = false): Promise<any 
       } catch {}
     }
 
-    let parsedDocs = data.documents || parsedBio?.documents;
-    if (typeof parsedDocs === 'string') {
-      try {
-        parsedDocs = JSON.parse(parsedDocs);
-      } catch {}
-    }
+    const parsedDocs = resolveSupabaseProfileDocuments(data.documents, parsedBio?.documents);
+
+    const cleanBio = parsedBio && typeof parsedBio === 'object' ? { ...parsedBio } : {};
+    delete (cleanBio as any).documents;
 
     if (data && data.id) {
       try {
@@ -841,9 +871,9 @@ export async function fetchProfileFromSupabaseTable(force = false): Promise<any 
       id: data.id,
       fullName: data.full_name || data.fullName,
       header: data.header,
-      bio: parsedBio || {},
+      bio: cleanBio,
       avatar_url: data.avatar_url || data.avatarUrl || '',
-      documents: Array.isArray(parsedDocs) ? parsedDocs : [],
+      documents: parsedDocs,
       updated_at: data.updated_at,
     };
     cachedProfileData = profileResult;
