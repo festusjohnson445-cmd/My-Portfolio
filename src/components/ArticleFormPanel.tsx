@@ -34,6 +34,9 @@ interface ArticleFormPanelProps {
   onCancel: () => void;
 }
 
+const isSupabaseStorageUrl = (url?: string): boolean =>
+  /supabase\.co\/storage\/v1\/object\//i.test(url || '');
+
 export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   initialArticle,
   isOwner,
@@ -101,7 +104,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           setUploadStage(stage);
         });
         const asset: MediaAssetItem = {
-          title: file.name.replace(/\.[^/.]+$/, ''),
+          title: '',
           url: res.publicUrl,
           fileName: res.fileName,
           fileSize: res.fileSize,
@@ -238,20 +241,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       </div>
 
       {uploadingField && (
-        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 space-y-1 text-xs">
-          <div className="flex items-center justify-between gap-2 text-cyan-950 font-semibold">
-            <span className="truncate flex items-center gap-1.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-              <span className="truncate">{uploadStage || 'Optimizing & uploading media...'}</span>
-            </span>
-            <span className="font-mono shrink-0">{uploadProgress}%</span>
-          </div>
-          <div className="w-full h-1.5 bg-cyan-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-cyan-800 transition-all duration-300"
-              style={{ width: `${Math.max(5, Math.min(100, uploadProgress))}%` }}
-            />
-          </div>
+        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span>uploading...</span>
         </div>
       )}
 
@@ -365,18 +357,31 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </label>
           <input
             type="url"
-            value={thumbnailUrl}
+            value={isSupabaseStorageUrl(thumbnailUrl) ? '' : thumbnailUrl}
             onChange={(e) => setThumbnailUrl(e.target.value)}
-            placeholder="Or paste image URL (https://...)"
+            placeholder={
+              isSupabaseStorageUrl(thumbnailUrl)
+                ? 'Image uploaded (paste external URL to replace)'
+                : 'Or paste image URL (https://...)'
+            }
             className="flex-1 min-w-0 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
           />
         </div>
         {thumbnailUrl && (
-          <img
-            src={thumbnailUrl}
-            alt="Article card image preview"
-            className="h-24 w-auto max-w-full rounded-md border border-slate-300 object-cover"
-          />
+          <div className="flex items-center gap-3 flex-wrap">
+            <img
+              src={thumbnailUrl}
+              alt="Article card image preview"
+              className="h-24 w-auto max-w-full rounded-md border border-slate-300 object-contain bg-white"
+            />
+            <button
+              type="button"
+              onClick={() => setThumbnailUrl('')}
+              className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer"
+            >
+              Remove Image
+            </button>
+          </div>
         )}
       </div>
 
@@ -432,11 +437,24 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               </label>
               <input
                 type="url"
-                value={heroMedia.url || ''}
+                value={isSupabaseStorageUrl(heroMedia.url) ? '' : heroMedia.url || ''}
                 onChange={(e) => setHeroMedia((prev) => ({ ...prev, url: e.target.value }))}
-                placeholder="Hero media URL"
+                placeholder={
+                  isSupabaseStorageUrl(heroMedia.url)
+                    ? 'Hero media uploaded'
+                    : 'Hero media URL'
+                }
                 className="flex-1 min-w-0 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
               />
+              {isSupabaseStorageUrl(heroMedia.url) && (
+                <button
+                  type="button"
+                  onClick={() => setHeroMedia((prev) => ({ ...prev, url: '' }))}
+                  className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                >
+                  Clear
+                </button>
+              )}
             </div>
           ) : null}
         </div>
@@ -540,7 +558,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </div>
           {diagrams.map((d, i) => (
             <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{d.title || d.url}</span>
+              <span className="truncate flex-1 min-w-0">{d.title || `Uploaded Schematic ${i + 1}`}</span>
               <button
                 type="button"
                 onClick={() => setDiagrams((prev) => prev.filter((_, idx) => idx !== i))}
@@ -601,7 +619,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </div>
           {images.map((im, i) => (
             <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{im.title || im.url}</span>
+              <span className="truncate flex-1 min-w-0">{im.title || `Uploaded Image ${i + 1}`}</span>
               <button
                 type="button"
                 onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
@@ -662,7 +680,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </div>
           {videos.map((v, i) => (
             <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{v.title || v.url}</span>
+              <span className="truncate flex-1 min-w-0">{v.title || `Uploaded Video ${i + 1}`}</span>
               <button
                 type="button"
                 onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
@@ -722,7 +740,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </div>
           {attachments.map((att, i) => (
             <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{att.title || att.fileName || att.url}</span>
+              <span className="truncate flex-1 min-w-0">
+                {att.title || (att.fileName && !/^\d+(\.[^/.]+)?$/.test(att.fileName) ? att.fileName : `Uploaded File ${i + 1}`)}
+              </span>
               <button
                 type="button"
                 onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}

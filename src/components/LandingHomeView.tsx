@@ -7,11 +7,14 @@ import {
   MessageSquare,
   FolderKanban,
   BookOpen,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
 import { withRecordVersion } from '../utils/supabase';
 import { useWebsiteSettingsSync, BUILT_IN_THEMES } from '../utils/portfolioSupabase';
+import { useUserColorMode, resolveEffectiveTheme } from '../utils/userThemeMode';
 
 interface LandingHomeViewProps {
   onNavigatePart: (part: PortfolioPart) => void;
@@ -23,10 +26,12 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   onResumeClick,
 }) => {
   const { bio, documents, avatar, updatedAt } = useProfileSync();
+  const [userColorMode, toggleUserColorMode] = useUserColorMode();
   const websiteSettings = useWebsiteSettingsSync();
   const appearance = websiteSettings.appearanceConfig;
-  const activeTheme =
+  const baseTheme =
     appearance.storedThemes.find((t) => t.id === appearance.activeThemeId) || BUILT_IN_THEMES[0];
+  const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const cardAnimClass = appearance.cardAnimationEnabled ? 'card-anim-enabled' : '';
 
   const heroMessage = bio.header || "Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.";
@@ -44,6 +49,21 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
           backgroundColor: activeTheme.surfaceBg,
         }}
       >
+        {/* Per-User Local Light/Dark Mode Toggle (Top-Right Corner of Hero) */}
+        <button
+          type="button"
+          onClick={() => toggleUserColorMode()}
+          className="absolute top-3 right-3 sm:top-4 sm:right-5 z-20 p-2 rounded-full bg-white/90 hover:bg-white text-slate-800 border border-slate-300 shadow-xs transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
+          aria-label={userColorMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={userColorMode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        >
+          {userColorMode === 'dark' ? (
+            <Sun className="w-4 h-4 text-amber-400" />
+          ) : (
+            <Moon className="w-4 h-4 text-slate-700" />
+          )}
+        </button>
+
         {/* Optional Hero Background Image */}
         {appearance.heroBackgroundImageUrl && (
           <>

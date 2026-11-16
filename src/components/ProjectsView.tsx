@@ -325,7 +325,10 @@ export const ProjectsView: React.FC = () => {
                           />
                         )}
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-slate-900 truncate">{cad.title || cad.fileName}</span>
+                          <span className="font-bold text-slate-900 truncate">
+                            {(cad.title && !/^\d+$/.test(cad.title.trim()) ? cad.title : '') ||
+                              (cad.fileName && !/^\d+(\.[^/.]+)?$/.test(cad.fileName.trim()) ? cad.fileName : 'CAD File')}
+                          </span>
                           <a
                             href={cad.url}
                             target="_blank"
@@ -345,7 +348,7 @@ export const ProjectsView: React.FC = () => {
             </div>
           )}
 
-          {/* Images Media Gallery */}
+          {/* Images Media Gallery (Full uploaded image only, no numeric/filename caption) */}
           {selectedProject.images.length > 0 && (
             <div className="space-y-2.5">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
@@ -354,18 +357,21 @@ export const ProjectsView: React.FC = () => {
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 {selectedProject.images.map((img, i) => (
-                  <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                    <img src={img.url} alt={img.title} loading="lazy" decoding="async" className="w-full h-44 object-cover" />
-                    {img.title && (
-                      <p className="px-2.5 py-1.5 text-[11px] text-slate-700 text-center">{img.title}</p>
-                    )}
+                  <div key={i} className="rounded-lg border border-slate-200 bg-white overflow-hidden flex items-center justify-center">
+                    <img
+                      src={img.url}
+                      alt={img.title || `Project Image ${i + 1}`}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full max-h-96 object-contain block"
+                    />
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Videos Gallery with Admin Video Card Controls */}
+          {/* Videos Gallery (Full video container without filename/number caption) */}
           {selectedProject.videos.length > 0 && (
             <div className="space-y-2.5">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
@@ -374,7 +380,7 @@ export const ProjectsView: React.FC = () => {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {selectedProject.videos.map((vid, i) => (
-                  <div key={i} className="rounded-lg border border-slate-200 bg-slate-900 overflow-hidden">
+                  <div key={i} className="rounded-lg border border-slate-200 bg-slate-950 overflow-hidden">
                     <div
                       className="w-full overflow-hidden bg-slate-950 flex items-center justify-center"
                       style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
@@ -385,14 +391,11 @@ export const ProjectsView: React.FC = () => {
                         preload="metadata"
                         className="w-full h-full transition-transform duration-200"
                         style={{
-                          objectFit: videoCardControls.objectFit || 'cover',
+                          objectFit: videoCardControls.objectFit || 'contain',
                           transform: `scale(${videoCardControls.zoomLevel || 1})`,
                         }}
                       />
                     </div>
-                    {vid.title && (
-                      <p className="px-2.5 py-1.5 text-[11px] text-slate-200 text-center">{vid.title}</p>
-                    )}
                   </div>
                 ))}
               </div>

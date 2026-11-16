@@ -443,7 +443,7 @@ export const ProfilePictureRepositionModal: React.FC<ProfilePictureRepositionMod
             {isProcessing ? (
               <>
                 <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>Uploading...</span>
+                <span>uploading...</span>
               </>
             ) : (
               <>

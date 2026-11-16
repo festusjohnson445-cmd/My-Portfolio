@@ -58,6 +58,7 @@ import {
   uploadChatFileToMaterialsBucket,
   updateMessageInSupabase,
   markConversationMessagesAsSeenInSupabase,
+  deleteConversationFromSupabase,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -1706,9 +1707,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         setVisitorId(freshId);
       }
 
-      // 5. Clean up from Firestore if active
+      // 5. Clean up from Firestore & Supabase so unread badge drops immediately
       deleteConversationFromFirestore(targetId).catch(() => {});
       deleteDirectInquiryFromFirestore(targetId).catch(() => {});
+      await deleteConversationFromSupabase(targetId);
 
       // 6. Delete from backend database (Cloud SQL / PostgreSQL) with SSE broadcast
       const res = await fetch(`/api/chats/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
@@ -1718,6 +1720,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
 
       setShowMailNotice(`Inquiry "${displayName}" deleted permanently.`);
       window.dispatchEvent(new CustomEvent('fesline_chats_updated'));
+      window.dispatchEvent(new CustomEvent('fesline_unread_count_changed'));
       broadcastSupabaseChatMessage({ event: 'inquiry_deleted', targetId });
     } catch (err) {
       console.warn('Delete error:', err);

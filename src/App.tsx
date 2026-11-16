@@ -26,17 +26,20 @@ import {
   BUILT_IN_THEMES,
   prewarmPortfolioCaches,
 } from './utils/portfolioSupabase';
+import { useUserColorMode, resolveEffectiveTheme } from './utils/userThemeMode';
 
 export default function App() {
   const [activePart, setActivePart] = useState<PortfolioPart>('home');
   const [isResumeOpen, setIsResumeOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [userColorMode] = useUserColorMode();
 
   const websiteSettings = useWebsiteSettingsSync();
   const appearance = websiteSettings.appearanceConfig;
-  const activeTheme =
+  const baseTheme =
     appearance.storedThemes.find((t) => t.id === appearance.activeThemeId) || BUILT_IN_THEMES[0];
+  const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const footerCfg = appearance.footerConfig;
 
   // Top-level onAuthStateChange session listener — ignore anonymous / public visitor chat sessions

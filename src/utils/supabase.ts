@@ -1655,37 +1655,113 @@ export async function markConversationMessagesAsSeenInSupabase(params: {
   }
 }
 
+function getDeletedConvIdsSet(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window === 'undefined') return set;
+  try {
+    const raw =
+      localStorage.getItem('fesline_deleted_conv_ids') ||
+      sessionStorage.getItem('fesline_deleted_conv_ids') ||
+      '[]';
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      parsed.forEach((id) => {
+        const str = String(id || '').trim();
+        if (!str) return;
+        const clean = str.replace(/^conv_/, '');
+        set.add(clean);
+        set.add(`conv_${clean}`);
+      });
+    }
+  } catch {}
+  return set;
+}
+
+/**
+ * Cleanly marks unread messages seen and deletes the conversation & messages in Supabase
+ * so deleted inquiries never linger in the live unread count badge.
+ */
+export async function deleteConversationFromSupabase(conversationId: string): Promise<void> {
+  const cleanId = String(conversationId || '').replace(/^conv_/, '').trim();
+  if (!cleanId) return;
+  const candidates = Array.from(new Set([cleanId, `conv_${cleanId}`]));
+
+  try {
+    await supabase
+      .from('messages')
+      .update({ status: 'seen' })
+      .in('conversation_id', candidates);
+    await supabase
+      .from('conversations')
+      .update({ unread: false, unread_count: 0 })
+      .in('id', candidates);
+    await supabase.from('messages').delete().in('conversation_id', candidates);
+    await supabase.from('conversations').delete().in('id', candidates);
+    await supabase.from('chats').delete().in('id', candidates);
+  } catch (err) {
+    console.warn('[deleteConversationFromSupabase note]:', err);
+  } finally {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fesline_unread_count_changed'));
+    }
+  }
+}
+
 /**
  * Lightweight unread messaging counter for both Owner and Visitors.
- * Queries minimal metadata columns only (zero heavy content/blob downloads).
+ * Counts only current unread messages belonging to active, non-deleted conversations.
  */
 export async function fetchUnreadMessagingCount(params: {
   isOwner: boolean;
   visitorId?: string;
 }): Promise<number> {
   try {
+    const deletedSet = getDeletedConvIdsSet();
+
     if (params.isOwner) {
       const ownerId = await getOrFetchOwnerId();
       const [msgsRes, convsRes] = await Promise.all([
         supabase
           .from('messages')
-          .select('id, sender_id, status')
+          .select('id, conversation_id, sender_id, status')
           .eq('status', 'unseen')
-          .limit(200),
+          .limit(300),
         supabase
           .from('conversations')
-          .select('id, unread')
-          .eq('unread', true)
-          .limit(100),
+          .select('id, visitor_id')
+          .limit(200),
       ]);
 
-      const unseenVisitorMsgs = Array.isArray(msgsRes.data)
-        ? msgsRes.data.filter(
-            (m: any) => m.sender_id && m.sender_id !== ownerId && m.sender_id !== 'festus'
-          ).length
-        : 0;
-      const unreadConvRows = Array.isArray(convsRes.data) ? convsRes.data.length : 0;
-      return Math.max(unseenVisitorMsgs, unreadConvRows);
+      const activeConvIds = new Set<string>();
+      const hasConvTableData = Array.isArray(convsRes.data) && !convsRes.error;
+      if (hasConvTableData) {
+        convsRes.data.forEach((c: any) => {
+          const cid = String(c?.id || '').trim();
+          const vid = String(c?.visitor_id || '').trim();
+          if (cid && !deletedSet.has(cid) && !deletedSet.has(cid.replace(/^conv_/, ''))) {
+            activeConvIds.add(cid);
+            activeConvIds.add(cid.replace(/^conv_/, ''));
+          }
+          if (vid && !deletedSet.has(vid) && !deletedSet.has(`conv_${vid}`)) {
+            activeConvIds.add(vid);
+            activeConvIds.add(`conv_${vid}`);
+          }
+        });
+      }
+
+      if (!Array.isArray(msgsRes.data) || msgsRes.error) return 0;
+
+      return msgsRes.data.filter((m: any) => {
+        if (!m?.sender_id || m.sender_id === ownerId || m.sender_id === 'festus') return false;
+        const convId = String(m.conversation_id || '').trim();
+        if (!convId) return false;
+        if (deletedSet.has(convId) || deletedSet.has(convId.replace(/^conv_/, ''))) return false;
+        if (deletedSet.has(m.sender_id) || deletedSet.has(`conv_${m.sender_id}`)) return false;
+        if (hasConvTableData && !activeConvIds.has(convId) && !activeConvIds.has(convId.replace(/^conv_/, ''))) {
+          return false;
+        }
+        return true;
+      }).length;
     }
 
     const storedVId =
@@ -1694,18 +1770,29 @@ export async function fetchUnreadMessagingCount(params: {
         ? localStorage.getItem('visitor_id') || localStorage.getItem('fesline_visitor_id') || ''
         : '');
     const cleanVId = storedVId.replace(/^conv_/, '').trim();
-    if (!cleanVId) return 0;
+    if (!cleanVId || deletedSet.has(cleanVId) || deletedSet.has(`conv_${cleanVId}`)) return 0;
 
     const targetConvId = `conv_${cleanVId}`;
-    const { data, error } = await supabase
-      .from('messages')
-      .select('id, sender_id, status')
-      .in('conversation_id', [targetConvId, cleanVId])
-      .eq('status', 'unseen')
-      .limit(100);
+    const [msgsRes, convCheckRes] = await Promise.all([
+      supabase
+        .from('messages')
+        .select('id, sender_id, status')
+        .in('conversation_id', [targetConvId, cleanVId])
+        .eq('status', 'unseen')
+        .limit(100),
+      supabase
+        .from('conversations')
+        .select('id')
+        .in('id', [targetConvId, cleanVId])
+        .limit(5),
+    ]);
 
-    if (error || !Array.isArray(data)) return 0;
-    return data.filter((m: any) => m.sender_id && m.sender_id !== cleanVId).length;
+    if (!convCheckRes.error && Array.isArray(convCheckRes.data) && convCheckRes.data.length === 0) {
+      return 0;
+    }
+
+    if (msgsRes.error || !Array.isArray(msgsRes.data)) return 0;
+    return msgsRes.data.filter((m: any) => m.sender_id && m.sender_id !== cleanVId).length;
   } catch {
     return 0;
   }

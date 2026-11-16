@@ -123,7 +123,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               onClick={() => setMenuOpen(!menuOpen)}
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#e4eaf1] hover:bg-white text-slate-800 hover:text-slate-950 border border-[#b4c2d1] hover:border-slate-400 shadow-xs transition-all cursor-pointer group focus:outline-none focus:ring-2 focus:ring-cyan-700/50 whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-xl bg-[#e4eaf1] hover:bg-white text-slate-800 hover:text-slate-950 border border-[#b4c2d1] hover:border-slate-400 shadow-xs transition-all cursor-pointer group focus:outline-none focus:ring-2 focus:ring-cyan-700/50 whitespace-nowrap shrink-0"
               aria-label="Toggle Menu Bar"
               title="Open Navigation Menu"
             >
@@ -150,7 +150,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* CENTER: DESKTOP NAVIGATION LINKS (Order: Home, Profile, Messaging, Engineering Hub, Projects, Blog / Articles, [Admin Dashboard]) */}
           <nav
             ref={dropdownRef}
-            className="hidden lg:flex items-center gap-0.5 bg-[#e0e7ee]/90 px-1.5 py-1 rounded-xl border border-[#b4c2d1] shadow-inner font-serif relative"
+            className="hidden lg:flex items-center gap-0.5 bg-[#e0e7ee]/90 px-1.5 py-0.5 rounded-xl border border-[#b4c2d1] shadow-inner font-serif relative"
           >
             {navParts.map((part) => {
               const isActive = activePart === part.id;
@@ -162,7 +162,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       type="button"
                       onClick={() => setProfileDropdownOpen((prev) => !prev)}
                       aria-expanded={profileDropdownOpen}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                         isActive || profileDropdownOpen
                           ? 'bg-slate-900 text-white shadow-xs'
                           : 'text-slate-800 hover:text-slate-950 hover:bg-white/80'
@@ -201,7 +201,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   key={part.id}
                   type="button"
                   onClick={() => handleNavClick(part.id)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                     isActive
                       ? 'bg-slate-900 text-white shadow-xs'
                       : 'text-slate-800 hover:text-slate-950 hover:bg-white/80'
@@ -293,7 +293,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                           type="button"
                           onClick={() => setDrawerProfileOpen((prev) => !prev)}
                           aria-expanded={drawerProfileOpen}
-                          className={`w-full text-left px-2.5 py-2 rounded-lg border flex items-center justify-between transition-all cursor-pointer ${
+                          className={`w-full text-left px-2.5 py-1.5 rounded-lg border flex items-center justify-between transition-all cursor-pointer ${
                             isActive || drawerProfileOpen
                               ? 'bg-slate-900 border-slate-900 text-white font-bold shadow-sm'
                               : 'bg-white hover:bg-white/80 border-[#cbd5e1] text-slate-800 hover:border-slate-400'
@@ -340,7 +340,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       key={part.id}
                       type="button"
                       onClick={() => handleNavClick(part.id)}
-                      className={`w-full text-left px-2.5 py-2 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                      className={`w-full text-left px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
                         isActive
                           ? 'bg-slate-950 border-slate-950 text-white font-bold shadow-md'
                           : 'bg-white hover:bg-white/80 border-[#cbd5e1] text-slate-800 hover:border-slate-400'

@@ -758,7 +758,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     const effectiveUploader = uploaderName.trim() || 'Festus, Olorunsogo Johnson (Owner)';
 
     const total = queuedFiles.length;
-    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Uploading to Supabase "materials" bucket...' });
+    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'uploading...' });
 
     try {
       // 2. Upload strictly to Supabase Storage bucket "materials" with { contentType, upsert: true }
@@ -769,7 +769,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             current: i + 1,
             total,
             percent: Math.round(((i + 1) / (total * 2)) * 100),
-            currentFileName: `Uploading "${item.file.name}" to Supabase...`,
+            currentFileName: 'uploading...',
           });
 
           // Direct upload strictly to Supabase Storage bucket "materials"
@@ -1623,19 +1623,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
                 {/* Progress Bar */}
                 {isPublishing && (
-                  <div className="space-y-1.5 font-mono text-xs p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <div className="flex justify-between text-cyan-800 font-semibold">
-                      <span>
-                        Uploading file {uploadProgress.current} of {uploadProgress.total} ({uploadProgress.currentFileName})...
-                      </span>
-                      <span>{uploadProgress.percent}%</span>
-                    </div>
-                    <div className="w-full h-2.5 rounded-full bg-slate-200 overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-cyan-600 to-sky-500 transition-all duration-300"
-                        style={{ width: `${uploadProgress.percent}%` }}
-                      />
-                    </div>
+                  <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-800 shrink-0" />
+                    <span>uploading...</span>
                   </div>
                 )}
 
@@ -1660,7 +1650,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     {isPublishing ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                        <span>Publishing {queuedFiles.length} Documents...</span>
+                        <span>uploading...</span>
                       </>
                     ) : (
                       <>

@@ -744,9 +744,14 @@ export const ArticlesView: React.FC = () => {
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {selectedArticle.diagrams.map((diag, idx) => (
-                      <div key={idx} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                        <img src={diag.url} alt={diag.title} loading="lazy" decoding="async" className="w-full h-48 object-contain rounded bg-white" />
-                        {diag.title && <p className="text-[11px] text-slate-700 text-center font-semibold">{diag.title}</p>}
+                      <div key={idx} className="rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center">
+                        <img
+                          src={diag.url}
+                          alt={diag.title || `Diagram ${idx + 1}`}
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full max-h-96 object-contain block"
+                        />
                       </div>
                     ))}
                   </div>
@@ -757,9 +762,14 @@ export const ArticlesView: React.FC = () => {
               {selectedArticle.images.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
                   {selectedArticle.images.map((im, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
-                      <img src={im.url} alt={im.title} loading="lazy" decoding="async" className="w-full h-48 object-cover" />
-                      {im.title && <p className="px-2 py-1 text-[11px] text-center text-slate-700">{im.title}</p>}
+                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-white flex items-center justify-center">
+                      <img
+                        src={im.url}
+                        alt={im.title || `Article Image ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full max-h-96 object-contain block"
+                      />
                     </div>
                   ))}
                 </div>
@@ -768,7 +778,7 @@ export const ArticlesView: React.FC = () => {
               {selectedArticle.videos.length > 0 && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
                   {selectedArticle.videos.map((v, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-900">
+                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-950">
                       <div
                         className="w-full overflow-hidden bg-slate-950 flex items-center justify-center"
                         style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
@@ -779,12 +789,11 @@ export const ArticlesView: React.FC = () => {
                           preload="metadata"
                           className="w-full h-full transition-transform duration-200"
                           style={{
-                            objectFit: videoCardControls.objectFit || 'cover',
+                            objectFit: videoCardControls.objectFit || 'contain',
                             transform: `scale(${videoCardControls.zoomLevel || 1})`,
                           }}
                         />
                       </div>
-                      {v.title && <p className="px-2 py-1 text-[11px] text-center text-slate-200">{v.title}</p>}
                     </div>
                   ))}
                 </div>

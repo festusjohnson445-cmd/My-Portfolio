@@ -133,72 +133,40 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     fileInputRef.current?.click();
   };
 
-  // 1. RENDER PDF CONTENT ON LIGHT-COLORED ARCHIVAL TOP (Real first-page PDF render or clean instant PDF card)
+  // 1. RENDER PDF CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, no floating badges or filename overlay)
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-56 sm:h-64 bg-gradient-to-br from-[#f8fafc] via-[#f1f5f9] to-[#e4ecf5] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
-        title="Click to view full PDF document preview"
+        className="w-full h-56 sm:h-64 bg-[#f8fafc] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
+        title="Preview document"
       >
-        <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
-
         {renderedPdfImage ? (
-          /* Rendered First Page of PDF */
-          <div className="relative w-full h-full p-3 sm:p-4 flex items-center justify-center z-10 animate-fade-in">
-            <div className="relative max-h-full max-w-full rounded-sm shadow-md overflow-hidden border border-slate-300/90 bg-white transition-transform duration-300 group-hover/pdf:scale-[1.02]">
-              <img
-                src={renderedPdfImage}
-                alt={doc.title}
-                loading="lazy"
-                decoding="async"
-                className="max-h-50 sm:max-h-56 w-auto object-contain block"
-              />
-            </div>
-          </div>
+          <img
+            src={renderedPdfImage}
+            alt={doc.title}
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-contain block transition-transform duration-300 group-hover/pdf:scale-[1.01]"
+          />
         ) : (
-          /* Clean Light Instant PDF Header without blocking blank spinner */
           <div className="flex flex-col items-center justify-center text-center p-4 z-10 animate-fade-in">
-            <div className="w-14 h-14 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-2.5 shadow-2xs">
-              <FileCode className="w-7 h-7" />
+            <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-cyan-800 mb-2 shadow-2xs">
+              <FileCode className="w-6 h-6" />
             </div>
-            <p className="font-bold text-xs sm:text-sm text-slate-900 max-w-[240px] truncate">{doc.attachmentName || doc.title}</p>
-            <span className="text-[11px] text-slate-600 font-mono mt-0.5">PDF Document Attached · Click to Preview</span>
             {isRenderingPdf && (
-              <span className="inline-flex items-center gap-1 text-[10px] text-cyan-800 font-mono mt-2 bg-white px-2.5 py-0.5 rounded-full border border-cyan-200 shadow-2xs">
+              <span className="inline-flex items-center gap-1 text-[10px] text-cyan-800 font-mono bg-white px-2.5 py-0.5 rounded-full border border-cyan-200 shadow-2xs">
                 <Loader2 className="w-2.5 h-2.5 text-cyan-700 animate-spin" />
-                <span>Loading preview...</span>
+                <span>uploading...</span>
               </span>
             )}
           </div>
         )}
-
-        {/* Top Floating Badge */}
-        <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 pointer-events-none">
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-rose-600 text-white shadow-2xs tracking-wider flex items-center gap-1">
-            <FileCode className="w-3 h-3" />
-            PDF
-          </span>
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-white/95 border border-slate-300 text-slate-700 shadow-2xs">
-            {doc.category}
-          </span>
-        </div>
-
-        {/* Bottom Expand Overlay */}
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-white/95 via-white/90 to-transparent px-3 py-2 border-t border-slate-200/70 flex items-center justify-between text-slate-800 z-20 pointer-events-none">
-          <span className="text-[11px] font-sans font-medium text-slate-700 truncate max-w-[180px] sm:max-w-[240px]">
-            {doc.attachmentName || doc.title}
-          </span>
-          <span className="text-[11px] font-sans font-semibold text-cyan-800 flex items-center gap-1 group-hover/pdf:text-cyan-950 transition-colors shrink-0">
-            <Eye className="w-3.5 h-3.5" />
-            <span>Click to View Full</span>
-          </span>
-        </div>
       </div>
     );
   }
 
-  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED ARCHIVAL TOP
+  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, no badges or overlay)
   if (isImage && (doc.attachmentDataUrl || doc.previewImageDataUrl)) {
     const rawSrc = doc.previewImageDataUrl || doc.attachmentDataUrl;
     const imgSrc = rawSrc && !isMockDrawingPreview(rawSrc) ? rawSrc : null;
@@ -206,43 +174,16 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return (
         <div
           onClick={() => onOpenPreview(doc)}
-          className="w-full h-56 sm:h-64 bg-gradient-to-br from-[#f8fafc] via-[#f1f5f9] to-[#e4ecf5] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
-          title="Click to zoom / view full document image"
+          className="w-full h-56 sm:h-64 bg-[#f8fafc] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          title="Preview image"
         >
-          <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
-
-          <div className="relative w-full h-full p-2.5 sm:p-3 flex items-center justify-center z-10">
-            <div className="relative max-h-full max-w-full rounded bg-white p-1 border border-slate-300/80 shadow-sm transition-transform duration-300 group-hover/img:scale-[1.02]">
-              <img
-                src={imgSrc}
-                alt={doc.title}
-                loading="lazy"
-                decoding="async"
-                className="max-h-48 sm:max-h-56 max-w-full object-contain rounded-xs block"
-              />
-            </div>
-          </div>
-
-          {/* Top Floating Badge */}
-          <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 pointer-events-none">
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-cyan-800 text-white shadow-2xs tracking-wider">
-              IMAGE / SCAN
-            </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-white/95 border border-slate-300 text-slate-700 shadow-2xs">
-              {doc.category}
-            </span>
-          </div>
-
-          {/* Bottom Expand Overlay */}
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-white/95 via-white/90 to-transparent px-3 py-2 border-t border-slate-200/70 flex items-center justify-between text-slate-800 z-20 pointer-events-none">
-            <span className="text-[11px] font-sans font-medium text-slate-700 truncate max-w-[180px] sm:max-w-[240px]">
-              {doc.attachmentName || doc.title}
-            </span>
-            <span className="text-[11px] font-sans font-semibold text-cyan-800 flex items-center gap-1 group-hover/img:text-cyan-950 transition-colors shrink-0">
-              <Eye className="w-3.5 h-3.5" />
-              <span>Click to View Full</span>
-            </span>
-          </div>
+          <img
+            src={imgSrc}
+            alt={doc.title}
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-contain block transition-transform duration-300 group-hover/img:scale-[1.01]"
+          />
         </div>
       );
     }

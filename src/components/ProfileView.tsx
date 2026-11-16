@@ -287,9 +287,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isSavingDoc, setIsSavingDoc] = useState(false);
   const docAttachmentInputRef = useRef<HTMLInputElement>(null);
 
-  // Credentials Grouping & Interactive Specialization Selection
+  // Credentials Grouping & Interactive Specialization Selection (all OPEN by default)
   const [credentialFilterGroup, setCredentialFilterGroup] = useState<'All' | 'Specialization' | 'Courses'>('All');
-  const [selectedSpecializationId, setSelectedSpecializationId] = useState<string | null>(null);
+  const [collapsedSpecializationIds, setCollapsedSpecializationIds] = useState<Set<string>>(() => new Set());
+  const toggleSpecialization = (specId: string) => {
+    const key = String(specId || '');
+    if (!key) return;
+    setCollapsedSpecializationIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Structured Profile Sections State (Experience, Publications, Achievements & Skills)
   const [experiences, setExperiences] = useState<ProfileExperience[]>(() => {
@@ -769,7 +779,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     const sizeStr = formatSize(file.size);
 
     try {
-      showNotification(`Uploading "${file.name}" to Supabase "materials" storage bucket...`);
+      showNotification('uploading...');
       // Direct upload strictly to Supabase Storage bucket materials with { contentType: file.type, upsert: true }
       const uploadRes = await uploadMaterialToSupabaseBucket(file, file.name, activeSession.user.id);
       if (!uploadRes?.publicUrl) {
@@ -1752,11 +1762,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 >
                   <Download className="w-3.5 h-3.5 text-cyan-200 group-hover:translate-y-0.5 transition-transform" />
                   <span>Download Resume</span>
-                  {localDownloadCount > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-md bg-white/20 text-[10px] font-mono text-cyan-100 font-bold tabular-nums">
-                      {localDownloadCount}
-                    </span>
-                  )}
                 </button>
 
                 {/* Converted completely from "Copy ATS Plaintext" to "ATS Preview" */}
@@ -1791,7 +1796,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
           <div className="p-4 sm:p-5 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] shadow-xs space-y-3">
             <div className="border-b border-[#cbd5e1] pb-2.5 flex flex-col sm:flex-row items-center justify-between gap-2">
               <h2 className="text-sm sm:text-base font-bold text-slate-950 font-serif text-center flex-1">
-                {getBuiltInSection('bio', 'Bio & About').label || 'Bio & About'} — {bioData.fullName}
+                {getBuiltInSection('bio', 'Bio & About').label || 'Bio & About'}
               </h2>
               {isOwnerAuthenticated && (
                 <button
@@ -2131,7 +2136,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   type="button"
                   onClick={() => {
                     setCredentialFilterGroup(grp);
-                    setSelectedSpecializationId(null);
+                    setCollapsedSpecializationIds(new Set());
                   }}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer border ${
                     credentialFilterGroup === grp
@@ -2201,8 +2206,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       </span>
                       {doc.date && <span>{doc.date}</span>}
                     </div>
-                    <h3 className="text-xs font-bold text-slate-950 text-center">{doc.title}</h3>
-                    <div className="text-[10.5px] text-slate-600 text-center">{doc.issuer}</div>
+                    <h3 className="text-xs font-bold text-slate-950 text-left">{doc.title}</h3>
+                    <div className="text-[10.5px] text-slate-600 text-left">{doc.issuer}</div>
                     <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
                       {doc.description}
                     </p>
@@ -2226,16 +2231,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           className="px-2 py-0.5 rounded bg-cyan-900 text-white font-semibold"
                         >
                           Download
-                        </a>
-                      )}
-                      {doc.verifiedLink && (
-                        <a
-                          href={doc.verifiedLink}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-cyan-800 hover:underline font-semibold"
-                        >
-                          Verify
                         </a>
                       )}
                     </div>
@@ -2276,7 +2271,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           const linkedCourses = courseDocs.filter(
                             (c) => c.parentSpecializationId === spec.id
                           );
-                          const isExpanded = selectedSpecializationId === spec.id;
+                          const isExpanded = !collapsedSpecializationIds.has(String(spec.id));
                           return (
                             <div
                               key={spec.id}
@@ -2285,9 +2280,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setSelectedSpecializationId(isExpanded ? null : spec.id)
-                                  }
+                                  onClick={() => toggleSpecialization(String(spec.id))}
                                   className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left"
                                 >
                                   {isExpanded ? (
@@ -2304,9 +2297,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                 <div className="flex items-center gap-1.5">
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      setSelectedSpecializationId(isExpanded ? null : spec.id)
-                                    }
+                                    onClick={() => toggleSpecialization(String(spec.id))}
                                     className="px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-semibold text-slate-800 cursor-pointer"
                                   >
                                     {isExpanded ? 'Hide Details' : 'View Certificate & Courses'}
@@ -2819,7 +2810,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         <p className="text-[11px] text-slate-500 font-mono">Size: {docAttachmentSize}</p>
                       )}
                       {isRenderingPdfInForm && (
-                        <p className="text-[11px] text-rose-600 font-medium animate-pulse">Rendering first page preview...</p>
+                        <p className="text-[11px] text-rose-600 font-medium animate-pulse">uploading...</p>
                       )}
                       <button
                         type="button"
@@ -3042,7 +3033,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   {isSavingDoc ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin text-white" />
-                      <span>Saving Document...</span>
+                      <span>uploading...</span>
                     </>
                   ) : (
                     <>

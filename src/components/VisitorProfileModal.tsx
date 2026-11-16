@@ -377,7 +377,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
                   disabled={isUploading}
                   className="px-2 py-1 rounded bg-[#243346] hover:bg-[#1a2533] text-white font-semibold text-[9.5px] cursor-pointer"
                 >
-                  {isUploading ? 'Uploading...' : 'Upload Avatar'}
+                  {isUploading ? 'uploading...' : 'Upload Avatar'}
                 </button>
                 {avatarUrl && (
                   <button

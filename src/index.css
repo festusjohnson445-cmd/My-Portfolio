@@ -154,3 +154,113 @@ html.dark ::-webkit-scrollbar-track {
 html.dark ::-webkit-scrollbar-thumb {
   background: #475569;
 }
+
+/* Strictly Per-User Light / Dark Mode CSS Overrides */
+html.user-dark-mode {
+  color-scheme: dark;
+  --bg-primary: #0b111e;
+  --surface-bg: #162033;
+  --card-bg: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border-subtle: #334155;
+  --footer-bg: #0f172a;
+  --navbar-bg: rgba(15, 23, 42, 0.96);
+}
+
+html.user-dark-mode header.sticky {
+  background-color: rgba(15, 23, 42, 0.95) !important;
+  border-color: #334155 !important;
+  color: #f1f5f9 !important;
+}
+
+html.user-dark-mode nav {
+  background-color: rgba(30, 41, 59, 0.95) !important;
+  border-color: #334155 !important;
+}
+
+html.user-dark-mode .bg-\[\#edf2f8\],
+html.user-dark-mode .bg-\[\#edf2f8\]\/60,
+html.user-dark-mode .bg-\[\#dce1e8\],
+html.user-dark-mode .bg-\[\#e6ecf4\],
+html.user-dark-mode .bg-\[\#e4eaf1\],
+html.user-dark-mode .bg-\[\#eaf0f6\],
+html.user-dark-mode .bg-\[\#dbe3ed\],
+html.user-dark-mode .bg-\[\#f8fafc\],
+html.user-dark-mode .bg-slate-50,
+html.user-dark-mode .bg-slate-100 {
+  background-color: #162033 !important;
+  color: #f1f5f9 !important;
+}
+
+html.user-dark-mode .bg-white,
+html.user-dark-mode .bg-white\/90,
+html.user-dark-mode .bg-white\/95,
+html.user-dark-mode .bg-white\/80,
+html.user-dark-mode .bg-white\/70 {
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+}
+
+html.user-dark-mode .text-slate-950,
+html.user-dark-mode .text-slate-900,
+html.user-dark-mode .text-slate-800 {
+  color: #f1f5f9 !important;
+}
+
+html.user-dark-mode .text-slate-700,
+html.user-dark-mode .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+html.user-dark-mode .text-slate-500,
+html.user-dark-mode .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+html.user-dark-mode .text-cyan-950,
+html.user-dark-mode .text-cyan-900,
+html.user-dark-mode .text-cyan-800 {
+  color: #38bdf8 !important;
+}
+
+html.user-dark-mode .border-\[\#b8c6d4\],
+html.user-dark-mode .border-\[\#cbd5e1\],
+html.user-dark-mode .border-\[\#b4c2d1\],
+html.user-dark-mode .border-\[\#abb8c7\],
+html.user-dark-mode .border-\[\#b0bece\],
+html.user-dark-mode .border-slate-300,
+html.user-dark-mode .border-slate-200,
+html.user-dark-mode .border-slate-100 {
+  border-color: #334155 !important;
+}
+
+html.user-dark-mode input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+html.user-dark-mode textarea,
+html.user-dark-mode select {
+  background-color: #0f172a !important;
+  color: #f1f5f9 !important;
+  border-color: #475569 !important;
+}
+
+html.user-dark-mode input::placeholder,
+html.user-dark-mode textarea::placeholder {
+  color: #64748b !important;
+}
+
+html.user-dark-mode .bg-cyan-50 {
+  background-color: rgba(8, 145, 178, 0.2) !important;
+  border-color: rgba(56, 189, 248, 0.35) !important;
+}
+
+html.user-dark-mode .bg-cyan-100 {
+  background-color: rgba(8, 145, 178, 0.28) !important;
+}
+
+html.user-dark-mode .bg-slate-900,
+html.user-dark-mode .bg-slate-950,
+html.user-dark-mode .bg-cyan-900,
+html.user-dark-mode .bg-cyan-800 {
+  color: #ffffff !important;
+}
+

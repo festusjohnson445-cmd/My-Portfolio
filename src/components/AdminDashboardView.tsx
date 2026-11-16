@@ -93,6 +93,7 @@ import {
   setOwnerAuthenticated,
   type DocumentItem,
 } from '../utils/profileState';
+import { deleteDocumentPersistently } from '../utils/documentStorage';
 import {
   resolveSkillStatus,
   formatSkillStatusLabel,
@@ -123,6 +124,7 @@ interface AdminDashboardViewProps {
 
 export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNavigatePart }) => {
   const { isOwner, bio, documents, saveBio, saveDocuments } = useProfileSync();
+  const isSupabaseStorageUrl = (url?: string): boolean => /supabase\.co\/storage\/v1\/object\//i.test(url || '');
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1344,7 +1346,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       <div className="flex flex-col sm:flex-row gap-2 min-w-0">
                         <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-cyan-800 text-white cursor-pointer shrink-0">
                           {pubUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                          <span>Upload PDF</span>
+                          <span>{pubUploading ? 'uploading...' : 'Upload PDF'}</span>
                           <input
                             type="file"
                             accept=".pdf,image/*"
@@ -1364,17 +1366,26 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         </label>
                         <input
                           type="url"
-                          placeholder="Or paste Attachment URL"
-                          value={pubForm.attachmentUrl || ''}
+                          placeholder={isSupabaseStorageUrl(pubForm.attachmentUrl) ? 'File uploaded' : 'Or paste Attachment URL'}
+                          value={isSupabaseStorageUrl(pubForm.attachmentUrl) ? '' : pubForm.attachmentUrl || ''}
                           onChange={(e) => setPubForm({ ...pubForm, attachmentUrl: e.target.value })}
                           className="w-full min-w-0 flex-1 px-2.5 py-1.5 rounded border border-slate-300 bg-white"
                         />
+                        {pubForm.attachmentUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setPubForm({ ...pubForm, attachmentUrl: '' })}
+                            className="px-2.5 py-1.5 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                          >
+                            Clear
+                          </button>
+                        )}
                       </div>
                       <div className="flex justify-end gap-2">
                         <button type="button" onClick={() => setPubOpen(false)} className="px-3 py-1 rounded bg-slate-200 text-xs cursor-pointer">
                           Cancel
                         </button>
-                        <button type="submit" className="px-3 py-1 rounded bg-cyan-900 text-white text-xs font-semibold cursor-pointer">
+                        <button type="submit" disabled={pubUploading} className="px-3 py-1 rounded bg-cyan-900 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer">
                           Save
                         </button>
                       </div>
@@ -1485,7 +1496,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       <div className="flex flex-col sm:flex-row gap-2 items-center min-w-0">
                         <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-cyan-800 text-white cursor-pointer shrink-0">
                           {achUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                          <span>Upload Certificate</span>
+                          <span>{achUploading ? 'uploading...' : 'Upload Certificate'}</span>
                           <input
                             type="file"
                             accept=".pdf,image/*"
@@ -1505,11 +1516,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         </label>
                         <input
                           type="url"
-                          placeholder="Or paste Certificate URL"
-                          value={achForm.certificateUrl || ''}
+                          placeholder={isSupabaseStorageUrl(achForm.certificateUrl) ? 'Certificate uploaded' : 'Or paste Certificate URL'}
+                          value={isSupabaseStorageUrl(achForm.certificateUrl) ? '' : achForm.certificateUrl || ''}
                           onChange={(e) => setAchForm({ ...achForm, certificateUrl: e.target.value })}
                           className="w-full min-w-0 flex-1 px-2.5 py-1.5 rounded border border-slate-300 bg-white"
                         />
+                        {achForm.certificateUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setAchForm({ ...achForm, certificateUrl: '' })}
+                            className="px-2.5 py-1.5 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                          >
+                            Clear
+                          </button>
+                        )}
                         <label className="inline-flex items-center gap-1.5 font-semibold cursor-pointer shrink-0">
                           <input
                             type="checkbox"
@@ -1523,7 +1543,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <button type="button" onClick={() => setAchOpen(false)} className="px-3 py-1 rounded bg-slate-200 text-xs cursor-pointer">
                           Cancel
                         </button>
-                        <button type="submit" className="px-3 py-1 rounded bg-cyan-900 text-white text-xs font-semibold cursor-pointer">
+                        <button type="submit" disabled={achUploading} className="px-3 py-1 rounded bg-cyan-900 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer">
                           Save
                         </button>
                       </div>
@@ -1749,7 +1769,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       <div className="flex flex-col sm:flex-row gap-2 min-w-0">
                         <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-cyan-800 text-white cursor-pointer shrink-0">
                           {credUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                          <span>Upload File</span>
+                          <span>{credUploading ? 'uploading...' : 'Upload File'}</span>
                           <input
                             type="file"
                             accept="image/*,.pdf"
@@ -1770,11 +1790,23 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         </label>
                         <input
                           type="url"
-                          placeholder="Or paste File URL"
-                          value={credAttachmentUrl}
+                          placeholder={isSupabaseStorageUrl(credAttachmentUrl) ? 'File uploaded' : 'Or paste File URL'}
+                          value={isSupabaseStorageUrl(credAttachmentUrl) ? '' : credAttachmentUrl}
                           onChange={(e) => setCredAttachmentUrl(e.target.value)}
                           className="w-full min-w-0 flex-1 px-2.5 py-1.5 rounded border border-slate-300 bg-white"
                         />
+                        {credAttachmentUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCredAttachmentUrl('');
+                              setCredAttachmentName('');
+                            }}
+                            className="px-2.5 py-1.5 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                          >
+                            Clear
+                          </button>
+                        )}
                         <input
                           type="url"
                           placeholder="Verify URL (optional)"
@@ -1787,7 +1819,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <button type="button" onClick={() => setCredOpen(false)} className="px-3 py-1 rounded bg-slate-200 text-xs cursor-pointer">
                           Cancel
                         </button>
-                        <button type="submit" className="px-3 py-1 rounded bg-cyan-900 text-white text-xs font-semibold cursor-pointer">
+                        <button type="submit" disabled={credUploading} className="px-3 py-1 rounded bg-cyan-900 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer">
                           Save Credential
                         </button>
                       </div>
@@ -1806,6 +1838,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <button
                           type="button"
                           onClick={async () => {
+                            await deleteDocumentPersistently(doc.id).catch(() => {});
                             await saveDocuments(documents.filter((d) => d.id !== doc.id));
                             showNotice('Credential removed.');
                           }}
@@ -1837,7 +1870,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       </select>
                       <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-xs font-semibold cursor-pointer">
                         {mediaUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                        <span>Upload</span>
+                        <span>{mediaUploading ? 'uploading...' : 'Upload'}</span>
                         <input
                           type="file"
                           multiple
@@ -1907,7 +1940,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                 <div className="w-full max-w-full overflow-hidden space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
                     <h2 className="text-sm font-bold text-slate-950 text-center flex-1">
-                      Website Settings &amp; Real-Time Appearance Control Center
+                      Website Settings
                     </h2>
                     <button
                       type="button"
@@ -1932,13 +1965,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                   </div>
 
                   {/* Sub-tab Switcher */}
-                  <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
+                  <div className="flex flex-wrap items-center justify-start gap-1.5 text-[11px]">
                     {[
-                      { id: 'appearance', label: '(a) Theme & Global Appearance', icon: <Palette className="w-3 h-3" /> },
-                      { id: 'projects_articles', label: '(b) Projects & Articles Manager', icon: <Sliders className="w-3 h-3" /> },
-                      { id: 'profile_sections', label: '(c) Profile Section Manager', icon: <LayoutTemplate className="w-3 h-3" /> },
-                      { id: 'footer', label: '(d) Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
-                      { id: 'moderation', label: '(e) Comment & General Rules', icon: <Type className="w-3 h-3" /> },
+                      { id: 'appearance', label: 'Theme & Global Appearance', icon: <Palette className="w-3 h-3" /> },
+                      { id: 'projects_articles', label: 'Projects & Articles Manager', icon: <Sliders className="w-3 h-3" /> },
+                      { id: 'profile_sections', label: 'Profile Section Manager', icon: <LayoutTemplate className="w-3 h-3" /> },
+                      { id: 'footer', label: 'Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
+                      { id: 'moderation', label: 'Comment & General Rules', icon: <Type className="w-3 h-3" /> },
                     ].map((st) => (
                       <button
                         key={st.id}
@@ -2247,7 +2280,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <div className="flex flex-col sm:flex-row gap-2 min-w-0">
                           <label className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-cyan-800 text-white cursor-pointer shrink-0">
                             {heroBgUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                            <span>Upload Hero Image</span>
+                            <span>{heroBgUploading ? 'uploading...' : 'Upload Hero Image'}</span>
                             <input
                               type="file"
                               accept="image/*"
@@ -2273,8 +2306,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           </label>
                           <input
                             type="url"
-                            placeholder="Or paste Hero Background Image URL..."
-                            value={siteSettings.appearanceConfig.heroBackgroundImageUrl}
+                            placeholder={
+                              isSupabaseStorageUrl(siteSettings.appearanceConfig.heroBackgroundImageUrl)
+                                ? 'Hero image uploaded'
+                                : 'Or paste Hero Background Image URL...'
+                            }
+                            value={
+                              isSupabaseStorageUrl(siteSettings.appearanceConfig.heroBackgroundImageUrl)
+                                ? ''
+                                : siteSettings.appearanceConfig.heroBackgroundImageUrl
+                            }
                             onChange={(e) =>
                               updateAppearance((prev) => ({
                                 ...prev,
@@ -2757,7 +2798,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                 ) : (
                                   <Upload className="w-3 h-3" />
                                 )}
-                                <span>Upload Section Image</span>
+                                <span>{profMediaUploading ? 'uploading...' : 'Upload Section Image'}</span>
                                 <input
                                   type="file"
                                   accept="image/*"
@@ -2777,13 +2818,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                               </label>
                               <input
                                 type="url"
-                                placeholder="Or paste Showcase Image URL..."
-                                value={profSectionDraft.mediaUrl}
+                                placeholder={
+                                  isSupabaseStorageUrl(profSectionDraft.mediaUrl)
+                                    ? 'Showcase image uploaded'
+                                    : 'Or paste Showcase Image URL...'
+                                }
+                                value={
+                                  isSupabaseStorageUrl(profSectionDraft.mediaUrl) ? '' : profSectionDraft.mediaUrl
+                                }
                                 onChange={(e) =>
                                   setProfSectionDraft({ ...profSectionDraft, mediaUrl: e.target.value })
                                 }
                                 className="w-full min-w-0 flex-1 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
                               />
+                              {profSectionDraft.mediaUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() => setProfSectionDraft({ ...profSectionDraft, mediaUrl: '' })}
+                                  className="px-2.5 py-1.5 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                                >
+                                  Clear
+                                </button>
+                              )}
                             </div>
                           )}
 
