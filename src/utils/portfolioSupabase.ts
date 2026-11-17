@@ -5,6 +5,7 @@ import {
   getValidatedSession,
   isRealOwnerUser,
 } from './supabase';
+import { probeLocalFileDuration, setCachedMediaDuration } from './mediaMetadata';
 
 // ============================================================================
 // TYPES: PROJECTS, ARTICLES, COMMENTS, PROFILE EXTENSIONS, SITE SETTINGS
@@ -432,13 +433,42 @@ export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
   },
 };
 
+export type BucketMediaKind = 'image' | 'video' | 'audio' | 'document';
+
 export interface BucketFileItem {
   bucket: string;
   name: string;
   path: string;
   publicUrl: string;
   size?: number;
+  mimeType?: string;
+  mediaKind: BucketMediaKind;
+  createdAt?: string;
   updatedAt?: string;
+}
+
+export function inferBucketMediaKind(name: string, mimeType?: string): BucketMediaKind {
+  const mime = (mimeType || '').toLowerCase();
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (
+    mime.startsWith('image/') ||
+    ['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'svg', 'bmp', 'tif', 'tiff'].includes(ext)
+  ) {
+    return 'image';
+  }
+  if (
+    mime.startsWith('video/') ||
+    ['mp4', 'mov', 'webm', 'm4v', 'mkv', 'avi'].includes(ext)
+  ) {
+    return 'video';
+  }
+  if (
+    mime.startsWith('audio/') ||
+    ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'].includes(ext)
+  ) {
+    return 'audio';
+  }
+  return 'document';
 }
 
 export function slugifyText(input: string): string {
@@ -558,11 +588,13 @@ async function optimizeImageInBrowserCanvas(
     if (!ctx) {
       return { blob: file, mimeType: file.type || 'image/jpeg', fileName: file.name };
     }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, 0, 0, targetW, targetH);
 
-    // Strip EXIF inherently via canvas redraw; prefer AVIF -> WebP -> JPEG at q=0.75
+    // Strip EXIF inherently via canvas redraw; prefer AVIF -> WebP -> JPEG at crisp q=0.88
     const tryExport = (mime: string) =>
-      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.75));
+      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.88));
 
     const stem = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
     const avifBlob = await tryExport('image/avif');
@@ -654,10 +686,10 @@ export async function uploadFileToBucket(
   file: File,
   folderPrefix = '',
   onProgress?: UploadProgressCallback
-): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string }> {
+): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string; durationSec?: number }> {
   // Route Projects & Articles raster images through Sharp AVIF pipeline with resilient client handoff & canvas fallback
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableRasterImage(file)) {
-    onProgress?.(25, 'Optimizing image (auto-rotate, strip EXIF, max 1920px, AVIF q=75)...');
+    onProgress?.(25, 'Optimizing image...');
     try {
       const authHeaders = await getPipelineAuthHeaders();
       const formData = new FormData();
@@ -702,7 +734,7 @@ export async function uploadFileToBucket(
     }
 
     // Resilient Client-Side EXIF-stripped 1920px Optimization Fallback
-    onProgress?.(55, 'Optimizing image (1920px, EXIF stripped)...');
+    onProgress?.(55, 'Optimizing image...');
     const optimized = await optimizeImageInBrowserCanvas(file);
     onProgress?.(82, `Uploading optimized image to "${bucket}"...`);
     const directRes = await uploadBlobDirectToBucket({
@@ -716,9 +748,10 @@ export async function uploadFileToBucket(
     return directRes;
   }
 
-  // Route Projects & Articles videos through Background FFmpeg 2-Pass AV1 + Opus pipeline with resilient fallback
+  // Route Projects & Articles videos through fast Background FFmpeg pipeline with resilient fallback
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
-    onProgress?.(8, 'Uploading source video for background AV1 optimization...');
+    onProgress?.(8, 'Uploading video...');
+    const localDurationPromise = probeLocalFileDuration(file);
     try {
       const authHeaders = await getPipelineAuthHeaders();
       const formData = new FormData();
@@ -736,20 +769,20 @@ export async function uploadFileToBucket(
 
       if (startResp.ok && startJson?.success && startJson?.jobId) {
         const jobId: string = startJson.jobId;
-        onProgress?.(startJson.progress || 10, startJson.stage || 'Queued for background AV1 transcode...');
+        onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
 
         const maxWaitMs = 45 * 60 * 1000;
         const startedAt = Date.now();
         let consecutivePollErrors = 0;
 
         while (Date.now() - startedAt < maxWaitMs) {
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, 450));
           const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`);
           const statusJson = await statusResp.json().catch(() => null);
 
           if (!statusResp.ok || !statusJson?.job) {
             consecutivePollErrors++;
-            if (consecutivePollErrors >= 4) {
+            if (consecutivePollErrors >= 5) {
               throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
             }
             continue;
@@ -757,14 +790,18 @@ export async function uploadFileToBucket(
           consecutivePollErrors = 0;
 
           const job = statusJson.job;
-          onProgress?.(job.progress || 50, job.stage || 'Processing AV1 video...');
+          onProgress?.(job.progress || 50, job.stage || 'Processing video...');
 
           if (job.status === 'completed' && job.publicUrl) {
+            const localDur = await localDurationPromise;
+            const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+            if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
             return {
               publicUrl: job.publicUrl,
               storagePath: job.storagePath,
               fileName: job.fileName || file.name,
               fileSize: job.fileSize || formatBytes(file.size),
+              durationSec: resolvedDuration,
             };
           }
 
@@ -783,8 +820,11 @@ export async function uploadFileToBucket(
               folderPrefix: folderPrefix || 'videos',
               explicitStoragePath: job.storagePath,
             });
-            onProgress?.(100, `Saved compressed AV1 video (${uploaded.fileSize})`);
-            return uploaded;
+            const localDur = await localDurationPromise;
+            const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+            if (resolvedDuration) setCachedMediaDuration(uploaded.publicUrl, resolvedDuration);
+            onProgress?.(100, `Saved optimized video (${uploaded.fileSize})`);
+            return { ...uploaded, durationSec: resolvedDuration };
           }
 
           if (job.status === 'failed') {
@@ -805,8 +845,10 @@ export async function uploadFileToBucket(
       contentType: file.type || 'video/mp4',
       folderPrefix: folderPrefix || 'videos',
     });
+    const localDur = await localDurationPromise;
+    if (localDur) setCachedMediaDuration(directVid.publicUrl, localDur);
     onProgress?.(100, `Uploaded (${directVid.fileSize})`);
-    return directVid;
+    return { ...directVid, durationSec: localDur };
   }
 
   // Direct Supabase Storage upload for non-raster/non-video assets (PDF, CAD, SVG, materials, avatars)
@@ -818,6 +860,8 @@ export async function uploadFileToBucket(
     contentType: file.type || 'application/octet-stream',
     folderPrefix,
   });
+  const localDur = file.type.startsWith('video/') || file.type.startsWith('audio/') ? await probeLocalFileDuration(file) : undefined;
+  if (localDur) setCachedMediaDuration(uploadedAsset.publicUrl, localDur);
   onProgress?.(100, 'Uploaded');
   return uploadedAsset;
 }
@@ -1795,40 +1839,68 @@ export async function listBucketMediaFiles(
 ): Promise<BucketFileItem[]> {
   try {
     const results: BucketFileItem[] = [];
-    const { data: rootItems, error } = await supabase.storage.from(bucket).list('', { limit: 100 });
+    const { data: rootItems, error } = await supabase.storage
+      .from(bucket)
+      .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } });
     if (error || !Array.isArray(rootItems)) return [];
 
+    const folderNames: string[] = [];
     for (const item of rootItems) {
-      if (!item.name) continue;
+      if (!item.name || item.name === '.emptyFolderPlaceholder') continue;
       if (!item.id) {
-        const { data: subItems } = await supabase.storage.from(bucket).list(item.name, { limit: 100 });
-        if (Array.isArray(subItems)) {
-          for (const sub of subItems) {
-            if (!sub.name || !sub.id) continue;
-            const fullPath = `${item.name}/${sub.name}`;
-            const { data: pub } = supabase.storage.from(bucket).getPublicUrl(fullPath);
-            results.push({
-              bucket,
-              name: sub.name,
-              path: fullPath,
-              publicUrl: pub?.publicUrl || '',
-              size: (sub.metadata as any)?.size,
-              updatedAt: sub.updated_at || sub.created_at || undefined,
-            });
-          }
-        }
+        folderNames.push(item.name);
       } else {
         const { data: pub } = supabase.storage.from(bucket).getPublicUrl(item.name);
+        const mimeType = (item.metadata as any)?.mimetype;
         results.push({
           bucket,
           name: item.name,
           path: item.name,
           publicUrl: pub?.publicUrl || '',
           size: (item.metadata as any)?.size,
+          mimeType,
+          mediaKind: inferBucketMediaKind(item.name, mimeType),
+          createdAt: item.created_at || item.updated_at || undefined,
           updatedAt: item.updated_at || item.created_at || undefined,
         });
       }
     }
+
+    if (folderNames.length > 0) {
+      const subResults = await Promise.all(
+        folderNames.map(async (folder) => {
+          const { data: subItems } = await supabase.storage
+            .from(bucket)
+            .list(folder, { limit: 200, sortBy: { column: 'created_at', order: 'desc' } });
+          return { folder, subItems: Array.isArray(subItems) ? subItems : [] };
+        })
+      );
+      for (const { folder, subItems } of subResults) {
+        for (const sub of subItems) {
+          if (!sub.name || !sub.id || sub.name === '.emptyFolderPlaceholder') continue;
+          const fullPath = `${folder}/${sub.name}`;
+          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(fullPath);
+          const mimeType = (sub.metadata as any)?.mimetype;
+          results.push({
+            bucket,
+            name: sub.name,
+            path: fullPath,
+            publicUrl: pub?.publicUrl || '',
+            size: (sub.metadata as any)?.size,
+            mimeType,
+            mediaKind: inferBucketMediaKind(sub.name, mimeType),
+            createdAt: sub.created_at || sub.updated_at || undefined,
+            updatedAt: sub.updated_at || sub.created_at || undefined,
+          });
+        }
+      }
+    }
+
+    results.sort((a, b) => {
+      const ta = new Date(a.createdAt || a.updatedAt || 0).getTime();
+      const tb = new Date(b.createdAt || b.updatedAt || 0).getTime();
+      return tb - ta;
+    });
     return results;
   } catch {
     return [];

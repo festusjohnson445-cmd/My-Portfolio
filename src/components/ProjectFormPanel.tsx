@@ -3,14 +3,19 @@ import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon } from 'lucide
 import {
   uploadFileToBucket,
   upsertProjectToSupabase,
+  formatBytes,
   type PortfolioProject,
   type ProjectSpecification,
   type MediaAssetItem,
   type LinkItem,
+  type BucketFileItem,
 } from '../utils/portfolioSupabase';
+import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
+import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
 
 interface ProjectFormPanelProps {
   initialProject?: PortfolioProject | null;
+  isOwner?: boolean;
   onSaved: (saved: PortfolioProject) => void;
   onCancel: () => void;
 }
@@ -20,6 +25,7 @@ const isSupabaseStorageUrl = (url?: string): boolean =>
 
 export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   initialProject,
+  isOwner = true,
   onSaved,
   onCancel,
 }) => {
@@ -65,6 +71,9 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadStage, setUploadStage] = useState<string>('');
+  const [mediaPickerTarget, setMediaPickerTarget] = useState<
+    'thumbnail' | 'image' | 'video' | 'cad' | 'document' | null
+  >(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -73,32 +82,39 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document'
   ) => {
     if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
     setUploadingField(target);
     setUploadProgress(5);
     setUploadStage('Preparing media pipeline...');
     setErrorMsg(null);
     try {
-      for (const file of Array.from(files)) {
+      const concurrency = target === 'video' ? 2 : 3;
+      const uploadedAssets = await runWithConcurrency(fileArr, concurrency, async (file) => {
         const res = await uploadFileToBucket('projects', file, target, (pct, stage) => {
           setUploadProgress(pct);
           setUploadStage(stage);
         });
-        const asset: MediaAssetItem = {
+        return {
           title: '',
           url: res.publicUrl,
           fileName: res.fileName,
           fileSize: res.fileSize,
           fileType: file.type,
-        };
-        if (target === 'thumbnail') setThumbnailUrl(res.publicUrl);
-        else if (target === 'image') setImages((prev) => [...prev, asset]);
-        else if (target === 'video') setVideos((prev) => [...prev, asset]);
-        else if (target === 'cad') {
-          setCadDrawings((prev) => [...prev, asset]);
-          setIsCadProject(true);
-        } else if (target === 'document') {
-          setDocuments((prev) => [...prev, asset]);
-        }
+        } as MediaAssetItem;
+      });
+
+      if (target === 'thumbnail') {
+        const first = uploadedAssets[0];
+        if (first?.url) setThumbnailUrl(first.url);
+      } else if (target === 'image') {
+        setImages((prev) => [...prev, ...uploadedAssets]);
+      } else if (target === 'video') {
+        setVideos((prev) => [...prev, ...uploadedAssets]);
+      } else if (target === 'cad') {
+        setCadDrawings((prev) => [...prev, ...uploadedAssets]);
+        setIsCadProject(true);
+      } else if (target === 'document') {
+        setDocuments((prev) => [...prev, ...uploadedAssets]);
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'File upload to projects bucket failed.');
@@ -106,6 +122,33 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       setUploadingField(null);
       setUploadProgress(0);
       setUploadStage('');
+    }
+  };
+
+  const handleMediaLibrarySelect = (
+    items: BucketFileItem[],
+    target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document'
+  ) => {
+    if (!items || items.length === 0) return;
+    const mapped: MediaAssetItem[] = items.map((item) => ({
+      title: cleanDisplayFileName(item.name).replace(/\.[^/.]+$/, ''),
+      url: item.publicUrl,
+      fileName: cleanDisplayFileName(item.name),
+      fileSize: item.size ? formatBytes(item.size) : undefined,
+      fileType: item.mimeType,
+    }));
+
+    if (target === 'thumbnail') {
+      setThumbnailUrl(items[0].publicUrl);
+    } else if (target === 'image') {
+      setImages((prev) => [...prev, ...mapped]);
+    } else if (target === 'video') {
+      setVideos((prev) => [...prev, ...mapped]);
+    } else if (target === 'cad') {
+      setCadDrawings((prev) => [...prev, ...mapped]);
+      setIsCadProject(true);
+    } else if (target === 'document') {
+      setDocuments((prev) => [...prev, ...mapped]);
     }
   };
 
@@ -219,20 +262,35 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
         <label className="block font-bold text-slate-700">Thumbnail Image (Upload or URL)</label>
         <div className="flex flex-col sm:flex-row gap-2 min-w-0">
-          <label className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0">
-            {uploadingField === 'thumbnail' ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Upload className="w-3.5 h-3.5" />
-            )}
-            <span>Upload to projects</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleBucketUpload(e.target.files, 'thumbnail')}
-              className="hidden"
-            />
-          </label>
+          {isOwner ? (
+            <button
+              type="button"
+              onClick={() => setMediaPickerTarget('thumbnail')}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0"
+            >
+              {uploadingField === 'thumbnail' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Upload className="w-3.5 h-3.5" />
+              )}
+              <span>Upload / Media Library</span>
+            </button>
+          ) : (
+            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0">
+              {uploadingField === 'thumbnail' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Upload className="w-3.5 h-3.5" />
+              )}
+              <span>Upload to projects</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => handleBucketUpload(e.target.files, 'thumbnail')}
+                className="hidden"
+              />
+            </label>
+          )}
           <input
             type="url"
             value={isSupabaseStorageUrl(thumbnailUrl) ? '' : thumbnailUrl}
@@ -434,17 +492,28 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="font-bold text-slate-700 truncate">Project Images ({images.length})</span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                onChange={(e) => handleBucketUpload(e.target.files, 'image')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('image')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'image')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -495,17 +564,28 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="font-bold text-slate-700 truncate">Project Videos ({videos.length})</span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept="video/*"
-                onChange={(e) => handleBucketUpload(e.target.files, 'video')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('video')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="video/*"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'video')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -556,17 +636,28 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="font-bold text-slate-700 truncate">CAD Drawings ({cadDrawings.length})</span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept=".pdf,.dwg,.dxf,.step,.stp,.iges,.igs,.sldprt,.sldasm,image/*"
-                onChange={(e) => handleBucketUpload(e.target.files, 'cad')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('cad')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.dwg,.dxf,.step,.stp,.iges,.igs,.sldprt,.sldasm,image/*"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'cad')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -620,16 +711,27 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         <div className="min-w-0 w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="font-bold text-slate-700 truncate">Technical Documents ({documents.length})</span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                onChange={(e) => handleBucketUpload(e.target.files, 'document')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('document')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  onChange={(e) => handleBucketUpload(e.target.files, 'document')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -747,6 +849,50 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
           <span>{initialProject ? 'Update Project' : 'Publish Project'}</span>
         </button>
       </div>
+
+      {isOwner && mediaPickerTarget && (
+        <MediaLibraryModal
+          isOpen={true}
+          title={
+            mediaPickerTarget === 'thumbnail'
+              ? 'Thumbnail Image'
+              : mediaPickerTarget === 'image'
+              ? 'Project Images'
+              : mediaPickerTarget === 'video'
+              ? 'Project Videos'
+              : mediaPickerTarget === 'cad'
+              ? 'CAD Drawings'
+              : 'Technical Documents'
+          }
+          defaultBucket="projects"
+          defaultFilter={
+            (mediaPickerTarget === 'thumbnail' || mediaPickerTarget === 'image'
+              ? 'image'
+              : mediaPickerTarget === 'video'
+              ? 'video'
+              : mediaPickerTarget === 'document'
+              ? 'document'
+              : 'all') as MediaLibraryFilter
+          }
+          allowMultiple={mediaPickerTarget !== 'thumbnail'}
+          accept={
+            mediaPickerTarget === 'thumbnail' || mediaPickerTarget === 'image'
+              ? 'image/*'
+              : mediaPickerTarget === 'video'
+              ? 'video/*'
+              : mediaPickerTarget === 'cad'
+              ? '.pdf,.dwg,.dxf,.step,.stp,.iges,.igs,.sldprt,.sldasm,image/*'
+              : undefined
+          }
+          onUploadFiles={(chosenFiles) => {
+            void handleBucketUpload(chosenFiles, mediaPickerTarget);
+          }}
+          onSelectExisting={(chosenItems) => {
+            handleMediaLibrarySelect(chosenItems, mediaPickerTarget);
+          }}
+          onClose={() => setMediaPickerTarget(null)}
+        />
+      )}
     </form>
   );
 };

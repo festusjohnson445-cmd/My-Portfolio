@@ -33,6 +33,12 @@ import {
   LayoutTemplate,
   Type,
   FileJson,
+  Clock,
+  Search,
+  Play,
+  Music,
+  Video as VideoIcon,
+  RefreshCw,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -108,8 +114,18 @@ import {
   type SkillStatus,
 } from '../data/skillsData';
 import { supabaseSignOutOwner } from '../utils/supabase';
+import { formatBytes } from '../utils/portfolioSupabase';
+import {
+  cleanDisplayFileName,
+  formatMediaDuration,
+  formatMediaTimestamp,
+  getCachedMediaDuration,
+  probeMediaDuration,
+  runWithConcurrency,
+} from '../utils/mediaMetadata';
 import { ProjectFormPanel } from './ProjectFormPanel';
 import { ArticleFormPanel } from './ArticleFormPanel';
+import { MediaPreviewDialog, type MediaLibraryFilter } from './MediaLibraryModal';
 import { SkillSelector } from './SkillSelector';
 import { PortfolioPart } from './Navbar';
 
@@ -308,6 +324,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [copiedMediaUrl, setCopiedMediaUrl] = useState<string | null>(null);
+  const [mediaFilter, setMediaFilter] = useState<MediaLibraryFilter>('all');
+  const [mediaSearch, setMediaSearch] = useState('');
+  const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
+  const [previewMediaItem, setPreviewMediaItem] = useState<BucketFileItem | null>(null);
 
   // Bio settings inside Settings tab
   const [bioForm, setBioForm] = useState(bio);
@@ -370,6 +390,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     try {
       const files = await listBucketMediaFiles(bucket);
       setMediaFiles(files);
+
+      const initialDurs: Record<string, number> = {};
+      const toProbe: BucketFileItem[] = [];
+      for (const item of files) {
+        const cached = getCachedMediaDuration(item.publicUrl);
+        if (cached !== undefined) {
+          initialDurs[item.publicUrl] = cached;
+        } else if (item.mediaKind === 'video' || item.mediaKind === 'audio') {
+          toProbe.push(item);
+        }
+      }
+      if (Object.keys(initialDurs).length > 0) {
+        setMediaDurations((prev) => ({ ...prev, ...initialDurs }));
+      }
+      if (toProbe.length > 0) {
+        void runWithConcurrency(toProbe.slice(0, 30), 3, async (vid) => {
+          const sec = await probeMediaDuration(
+            vid.publicUrl,
+            vid.mediaKind === 'audio' ? 'audio' : 'video'
+          );
+          if (sec && sec > 0) {
+            setMediaDurations((prev) => ({ ...prev, [vid.publicUrl]: sec }));
+          }
+        });
+      }
     } finally {
       setMediaLoading(false);
     }
@@ -380,6 +425,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       loadMedia(mediaBucket);
     }
   }, [isOwner, activeTab, mediaBucket]);
+
+  const filteredMediaFiles = useMemo(() => {
+    const q = mediaSearch.trim().toLowerCase();
+    return mediaFiles.filter((f) => {
+      if (mediaFilter !== 'all') {
+        if (mediaFilter === 'document') {
+          if (f.mediaKind !== 'document' && f.mediaKind !== 'audio') return false;
+        } else if (f.mediaKind !== mediaFilter) {
+          return false;
+        }
+      }
+      if (q) {
+        const displayName = cleanDisplayFileName(f.name).toLowerCase();
+        if (!displayName.includes(q) && !f.path.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+  }, [mediaFiles, mediaFilter, mediaSearch]);
 
   const specializationDocs = useMemo(
     () => documents.filter((d) => d.credentialGroup === 'Specialization'),
@@ -787,6 +850,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                   {projectFormOpen && (
                     <ProjectFormPanel
                       initialProject={editingProject}
+                      isOwner={true}
                       onSaved={(saved) => {
                         setProjects((prev) =>
                           prev.some((p) => p.id === saved.id)
@@ -1964,18 +2028,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
                     <h2 className="text-sm font-bold text-slate-950 text-center flex-1">Media Library</h2>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={mediaBucket}
                         onChange={(e) => setMediaBucket(e.target.value as any)}
-                        className="px-2 py-1 rounded border border-slate-300 bg-white text-xs cursor-pointer"
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs cursor-pointer"
                       >
                         <option value="projects">projects</option>
                         <option value="articles">articles</option>
                         <option value="materials">materials</option>
                         <option value="avatars">avatars</option>
                       </select>
-                      <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-xs font-semibold cursor-pointer">
+                      <button
+                        type="button"
+                        onClick={() => loadMedia(mediaBucket)}
+                        disabled={mediaLoading}
+                        className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 cursor-pointer"
+                        title="Refresh Media Library"
+                        aria-label="Refresh Media Library"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${mediaLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                      <label className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer">
                         {mediaUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
                         <span>{mediaUploading ? 'uploading...' : 'Upload'}</span>
                         <input
@@ -1983,16 +2057,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           multiple
                           onChange={async (e) => {
                             const files = e.target.files;
-                            if (!files) return;
+                            if (!files || files.length === 0) return;
                             setMediaUploading(true);
                             try {
-                              for (const f of Array.from(files)) {
+                              await runWithConcurrency(Array.from(files), 2, async (f) => {
                                 await uploadFileToBucket(mediaBucket, f);
-                              }
+                              });
                               await loadMedia(mediaBucket);
                               showNotice(`Uploaded to "${mediaBucket}".`);
+                            } catch (err: any) {
+                              showNotice(err?.message || 'Upload failed.');
                             } finally {
                               setMediaUploading(false);
+                              e.currentTarget.value = '';
                             }
                           }}
                           className="hidden"
@@ -2001,44 +2078,206 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     </div>
                   </div>
 
-                  {mediaLoading ? (
-                    <p className="text-xs text-slate-500 text-center py-6">Loading bucket files...</p>
-                  ) : mediaFiles.length === 0 ? (
-                    <p className="text-xs text-slate-500 text-center py-6">No files found in "{mediaBucket}".</p>
-                  ) : (
-                    <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden text-xs">
-                      {mediaFiles.map((f) => (
-                        <div key={f.path} className="p-2.5 flex items-center justify-between gap-2 bg-white">
-                          <span className="truncate font-semibold text-slate-800 flex-1">{f.path}</span>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(f.publicUrl);
-                                setCopiedMediaUrl(f.path);
-                                setTimeout(() => setCopiedMediaUrl(null), 1500);
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 border border-slate-300 text-[10px] cursor-pointer"
-                            >
-                              {copiedMediaUrl === f.path ? <Check className="w-3 h-3 text-emerald-700" /> : <Copy className="w-3 h-3" />}
-                              <span>Copy URL</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await deleteBucketMediaFile(mediaBucket, f.path);
-                                setMediaFiles((prev) => prev.filter((x) => x.path !== f.path));
-                                showNotice('File deleted.');
-                              }}
-                              className="p-1 text-rose-600 cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
+                  {/* Filter & Search Toolbar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      {(
+                        [
+                          { id: 'all', label: 'All' },
+                          { id: 'image', label: 'Images' },
+                          { id: 'video', label: 'Videos' },
+                          { id: 'document', label: 'Files' },
+                        ] as { id: MediaLibraryFilter; label: string }[]
+                      ).map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setMediaFilter(tab.id)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold cursor-pointer transition-colors ${
+                            mediaFilter === tab.id
+                              ? 'bg-white text-slate-950 shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
                       ))}
                     </div>
+
+                    <div className="relative flex-1 min-w-[180px] max-w-xs">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={mediaSearch}
+                        onChange={(e) => setMediaSearch(e.target.value)}
+                        placeholder="Search saved files..."
+                        className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
+                      />
+                    </div>
+                  </div>
+
+                  {mediaLoading ? (
+                    <p className="text-xs text-slate-500 text-center py-6">Loading bucket files...</p>
+                  ) : filteredMediaFiles.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-6">
+                      No matching files found in "{mediaBucket}".
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden text-xs bg-white">
+                      {filteredMediaFiles.map((f) => {
+                        const durationVal =
+                          mediaDurations[f.publicUrl] ?? getCachedMediaDuration(f.publicUrl);
+                        const durationText = formatMediaDuration(durationVal);
+                        const savedTimestamp = formatMediaTimestamp(f.createdAt || f.updatedAt);
+                        const fileSizeText = f.size ? formatBytes(f.size) : '';
+
+                        return (
+                          <div
+                            key={f.path}
+                            className="p-2.5 sm:p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-white hover:bg-slate-50/80 transition-colors"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setPreviewMediaItem(f)}
+                              className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer group"
+                              title="Click to preview stored file"
+                            >
+                              {f.mediaKind === 'image' ? (
+                                <div className="w-14 h-11 rounded-lg overflow-hidden bg-slate-200 border border-slate-200 shrink-0">
+                                  <img
+                                    src={f.publicUrl}
+                                    alt={cleanDisplayFileName(f.name)}
+                                    loading="lazy"
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                              ) : f.mediaKind === 'video' ? (
+                                <div className="relative w-14 h-11 rounded-lg overflow-hidden bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0">
+                                  <Play className="w-4 h-4 text-white fill-white/80" />
+                                  {durationText && (
+                                    <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/80 text-white text-[9px] font-mono tabular-nums">
+                                      {durationText}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : f.mediaKind === 'audio' ? (
+                                <div className="w-14 h-11 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center shrink-0">
+                                  <Music className="w-4 h-4 text-cyan-800" />
+                                </div>
+                              ) : (
+                                <div className="w-14 h-11 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+                                  <FileText className="w-4 h-4 text-slate-700" />
+                                </div>
+                              )}
+
+                              <div className="min-w-0 flex-1">
+                                <span className="font-bold text-slate-900 group-hover:text-cyan-800 block truncate">
+                                  {cleanDisplayFileName(f.name)}
+                                </span>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 tabular-nums mt-0.5">
+                                  <span className="inline-flex items-center gap-1 capitalize text-slate-700 font-medium">
+                                    {f.mediaKind === 'image' ? (
+                                      <ImageIcon className="w-3 h-3 text-cyan-800" />
+                                    ) : f.mediaKind === 'video' ? (
+                                      <VideoIcon className="w-3 h-3 text-cyan-800" />
+                                    ) : f.mediaKind === 'audio' ? (
+                                      <Music className="w-3 h-3 text-cyan-800" />
+                                    ) : (
+                                      <FileText className="w-3 h-3 text-slate-600" />
+                                    )}
+                                    <span>{f.mediaKind}</span>
+                                  </span>
+                                  {(f.mediaKind === 'video' || f.mediaKind === 'audio') && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span className="inline-flex items-center gap-0.5 text-slate-700 font-medium">
+                                        <Clock className="w-3 h-3" />
+                                        <span>{durationText || '—:—'}</span>
+                                      </span>
+                                    </>
+                                  )}
+                                  {fileSizeText && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>{fileSizeText}</span>
+                                    </>
+                                  )}
+                                  {savedTimestamp && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>Saved {savedTimestamp}</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+
+                            <div className="flex items-center justify-end gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setPreviewMediaItem(f)}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-cyan-900 text-[11px] font-semibold cursor-pointer"
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span>Preview</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(f.publicUrl);
+                                  setCopiedMediaUrl(f.path);
+                                  setTimeout(() => setCopiedMediaUrl(null), 1500);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-[11px] cursor-pointer"
+                              >
+                                {copiedMediaUrl === f.path ? (
+                                  <Check className="w-3 h-3 text-emerald-700" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                                <span>Copy URL</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await deleteBucketMediaFile(mediaBucket, f.path);
+                                  setMediaFiles((prev) => prev.filter((x) => x.path !== f.path));
+                                  showNotice('File deleted.');
+                                }}
+                                className="p-1.5 rounded-md text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                title="Delete file"
+                                aria-label="Delete file"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
+
+                  <MediaPreviewDialog
+                    item={previewMediaItem}
+                    durationSec={
+                      previewMediaItem ? mediaDurations[previewMediaItem.publicUrl] : undefined
+                    }
+                    onClose={() => setPreviewMediaItem(null)}
+                    onDurationResolved={(url, sec) => {
+                      setMediaDurations((prev) => ({ ...prev, [url]: sec }));
+                    }}
+                    onCopyUrl={(item) => {
+                      navigator.clipboard.writeText(item.publicUrl);
+                      setCopiedMediaUrl(item.path);
+                      setTimeout(() => setCopiedMediaUrl(null), 1500);
+                    }}
+                    onDelete={async (item) => {
+                      await deleteBucketMediaFile(mediaBucket, item.path);
+                      setMediaFiles((prev) => prev.filter((x) => x.path !== item.path));
+                      showNotice('File deleted.');
+                    }}
+                  />
                 </div>
               )}
 

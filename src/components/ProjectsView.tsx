@@ -528,6 +528,7 @@ export const ProjectsView: React.FC = () => {
       {isOwner && isFormOpen && (
         <ProjectFormPanel
           initialProject={editingProject}
+          isOwner={isOwner}
           onSaved={(saved) => {
             setProjects((prev) => {
               const exists = prev.some((p) => p.id === saved.id);

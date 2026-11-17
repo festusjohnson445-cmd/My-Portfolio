@@ -18,13 +18,17 @@ import {
   uploadFileToBucket,
   submitOrSaveArticleToSupabase,
   estimateReadingTime,
+  formatBytes,
   type PortfolioArticle,
   type ArticleHeroMedia,
   type ArticleCodeBlock,
   type ArticleChartData,
   type ArticleBomItem,
   type MediaAssetItem,
+  type BucketFileItem,
 } from '../utils/portfolioSupabase';
+import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
+import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
 
 interface ArticleFormPanelProps {
   initialArticle?: PortfolioArticle | null;
@@ -85,6 +89,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadStage, setUploadStage] = useState<string>('');
+  const [mediaPickerTarget, setMediaPickerTarget] = useState<
+    'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment' | null
+  >(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -93,41 +100,50 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
   ) => {
     if (!files || files.length === 0) return;
+    const fileArr = Array.from(files);
     setUploadingField(target);
     setUploadProgress(5);
     setUploadStage('Preparing media pipeline...');
     setErrorMsg(null);
     try {
-      for (const file of Array.from(files)) {
+      const concurrency = target === 'video' ? 2 : 3;
+      const results = await runWithConcurrency(fileArr, concurrency, async (file) => {
         const res = await uploadFileToBucket('articles', file, target, (pct, stage) => {
           setUploadProgress(pct);
           setUploadStage(stage);
         });
-        const asset: MediaAssetItem = {
-          title: '',
-          url: res.publicUrl,
-          fileName: res.fileName,
-          fileSize: res.fileSize,
-          fileType: file.type,
+        return {
+          asset: {
+            title: '',
+            url: res.publicUrl,
+            fileName: res.fileName,
+            fileSize: res.fileSize,
+            fileType: file.type,
+          } as MediaAssetItem,
+          isVideo: file.type.startsWith('video/'),
         };
-        if (target === 'thumbnail') {
-          setThumbnailUrl(res.publicUrl);
-        } else if (target === 'hero') {
-          const isVid = file.type.startsWith('video/');
+      });
+
+      if (target === 'thumbnail') {
+        const first = results[0];
+        if (first?.asset.url) setThumbnailUrl(first.asset.url);
+      } else if (target === 'hero') {
+        const first = results[0];
+        if (first?.asset.url) {
           setHeroMedia((prev) => ({
             ...prev,
-            type: isVid ? 'video' : prev.type === 'none' ? 'image' : prev.type,
-            url: res.publicUrl,
+            type: first.isVideo ? 'video' : prev.type === 'none' ? 'image' : prev.type,
+            url: first.asset.url,
           }));
-        } else if (target === 'image') {
-          setImages((prev) => [...prev, asset]);
-        } else if (target === 'video') {
-          setVideos((prev) => [...prev, asset]);
-        } else if (target === 'diagram') {
-          setDiagrams((prev) => [...prev, asset]);
-        } else if (target === 'attachment') {
-          setAttachments((prev) => [...prev, asset]);
         }
+      } else if (target === 'image') {
+        setImages((prev) => [...prev, ...results.map((r) => r.asset)]);
+      } else if (target === 'video') {
+        setVideos((prev) => [...prev, ...results.map((r) => r.asset)]);
+      } else if (target === 'diagram') {
+        setDiagrams((prev) => [...prev, ...results.map((r) => r.asset)]);
+      } else if (target === 'attachment') {
+        setAttachments((prev) => [...prev, ...results.map((r) => r.asset)]);
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Upload to "articles" bucket failed.');
@@ -135,6 +151,44 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       setUploadingField(null);
       setUploadProgress(0);
       setUploadStage('');
+    }
+  };
+
+  const handleMediaLibrarySelect = (
+    items: BucketFileItem[],
+    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
+  ) => {
+    if (!items || items.length === 0) return;
+    const mapped: MediaAssetItem[] = items.map((item) => ({
+      title: cleanDisplayFileName(item.name).replace(/\.[^/.]+$/, ''),
+      url: item.publicUrl,
+      fileName: cleanDisplayFileName(item.name),
+      fileSize: item.size ? formatBytes(item.size) : undefined,
+      fileType: item.mimeType,
+    }));
+
+    if (target === 'thumbnail') {
+      setThumbnailUrl(items[0].publicUrl);
+    } else if (target === 'hero') {
+      const first = items[0];
+      setHeroMedia((prev) => ({
+        ...prev,
+        type:
+          first.mediaKind === 'video'
+            ? 'video'
+            : prev.type === 'none'
+            ? 'image'
+            : prev.type,
+        url: first.publicUrl,
+      }));
+    } else if (target === 'image') {
+      setImages((prev) => [...prev, ...mapped]);
+    } else if (target === 'video') {
+      setVideos((prev) => [...prev, ...mapped]);
+    } else if (target === 'diagram') {
+      setDiagrams((prev) => [...prev, ...mapped]);
+    } else if (target === 'attachment') {
+      setAttachments((prev) => [...prev, ...mapped]);
     }
   };
 
@@ -341,20 +395,35 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
         <label className="block font-bold text-slate-700">Card Image</label>
         <div className="flex flex-col sm:flex-row gap-2 min-w-0">
-          <label className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0">
-            {uploadingField === 'thumbnail' ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Upload className="w-3.5 h-3.5" />
-            )}
-            <span>Upload Image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleBucketUpload(e.target.files, 'thumbnail')}
-              className="hidden"
-            />
-          </label>
+          {isOwner ? (
+            <button
+              type="button"
+              onClick={() => setMediaPickerTarget('thumbnail')}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0"
+            >
+              {uploadingField === 'thumbnail' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Upload className="w-3.5 h-3.5" />
+              )}
+              <span>Upload / Media Library</span>
+            </button>
+          ) : (
+            <label className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0">
+              {uploadingField === 'thumbnail' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Upload className="w-3.5 h-3.5" />
+              )}
+              <span>Upload Image</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => handleBucketUpload(e.target.files, 'thumbnail')}
+                className="hidden"
+              />
+            </label>
+          )}
           <input
             type="url"
             value={isSupabaseStorageUrl(thumbnailUrl) ? '' : thumbnailUrl}
@@ -421,20 +490,35 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             </select>
           ) : heroMedia.type !== 'none' ? (
             <div className="sm:col-span-2 flex flex-col sm:flex-row gap-2 min-w-0">
-              <label className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 text-white text-xs cursor-pointer shrink-0">
-                {uploadingField === 'hero' ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Upload className="w-3 h-3" />
-                )}
-                <span>Upload</span>
-                <input
-                  type="file"
-                  accept={heroMedia.type === 'video' ? 'video/*' : 'image/*,.svg'}
-                  onChange={(e) => handleBucketUpload(e.target.files, 'hero')}
-                  className="hidden"
-                />
-              </label>
+              {isOwner ? (
+                <button
+                  type="button"
+                  onClick={() => setMediaPickerTarget('hero')}
+                  className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-xs cursor-pointer shrink-0"
+                >
+                  {uploadingField === 'hero' ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Upload className="w-3 h-3" />
+                  )}
+                  <span>Upload / Library</span>
+                </button>
+              ) : (
+                <label className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-800 text-white text-xs cursor-pointer shrink-0">
+                  {uploadingField === 'hero' ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Upload className="w-3 h-3" />
+                  )}
+                  <span>Upload</span>
+                  <input
+                    type="file"
+                    accept={heroMedia.type === 'video' ? 'video/*' : 'image/*,.svg'}
+                    onChange={(e) => handleBucketUpload(e.target.files, 'hero')}
+                    className="hidden"
+                  />
+                </label>
+              )}
               <input
                 type="url"
                 value={isSupabaseStorageUrl(heroMedia.url) ? '' : heroMedia.url || ''}
@@ -516,17 +600,28 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               <Compass className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
               <span className="truncate">Schematics &amp; Illustrations ({diagrams.length})</span>
             </span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*,.svg"
-                onChange={(e) => handleBucketUpload(e.target.files, 'diagram')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('diagram')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,.svg"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'diagram')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -577,17 +672,28 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               <ImageIcon className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
               <span className="truncate">Images ({images.length})</span>
             </span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                onChange={(e) => handleBucketUpload(e.target.files, 'image')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('image')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'image')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -638,17 +744,28 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               <Video className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
               <span className="truncate">Videos ({videos.length})</span>
             </span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                accept="video/*"
-                onChange={(e) => handleBucketUpload(e.target.files, 'video')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('video')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  accept="video/*"
+                  onChange={(e) => handleBucketUpload(e.target.files, 'video')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -699,16 +816,27 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               <FileText className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
               <span className="truncate">Technical Files ({attachments.length})</span>
             </span>
-            <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
-              <Upload className="w-3 h-3" />
-              <span>Upload</span>
-              <input
-                type="file"
-                multiple
-                onChange={(e) => handleBucketUpload(e.target.files, 'attachment')}
-                className="hidden"
-              />
-            </label>
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setMediaPickerTarget('attachment')}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[11px] cursor-pointer shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload / Library</span>
+              </button>
+            ) : (
+              <label className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 text-white text-[11px] cursor-pointer shrink-0">
+                <Upload className="w-3 h-3" />
+                <span>Upload</span>
+                <input
+                  type="file"
+                  multiple
+                  onChange={(e) => handleBucketUpload(e.target.files, 'attachment')}
+                  className="hidden"
+                />
+              </label>
+            )}
           </div>
           <div className="flex flex-wrap sm:flex-nowrap gap-1.5 min-w-0">
             <input
@@ -1056,6 +1184,58 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           </button>
         </div>
       </div>
+
+      {isOwner && mediaPickerTarget && (
+        <MediaLibraryModal
+          isOpen={true}
+          title={
+            mediaPickerTarget === 'thumbnail'
+              ? 'Card Image'
+              : mediaPickerTarget === 'hero'
+              ? 'Hero Media'
+              : mediaPickerTarget === 'diagram'
+              ? 'Schematics & Illustrations'
+              : mediaPickerTarget === 'image'
+              ? 'Images'
+              : mediaPickerTarget === 'video'
+              ? 'Videos'
+              : 'Technical Files'
+          }
+          defaultBucket="articles"
+          defaultFilter={
+            (mediaPickerTarget === 'thumbnail' || mediaPickerTarget === 'image' || mediaPickerTarget === 'diagram'
+              ? 'image'
+              : mediaPickerTarget === 'video'
+              ? 'video'
+              : mediaPickerTarget === 'hero'
+              ? heroMedia.type === 'video'
+                ? 'video'
+                : 'image'
+              : 'document') as MediaLibraryFilter
+          }
+          allowMultiple={mediaPickerTarget !== 'thumbnail' && mediaPickerTarget !== 'hero'}
+          accept={
+            mediaPickerTarget === 'thumbnail' || mediaPickerTarget === 'image'
+              ? 'image/*'
+              : mediaPickerTarget === 'diagram'
+              ? 'image/*,.svg'
+              : mediaPickerTarget === 'video'
+              ? 'video/*'
+              : mediaPickerTarget === 'hero'
+              ? heroMedia.type === 'video'
+                ? 'video/*'
+                : 'image/*,.svg'
+              : undefined
+          }
+          onUploadFiles={(chosenFiles) => {
+            void handleBucketUpload(chosenFiles, mediaPickerTarget);
+          }}
+          onSelectExisting={(chosenItems) => {
+            handleMediaLibrarySelect(chosenItems, mediaPickerTarget);
+          }}
+          onClose={() => setMediaPickerTarget(null)}
+        />
+      )}
     </form>
   );
 };

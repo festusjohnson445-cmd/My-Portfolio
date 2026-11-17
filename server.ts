@@ -1160,16 +1160,7 @@ try {
 } catch {}
 
 const imageUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      try { fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true }); } catch {}
-      cb(null, MEDIA_TEMP_DIR);
-    },
-    filename: (_req, file, cb) => {
-      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-      cb(null, `img_${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${safe}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 60 * 1024 * 1024 },
 });
 
@@ -1201,6 +1192,7 @@ interface VideoOptimizationJob {
   fileSize?: string;
   bytes?: number;
   originalBytes?: number;
+  durationSec?: number;
   error?: string;
   createdAt: number;
 }
@@ -1226,7 +1218,7 @@ function formatMediaBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-let cachedFfmpegInfo: { bin: string; ffprobeBin: string; hasSvtAv1: boolean; hasAomAv1: boolean } | null = null;
+let cachedFfmpegInfo: { bin: string; ffprobeBin: string; hasSvtAv1: boolean; hasX264: boolean; hasAac: boolean; hasOpus: boolean } | null = null;
 async function getFfmpegCapabilities() {
   if (cachedFfmpegInfo) return cachedFfmpegInfo;
   let ffmpegPath = 'ffmpeg';
@@ -1238,15 +1230,19 @@ async function getFfmpegCapabilities() {
     }
   } catch {}
 
-  const ffprobeBin = 'ffprobe';
+  const ffprobeBin = fs.existsSync('/usr/bin/ffprobe') ? '/usr/bin/ffprobe' : 'ffprobe';
   let hasSvtAv1 = false;
-  let hasAomAv1 = false;
+  let hasX264 = false;
+  let hasAac = false;
+  let hasOpus = false;
   try {
     const { stdout } = await execFileAsync(ffmpegPath, ['-encoders'], { timeout: 10000 });
     hasSvtAv1 = /\blibsvtav1\b/.test(stdout);
-    hasAomAv1 = /\blibaom-av1\b/.test(stdout);
+    hasX264 = /\blibx264\b/.test(stdout);
+    hasAac = /\baac\b/.test(stdout);
+    hasOpus = /\blibopus\b/.test(stdout);
   } catch {}
-  cachedFfmpegInfo = { bin: ffmpegPath, ffprobeBin, hasSvtAv1, hasAomAv1 };
+  cachedFfmpegInfo = { bin: ffmpegPath, ffprobeBin, hasSvtAv1, hasX264, hasAac, hasOpus };
   return cachedFfmpegInfo;
 }
 
@@ -1352,12 +1348,34 @@ async function uploadMediaToSupabaseStorage(params: {
   return `${params.supabaseUrl}/storage/v1/object/public/${encodeURIComponent(params.bucket)}/${encodedPath}`;
 }
 
-function runProcess(bin: string, args: string[]): Promise<void> {
+function parseFfmpegTimeSeconds(line: string): number | null {
+  const match = line.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+  if (!match) return null;
+  const h = Number(match[1]) || 0;
+  const m = Number(match[2]) || 0;
+  const s = Number(match[3]) || 0;
+  return h * 3600 + m * 60 + s;
+}
+
+function runProcess(
+  bin: string,
+  args: string[],
+  durationSec?: number,
+  onProgressPct?: (pct: number) => void
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderrTail = '';
     proc.stderr?.on('data', (chunk) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-3000);
+      const txt = chunk.toString();
+      stderrTail = (stderrTail + txt).slice(-3000);
+      if (durationSec && durationSec > 0 && onProgressPct) {
+        const cur = parseFfmpegTimeSeconds(txt);
+        if (cur !== null) {
+          const pct = Math.min(99, Math.max(0, (cur / durationSec) * 100));
+          onProgressPct(pct);
+        }
+      }
     });
     proc.on('error', (err) => reject(err));
     proc.on('close', (code) => {
@@ -1370,7 +1388,7 @@ function runProcess(bin: string, args: string[]): Promise<void> {
 async function probeVideoMetadata(
   ffprobeBin: string,
   inputPath: string
-): Promise<{ width: number; height: number; durationSec: number; hasAudio: boolean }> {
+): Promise<{ width: number; height: number; durationSec: number; hasAudio: boolean; videoCodec: string }> {
   try {
     const { stdout } = await execFileAsync(ffprobeBin, [
       '-v', 'quiet',
@@ -1386,11 +1404,12 @@ async function probeVideoMetadata(
     return {
       width: Number(videoStream?.width) || 1280,
       height: Number(videoStream?.height) || 720,
-      durationSec: Number(parsed?.format?.duration) || 0,
+      durationSec: Number(parsed?.format?.duration) || Number(videoStream?.duration) || 0,
       hasAudio: Boolean(audioStream),
+      videoCodec: String(videoStream?.codec_name || '').toLowerCase(),
     };
   } catch {
-    return { width: 1280, height: 720, durationSec: 0, hasAudio: false };
+    return { width: 1280, height: 720, durationSec: 0, hasAudio: false, videoCodec: '' };
   }
 }
 
@@ -1422,89 +1441,64 @@ async function processVideoJobAsync(params: {
     job.progress = 12;
     job.stage = 'Inspecting video stream geometry...';
 
-    const { bin, ffprobeBin, hasSvtAv1, hasAomAv1 } = await getFfmpegCapabilities();
+    const { bin, ffprobeBin, hasSvtAv1, hasOpus } = await getFfmpegCapabilities();
     const meta = await probeVideoMetadata(ffprobeBin, params.rawPath);
+    if (meta.durationSec > 0) {
+      job.durationSec = Math.round(meta.durationSec * 10) / 10;
+    }
 
     const maxW = params.maxHeight === 720 ? 1280 : 1920;
     const maxH = params.maxHeight === 720 ? 720 : 1080;
-    // Scale down to max 720p/1080p without upscaling, keeping even pixel dimensions, + light perceptual denoising & subtle sharpening
-    const vfChain = [
-      `scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease`,
-      `scale=trunc(iw/2)*2:trunc(ih/2)*2`,
-      'hqdn3d=1.5:1.5:6:6',
-      'unsharp=5:5:0.35:5:5:0.0',
-    ].join(',');
+    const needsResize = meta.width > maxW || meta.height > maxH || meta.width % 2 !== 0 || meta.height % 2 !== 0;
 
-    const audioArgs = meta.hasAudio ? ['-c:a', 'libopus', '-b:a', '80k'] : ['-an'];
+    // Fast high-quality Lanczos resize without upscaling + light perceptual cleanup & crisp sharpening
+    const filterSteps: string[] = [];
+    if (needsResize) {
+      filterSteps.push(`scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`);
+      filterSteps.push(`scale=trunc(iw/2)*2:trunc(ih/2)*2`);
+    }
+    filterSteps.push('hqdn3d=0.6:0.6:2.5:2.5');
+    filterSteps.push('unsharp=3:3:0.3:3:3:0.0');
+    const vfChain = filterSteps.join(',');
 
-    const primaryEncoderArgs = hasSvtAv1
-      ? ['-c:v', 'libsvtav1', '-crf', '34', '-preset', '5', '-pix_fmt', 'yuv420p']
-      : hasAomAv1
-      ? ['-c:v', 'libaom-av1', '-crf', '34', '-b:v', '0', '-cpu-used', '8', '-row-mt', '1', '-tiles', '2x2', '-pix_fmt', 'yuv420p']
-      : ['-c:v', 'libx264', '-crf', '28', '-preset', 'medium', '-pix_fmt', 'yuv420p'];
+    job.progress = 20;
+    job.stage = 'Optimizing video stream (high-quality compression)...';
 
-    job.progress = 28;
-    job.stage = hasSvtAv1
-      ? 'Encoding Pass 1/2 (SVT-AV1 perceptual analysis)...'
-      : hasAomAv1
-      ? 'Encoding Pass 1/2 (AV1 perceptual analysis)...'
-      : 'Encoding Pass 1/2 (video perceptual analysis)...';
+    // Single-pass hardware-friendly encoding:
+    // - Use SVT-AV1 fast preset 7 CRF 27 + Opus 96k when available (5-8x faster than 2-pass preset 5, higher visual quality)
+    // - Otherwise use libx264 High Profile CRF 21 preset veryfast + AAC 128k (15-30x faster than libaom-av1 2-pass, crisp universal MP4)
+    const videoArgs = hasSvtAv1
+      ? ['-c:v', 'libsvtav1', '-crf', '27', '-preset', '7', '-g', '120', '-pix_fmt', 'yuv420p']
+      : ['-c:v', 'libx264', '-profile:v', 'high', '-level:v', '4.1', '-crf', '21', '-preset', 'veryfast', '-threads', '0', '-pix_fmt', 'yuv420p'];
 
-    let encodedOk = false;
-    try {
-      // 2-Pass Encoding — Pass 1
-      await runProcess(bin, [
+    const audioArgs = meta.hasAudio
+      ? hasSvtAv1 && hasOpus
+        ? ['-c:a', 'libopus', '-b:a', '96k']
+        : ['-c:a', 'aac', '-b:a', '128k']
+      : ['-an'];
+
+    await runProcess(
+      bin,
+      [
         '-y',
+        '-threads', '0',
         '-i', params.rawPath,
         '-vf', vfChain,
-        ...primaryEncoderArgs,
-        '-pass', '1',
-        '-passlogfile', passLogPrefix,
-        '-an',
-        '-f', 'mp4',
-        process.platform === 'win32' ? 'NUL' : '/dev/null',
-      ]);
-
-      job.progress = 62;
-      job.stage = 'Encoding Pass 2/2 (AV1 + 80kbps Opus audio)...';
-
-      // 2-Pass Encoding — Pass 2
-      await runProcess(bin, [
-        '-y',
-        '-i', params.rawPath,
-        '-vf', vfChain,
-        ...primaryEncoderArgs,
-        '-pass', '2',
-        '-passlogfile', passLogPrefix,
+        '-map_metadata', '-1',
+        ...videoArgs,
         ...audioArgs,
         '-movflags', '+faststart',
         outPath,
-      ]);
-      encodedOk = true;
-    } catch (twoPassErr: any) {
-      console.warn(`[Video Pipeline] 2-pass retry note for job ${params.jobId}:`, twoPassErr?.message);
-    }
-
-    if (!encodedOk) {
-      job.progress = 48;
-      job.stage = 'Optimizing video stream (adaptive fallback)...';
-      await runProcess(bin, [
-        '-y',
-        '-i', params.rawPath,
-        '-vf', vfChain,
-        '-c:v', 'libx264',
-        '-crf', '28',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        ...(meta.hasAudio ? ['-c:a', 'aac', '-b:a', '96k'] : ['-an']),
-        '-movflags', '+faststart',
-        outPath,
-      ]);
-    }
+      ],
+      meta.durationSec,
+      (encodePct) => {
+        job.progress = Math.min(86, Math.max(20, Math.round(20 + encodePct * 0.66)));
+      }
+    );
 
     job.status = 'uploading';
     job.progress = 88;
-    job.stage = `Uploading compressed AV1 MP4 to "${params.bucket}" bucket...`;
+    job.stage = `Uploading optimized MP4 to "${params.bucket}" bucket...`;
 
     const finalBuffer = await fs.promises.readFile(outPath);
     const finalFileName = `${baseStem}.mp4`;
@@ -1531,7 +1525,6 @@ async function processVideoJobAsync(params: {
       job.originalBytes = params.originalSize;
       job.fileSize = formatMediaBytes(finalBuffer.length);
     } catch (storageErr: any) {
-      // Hand off compressed MP4 to authenticated client session if server-side storage upload hit RLS
       keepOutFileForClient = true;
       job.localOutPath = outPath;
       job.storagePath = storagePath;
@@ -1559,7 +1552,7 @@ async function processVideoJobAsync(params: {
   }
 }
 
-// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1920px, AVIF q=75 -> upload to Supabase bucket
+// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1920px Lanczos3, AVIF q=82 effort=2 -> upload to Supabase bucket
 app.post('/api/media/optimize-image', async (req, res) => {
   const ok = await runMulterSingle(imageUpload.single('file'), req, res);
   if (!ok) return;
@@ -1576,7 +1569,7 @@ app.post('/api/media/optimize-image', async (req, res) => {
   try {
     const ext = path.extname(file.originalname).toLowerCase();
     const isSvg = file.mimetype === 'image/svg+xml' || ext === '.svg';
-    const rawBuffer = await fs.promises.readFile(file.path);
+    const rawBuffer = file.buffer || (file.path ? await fs.promises.readFile(file.path) : Buffer.alloc(0));
 
     let outBuffer: Buffer;
     let outMime = 'image/avif';
@@ -1589,11 +1582,11 @@ app.post('/api/media/optimize-image', async (req, res) => {
     } else {
       const sharpMod = await import('sharp');
       const sharpFn = sharpMod.default || (sharpMod as any);
-      // Auto-rotate per EXIF, strip EXIF metadata (default when withMetadata() is not called), resize max 1920w without upscaling, convert to AVIF q75
-      outBuffer = await sharpFn(rawBuffer)
+      // Auto-rotate per EXIF, strip EXIF metadata, resize max 1920w (lanczos3, no upscale), convert to high-clarity AVIF q=82 effort=2
+      outBuffer = await sharpFn(rawBuffer, { failOn: 'none' })
         .rotate()
-        .resize({ width: 1920, withoutEnlargement: true })
-        .avif({ quality: 75 })
+        .resize({ width: 1920, withoutEnlargement: true, kernel: 'lanczos3' })
+        .avif({ quality: 82, effort: 2 })
         .toBuffer();
     }
 
@@ -1623,7 +1616,6 @@ app.post('/api/media/optimize-image', async (req, res) => {
         optimizedBytes: outBuffer.length,
       });
     } catch (storageErr: any) {
-      // Return optimized AVIF bytes so authenticated frontend client completes Supabase bucket upload directly
       return res.json({
         success: true,
         directUploadRequired: true,
@@ -1644,11 +1636,11 @@ app.post('/api/media/optimize-image', async (req, res) => {
       message: err?.message || 'Image optimization failed.',
     });
   } finally {
-    await safeUnlink(file.path);
+    if (file.path) await safeUnlink(file.path);
   }
 });
 
-// Enqueue background AV1 + Opus video optimization job so request never times out
+// Enqueue background video optimization job so request never times out
 app.post('/api/media/optimize-video', async (req, res) => {
   const ok = await runMulterSingle(videoUpload.single('file'), req, res);
   if (!ok) return;
@@ -1669,13 +1661,12 @@ app.post('/api/media/optimize-video', async (req, res) => {
     bucket,
     status: 'queued',
     progress: 5,
-    stage: 'Queued for background AV1 optimization...',
+    stage: 'Queued for background video optimization...',
     originalBytes: file.size,
     createdAt: Date.now(),
   };
   videoJobs.set(jobId, job);
 
-  // Run asynchronously in background without awaiting completion in HTTP handler
   setImmediate(() => {
     void processVideoJobAsync({
       jobId,
@@ -1710,13 +1701,17 @@ app.get('/api/media/jobs/:jobId', (req, res) => {
   res.json({ success: true, job: publicJob });
 });
 
-// Stream optimized AV1 video to authenticated client when server-side storage handoff is needed
+// Stream optimized video to authenticated client when server-side storage handoff is needed
 app.get('/api/media/job-file/:jobId', async (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job || !job.localOutPath || !fs.existsSync(job.localOutPath)) {
     return res.status(404).json({ success: false, message: 'Optimized video file not found.' });
   }
   const filePath = job.localOutPath;
+  try {
+    const stat = await fs.promises.stat(filePath);
+    res.setHeader('Content-Length', String(stat.size));
+  } catch {}
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(job.fileName || 'video.mp4')}"`);
   const stream = fs.createReadStream(filePath);
