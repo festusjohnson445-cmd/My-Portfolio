@@ -1182,7 +1182,7 @@ interface VideoOptimizationJob {
   jobId: string;
   bucket: string;
   storagePath?: string;
-  status: 'queued' | 'processing' | 'uploading' | 'ready_for_client_upload' | 'completed' | 'failed';
+  status: 'queued' | 'processing' | 'uploading' | 'ready_for_client_upload' | 'completed' | 'failed' | 'cancelled';
   progress: number;
   stage: string;
   publicUrl?: string;
@@ -1194,6 +1194,8 @@ interface VideoOptimizationJob {
   originalBytes?: number;
   durationSec?: number;
   error?: string;
+  cancelled?: boolean;
+  activeChild?: ReturnType<typeof spawn>;
   createdAt: number;
 }
 
@@ -1361,10 +1363,12 @@ function runProcess(
   bin: string,
   args: string[],
   durationSec?: number,
-  onProgressPct?: (pct: number) => void
+  onProgressPct?: (pct: number) => void,
+  onSpawn?: (proc: ReturnType<typeof spawn>) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    onSpawn?.(proc);
     let stderrTail = '';
     proc.stderr?.on('data', (chunk) => {
       const txt = chunk.toString();
@@ -1378,9 +1382,15 @@ function runProcess(
       }
     });
     proc.on('error', (err) => reject(err));
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       if (code === 0) resolve();
-      else reject(new Error(`FFmpeg exited with code ${code}: ${stderrTail.slice(-600)}`));
+      else if (signal === 'SIGKILL' || signal === 'SIGTERM') {
+        const cancelErr: any = new Error('Video optimization cancelled.');
+        cancelErr.isCancelled = true;
+        reject(cancelErr);
+      } else {
+        reject(new Error(`FFmpeg exited with code ${code}: ${stderrTail.slice(-600)}`));
+      }
     });
   });
 }
@@ -1442,6 +1452,8 @@ async function processVideoJobAsync(params: {
     job.stage = 'Inspecting video stream geometry...';
 
     const { bin, ffprobeBin, hasSvtAv1, hasOpus } = await getFfmpegCapabilities();
+    if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+
     const meta = await probeVideoMetadata(ffprobeBin, params.rawPath);
     if (meta.durationSec > 0) {
       job.durationSec = Math.round(meta.durationSec * 10) / 10;
@@ -1451,30 +1463,40 @@ async function processVideoJobAsync(params: {
     const maxH = params.maxHeight === 720 ? 720 : 1080;
     const needsResize = meta.width > maxW || meta.height > maxH || meta.width % 2 !== 0 || meta.height % 2 !== 0;
 
-    // Fast high-quality Lanczos resize without upscaling + light perceptual cleanup & crisp sharpening
+    // Sharp Lanczos resize + gentle denoise & unsharp masking so compressed frames look crisp and small
     const filterSteps: string[] = [];
     if (needsResize) {
       filterSteps.push(`scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`);
       filterSteps.push(`scale=trunc(iw/2)*2:trunc(ih/2)*2`);
     }
-    filterSteps.push('hqdn3d=0.6:0.6:2.5:2.5');
-    filterSteps.push('unsharp=3:3:0.3:3:3:0.0');
+    filterSteps.push('hqdn3d=0.8:0.8:2.8:2.8');
+    filterSteps.push('unsharp=3:3:0.35:3:3:0.0');
     const vfChain = filterSteps.join(',');
 
     job.progress = 20;
-    job.stage = 'Optimizing video stream (high-quality compression)...';
+    job.stage = 'Optimizing video stream (compact high-clarity compression)...';
 
-    // Single-pass hardware-friendly encoding:
-    // - Use SVT-AV1 fast preset 7 CRF 27 + Opus 96k when available (5-8x faster than 2-pass preset 5, higher visual quality)
-    // - Otherwise use libx264 High Profile CRF 21 preset veryfast + AAC 128k (15-30x faster than libaom-av1 2-pass, crisp universal MP4)
+    // Single-pass fast encoding tuned for noticeable size reduction while retaining crisp sharpness:
+    // - SVT-AV1 preset 8 CRF 31 + Opus 80k (very small file size, fast multi-threaded AV1 in MP4)
+    // - libx264 High Profile CRF 25 preset veryfast with bitrate ceiling 1600k + AAC 96k (fast, compact & crisp)
     const videoArgs = hasSvtAv1
-      ? ['-c:v', 'libsvtav1', '-crf', '27', '-preset', '7', '-g', '120', '-pix_fmt', 'yuv420p']
-      : ['-c:v', 'libx264', '-profile:v', 'high', '-level:v', '4.1', '-crf', '21', '-preset', 'veryfast', '-threads', '0', '-pix_fmt', 'yuv420p'];
+      ? ['-c:v', 'libsvtav1', '-crf', '31', '-preset', '8', '-g', '120', '-pix_fmt', 'yuv420p']
+      : [
+          '-c:v', 'libx264',
+          '-profile:v', 'high',
+          '-level:v', '4.1',
+          '-crf', '25',
+          '-maxrate', '1600k',
+          '-bufsize', '3200k',
+          '-preset', 'veryfast',
+          '-threads', '0',
+          '-pix_fmt', 'yuv420p',
+        ];
 
     const audioArgs = meta.hasAudio
       ? hasSvtAv1 && hasOpus
-        ? ['-c:a', 'libopus', '-b:a', '96k']
-        : ['-c:a', 'aac', '-b:a', '128k']
+        ? ['-c:a', 'libopus', '-b:a', '80k']
+        : ['-c:a', 'aac', '-b:a', '96k']
       : ['-an'];
 
     await runProcess(
@@ -1492,9 +1514,22 @@ async function processVideoJobAsync(params: {
       ],
       meta.durationSec,
       (encodePct) => {
-        job.progress = Math.min(86, Math.max(20, Math.round(20 + encodePct * 0.66)));
+        if (!job.cancelled) {
+          job.progress = Math.min(86, Math.max(20, Math.round(20 + encodePct * 0.66)));
+        }
+      },
+      (child) => {
+        job.activeChild = child;
+        if (job.cancelled) {
+          try { child.kill('SIGKILL'); } catch {}
+        }
       }
     );
+    job.activeChild = undefined;
+
+    if (job.cancelled) {
+      throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+    }
 
     job.status = 'uploading';
     job.progress = 88;
@@ -1515,6 +1550,10 @@ async function processVideoJobAsync(params: {
         contentType: 'video/mp4',
       });
 
+      if (job.cancelled) {
+        throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+      }
+
       job.status = 'completed';
       job.progress = 100;
       job.stage = 'Completed';
@@ -1525,6 +1564,9 @@ async function processVideoJobAsync(params: {
       job.originalBytes = params.originalSize;
       job.fileSize = formatMediaBytes(finalBuffer.length);
     } catch (storageErr: any) {
+      if (job.cancelled || storageErr?.isCancelled) {
+        throw storageErr;
+      }
       keepOutFileForClient = true;
       job.localOutPath = outPath;
       job.storagePath = storagePath;
@@ -1539,20 +1581,27 @@ async function processVideoJobAsync(params: {
       console.info(`[Video Pipeline Job ${params.jobId}] Handing off compressed video to authenticated client:`, storageErr?.message);
     }
   } catch (err: any) {
-    console.error(`[Video Pipeline Error Job ${params.jobId}]:`, err);
-    job.status = 'failed';
-    job.stage = 'Optimization failed';
-    job.error = err?.message || 'Video transcoding or upload failed.';
+    if (job.cancelled || err?.isCancelled) {
+      job.status = 'cancelled';
+      job.stage = 'Cancelled';
+      job.error = 'Upload cancelled';
+    } else {
+      console.error(`[Video Pipeline Error Job ${params.jobId}]:`, err);
+      job.status = 'failed';
+      job.stage = 'Optimization failed';
+      job.error = err?.message || 'Video transcoding or upload failed.';
+    }
   } finally {
+    job.activeChild = undefined;
     await safeUnlink(params.rawPath);
-    if (!keepOutFileForClient) {
+    if (!keepOutFileForClient || job.cancelled) {
       await safeUnlink(outPath);
     }
     await cleanupPassLogs(passLogPrefix);
   }
 }
 
-// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1920px Lanczos3, AVIF q=82 effort=2 -> upload to Supabase bucket
+// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1600px Lanczos3 + crisp sharpen, compact AVIF q=68
 app.post('/api/media/optimize-image', async (req, res) => {
   const ok = await runMulterSingle(imageUpload.single('file'), req, res);
   if (!ok) return;
@@ -1582,11 +1631,12 @@ app.post('/api/media/optimize-image', async (req, res) => {
     } else {
       const sharpMod = await import('sharp');
       const sharpFn = sharpMod.default || (sharpMod as any);
-      // Auto-rotate per EXIF, strip EXIF metadata, resize max 1920w (lanczos3, no upscale), convert to high-clarity AVIF q=82 effort=2
+      // Auto-rotate per EXIF, strip metadata, resize max 1600w Lanczos3, crisp mild sharpen, compact AVIF q=68 effort=2
       outBuffer = await sharpFn(rawBuffer, { failOn: 'none' })
         .rotate()
-        .resize({ width: 1920, withoutEnlargement: true, kernel: 'lanczos3' })
-        .avif({ quality: 82, effort: 2 })
+        .resize({ width: 1600, withoutEnlargement: true, kernel: 'lanczos3' })
+        .sharpen({ sigma: 0.65, m1: 0.6, m2: 2.0 })
+        .avif({ quality: 68, effort: 2, chromaSubsampling: '4:2:0' })
         .toBuffer();
     }
 
@@ -1652,7 +1702,7 @@ app.post('/api/media/optimize-video', async (req, res) => {
 
   const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
   const folderPrefix = String(req.body?.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_');
-  const maxHeight: 720 | 1080 = req.body?.maxHeight === '720' ? 720 : 1080;
+  const maxHeight: 720 | 1080 = req.body?.maxHeight === '1080' ? 1080 : 720;
   const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
   const jobId = `vjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -1697,8 +1747,29 @@ app.get('/api/media/jobs/:jobId', (req, res) => {
   if (!job) {
     return res.status(404).json({ success: false, message: 'Video processing job not found or expired.' });
   }
-  const { localOutPath: _omit, ...publicJob } = job;
+  const { localOutPath: _omit, activeChild: _omitChild, ...publicJob } = job;
   res.json({ success: true, job: publicJob });
+});
+
+// Cancel active background video optimization job immediately
+app.post('/api/media/jobs/:jobId/cancel', (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job) {
+    return res.json({ success: true, status: 'not_found' });
+  }
+  job.cancelled = true;
+  job.status = 'cancelled';
+  job.stage = 'Cancelled';
+  if (job.activeChild) {
+    try {
+      job.activeChild.kill('SIGKILL');
+    } catch {}
+  }
+  if (job.localOutPath) {
+    safeUnlink(job.localOutPath).catch(() => {});
+    job.localOutPath = undefined;
+  }
+  res.json({ success: true, status: 'cancelled' });
 });
 
 // Stream optimized video to authenticated client when server-side storage handoff is needed

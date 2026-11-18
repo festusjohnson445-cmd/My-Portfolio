@@ -19,6 +19,7 @@ export interface ProjectSpecification {
 export interface MediaAssetItem {
   title: string;
   url: string;
+  note?: string;
   fileName?: string;
   fileSize?: string;
   fileType?: string;
@@ -576,7 +577,7 @@ async function optimizeImageInBrowserCanvas(
     if (!width || !height) {
       return { blob: file, mimeType: file.type || 'image/jpeg', fileName: file.name };
     }
-    const maxW = 1920;
+    const maxW = 1600;
     const scale = width > maxW ? maxW / width : 1;
     const targetW = Math.max(1, Math.round(width * scale));
     const targetH = Math.max(1, Math.round(height * scale));
@@ -592,9 +593,9 @@ async function optimizeImageInBrowserCanvas(
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, 0, 0, targetW, targetH);
 
-    // Strip EXIF inherently via canvas redraw; prefer AVIF -> WebP -> JPEG at crisp q=0.88
+    // Strip EXIF inherently via canvas redraw; prefer AVIF -> WebP -> JPEG at compact crisp q=0.78
     const tryExport = (mime: string) =>
-      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.88));
+      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), mime, 0.78));
 
     const stem = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
     const avifBlob = await tryExport('image/avif');
@@ -681,17 +682,43 @@ async function uploadBlobDirectToBucket(params: {
   };
 }
 
+export function isAbortError(err: unknown): boolean {
+  if (!err) return false;
+  const anyErr = err as any;
+  return (
+    anyErr?.name === 'AbortError' ||
+    anyErr?.code === 20 ||
+    /abort|cancell?ed/i.test(String(anyErr?.message || ''))
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException('Upload cancelled', 'AbortError');
+  }
+}
+
+async function cancelServerVideoJob(jobId: string): Promise<void> {
+  try {
+    await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  } catch {}
+}
+
 export async function uploadFileToBucket(
   bucket: 'projects' | 'articles' | 'materials' | 'avatars',
   file: File,
   folderPrefix = '',
-  onProgress?: UploadProgressCallback
+  onProgress?: UploadProgressCallback,
+  signal?: AbortSignal
 ): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string; durationSec?: number }> {
+  throwIfAborted(signal);
+
   // Route Projects & Articles raster images through Sharp AVIF pipeline with resilient client handoff & canvas fallback
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableRasterImage(file)) {
     onProgress?.(25, 'Optimizing image...');
     try {
       const authHeaders = await getPipelineAuthHeaders();
+      throwIfAborted(signal);
       const formData = new FormData();
       formData.append('bucket', bucket);
       formData.append('folderPrefix', folderPrefix || 'images');
@@ -701,7 +728,9 @@ export async function uploadFileToBucket(
         method: 'POST',
         headers: authHeaders,
         body: formData,
+        signal,
       });
+      throwIfAborted(signal);
       const json = await resp.json().catch(() => null);
 
       if (resp.ok && json?.success) {
@@ -717,6 +746,7 @@ export async function uploadFileToBucket(
         if (json.directUploadRequired && json.optimizedBase64) {
           onProgress?.(75, `Uploading optimized AVIF (${json.fileSize}) to "${bucket}"...`);
           const avifBlob = base64ToBlob(json.optimizedBase64, json.mimeType || 'image/avif');
+          throwIfAborted(signal);
           const uploaded = await uploadBlobDirectToBucket({
             bucket,
             blob: avifBlob,
@@ -730,12 +760,17 @@ export async function uploadFileToBucket(
         }
       }
     } catch (serverImgErr) {
+      if (isAbortError(serverImgErr) || signal?.aborted) {
+        throw new DOMException('Upload cancelled', 'AbortError');
+      }
       console.warn('[Image Pipeline] Server optimization unavailable, using client optimizer fallback:', serverImgErr);
     }
 
-    // Resilient Client-Side EXIF-stripped 1920px Optimization Fallback
+    throwIfAborted(signal);
+    // Resilient Client-Side EXIF-stripped 1600px Optimization Fallback
     onProgress?.(55, 'Optimizing image...');
     const optimized = await optimizeImageInBrowserCanvas(file);
+    throwIfAborted(signal);
     onProgress?.(82, `Uploading optimized image to "${bucket}"...`);
     const directRes = await uploadBlobDirectToBucket({
       bucket,
@@ -754,88 +789,111 @@ export async function uploadFileToBucket(
     const localDurationPromise = probeLocalFileDuration(file);
     try {
       const authHeaders = await getPipelineAuthHeaders();
+      throwIfAborted(signal);
       const formData = new FormData();
       formData.append('bucket', bucket);
       formData.append('folderPrefix', folderPrefix || 'videos');
-      formData.append('maxHeight', '1080');
+      formData.append('maxHeight', '720');
       formData.append('file', file);
 
       const startResp = await fetch('/api/media/optimize-video', {
         method: 'POST',
         headers: authHeaders,
         body: formData,
+        signal,
       });
+      throwIfAborted(signal);
       const startJson = await startResp.json().catch(() => null);
 
       if (startResp.ok && startJson?.success && startJson?.jobId) {
         const jobId: string = startJson.jobId;
-        onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
+        const onAbort = () => {
+          void cancelServerVideoJob(jobId);
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
 
-        const maxWaitMs = 45 * 60 * 1000;
-        const startedAt = Date.now();
-        let consecutivePollErrors = 0;
+        try {
+          onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
 
-        while (Date.now() - startedAt < maxWaitMs) {
-          await new Promise((r) => setTimeout(r, 450));
-          const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`);
-          const statusJson = await statusResp.json().catch(() => null);
+          const maxWaitMs = 45 * 60 * 1000;
+          const startedAt = Date.now();
+          let consecutivePollErrors = 0;
 
-          if (!statusResp.ok || !statusJson?.job) {
-            consecutivePollErrors++;
-            if (consecutivePollErrors >= 5) {
-              throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
+          while (Date.now() - startedAt < maxWaitMs) {
+            throwIfAborted(signal);
+            await new Promise((r) => setTimeout(r, 350));
+            throwIfAborted(signal);
+            const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`, { signal });
+            const statusJson = await statusResp.json().catch(() => null);
+
+            if (!statusResp.ok || !statusJson?.job) {
+              consecutivePollErrors++;
+              if (consecutivePollErrors >= 5) {
+                throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
+              }
+              continue;
             }
-            continue;
-          }
-          consecutivePollErrors = 0;
+            consecutivePollErrors = 0;
 
-          const job = statusJson.job;
-          onProgress?.(job.progress || 50, job.stage || 'Processing video...');
+            const job = statusJson.job;
+            onProgress?.(job.progress || 50, job.stage || 'Processing video...');
 
-          if (job.status === 'completed' && job.publicUrl) {
-            const localDur = await localDurationPromise;
-            const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
-            if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
-            return {
-              publicUrl: job.publicUrl,
-              storagePath: job.storagePath,
-              fileName: job.fileName || file.name,
-              fileSize: job.fileSize || formatBytes(file.size),
-              durationSec: resolvedDuration,
-            };
-          }
-
-          if (job.status === 'ready_for_client_upload' && job.directUploadUrl) {
-            onProgress?.(95, `Uploading compressed video (${job.fileSize || ''}) to "${bucket}"...`);
-            const blobResp = await fetch(job.directUploadUrl);
-            if (!blobResp.ok) {
-              throw new Error('Failed to retrieve transcoded video from server.');
+            if (job.status === 'cancelled') {
+              throw new DOMException('Upload cancelled', 'AbortError');
             }
-            const compressedBlob = await blobResp.blob();
-            const uploaded = await uploadBlobDirectToBucket({
-              bucket,
-              blob: compressedBlob,
-              fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
-              contentType: 'video/mp4',
-              folderPrefix: folderPrefix || 'videos',
-              explicitStoragePath: job.storagePath,
-            });
-            const localDur = await localDurationPromise;
-            const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
-            if (resolvedDuration) setCachedMediaDuration(uploaded.publicUrl, resolvedDuration);
-            onProgress?.(100, `Saved optimized video (${uploaded.fileSize})`);
-            return { ...uploaded, durationSec: resolvedDuration };
-          }
 
-          if (job.status === 'failed') {
-            throw new Error(job.error || 'Background video optimization failed.');
+            if (job.status === 'completed' && job.publicUrl) {
+              const localDur = await localDurationPromise;
+              const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+              if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
+              return {
+                publicUrl: job.publicUrl,
+                storagePath: job.storagePath,
+                fileName: job.fileName || file.name,
+                fileSize: job.fileSize || formatBytes(file.size),
+                durationSec: resolvedDuration,
+              };
+            }
+
+            if (job.status === 'ready_for_client_upload' && job.directUploadUrl) {
+              onProgress?.(95, `Uploading compressed video (${job.fileSize || ''}) to "${bucket}"...`);
+              const blobResp = await fetch(job.directUploadUrl, { signal });
+              if (!blobResp.ok) {
+                throw new Error('Failed to retrieve transcoded video from server.');
+              }
+              const compressedBlob = await blobResp.blob();
+              throwIfAborted(signal);
+              const uploaded = await uploadBlobDirectToBucket({
+                bucket,
+                blob: compressedBlob,
+                fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
+                contentType: 'video/mp4',
+                folderPrefix: folderPrefix || 'videos',
+                explicitStoragePath: job.storagePath,
+              });
+              const localDur = await localDurationPromise;
+              const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+              if (resolvedDuration) setCachedMediaDuration(uploaded.publicUrl, resolvedDuration);
+              onProgress?.(100, `Saved optimized video (${uploaded.fileSize})`);
+              return { ...uploaded, durationSec: resolvedDuration };
+            }
+
+            if (job.status === 'failed') {
+              throw new Error(job.error || 'Background video optimization failed.');
+            }
           }
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
         }
       }
     } catch (videoPipeErr) {
+      if (isAbortError(videoPipeErr) || signal?.aborted) {
+        throw new DOMException('Upload cancelled', 'AbortError');
+      }
       console.warn('[Video Pipeline] Background optimization unavailable, falling back to direct bucket upload:', videoPipeErr);
     }
 
+    throwIfAborted(signal);
     // Resilient direct storage upload fallback so valid videos always publish
     onProgress?.(60, `Uploading "${file.name}" directly to "${bucket}" storage...`);
     const directVid = await uploadBlobDirectToBucket({
@@ -851,6 +909,7 @@ export async function uploadFileToBucket(
     return { ...directVid, durationSec: localDur };
   }
 
+  throwIfAborted(signal);
   // Direct Supabase Storage upload for non-raster/non-video assets (PDF, CAD, SVG, materials, avatars)
   onProgress?.(35, `Uploading ${file.name}...`);
   const uploadedAsset = await uploadBlobDirectToBucket({
@@ -1243,24 +1302,110 @@ export async function deleteArticleFromSupabase(articleId: string): Promise<void
 }
 
 export async function incrementArticleLikesInSupabase(articleId: string): Promise<number> {
+  const count = await toggleArticleLikeInSupabase(articleId, 1);
+  return typeof count === 'number' ? count : 0;
+}
+
+export async function toggleArticleLikeInSupabase(
+  articleId: string,
+  delta: 1 | -1,
+  fallbackNextCount?: number
+): Promise<number | null> {
   try {
-    const { data, error } = await supabase.rpc('increment_article_likes', {
-      target_article_id: articleId,
-    });
-    if (!error && typeof data === 'number') {
-      return data;
+    if (delta > 0) {
+      const { data, error } = await supabase.rpc('increment_article_likes', {
+        target_article_id: articleId,
+      });
+      if (!error && typeof data === 'number') {
+        const current = getCachedArticles(true);
+        setCachedArticles(
+          current.map((a) => (a.id === articleId ? { ...a, likesCount: data } : a))
+        );
+        return data;
+      }
+    } else {
+      const { data: decData, error: decError } = await supabase.rpc('decrement_article_likes', {
+        target_article_id: articleId,
+      });
+      if (!decError && typeof decData === 'number') {
+        const safeCount = Math.max(0, decData);
+        const current = getCachedArticles(true);
+        setCachedArticles(
+          current.map((a) => (a.id === articleId ? { ...a, likesCount: safeCount } : a))
+        );
+        return safeCount;
+      }
+    }
+
+    if (typeof fallbackNextCount === 'number') {
+      const safeTarget = Math.max(0, fallbackNextCount);
+      const { data: updData, error: updError } = await supabase
+        .from('articles')
+        .update({ likes_count: safeTarget })
+        .eq('id', articleId)
+        .select('likes_count')
+        .maybeSingle();
+      if (!updError && updData && typeof updData.likes_count === 'number') {
+        const current = getCachedArticles(true);
+        setCachedArticles(
+          current.map((a) => (a.id === articleId ? { ...a, likesCount: updData.likes_count } : a))
+        );
+        return updData.likes_count;
+      }
     }
   } catch {}
-  return 0;
+  return null;
 }
 
 // ============================================================================
 // COMMENTS CRUD & MODERATION
 // ============================================================================
 
+const STORAGE_KEY_COMMENTS_BY_ARTICLE = 'fesline_article_comments_v1';
 let memoryCommentsCache: ArticleComment[] | null = null;
+const memoryCommentsByArticle = new Map<string, ArticleComment[]>();
+let commentsStorageHydrated = false;
+
+function hydrateCommentsByArticleStorage() {
+  if (commentsStorageHydrated) return;
+  commentsStorageHydrated = true;
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_COMMENTS_BY_ARTICLE);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      for (const [aid, arr] of Object.entries(parsed)) {
+        if (Array.isArray(arr)) {
+          memoryCommentsByArticle.set(aid, arr as ArticleComment[]);
+        }
+      }
+    }
+  } catch {}
+}
+
+function persistCommentsByArticleStorage() {
+  if (typeof window === 'undefined') return;
+  try {
+    const obj: Record<string, ArticleComment[]> = {};
+    let count = 0;
+    for (const [k, v] of memoryCommentsByArticle.entries()) {
+      obj[k] = v.slice(0, 60);
+      if (++count > 40) break;
+    }
+    localStorage.setItem(STORAGE_KEY_COMMENTS_BY_ARTICLE, JSON.stringify(obj));
+  } catch {}
+}
+
 export function getCachedCommentsForAdmin(): ArticleComment[] {
   return memoryCommentsCache || [];
+}
+
+export function getCachedCommentsForArticle(articleId: string, includeAll = false): ArticleComment[] {
+  hydrateCommentsByArticleStorage();
+  const cached = memoryCommentsByArticle.get(articleId) || [];
+  if (includeAll) return cached;
+  return cached.filter((c) => c.status === 'approved');
 }
 
 function mapDbRowToComment(row: any): ArticleComment {
@@ -1276,6 +1421,7 @@ function mapDbRowToComment(row: any): ArticleComment {
 }
 
 export async function fetchCommentsForArticle(articleId: string, includeAll = false): Promise<ArticleComment[]> {
+  hydrateCommentsByArticleStorage();
   try {
     let query = supabase
       .from('article_comments')
@@ -1286,14 +1432,20 @@ export async function fetchCommentsForArticle(articleId: string, includeAll = fa
       query = query.eq('status', 'approved');
     }
     const { data, error } = await query;
-    if (error || !Array.isArray(data)) return [];
-    return data.map(mapDbRowToComment);
+    if (error || !Array.isArray(data)) {
+      return getCachedCommentsForArticle(articleId, includeAll);
+    }
+    const mapped = data.map(mapDbRowToComment);
+    memoryCommentsByArticle.set(articleId, mapped);
+    persistCommentsByArticleStorage();
+    return mapped;
   } catch {
-    return [];
+    return getCachedCommentsForArticle(articleId, includeAll);
   }
 }
 
 export async function fetchAllCommentsForAdmin(): Promise<ArticleComment[]> {
+  hydrateCommentsByArticleStorage();
   try {
     const { data, error } = await supabase
       .from('article_comments')
@@ -1302,6 +1454,16 @@ export async function fetchAllCommentsForAdmin(): Promise<ArticleComment[]> {
     if (error || !Array.isArray(data)) return memoryCommentsCache || [];
     const mapped = data.map(mapDbRowToComment);
     memoryCommentsCache = mapped;
+    const grouped = new Map<string, ArticleComment[]>();
+    for (const c of mapped) {
+      const list = grouped.get(c.articleId) || [];
+      list.push(c);
+      grouped.set(c.articleId, list);
+    }
+    for (const [aid, list] of grouped.entries()) {
+      memoryCommentsByArticle.set(aid, list);
+    }
+    persistCommentsByArticleStorage();
     return mapped;
   } catch {
     return memoryCommentsCache || [];
@@ -1315,6 +1477,7 @@ export async function submitArticleComment(params: {
   contentMarkdown: string;
   isOwnerPosting: boolean;
 }): Promise<ArticleComment> {
+  hydrateCommentsByArticleStorage();
   const now = new Date().toISOString();
   const id = `cmt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const status: ArticleComment['status'] = params.isOwnerPosting ? 'approved' : 'pending';
@@ -1335,6 +1498,9 @@ export async function submitArticleComment(params: {
   if (memoryCommentsCache) {
     memoryCommentsCache = [mapped, ...memoryCommentsCache];
   }
+  const existing = memoryCommentsByArticle.get(params.articleId) || [];
+  memoryCommentsByArticle.set(params.articleId, [mapped, ...existing.filter((c) => c.id !== mapped.id)]);
+  persistCommentsByArticleStorage();
   return mapped;
 }
 
@@ -1352,6 +1518,15 @@ export async function moderateCommentInSupabase(
   if (memoryCommentsCache) {
     memoryCommentsCache = memoryCommentsCache.map((c) => (c.id === commentId ? { ...c, status } : c));
   }
+  for (const [aid, list] of memoryCommentsByArticle.entries()) {
+    if (list.some((c) => c.id === commentId)) {
+      memoryCommentsByArticle.set(
+        aid,
+        list.map((c) => (c.id === commentId ? { ...c, status } : c))
+      );
+    }
+  }
+  persistCommentsByArticleStorage();
 }
 
 export async function deleteCommentFromSupabase(commentId: string): Promise<void> {
@@ -1362,6 +1537,15 @@ export async function deleteCommentFromSupabase(commentId: string): Promise<void
   if (memoryCommentsCache) {
     memoryCommentsCache = memoryCommentsCache.filter((c) => c.id !== commentId);
   }
+  for (const [aid, list] of memoryCommentsByArticle.entries()) {
+    if (list.some((c) => c.id === commentId)) {
+      memoryCommentsByArticle.set(
+        aid,
+        list.filter((c) => c.id !== commentId)
+      );
+    }
+  }
+  persistCommentsByArticleStorage();
 }
 
 // ============================================================================

@@ -91,6 +91,7 @@ function sanitizeDocumentDescription(desc?: string): string {
 }
 
 export type DocumentCategory =
+  | 'Students Materials'
   | 'Christians Book'
   | 'Inspirational Book'
   | 'Technical Drawing'
@@ -239,7 +240,7 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     >
       {/* Category Icon */}
       <div className="w-12 h-12 rounded-2xl bg-white border border-slate-300 shadow-xs flex items-center justify-center text-cyan-800 mb-1">
-        {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' ? (
+        {doc.category === 'Christians Book' || doc.category === 'Inspirational Book' || doc.category === 'Students Materials' ? (
           <BookOpen className="w-6 h-6 text-cyan-700" />
         ) : doc.category === 'Technical Drawing' || doc.category === 'Production Blueprint' ? (
           <FileCode className="w-6 h-6 text-blue-700" />
@@ -359,6 +360,7 @@ export interface EngineeringDocumentHubProps {
 }
 
 export const CATEGORIES_LIST: DocumentCategory[] = [
+  'Students Materials',
   'Christians Book',
   'Inspirational Book',
   'Technical Drawing',
@@ -375,6 +377,25 @@ export const CATEGORIES_LIST: DocumentCategory[] = [
 export function autoDetectCategory(fileName: string): DocumentCategory {
   const lowerName = fileName.toLowerCase();
   const ext = lowerName.split('.').pop() || '';
+
+  if (
+    lowerName.includes('student') ||
+    lowerName.includes('lecture') ||
+    lowerName.includes('syllabus') ||
+    lowerName.includes('assignment') ||
+    lowerName.includes('homework') ||
+    lowerName.includes('exam') ||
+    lowerName.includes('past question') ||
+    lowerName.includes('handout') ||
+    lowerName.includes('course') ||
+    lowerName.includes('tutorial') ||
+    lowerName.includes('worksheet') ||
+    lowerName.includes('study') ||
+    lowerName.includes('semester') ||
+    lowerName.includes('notes')
+  ) {
+    return 'Students Materials';
+  }
 
   if (
     lowerName.includes('christian') ||
@@ -1221,6 +1242,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
   const getCategoryIcon = (category: DocumentCategory) => {
     switch (category) {
+      case 'Students Materials':
+        return <BookOpen className="w-4 h-4 text-cyan-700" />;
       case 'Christians Book':
       case 'Inspirational Book':
         return <BookOpen className="w-4 h-4 text-amber-600" />;
@@ -1303,63 +1326,56 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       )}
 
       {/* 2. SEARCH, CATEGORY FILTER & SORT CONTROLS */}
-      <div className="bg-white p-3.5 sm:p-4.5 rounded-2xl border border-slate-300 shadow-sm space-y-3.5">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-          {/* Search Box */}
-          <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by title, filename, CAD keyword, book author, or GD&T tag..."
-              className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* Sort Dropdown */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <div className="flex items-center gap-1 text-[10.5px] sm:text-[11px] text-slate-600 font-mono">
-              <ArrowUpDown className="w-3 h-3 text-slate-400" />
-              <span>Sort:</span>
-            </div>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-[10.5px] sm:text-[11.5px] font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
+      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-300 shadow-sm space-y-2.5">
+        {/* Row 1: Search Box */}
+        <div className="relative w-full">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by title, filename, CAD keyword, book author, or GD&T tag..."
+            className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
             >
-              <option value="newest">Newest First</option>
-              <option value="downloads">Most Downloaded</option>
-              <option value="title">Alphabetical (A-Z)</option>
-              <option value="size">Largest Size</option>
-            </select>
-          </div>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
-        {/* Category Filter Dropdown */}
-        <div className="pt-2 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <label
-            htmlFor="hub-category-filter"
-            className="flex items-center gap-1.5 text-[10.5px] sm:text-[11.5px] font-semibold text-slate-700"
-          >
-            <Filter className="w-3.5 h-3.5 text-cyan-700" />
-            <span>Category Filter:</span>
-          </label>
+        {/* Row 2: Compact Filter & Categories Dropdowns Side-by-Side */}
+        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+            <label htmlFor="hub-sort-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap">
+              Filter:
+            </label>
+            <select
+              id="hub-sort-filter"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="w-[105px] sm:w-auto px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer"
+            >
+              <option value="newest">Newest</option>
+              <option value="downloads">Most Downloaded</option>
+              <option value="title">A-Z</option>
+              <option value="size">Largest</option>
+            </select>
+          </div>
 
-          <div className="flex items-center gap-2.5 flex-1 sm:max-w-sm justify-end">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
+            <label htmlFor="hub-category-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden xs:inline sm:inline">
+              Category:
+            </label>
             <select
               id="hub-category-filter"
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="w-full sm:w-64 px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-[10.5px] sm:text-[11.5px] font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-600 cursor-pointer"
+              className="min-w-0 max-w-[140px] sm:max-w-[180px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
             >
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
@@ -1367,7 +1383,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 </option>
               ))}
             </select>
-            <span className="text-[10px] sm:text-[10.5px] text-cyan-800 font-semibold whitespace-nowrap shrink-0">
+            <span className="text-[9.5px] text-cyan-800 font-sans font-medium whitespace-nowrap shrink-0">
               ({filteredDocs.length})
             </span>
           </div>
@@ -1565,24 +1581,25 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       {/* 5. MODAL: DEDICATED UPLOAD MODAL (Owner Only) */}
       {isOwner && isUploadModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="relative w-full max-w-3xl bg-white border border-slate-300 rounded-3xl p-5 sm:p-7 shadow-2xl text-slate-800 space-y-5 animate-fadeIn my-8 max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto overflow-x-hidden">
+          <div className="relative w-full max-w-2xl bg-white border border-slate-300 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl text-slate-800 space-y-4 animate-fadeIn my-auto max-h-[92vh] flex flex-col overflow-hidden box-border">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700">
-                  <Upload className="w-5 h-5" />
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-3 min-w-0 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 shrink-0">
+                  <Upload className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
                     Upload Documents &amp; Files
                   </h3>
-                  <p className="text-xs text-slate-500">
-                    Upload single or multiple files irrespective of size or content
+                  <p className="text-[11px] text-slate-500 truncate">
+                    Upload single or multiple files directly to Engineering Hub
                   </p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   if (!isPublishing) {
                     setIsUploadModalOpen(false);
@@ -1590,25 +1607,25 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   }
                 }}
                 disabled={isPublishing}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40 shrink-0 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {uploadSuccessMsg ? (
-              <div className="p-8 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-center space-y-3">
-                <CheckCircle2 className="w-14 h-14 text-emerald-600 mx-auto animate-bounce" />
-                <h4 className="text-lg sm:text-xl font-bold text-slate-900">Uploads Published Successfully!</h4>
-                <p className="text-xs sm:text-sm max-w-md mx-auto text-emerald-900 leading-relaxed">
+              <div className="p-6 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-center space-y-3">
+                <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto animate-bounce" />
+                <h4 className="text-base sm:text-lg font-bold text-slate-900">Uploads Published Successfully!</h4>
+                <p className="text-xs max-w-md mx-auto text-emerald-900 leading-relaxed break-words">
                   {uploadSuccessMsg}
                 </p>
               </div>
             ) : (
-              <form onSubmit={handlePublishAllQueued} className="space-y-4 flex-1 overflow-y-auto pr-1">
+              <form onSubmit={handlePublishAllQueued} className="space-y-3.5 flex-1 min-h-0 min-w-0 w-full overflow-y-auto overflow-x-hidden box-border">
                 {/* Uploader Name Bar */}
-                <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 w-full min-w-0 box-border">
+                  <label className="block text-[10.5px] font-bold text-slate-700 uppercase tracking-wider">
                     Uploader / Author Name *
                   </label>
                   <input
@@ -1617,12 +1634,12 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     value={uploaderName}
                     onChange={(e) => setUploaderName(e.target.value)}
                     placeholder={isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Enter your name or organization'}
-                    className="w-full p-2.5 rounded-xl bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans"
+                    className="w-full min-w-0 box-border p-2 rounded-lg bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans"
                   />
                 </div>
 
                 {/* Dropzone */}
-                <div>
+                <div className="w-full min-w-0 box-border">
                   <input
                     ref={modalFileInputRef}
                     type="file"
@@ -1658,48 +1675,45 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                           handleFilesPicked(e.dataTransfer.files);
                         }
                       }}
-                      className="border-2 border-dashed border-slate-300 hover:border-cyan-600 bg-slate-50/70 hover:bg-cyan-50/30 rounded-2xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group"
+                      className="w-full box-border border-2 border-dashed border-slate-300 hover:border-cyan-600 bg-slate-50/70 hover:bg-cyan-50/30 rounded-2xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group"
                     >
-                      <div className="w-12 h-12 rounded-2xl bg-cyan-100/70 border border-cyan-300 flex items-center justify-center text-cyan-800 group-hover:scale-110 transition-transform shadow-xs">
-                        <Upload className="w-6 h-6" />
+                      <div className="w-11 h-11 rounded-2xl bg-cyan-100/70 border border-cyan-300 flex items-center justify-center text-cyan-800 group-hover:scale-105 transition-transform shadow-xs">
+                        <Upload className="w-5 h-5" />
                       </div>
-                      <span className="text-sm font-bold text-slate-800 block">
+                      <span className="text-xs sm:text-sm font-bold text-slate-800 block">
                         Click to browse or drag &amp; drop files here
                       </span>
-                      <span className="text-xs text-slate-500 block">
-                        Select single or multiple files (PDF Books, STEP CAD, Drawings, Word, Excel, ZIP)
-                      </span>
-                      <span className="text-[10px] text-cyan-800 font-mono bg-cyan-50 px-2 py-0.5 rounded-full border border-cyan-200">
-                        Direct publishing · Supports any number of uploads
+                      <span className="text-[11px] text-slate-500 block max-w-full break-words">
+                        PDF Books, Student Materials, STEP CAD, Drawings, Word, Excel, ZIP
                       </span>
                     </div>
                   ) : (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider flex items-center gap-1.5">
-                          <ListPlus className="w-4 h-4 text-cyan-700" />
+                    <div className="space-y-2.5 w-full min-w-0">
+                      <div className="flex items-center justify-between gap-2 min-w-0">
+                        <span className="text-[11px] font-bold text-slate-800 font-mono uppercase tracking-wider flex items-center gap-1.5 truncate">
+                          <ListPlus className="w-3.5 h-3.5 text-cyan-700 shrink-0" />
                           <span>Queued Files ({queuedFiles.length})</span>
                         </span>
                         <button
                           type="button"
                           onClick={() => addMoreInputRef.current?.click()}
-                          className="px-3 py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors shrink-0"
                         >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Add More Files</span>
+                          <Plus className="w-3 h-3" />
+                          <span>Add More</span>
                         </button>
                       </div>
 
                       {/* Itemized File Cards */}
-                      <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                      <div className="space-y-2.5 max-h-64 overflow-y-auto overflow-x-hidden w-full min-w-0">
                         {queuedFiles.map((item, idx) => (
                           <div
                             key={item.id}
-                            className="p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs space-y-2.5"
+                            className="p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs space-y-2 w-full min-w-0 box-border overflow-hidden"
                           >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                                <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
+                            <div className="flex items-start justify-between gap-2 min-w-0">
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
                                   {item.previewUrl ? (
                                     <img src={item.previewUrl} alt="Preview" loading="lazy" decoding="async" className="w-full h-full object-contain" />
                                   ) : (
@@ -1707,22 +1721,22 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                                   )}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-cyan-100 text-cyan-900">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-900 shrink-0">
                                       #{idx + 1}
                                     </span>
                                     <input
                                       type="text"
                                       value={item.title}
                                       onChange={(e) => handleUpdateQueueItem(item.id, { title: e.target.value })}
-                                      className="font-bold text-xs sm:text-sm text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-cyan-600 focus:outline-none w-full"
+                                      className="font-bold text-xs text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-cyan-600 focus:outline-none w-full min-w-0"
                                       placeholder="Document title"
                                     />
                                   </div>
-                                  <div className="text-[11px] text-slate-500 font-mono flex items-center gap-2 mt-0.5">
-                                    <span>{item.file.name}</span>
+                                  <div className="text-[10.5px] text-slate-500 font-mono flex flex-wrap items-center gap-1.5 mt-0.5 min-w-0">
+                                    <span className="truncate max-w-[180px] sm:max-w-[260px]" title={item.file.name}>{item.file.name}</span>
                                     <span>·</span>
-                                    <span>{item.fileSize}</span>
+                                    <span className="shrink-0">{item.fileSize}</span>
                                   </div>
                                 </div>
                               </div>
@@ -1730,7 +1744,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                               <button
                                 type="button"
                                 onClick={() => handleRemoveQueueItem(item.id)}
-                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0 cursor-pointer"
                                 title="Remove file"
                               >
                                 <X className="w-4 h-4" />
@@ -1738,15 +1752,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                             </div>
 
                             {/* Category Selector, Tags & Description */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-200/60">
-                              <div>
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Category</label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-slate-200/60 w-full min-w-0">
+                              <div className="min-w-0">
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Category</label>
                                 <select
                                   value={item.category}
                                   onChange={(e) =>
                                     handleUpdateQueueItem(item.id, { category: e.target.value as DocumentCategory })
                                   }
-                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
                                 >
                                   {CATEGORIES_LIST.map((cat) => (
                                     <option key={cat} value={cat}>
@@ -1755,24 +1769,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                                   ))}
                                 </select>
                               </div>
-                              <div>
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Tags</label>
+                              <div className="min-w-0">
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Tags</label>
                                 <input
                                   type="text"
                                   value={item.tags}
                                   onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
                                   placeholder="Comma separated tags"
-                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
                                 />
                               </div>
-                              <div className="sm:col-span-2">
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase">Description</label>
+                              <div className="sm:col-span-2 min-w-0">
+                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Description</label>
                                 <textarea
                                   rows={2}
                                   value={item.description}
                                   onChange={(e) => handleUpdateQueueItem(item.id, { description: e.target.value })}
                                   placeholder="Enter document description (optional)"
-                                  className="w-full text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
+                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
                                 />
                               </div>
                             </div>
@@ -1784,22 +1798,22 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 </div>
 
                 {uploadError && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                    <span>{uploadError}</span>
+                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold flex items-start gap-2 w-full min-w-0 box-border">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span className="break-words min-w-0 flex-1">{uploadError}</span>
                   </div>
                 )}
 
                 {/* Progress Bar */}
                 {isPublishing && (
-                  <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold">
+                  <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold w-full min-w-0 box-border">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-800 shrink-0" />
                     <span>uploading...</span>
                   </div>
                 )}
 
                 {/* Action Buttons */}
-                <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 w-full min-w-0">
                   <button
                     type="button"
                     disabled={isPublishing}
@@ -1807,25 +1821,25 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       setIsUploadModalOpen(false);
                       setQueuedFiles([]);
                     }}
-                    className="px-4 py-2.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                    className="px-3 py-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={isPublishing || queuedFiles.length === 0}
-                    className="px-6 py-2.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs sm:text-sm shadow-md flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                    className="px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isPublishing ? (
                       <>
-                        <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
                         <span>uploading...</span>
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 className="w-4 h-4 text-white" />
+                        <CheckCircle2 className="w-3.5 h-3.5 text-white" />
                         <span>
-                          Publish {queuedFiles.length > 0 ? `${queuedFiles.length} ` : ''}Document
+                          Publish {queuedFiles.length > 0 ? `${queuedFiles.length} ` : ''}Doc
                           {queuedFiles.length === 1 ? '' : 's'}
                         </span>
                       </>

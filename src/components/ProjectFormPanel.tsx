@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon } from 'lucide-react';
 import {
   uploadFileToBucket,
   upsertProjectToSupabase,
   formatBytes,
+  isAbortError,
   type PortfolioProject,
   type ProjectSpecification,
   type MediaAssetItem,
@@ -71,11 +72,35 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadStage, setUploadStage] = useState<string>('');
+  const [customCategoryMode, setCustomCategoryMode] = useState(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
     'thumbnail' | 'image' | 'video' | 'cad' | 'document' | null
   >(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const projectCategories = Array.from(
+    new Set([
+      ...(initialProject?.category ? [initialProject.category] : []),
+      'CAD Design',
+      'Mechanical Design',
+      'Mechanical Systems',
+      'FEA & Simulation',
+      'Robotics & Mechatronics',
+      'Thermal Systems',
+      'Manufacturing & CNC',
+      'Web & Software',
+    ])
+  ).filter(Boolean);
+
+  const handleCancelUpload = () => {
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
+    setUploadingField(null);
+    setUploadProgress(0);
+    setUploadStage('');
+  };
 
   const handleBucketUpload = async (
     files: FileList | null,
@@ -83,6 +108,10 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   ) => {
     if (!files || files.length === 0) return;
     const fileArr = Array.from(files);
+    uploadAbortRef.current?.abort();
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+
     setUploadingField(target);
     setUploadProgress(5);
     setUploadStage('Preparing media pipeline...');
@@ -90,18 +119,27 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     try {
       const concurrency = target === 'video' ? 2 : 3;
       const uploadedAssets = await runWithConcurrency(fileArr, concurrency, async (file) => {
-        const res = await uploadFileToBucket('projects', file, target, (pct, stage) => {
-          setUploadProgress(pct);
-          setUploadStage(stage);
-        });
+        const res = await uploadFileToBucket(
+          'projects',
+          file,
+          target,
+          (pct, stage) => {
+            setUploadProgress(pct);
+            setUploadStage(stage);
+          },
+          controller.signal
+        );
         return {
           title: '',
+          note: '',
           url: res.publicUrl,
           fileName: res.fileName,
           fileSize: res.fileSize,
           fileType: file.type,
         } as MediaAssetItem;
       });
+
+      if (controller.signal.aborted) return;
 
       if (target === 'thumbnail') {
         const first = uploadedAssets[0];
@@ -117,11 +155,16 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         setDocuments((prev) => [...prev, ...uploadedAssets]);
       }
     } catch (err: any) {
-      setErrorMsg(err?.message || 'File upload to projects bucket failed.');
+      if (!isAbortError(err) && !controller.signal.aborted) {
+        setErrorMsg(err?.message || 'File upload to projects bucket failed.');
+      }
     } finally {
-      setUploadingField(null);
-      setUploadProgress(0);
-      setUploadStage('');
+      if (uploadAbortRef.current === controller) {
+        uploadAbortRef.current = null;
+        setUploadingField(null);
+        setUploadProgress(0);
+        setUploadStage('');
+      }
     }
   };
 
@@ -214,9 +257,20 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       </div>
 
       {uploadingField && (
-        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold">
-          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-          <span>uploading...</span>
+        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-between gap-2 text-xs text-cyan-950 font-semibold">
+          <div className="flex items-center gap-2 min-w-0">
+            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+            <span>uploading...</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelUpload}
+            className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-cyan-200/70 text-cyan-900 font-bold cursor-pointer shrink-0 leading-none"
+            title="Cancel upload"
+            aria-label="Cancel upload"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -240,21 +294,45 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         </div>
         <div className="min-w-0">
           <label className="block font-bold text-slate-700 mb-1">Category *</label>
-          <input
-            type="text"
-            list="project-category-suggestions"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            placeholder="e.g. CAD Design, Robotics, FEA, Web Engineering"
-            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-cyan-700"
-          />
-          <datalist id="project-category-suggestions">
-            <option value="CAD Design" />
-            <option value="Mechanical Systems" />
-            <option value="FEA & Simulation" />
-            <option value="Robotics & Mechatronics" />
-            <option value="Web & Software" />
-          </datalist>
+          {!customCategoryMode ? (
+            <select
+              value={projectCategories.includes(category) ? category : ''}
+              onChange={(e) => {
+                if (e.target.value === '__custom__') {
+                  setCustomCategoryMode(true);
+                  setCategory('');
+                } else {
+                  setCategory(e.target.value);
+                }
+              }}
+              className="w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-700"
+            >
+              <option value="">Select category</option>
+              {projectCategories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+              <option value="__custom__">Other category...</option>
+            </select>
+          ) : (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <input
+                type="text"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="Enter category"
+                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
+              />
+              <button
+                type="button"
+                onClick={() => setCustomCategoryMode(false)}
+                className="px-2 py-1 rounded border border-slate-300 bg-white text-[10.5px] font-semibold cursor-pointer shrink-0"
+              >
+                List
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -304,7 +382,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
           />
         </div>
         {thumbnailUrl && (
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <img
               src={thumbnailUrl}
               alt="Thumbnail preview"
@@ -313,9 +391,11 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             <button
               type="button"
               onClick={() => setThumbnailUrl('')}
-              className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer"
+              className="inline-flex items-center justify-center w-6 h-6 rounded bg-rose-100 hover:bg-rose-200 text-rose-800 text-xs font-bold cursor-pointer"
+              title="Remove image"
+              aria-label="Remove image"
             >
-              Remove Image
+              ×
             </button>
           </div>
         )}
@@ -547,15 +627,30 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             </button>
           </div>
           {images.map((img, i) => (
-            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{img.title || `Uploaded Image ${i + 1}`}</span>
-              <button
-                type="button"
-                onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-rose-600 cursor-pointer shrink-0"
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
+            <div key={i} className="bg-white p-2 rounded border border-slate-200 space-y-1.5 min-w-0">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <span className="truncate flex-1 min-w-0 font-semibold text-slate-800">
+                  {img.title || `Uploaded Image ${i + 1}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                  className="text-rose-600 cursor-pointer shrink-0"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={img.note ?? ''}
+                onChange={(e) =>
+                  setImages((prev) =>
+                    prev.map((item, idx) => (idx === i ? { ...item, note: e.target.value } : item))
+                  )
+                }
+                placeholder="Add text / note for this image (optional)"
+                className="w-full min-w-0 px-2 py-1 rounded border border-slate-200 bg-slate-50 text-[11px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+              />
             </div>
           ))}
         </div>
@@ -608,7 +703,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
                 if (!newVideoUrl.trim()) return;
                 setVideos((prev) => [
                   ...prev,
-                  { title: newVideoTitle.trim() || 'Demo Video', url: newVideoUrl.trim() },
+                  { title: newVideoTitle.trim() || 'Demo Video', note: '', url: newVideoUrl.trim() },
                 ]);
                 setNewVideoUrl('');
                 setNewVideoTitle('');
@@ -619,15 +714,30 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             </button>
           </div>
           {videos.map((v, i) => (
-            <div key={i} className="flex items-center justify-between gap-2 bg-white px-2 py-1 rounded border border-slate-200 min-w-0">
-              <span className="truncate flex-1 min-w-0">{v.title || `Uploaded Video ${i + 1}`}</span>
-              <button
-                type="button"
-                onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-rose-600 cursor-pointer shrink-0"
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
+            <div key={i} className="bg-white p-2 rounded border border-slate-200 space-y-1.5 min-w-0">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <span className="truncate flex-1 min-w-0 font-semibold text-slate-800">
+                  {v.title || `Uploaded Video ${i + 1}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
+                  className="text-rose-600 cursor-pointer shrink-0"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={v.note ?? ''}
+                onChange={(e) =>
+                  setVideos((prev) =>
+                    prev.map((item, idx) => (idx === i ? { ...item, note: e.target.value } : item))
+                  )
+                }
+                placeholder="Add text / note for this video (optional)"
+                className="w-full min-w-0 px-2 py-1 rounded border border-slate-200 bg-slate-50 text-[11px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+              />
             </div>
           ))}
         </div>

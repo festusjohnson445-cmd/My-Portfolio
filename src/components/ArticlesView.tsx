@@ -21,8 +21,9 @@ import {
 import {
   fetchArticlesFromSupabase,
   deleteArticleFromSupabase,
-  incrementArticleLikesInSupabase,
+  toggleArticleLikeInSupabase,
   fetchCommentsForArticle,
+  getCachedCommentsForArticle,
   submitArticleComment,
   moderateCommentInSupabase,
   deleteCommentFromSupabase,
@@ -36,6 +37,8 @@ import {
 import { useProfileSync } from '../utils/profileState';
 import { Interactive3DViewer } from './Interactive3DViewer';
 import { ArticleFormPanel } from './ArticleFormPanel';
+import { CleanVideoPlayer } from './CleanVideoPlayer';
+import { LiveRelativeTime } from './LiveRelativeTime';
 
 function slugHeadingId(heading: string, idx: number): string {
   const clean = heading
@@ -215,13 +218,13 @@ const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => 
         }
         if (blk.type === 'code') {
           return (
-            <div key={idx} className="rounded-lg overflow-hidden border border-slate-700 bg-slate-900 text-slate-100">
+            <div key={idx} className="rounded-lg overflow-hidden border border-slate-200 bg-slate-50 text-slate-900 shadow-2xs">
               {blk.lang && (
-                <div className="px-3 py-1 bg-slate-950 text-[10px] font-mono text-cyan-300 border-b border-slate-800">
+                <div className="px-3 py-1 bg-[#edf2f8] text-[10px] font-mono font-bold text-cyan-950 border-b border-slate-200 uppercase">
                   {blk.lang}
                 </div>
               )}
-              <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed">{blk.code}</pre>
+              <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed text-slate-900 bg-slate-50">{blk.code}</pre>
             </div>
           );
         }
@@ -323,7 +326,16 @@ export const ArticlesView: React.FC = () => {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
-  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+  const [likedIds, setLikedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('fesline_liked_articles_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return new Set(parsed);
+      }
+    } catch {}
+    return new Set();
+  });
 
   const loadArticles = async () => {
     if (!hasArticlesCacheHydrated() && articles.length === 0) {
@@ -347,13 +359,35 @@ export const ArticlesView: React.FC = () => {
     return () => window.removeEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
   }, [isOwner]);
 
+  const openArticleDetail = (art: PortfolioArticle) => {
+    setIsPostOpen(false);
+    setEditingArticle(null);
+    setCommentNotice(null);
+    setCopiedCodeIdx(null);
+    setCopiedShare(false);
+    // Instantly hydrate cached comments synchronously for immediate display
+    setComments(getCachedCommentsForArticle(art.id, isOwner));
+    setSelectedArticle(art);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  };
+
   useEffect(() => {
     if (!selectedArticle) {
       setComments([]);
       return;
     }
-    fetchCommentsForArticle(selectedArticle.id, isOwner).then(setComments);
-  }, [selectedArticle, isOwner]);
+    let active = true;
+    const cached = getCachedCommentsForArticle(selectedArticle.id, isOwner);
+    setComments(cached);
+    fetchCommentsForArticle(selectedArticle.id, isOwner).then((fresh) => {
+      if (active) setComments(fresh);
+    });
+    return () => {
+      active = false;
+    };
+  }, [selectedArticle?.id, isOwner]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -425,18 +459,30 @@ export const ArticlesView: React.FC = () => {
   }, [selectedArticle]);
 
   const handleLike = async (article: PortfolioArticle) => {
-    if (likedIds.has(article.id)) return;
-    setLikedIds((prev) => new Set(prev).add(article.id));
-    const optimistic = article.likesCount + 1;
+    const currentlyLiked = likedIds.has(article.id);
+    const delta: 1 | -1 = currentlyLiked ? -1 : 1;
+    const optimistic = Math.max(0, (article.likesCount || 0) + delta);
+
+    setLikedIds((prev) => {
+      const next = new Set(prev);
+      if (currentlyLiked) next.delete(article.id);
+      else next.add(article.id);
+      try {
+        localStorage.setItem('fesline_liked_articles_v1', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+
     setArticles((prev) => prev.map((a) => (a.id === article.id ? { ...a, likesCount: optimistic } : a)));
     if (selectedArticle?.id === article.id) {
-      setSelectedArticle({ ...selectedArticle, likesCount: optimistic });
+      setSelectedArticle((prev) => (prev ? { ...prev, likesCount: optimistic } : prev));
     }
-    const serverCount = await incrementArticleLikesInSupabase(article.id);
-    if (serverCount > 0) {
+
+    const serverCount = await toggleArticleLikeInSupabase(article.id, delta, optimistic);
+    if (typeof serverCount === 'number') {
       setArticles((prev) => prev.map((a) => (a.id === article.id ? { ...a, likesCount: serverCount } : a)));
       if (selectedArticle?.id === article.id) {
-        setSelectedArticle({ ...selectedArticle, likesCount: serverCount });
+        setSelectedArticle((prev) => (prev ? { ...prev, likesCount: serverCount } : prev));
       }
     }
   };
@@ -486,17 +532,30 @@ export const ArticlesView: React.FC = () => {
     const shareTitle = encodeURIComponent(selectedArticle.title);
     const shareHref = encodeURIComponent(shareUrl);
 
+    const keyPointsList = (selectedArticle.tldr || '')
+      .split(/\n+/)
+      .map((line) => line.replace(/^([-*•]|\d+\.)\s+/, '').trim())
+      .filter(Boolean);
+
+    const normalizedKeyPoints =
+      keyPointsList.length > 1
+        ? keyPointsList
+        : (selectedArticle.tldr || '')
+            .split(/(?<=[.!?])\s+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+
     return (
-      <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-16 space-y-5 font-serif text-slate-900">
+      <div className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-5 lg:px-6 py-4 pb-12 space-y-3 font-serif text-slate-900">
         {/* Top Control Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3.5 py-2 shadow-2xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3 py-2 shadow-2xs">
           <button
             type="button"
             onClick={() => setSelectedArticle(null)}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Back to Articles</span>
+            <span>Back</span>
           </button>
 
           <div className="flex flex-wrap items-center gap-1.5">
@@ -569,40 +628,12 @@ export const ArticlesView: React.FC = () => {
           </div>
         </div>
 
-        {/* Metadata Header */}
-        <article className="bg-white border border-[#b8c6d4] rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
-          <header className="text-center space-y-2 border-b border-slate-200 pb-4">
-            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px]">
-              <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
-                {selectedArticle.category}
-              </span>
-              {selectedArticle.difficultyLevel && (
-                <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
-                  {selectedArticle.difficultyLevel}
-                </span>
-              )}
-              {selectedArticle.isAdminAuthor && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-bold">
-                  <ShieldCheck className="w-3 h-3 text-cyan-300" />
-                  <span>Chief Admin</span>
-                </span>
-              )}
-            </div>
-
+        {/* Article Body Container */}
+        <article className="w-full bg-white border border-[#b8c6d4] rounded-2xl p-3.5 sm:p-5 shadow-xs space-y-3.5">
+          <header className="text-center border-b border-slate-200 pb-3">
             <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center">
               {selectedArticle.title}
             </h1>
-
-            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-600">
-              <span>By {selectedArticle.authorName}</span>
-              <span>·</span>
-              <span>{new Date(selectedArticle.publishedAt || selectedArticle.createdAt).toLocaleDateString()}</span>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                <span>{selectedArticle.readingTime}</span>
-              </span>
-            </div>
           </header>
 
           {/* Flexible Visual Hero */}
@@ -611,19 +642,12 @@ export const ArticlesView: React.FC = () => {
               {selectedArticle.heroMedia.type === 'cad3d' ? (
                 <Interactive3DViewer modelType={selectedArticle.heroMedia.cadModelType || 'harmonic_actuator'} />
               ) : selectedArticle.heroMedia.type === 'video' && selectedArticle.heroMedia.url ? (
-                <div
-                  className="rounded-xl overflow-hidden border border-slate-200 bg-slate-950 flex items-center justify-center"
-                  style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
-                >
-                  <video
+                <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
+                  <CleanVideoPlayer
                     src={selectedArticle.heroMedia.url}
-                    controls
-                    preload="metadata"
-                    className="w-full h-full transition-transform duration-200"
-                    style={{
-                      objectFit: videoCardControls.objectFit || 'cover',
-                      transform: `scale(${videoCardControls.zoomLevel || 1})`,
-                    }}
+                    aspectRatio={videoCardControls.aspectRatio || '16/9'}
+                    objectFit={videoCardControls.objectFit || 'cover'}
+                    zoomLevel={videoCardControls.zoomLevel || 1}
                   />
                 </div>
               ) : selectedArticle.heroMedia.url ? (
@@ -653,67 +677,84 @@ export const ArticlesView: React.FC = () => {
             </div>
           ) : null}
 
-          {/* TL;DR Summary Box */}
-          {selectedArticle.tldr && (
-            <div className="p-3.5 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] space-y-1">
-              <h2 className="text-xs font-bold text-slate-950 text-center uppercase tracking-wider">TL;DR</h2>
-              <p className="text-xs text-slate-800 leading-relaxed text-justify">{selectedArticle.tldr}</p>
+          {/* Key Points List */}
+          {normalizedKeyPoints.length > 0 && (
+            <div className="w-full p-3.5 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] space-y-1.5">
+              <h2 className="text-xs font-bold text-slate-950 text-center uppercase tracking-wider">Key Points</h2>
+              <ul className="list-disc list-inside space-y-1 text-xs text-slate-800 leading-relaxed pl-1">
+                {normalizedKeyPoints.map((pt, idx) => (
+                  <li key={idx}>{pt}</li>
+                ))}
+              </ul>
             </div>
           )}
 
           {/* Layout: Sticky ToC + Body */}
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-5 items-start">
-            <aside className="lg:col-span-1 lg:sticky lg:top-20 p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-3.5 items-start">
+            <aside className="w-full lg:col-span-1 lg:sticky lg:top-20 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs">
               <h3 className="font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
                 Table of Contents
               </h3>
-              <nav className="space-y-1 text-[11px]">
-                {tocHeadings.map((h) => (
-                  <a
-                    key={h.id}
-                    href={`#${h.id}`}
-                    className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline truncate"
-                  >
-                    {h.label}
-                  </a>
-                ))}
-                {selectedArticle.diagrams.length > 0 && (
-                  <a href="#article-schematics" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
-                    Vector Schematics
-                  </a>
-                )}
-                {selectedArticle.chartData.length > 0 && (
-                  <a href="#article-charts" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
-                    Data Visualizations
-                  </a>
-                )}
-                {selectedArticle.bomItems.length > 0 && (
-                  <a href="#article-bom" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
-                    Bill of Materials (BOM)
-                  </a>
-                )}
-                {selectedArticle.attachments.length > 0 && (
-                  <a href="#article-attachments" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
-                    Technical Attachments
-                  </a>
-                )}
-                <a href="#article-comments" className="block py-0.5 text-slate-700 hover:text-cyan-900 hover:underline">
-                  Discussion &amp; Comments ({comments.length})
-                </a>
+              <nav aria-label="Table of Contents">
+                <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-700">
+                  {tocHeadings.map((h) => (
+                    <li key={h.id} className="truncate">
+                      <a
+                        href={`#${h.id}`}
+                        className="text-slate-700 hover:text-cyan-900 hover:underline"
+                      >
+                        {h.label}
+                      </a>
+                    </li>
+                  ))}
+                  {selectedArticle.diagrams.length > 0 && (
+                    <li>
+                      <a href="#article-schematics" className="text-slate-700 hover:text-cyan-900 hover:underline">
+                        Vector Schematics
+                      </a>
+                    </li>
+                  )}
+                  {selectedArticle.chartData.length > 0 && (
+                    <li>
+                      <a href="#article-charts" className="text-slate-700 hover:text-cyan-900 hover:underline">
+                        Data Visualizations
+                      </a>
+                    </li>
+                  )}
+                  {selectedArticle.bomItems.length > 0 && (
+                    <li>
+                      <a href="#article-bom" className="text-slate-700 hover:text-cyan-900 hover:underline">
+                        Bill of Materials (BOM)
+                      </a>
+                    </li>
+                  )}
+                  {selectedArticle.attachments.length > 0 && (
+                    <li>
+                      <a href="#article-attachments" className="text-slate-700 hover:text-cyan-900 hover:underline">
+                        Technical Attachments
+                      </a>
+                    </li>
+                  )}
+                  <li>
+                    <a href="#article-comments" className="text-slate-700 hover:text-cyan-900 hover:underline">
+                      Discussion &amp; Comments ({comments.length})
+                    </a>
+                  </li>
+                </ol>
               </nav>
             </aside>
 
-            <div className="lg:col-span-3 space-y-5">
+            <div className="w-full lg:col-span-3 space-y-3.5 min-w-0">
               {/* Rich Markdown Content */}
               <ArticleMarkdownRenderer content={selectedArticle.content} />
 
-              {/* Explicit Code Blocks */}
+              {/* Explicit Code Blocks (Light Background Theme) */}
               {selectedArticle.codeBlocks.length > 0 && (
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {selectedArticle.codeBlocks.map((cb, idx) => (
-                    <div key={idx} className="rounded-xl overflow-hidden border border-slate-700 bg-slate-900 text-slate-100">
-                      <div className="px-3 py-1.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between text-[11px]">
-                        <span className="font-bold text-cyan-300">
+                    <div key={idx} className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 text-slate-900 shadow-2xs">
+                      <div className="px-3 py-1.5 bg-[#edf2f8] border-b border-slate-200 flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-cyan-950">
                           {cb.title || 'Code Listing'} {cb.language ? `(${cb.language})` : ''}
                         </span>
                         <button
@@ -723,13 +764,13 @@ export const ArticlesView: React.FC = () => {
                             setCopiedCodeIdx(idx);
                             setTimeout(() => setCopiedCodeIdx(null), 1500);
                           }}
-                          className="inline-flex items-center gap-1 text-slate-300 hover:text-white cursor-pointer"
+                          className="inline-flex items-center gap-1 text-slate-700 hover:text-slate-950 font-semibold cursor-pointer"
                         >
-                          {copiedCodeIdx === idx ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          {copiedCodeIdx === idx ? <Check className="w-3 h-3 text-emerald-700" /> : <Copy className="w-3 h-3" />}
                           <span>{copiedCodeIdx === idx ? 'Copied' : 'Copy'}</span>
                         </button>
                       </div>
-                      <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed">{cb.code}</pre>
+                      <pre className="p-3 overflow-x-auto text-[11px] font-mono leading-relaxed text-slate-900 bg-slate-50">{cb.code}</pre>
                     </div>
                   ))}
                 </div>
@@ -737,21 +778,26 @@ export const ArticlesView: React.FC = () => {
 
               {/* Vector Schematics & Technical Illustrations */}
               {selectedArticle.diagrams.length > 0 && (
-                <section id="article-schematics" className="space-y-2.5 pt-2 border-t border-slate-200">
+                <section id="article-schematics" className="space-y-2 pt-2 border-t border-slate-200">
                   <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-cyan-800" />
                     <span>Vector Schematics &amp; Technical Illustrations</span>
                   </h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     {selectedArticle.diagrams.map((diag, idx) => (
-                      <div key={idx} className="rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center">
+                      <div key={idx} className="w-full rounded-xl bg-white border border-slate-200 overflow-hidden flex flex-col">
                         <img
                           src={diag.url}
-                          alt={diag.title || `Diagram ${idx + 1}`}
+                          alt={diag.note || diag.title || `Diagram ${idx + 1}`}
                           loading="lazy"
                           decoding="async"
                           className="w-full max-h-96 object-contain block"
                         />
+                        {diag.note && diag.note.trim() && (
+                          <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-center">
+                            {diag.note.trim()}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -760,40 +806,41 @@ export const ArticlesView: React.FC = () => {
 
               {/* Embedded Article Images & Videos */}
               {selectedArticle.images.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
                   {selectedArticle.images.map((im, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-white flex items-center justify-center">
+                    <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-white flex flex-col">
                       <img
                         src={im.url}
-                        alt={im.title || `Article Image ${idx + 1}`}
+                        alt={im.note || im.title || `Article Image ${idx + 1}`}
                         loading="lazy"
                         decoding="async"
                         className="w-full max-h-96 object-contain block"
                       />
+                      {im.note && im.note.trim() && (
+                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-center">
+                          {im.note.trim()}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
 
               {selectedArticle.videos.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
                   {selectedArticle.videos.map((v, idx) => (
-                    <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-950">
-                      <div
-                        className="w-full overflow-hidden bg-slate-950 flex items-center justify-center"
-                        style={{ aspectRatio: videoCardControls.aspectRatio || '16/9' }}
-                      >
-                        <video
-                          src={v.url}
-                          controls
-                          preload="metadata"
-                          className="w-full h-full transition-transform duration-200"
-                          style={{
-                            objectFit: videoCardControls.objectFit || 'contain',
-                            transform: `scale(${videoCardControls.zoomLevel || 1})`,
-                          }}
-                        />
-                      </div>
+                    <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-slate-950 flex flex-col">
+                      <CleanVideoPlayer
+                        src={v.url}
+                        aspectRatio={videoCardControls.aspectRatio || '16/9'}
+                        objectFit={videoCardControls.objectFit || 'contain'}
+                        zoomLevel={videoCardControls.zoomLevel || 1}
+                      />
+                      {v.note && v.note.trim() && (
+                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-center">
+                          {v.note.trim()}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -801,7 +848,7 @@ export const ArticlesView: React.FC = () => {
 
               {/* Data Charts & Visualizations */}
               {selectedArticle.chartData.length > 0 && (
-                <section id="article-charts" className="space-y-3 pt-2 border-t border-slate-200">
+                <section id="article-charts" className="space-y-2.5 pt-2 border-t border-slate-200">
                   <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                     <BarChart3 className="w-3.5 h-3.5 text-cyan-800" />
                     <span>Data Charts &amp; Visualizations</span>
@@ -810,23 +857,33 @@ export const ArticlesView: React.FC = () => {
                     {selectedArticle.chartData.map((ch, cIdx) => {
                       const maxVal = Math.max(1, ...ch.items.map((x) => Math.abs(x.value)));
                       return (
-                        <div key={cIdx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-                          <h3 className="text-xs font-bold text-slate-900 text-center">
-                            {ch.title || 'Engineering Data'} {ch.unit ? `(${ch.unit})` : ''}
-                          </h3>
-                          <div className="space-y-1.5">
+                        <div key={cIdx} className="w-full p-3.5 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-2.5">
+                          <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5">
+                            <h3 className="text-xs font-bold text-slate-950">
+                              {ch.title || 'Engineering Data'}
+                            </h3>
+                            {ch.unit && (
+                              <span className="px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-mono font-bold text-cyan-950">
+                                {ch.unit}
+                              </span>
+                            )}
+                          </div>
+                          <div className="space-y-2">
                             {ch.items.map((pt, pIdx) => {
                               const pct = Math.max(4, Math.round((Math.abs(pt.value) / maxVal) * 100));
                               return (
-                                <div key={pIdx} className="space-y-0.5 text-[11px]">
-                                  <div className="flex justify-between text-slate-700">
-                                    <span>{pt.label}</span>
-                                    <span className="font-mono font-bold">
-                                      {pt.value} {ch.unit || ''}
+                                <div key={pIdx} className="space-y-1 text-[11px]">
+                                  <div className="flex items-center justify-between gap-2 text-slate-800">
+                                    <span className="font-medium truncate">{pt.label}</span>
+                                    <span className="font-mono font-bold text-cyan-950 shrink-0 tabular-nums">
+                                      {pt.value.toLocaleString()} {ch.unit || ''}
                                     </span>
                                   </div>
-                                  <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
-                                    <div className="h-full bg-cyan-800 rounded-full" style={{ width: `${pct}%` }} />
+                                  <div className="w-full h-3 bg-slate-100 border border-slate-200 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full bg-gradient-to-r from-cyan-800 to-cyan-600 rounded-full transition-all duration-300"
+                                      style={{ width: `${pct}%` }}
+                                    />
                                   </div>
                                 </div>
                               );
@@ -842,29 +899,34 @@ export const ArticlesView: React.FC = () => {
               {/* Optional Bill of Materials (BOM) */}
               {selectedArticle.bomItems.length > 0 && (
                 <section id="article-bom" className="space-y-2 pt-2 border-t border-slate-200">
-                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
-                    <TableIcon className="w-3.5 h-3.5 text-cyan-800" />
-                    <span>Bill of Materials (BOM)</span>
-                  </h2>
-                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-sm font-bold text-slate-950 flex items-center gap-1.5">
+                      <TableIcon className="w-3.5 h-3.5 text-cyan-800" />
+                      <span>Bill of Materials (BOM)</span>
+                    </h2>
+                    <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-cyan-950">
+                      {selectedArticle.bomItems.length} {selectedArticle.bomItems.length === 1 ? 'Item' : 'Items'}
+                    </span>
+                  </div>
+                  <div className="w-full overflow-x-auto border border-[#b8c6d4] rounded-xl bg-white shadow-2xs">
                     <table className="w-full text-xs text-left border-collapse">
-                      <thead className="bg-[#edf2f8] text-slate-950 font-bold">
+                      <thead className="bg-[#edf2f8] text-slate-950 font-bold border-b border-[#b8c6d4]">
                         <tr>
-                          <th className="px-3 py-1.5 border-b border-slate-200">Part #</th>
-                          <th className="px-3 py-1.5 border-b border-slate-200">Component</th>
-                          <th className="px-3 py-1.5 border-b border-slate-200">Material</th>
-                          <th className="px-3 py-1.5 border-b border-slate-200">Qty</th>
-                          <th className="px-3 py-1.5 border-b border-slate-200">Specification</th>
+                          <th className="px-3 py-2 whitespace-nowrap">Part #</th>
+                          <th className="px-3 py-2">Component</th>
+                          <th className="px-3 py-2">Material</th>
+                          <th className="px-3 py-2 whitespace-nowrap text-center">Qty</th>
+                          <th className="px-3 py-2">Specification</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 bg-white">
+                      <tbody className="divide-y divide-slate-200 bg-white">
                         {selectedArticle.bomItems.map((b, i) => (
-                          <tr key={i}>
-                            <td className="px-3 py-1.5 font-mono">{b.partNo}</td>
-                            <td className="px-3 py-1.5 font-semibold">{b.name}</td>
-                            <td className="px-3 py-1.5">{b.material}</td>
-                            <td className="px-3 py-1.5 font-mono">{b.qty}</td>
-                            <td className="px-3 py-1.5">{b.specification}</td>
+                          <tr key={i} className="even:bg-slate-50/70 hover:bg-cyan-50/40 transition-colors">
+                            <td className="px-3 py-2 font-mono text-[11px] font-semibold text-cyan-950 whitespace-nowrap">{b.partNo || '—'}</td>
+                            <td className="px-3 py-2 font-semibold text-slate-900">{b.name || '—'}</td>
+                            <td className="px-3 py-2 text-slate-700">{b.material || '—'}</td>
+                            <td className="px-3 py-2 font-mono text-center font-semibold text-slate-900">{b.qty || '—'}</td>
+                            <td className="px-3 py-2 text-slate-700">{b.specification || '—'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -906,7 +968,7 @@ export const ArticlesView: React.FC = () => {
                     {relatedArticles.map((rel) => (
                       <div
                         key={rel.id}
-                        onClick={() => setSelectedArticle(rel)}
+                        onClick={() => openArticleDetail(rel)}
                         className="p-3 rounded-xl bg-slate-50 border border-slate-200 hover:border-cyan-700 cursor-pointer space-y-1"
                       >
                         <span className="text-[10px] font-bold text-cyan-900">{rel.category}</span>
@@ -1060,46 +1122,46 @@ export const ArticlesView: React.FC = () => {
         </h1>
       </div>
 
-      {/* Toolbar: Search with suggestions, Category Dropdown, Small "Post" button */}
-      <div className="p-3 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 text-xs">
-        <div className="flex flex-1 flex-wrap items-center gap-2">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onFocus={() => setShowSuggestions(true)}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 180)}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setShowSuggestions(true);
-              }}
-              placeholder="Search articles by title, category, author, or tag..."
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
-            />
-            {showSuggestions && searchSuggestions.length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-300 rounded-lg shadow-lg z-20 divide-y divide-slate-100">
-                {searchSuggestions.map((sug) => (
-                  <button
-                    key={sug}
-                    type="button"
-                    onMouseDown={() => {
-                      setSearchQuery(sug);
-                      setShowSuggestions(false);
-                    }}
-                    className="w-full text-left px-3 py-1.5 text-xs text-slate-800 hover:bg-[#edf2f8] cursor-pointer"
-                  >
-                    {sug}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      {/* Toolbar: Search on row 1; Category Dropdown + Small "Post" button aligned on same row */}
+      <div className="p-3 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs space-y-2 text-xs">
+        <div className="relative w-full">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 180)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setShowSuggestions(true);
+            }}
+            placeholder="Search articles by title, category, author, or tag..."
+            className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
+          />
+          {showSuggestions && searchSuggestions.length > 0 && (
+            <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-300 rounded-lg shadow-lg z-20 divide-y divide-slate-100">
+              {searchSuggestions.map((sug) => (
+                <button
+                  key={sug}
+                  type="button"
+                  onMouseDown={() => {
+                    setSearchQuery(sug);
+                    setShowSuggestions(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-slate-800 hover:bg-[#edf2f8] cursor-pointer"
+                >
+                  {sug}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
+        <div className="flex items-center justify-between gap-2">
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs cursor-pointer"
+            className="min-w-0 max-w-[200px] px-2 py-1 rounded-lg border border-slate-300 bg-white text-[11px] font-medium cursor-pointer truncate"
           >
             {categories.map((cat) => (
               <option key={cat} value={cat}>
@@ -1107,19 +1169,19 @@ export const ArticlesView: React.FC = () => {
               </option>
             ))}
           </select>
-        </div>
 
-        {/* Small "Post" button for creating new articles */}
-        <button
-          type="button"
-          onClick={() => {
-            setEditingArticle(null);
-            setIsPostOpen(!isPostOpen);
-          }}
-          className="px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer shrink-0"
-        >
-          Post
-        </button>
+          {/* Small "Post" button aligned cleanly with category select */}
+          <button
+            type="button"
+            onClick={() => {
+              setEditingArticle(null);
+              setIsPostOpen(!isPostOpen);
+            }}
+            className="px-3 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
+          >
+            Post
+          </button>
+        </div>
       </div>
 
       {submissionNotice && (
@@ -1227,58 +1289,87 @@ export const ArticlesView: React.FC = () => {
 
         return (
           <div className={`grid ${gridColsClass} ${gapClass}`}>
-            {filteredArticles.map((art) => (
-              <article
-                key={art.id}
-                onClick={() => setSelectedArticle(art)}
-                className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
-              >
-                <div>
-                  {art.thumbnailUrl && (
-                    <div className="w-full h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
-                      <img
-                        src={art.thumbnailUrl}
-                        alt={art.title}
-                        className="w-full h-full object-cover"
+            {filteredArticles.map((art) => {
+              const isLiked = likedIds.has(art.id);
+              return (
+                <article
+                  key={art.id}
+                  onClick={() => openArticleDetail(art)}
+                  className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
+                >
+                  <div>
+                    {art.thumbnailUrl && (
+                      <div className="w-full h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                        <img
+                          src={art.thumbnailUrl}
+                          alt={art.title}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                    )}
+                    <div className={`${padClass} space-y-2`}>
+                      <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
+                        <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                          {art.category}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {art.isAdminAuthor && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white text-[9px] font-bold">
+                              Chief Admin
+                            </span>
+                          )}
+                          {art.status !== 'published' && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
+                              {art.status}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-950 text-center leading-snug">
+                        {art.title}
+                      </h3>
+                      <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${summaryAlignClass}`}>
+                        {art.summary}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="px-3.5 pb-2.5 pt-2 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-semibold text-slate-700">
+                        by: {art.authorName}
+                      </span>
+                      <LiveRelativeTime
+                        date={art.publishedAt || art.createdAt}
+                        className="text-[9px] text-slate-500 shrink-0"
                       />
                     </div>
-                  )}
-                  <div className={`${padClass} space-y-2`}>
-                    <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
-                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
-                        {art.category}
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <span className="inline-flex items-center gap-1 shrink-0 text-slate-600">
+                        <Clock className="w-3 h-3" />
+                        <span>{art.readingTime}</span>
                       </span>
-                      <div className="flex items-center gap-1">
-                        {art.isAdminAuthor && (
-                          <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white text-[9px] font-bold">
-                            Chief Admin
-                          </span>
-                        )}
-                        {art.status !== 'published' && (
-                          <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
-                            {art.status}
-                          </span>
-                        )}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleLike(art);
+                        }}
+                        aria-label={isLiked ? 'Unlike article' : 'Like article'}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                          isLiked
+                            ? 'bg-rose-50 border-rose-300 text-rose-700'
+                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
+                        }`}
+                      >
+                        <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                        <span className="tabular-nums">{art.likesCount || 0}</span>
+                      </button>
                     </div>
-                    <h3 className="text-sm font-bold text-slate-950 text-center leading-snug">
-                      {art.title}
-                    </h3>
-                    <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${summaryAlignClass}`}>
-                      {art.summary}
-                    </p>
                   </div>
-                </div>
-
-                <div className="px-3.5 pb-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
-                  <span className="truncate font-semibold text-slate-700">{art.authorName}</span>
-                  <span className="inline-flex items-center gap-1 shrink-0">
-                    <Clock className="w-3 h-3" />
-                    <span>{art.readingTime}</span>
-                  </span>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         );
       })()}

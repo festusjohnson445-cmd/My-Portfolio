@@ -32,6 +32,7 @@ import {
   runWithConcurrency,
   setCachedMediaDuration,
 } from '../utils/mediaMetadata';
+import { CleanVideoPlayer } from './CleanVideoPlayer';
 
 export type MediaLibraryBucket = 'projects' | 'articles' | 'materials' | 'avatars';
 export type MediaLibraryFilter = 'all' | 'image' | 'video' | 'document';
@@ -132,22 +133,19 @@ export const MediaPreviewDialog: React.FC<MediaPreviewDialogProps> = ({
               className="max-w-full max-h-[62vh] w-auto h-auto object-contain rounded-lg bg-white border border-slate-200 shadow-xs"
             />
           ) : item.mediaKind === 'video' ? (
-            <video
-              src={item.publicUrl}
-              controls
-              autoPlay
-              playsInline
-              preload="metadata"
-              onLoadedMetadata={(e) => {
-                const dur = e.currentTarget.duration;
-                if (dur && Number.isFinite(dur) && dur > 0) {
+            <div className="w-full max-w-2xl rounded-lg overflow-hidden shadow-sm">
+              <CleanVideoPlayer
+                src={item.publicUrl}
+                autoPlay
+                aspectRatio="16/9"
+                objectFit="contain"
+                onDurationResolved={(dur) => {
                   setCachedMediaDuration(item.publicUrl, dur);
                   setLiveDuration(dur);
                   onDurationResolved?.(item.publicUrl, dur);
-                }
-              }}
-              className="w-full max-h-[62vh] rounded-lg bg-slate-950 shadow-sm"
-            />
+                }}
+              />
+            </div>
           ) : item.mediaKind === 'audio' ? (
             <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-5 flex flex-col items-center gap-3">
               <Music className="w-10 h-10 text-cyan-800" />
