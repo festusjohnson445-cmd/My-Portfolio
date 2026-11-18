@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   Video,
   Compass,
+  RotateCcw,
 } from 'lucide-react';
 import {
   uploadFileToBucket,
@@ -92,6 +93,11 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const [uploadStage, setUploadStage] = useState<string>('');
   const [customCategoryMode, setCustomCategoryMode] = useState(false);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const lastFailedUploadRef = useRef<{
+    files: File[];
+    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment';
+  } | null>(null);
+  const [canRetryUpload, setCanRetryUpload] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
     'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment' | null
   >(null);
@@ -106,15 +112,16 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     setUploadStage('');
   };
 
-  const handleBucketUpload = async (
-    files: FileList | null,
+  const runUploadFiles = async (
+    fileArr: File[],
     target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
   ) => {
-    if (!files || files.length === 0) return;
-    const fileArr = Array.from(files);
+    if (!fileArr || fileArr.length === 0) return;
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
+    lastFailedUploadRef.current = { files: fileArr, target };
+    setCanRetryUpload(false);
 
     setUploadingField(target);
     setUploadProgress(5);
@@ -141,12 +148,31 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             fileName: res.fileName,
             fileSize: res.fileSize,
             fileType: file.type,
+            avifUrl: res.avifUrl,
+            webpUrl: res.webpUrl,
+            jpegUrl: res.jpegUrl,
+            mobileUrl: res.mobileUrl,
+            posterUrl: res.posterUrl,
+            vttThumbnailsUrl: res.vttThumbnailsUrl,
+            av1Urls: res.av1Urls,
+            h264Urls: res.h264Urls,
+            width: res.width,
+            height: res.height,
+            resolution: res.resolution,
+            originalBytes: res.originalBytes,
+            optimizedBytes: res.optimizedBytes,
+            compressionPct: res.compressionPct,
+            format: res.format,
+            mediaAssetId: res.mediaAssetId,
           } as MediaAssetItem,
           isVideo: file.type.startsWith('video/'),
         };
       });
 
       if (controller.signal.aborted) return;
+
+      lastFailedUploadRef.current = null;
+      setCanRetryUpload(false);
 
       if (target === 'thumbnail') {
         const first = results[0];
@@ -158,6 +184,15 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             ...prev,
             type: first.isVideo ? 'video' : prev.type === 'none' ? 'image' : prev.type,
             url: first.asset.url,
+            avifUrl: first.asset.avifUrl,
+            webpUrl: first.asset.webpUrl,
+            jpegUrl: first.asset.jpegUrl,
+            mobileUrl: first.asset.mobileUrl,
+            posterUrl: first.asset.posterUrl,
+            vttThumbnailsUrl: first.asset.vttThumbnailsUrl,
+            av1Urls: first.asset.av1Urls,
+            h264Urls: first.asset.h264Urls,
+            mediaAssetId: first.asset.mediaAssetId,
           }));
         }
       } else if (target === 'image') {
@@ -172,6 +207,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     } catch (err: any) {
       if (!isAbortError(err) && !controller.signal.aborted) {
         setErrorMsg(err?.message || 'Upload to "articles" bucket failed.');
+        setCanRetryUpload(true);
       }
     } finally {
       if (uploadAbortRef.current === controller) {
@@ -181,6 +217,20 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
         setUploadStage('');
       }
     }
+  };
+
+  const handleBucketUpload = async (
+    files: FileList | null,
+    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
+  ) => {
+    if (!files || files.length === 0) return;
+    await runUploadFiles(Array.from(files), target);
+  };
+
+  const handleRetryFailedUpload = async () => {
+    const failed = lastFailedUploadRef.current;
+    if (!failed) return;
+    await runUploadFiles(failed.files, failed.target);
   };
 
   const handleMediaLibrarySelect = (
@@ -343,8 +393,18 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       )}
 
       {errorMsg && (
-        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs break-words">
-          {errorMsg}
+        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs break-words flex items-center justify-between gap-2">
+          <span className="flex-1 min-w-0">{errorMsg}</span>
+          {canRetryUpload && lastFailedUploadRef.current && (
+            <button
+              type="button"
+              onClick={handleRetryFailedUpload}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-semibold cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Retry</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -668,7 +728,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-1.5">
             <span className="font-bold text-slate-700 flex items-center gap-1 min-w-0">
               <Compass className="w-3.5 h-3.5 text-cyan-800 shrink-0" />
-              <span className="truncate">Schematics &amp; Illustrations ({diagrams.length})</span>
+              <span className="truncate">Illustrations ({diagrams.length})</span>
             </span>
             {isOwner ? (
               <button
@@ -1309,7 +1369,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               : mediaPickerTarget === 'hero'
               ? 'Hero Media'
               : mediaPickerTarget === 'diagram'
-              ? 'Schematics & Illustrations'
+              ? 'Illustrations'
               : mediaPickerTarget === 'image'
               ? 'Images'
               : mediaPickerTarget === 'video'

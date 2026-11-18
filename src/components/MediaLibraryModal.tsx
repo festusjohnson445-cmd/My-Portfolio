@@ -33,6 +33,7 @@ import {
   setCachedMediaDuration,
 } from '../utils/mediaMetadata';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
+import { OptimizedImage } from './OptimizedImage';
 
 export type MediaLibraryBucket = 'projects' | 'articles' | 'materials' | 'avatars';
 export type MediaLibraryFilter = 'all' | 'image' | 'video' | 'document';
@@ -72,6 +73,10 @@ export const MediaPreviewDialog: React.FC<MediaPreviewDialogProps> = ({
   const savedTime = formatMediaTimestamp(item.createdAt || item.updatedAt);
   const formattedDur = formatMediaDuration(liveDuration);
   const sizeText = item.size ? formatBytes(item.size) : '';
+  const origSizeText =
+    item.originalBytes && item.originalBytes > 0 ? formatBytes(item.originalBytes) : '';
+  const optSizeText =
+    item.optimizedBytes && item.optimizedBytes > 0 ? formatBytes(item.optimizedBytes) : '';
 
   return (
     <div
@@ -94,18 +99,40 @@ export const MediaPreviewDialog: React.FC<MediaPreviewDialogProps> = ({
               <span className="capitalize">{item.mediaKind}</span>
               <span aria-hidden="true">·</span>
               <span>{item.bucket}</span>
+              {item.format && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-semibold text-cyan-800">{item.format}</span>
+                </>
+              )}
+              {item.optimizedResolution && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{item.optimizedResolution}</span>
+                </>
+              )}
               {formattedDur && (
                 <>
                   <span aria-hidden="true">·</span>
                   <span>Duration {formattedDur}</span>
                 </>
               )}
-              {sizeText && (
+              {origSizeText && optSizeText ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    {origSizeText} → {optSizeText}
+                    {typeof item.compressionPct === 'number' && item.compressionPct > 0
+                      ? ` (-${item.compressionPct}%)`
+                      : ''}
+                  </span>
+                </>
+              ) : sizeText ? (
                 <>
                   <span aria-hidden="true">·</span>
                   <span>{sizeText}</span>
                 </>
-              )}
+              ) : null}
               {savedTime && (
                 <>
                   <span aria-hidden="true">·</span>
@@ -126,16 +153,30 @@ export const MediaPreviewDialog: React.FC<MediaPreviewDialogProps> = ({
 
         <div className="flex-1 overflow-auto bg-slate-100 p-3 sm:p-5 flex items-center justify-center min-h-[240px]">
           {item.mediaKind === 'image' ? (
-            <img
+            <OptimizedImage
               src={item.publicUrl}
+              webpUrl={item.webpUrl}
+              jpegUrl={item.jpegUrl}
+              originalUrl={item.originalUrl}
+              responsiveUrl={item.responsiveUrl}
               alt={cleanDisplayFileName(item.name)}
-              referrerPolicy="no-referrer"
               className="max-w-full max-h-[62vh] w-auto h-auto object-contain rounded-lg bg-white border border-slate-200 shadow-xs"
             />
           ) : item.mediaKind === 'video' ? (
             <div className="w-full max-w-2xl rounded-lg overflow-hidden shadow-sm">
               <CleanVideoPlayer
                 src={item.publicUrl}
+                title={cleanDisplayFileName(item.name)}
+                mediaId={item.path}
+                poster={item.posterUrl}
+                av1Urls={item.av1Urls}
+                h264Urls={
+                  item.h264Urls ||
+                  (item.fallbackVideoUrl
+                    ? { '1080p': item.hdVideoUrl || item.fallbackVideoUrl, '720p': item.fallbackVideoUrl }
+                    : undefined)
+                }
+                vttThumbnailsUrl={item.vttThumbnailsUrl}
                 autoPlay
                 aspectRatio="16/9"
                 objectFit="contain"
@@ -385,7 +426,16 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
     if (item.mediaKind === 'video') {
       return (
         <div className="relative w-16 h-12 sm:w-20 sm:h-14 rounded-lg overflow-hidden bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0">
-          <Play className="w-4 h-4 text-white fill-white/80" />
+          {item.posterUrl ? (
+            <img
+              src={item.posterUrl}
+              alt={cleanDisplayFileName(item.name)}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover opacity-85"
+            />
+          ) : null}
+          <Play className="w-4 h-4 text-white fill-white/80 absolute" />
           {formattedDur && (
             <span className="absolute bottom-0.5 right-0.5 px-1 py-0.2 rounded bg-black/80 text-white text-[9px] font-mono tabular-nums">
               {formattedDur}
@@ -606,6 +656,18 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
                             <>
                               <span aria-hidden="true">·</span>
                               <span>{sizeText}</span>
+                            </>
+                          )}
+                          {item.format && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-cyan-800 font-semibold">{item.format}</span>
+                            </>
+                          )}
+                          {typeof item.compressionPct === 'number' && item.compressionPct > 0 && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-emerald-700 font-semibold">-{item.compressionPct}%</span>
                             </>
                           )}
                           {savedAt && (

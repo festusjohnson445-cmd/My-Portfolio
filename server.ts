@@ -1147,7 +1147,7 @@ The output must be a valid JSON object matching the requested schema with:
 });
 
 // =================================================================
-// 9. PRODUCTION MEDIA OPTIMIZATION PIPELINE (SHARP AVIF & FFMPEG AV1)
+// 9. PRODUCTION MEDIA OPTIMIZATION PIPELINE (SHARP AVIF & FFMPEG AV1/H.264)
 // =================================================================
 const execFileAsync = promisify(execFile);
 
@@ -1178,41 +1178,85 @@ const videoUpload = multer({
   limits: { fileSize: 550 * 1024 * 1024 },
 });
 
-interface VideoOptimizationJob {
+export interface JobArtifactDescriptor {
+  key: string;
+  localPath: string;
+  storagePath: string;
+  fileName: string;
+  contentType: string;
+  bytes: number;
+  publicUrl?: string;
+}
+
+export interface VideoOptimizationJob {
   jobId: string;
-  bucket: string;
+  bucket: 'projects' | 'articles';
+  folderPrefix: string;
+  originalName: string;
   storagePath?: string;
   status: 'queued' | 'processing' | 'uploading' | 'ready_for_client_upload' | 'completed' | 'failed' | 'cancelled';
   progress: number;
   stage: string;
+  format: string;
+  resolution?: string;
+  width?: number;
+  height?: number;
   publicUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  spriteUrl?: string;
   directUploadUrl?: string;
-  localOutPath?: string;
+  handoffArtifacts?: Array<{
+    key: string;
+    downloadUrl: string;
+    storagePath: string;
+    fileName: string;
+    contentType: string;
+    bytes: number;
+  }>;
+  artifactPaths?: Record<string, JobArtifactDescriptor>;
+  vttContent?: string;
+  rawRetryPath?: string;
+  supabaseUrl?: string;
+  anonKey?: string;
+  authHeader?: string;
   fileName?: string;
   fileSize?: string;
   bytes?: number;
   originalBytes?: number;
+  compressionPct?: number;
   durationSec?: number;
   error?: string;
   cancelled?: boolean;
   activeChild?: ReturnType<typeof spawn>;
   createdAt: number;
+  updatedAt: number;
 }
 
 const videoJobs = new Map<string, VideoOptimizationJob>();
 
-// Prune completed/failed job metadata older than 2 hours
+// Prune completed/failed job metadata & stale temp files periodically
 setInterval(() => {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  const failedRetryCutoff = Date.now() - 45 * 60 * 1000;
   for (const [id, job] of videoJobs.entries()) {
+    if (job.rawRetryPath && (job.createdAt < failedRetryCutoff || job.status !== 'failed')) {
+      safeUnlink(job.rawRetryPath).catch(() => {});
+      job.rawRetryPath = undefined;
+    }
     if (job.createdAt < cutoff) {
-      if (job.localOutPath) {
-        safeUnlink(job.localOutPath).catch(() => {});
+      if (job.artifactPaths) {
+        for (const art of Object.values(job.artifactPaths)) {
+          safeUnlink(art.localPath).catch(() => {});
+        }
       }
+      safeUnlink(job.rawRetryPath).catch(() => {});
       videoJobs.delete(id);
     }
   }
-}, 15 * 60 * 1000).unref?.();
+}, 10 * 60 * 1000).unref?.();
 
 function formatMediaBytes(bytes: number): string {
   if (!bytes || bytes < 1024) return `${bytes || 0} B`;
@@ -1220,7 +1264,16 @@ function formatMediaBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-let cachedFfmpegInfo: { bin: string; ffprobeBin: string; hasSvtAv1: boolean; hasX264: boolean; hasAac: boolean; hasOpus: boolean } | null = null;
+let cachedFfmpegInfo: {
+  bin: string;
+  ffprobeBin: string;
+  hasSvtAv1: boolean;
+  hasAomAv1: boolean;
+  hasX264: boolean;
+  hasAac: boolean;
+  hasOpus: boolean;
+} | null = null;
+
 async function getFfmpegCapabilities() {
   if (cachedFfmpegInfo) return cachedFfmpegInfo;
   let ffmpegPath = 'ffmpeg';
@@ -1234,17 +1287,19 @@ async function getFfmpegCapabilities() {
 
   const ffprobeBin = fs.existsSync('/usr/bin/ffprobe') ? '/usr/bin/ffprobe' : 'ffprobe';
   let hasSvtAv1 = false;
+  let hasAomAv1 = false;
   let hasX264 = false;
   let hasAac = false;
   let hasOpus = false;
   try {
     const { stdout } = await execFileAsync(ffmpegPath, ['-encoders'], { timeout: 10000 });
     hasSvtAv1 = /\blibsvtav1\b/.test(stdout);
+    hasAomAv1 = /\blibaom-av1\b/.test(stdout);
     hasX264 = /\blibx264\b/.test(stdout);
     hasAac = /\baac\b/.test(stdout);
     hasOpus = /\blibopus\b/.test(stdout);
   } catch {}
-  cachedFfmpegInfo = { bin: ffmpegPath, ffprobeBin, hasSvtAv1, hasX264, hasAac, hasOpus };
+  cachedFfmpegInfo = { bin: ffmpegPath, ffprobeBin, hasSvtAv1, hasAomAv1, hasX264, hasAac, hasOpus };
   return cachedFfmpegInfo;
 }
 
@@ -1253,6 +1308,19 @@ async function safeUnlink(filePath?: string | null) {
   try {
     await fs.promises.unlink(filePath);
   } catch {}
+}
+
+async function cleanupJobTempArtifacts(job: VideoOptimizationJob, keepForFailedRetry = false) {
+  if (!keepForFailedRetry && job.rawRetryPath) {
+    await safeUnlink(job.rawRetryPath);
+    job.rawRetryPath = undefined;
+  }
+  if (job.artifactPaths) {
+    await Promise.all(
+      Object.values(job.artifactPaths).map((art) => safeUnlink(art.localPath))
+    );
+    job.artifactPaths = undefined;
+  }
 }
 
 async function cleanupPassLogs(prefix: string) {
@@ -1423,6 +1491,49 @@ async function probeVideoMetadata(
   }
 }
 
+function formatVttTimestamp(totalSec: number): string {
+  const safe = Math.max(0, totalSec);
+  const hrs = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = Math.floor(safe % 60);
+  const ms = Math.round((safe - Math.floor(safe)) * 1000);
+  const pad = (n: number, d = 2) => String(n).padStart(d, '0');
+  return `${pad(hrs)}:${pad(mins)}:${pad(secs)}.${pad(ms, 3)}`;
+}
+
+function buildStoryboardVtt(spritePublicUrl: string, durationSec: number, frameCount: number, intervalSec: number): string {
+  const lines = ['WEBVTT', ''];
+  const tileW = 160;
+  const tileH = 90;
+  const cols = 4;
+  for (let i = 0; i < frameCount; i++) {
+    const start = i * intervalSec;
+    const end = Math.min(Math.max(durationSec, start + intervalSec), (i + 1) * intervalSec);
+    if (start >= end && i > 0) break;
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = col * tileW;
+    const y = row * tileH;
+    lines.push(`${formatVttTimestamp(start)} --> ${formatVttTimestamp(Math.max(end, start + 0.5))}`);
+    lines.push(`${spritePublicUrl}#xywh=${x},${y},${tileW},${tileH}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function serializePublicJob(job: VideoOptimizationJob) {
+  const {
+    artifactPaths: _omitPaths,
+    rawRetryPath: _omitRaw,
+    activeChild: _omitChild,
+    authHeader: _omitAuth,
+    anonKey: _omitAnon,
+    vttContent: _omitVtt,
+    ...publicJob
+  } = job;
+  return publicJob;
+}
+
 async function processVideoJobAsync(params: {
   jobId: string;
   rawPath: string;
@@ -1430,7 +1541,6 @@ async function processVideoJobAsync(params: {
   originalSize: number;
   bucket: 'projects' | 'articles';
   folderPrefix: string;
-  maxHeight: 720 | 1080;
   supabaseUrl: string;
   anonKey: string;
   authHeader: string;
@@ -1442,143 +1552,354 @@ async function processVideoJobAsync(params: {
   }
 
   const baseStem = params.originalName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const outPath = path.join(MEDIA_TEMP_DIR, `out_${params.jobId}.mp4`);
+  const uniquePrefix = `${params.folderPrefix || 'videos'}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const passLogPrefix = path.join(MEDIA_TEMP_DIR, `passlog_${params.jobId}`);
-  let keepOutFileForClient = false;
+  const artifacts: Record<string, JobArtifactDescriptor> = {};
+  let keepRawForRetry = false;
+  let keepArtifactsForClient = false;
+
+  const registerArtifact = async (
+    key: string,
+    localPath: string,
+    fileName: string,
+    contentType: string
+  ) => {
+    const stat = await fs.promises.stat(localPath);
+    artifacts[key] = {
+      key,
+      localPath,
+      storagePath: `${uniquePrefix}_${fileName}`,
+      fileName,
+      contentType,
+      bytes: stat.size,
+    };
+  };
 
   try {
     job.status = 'processing';
-    job.progress = 12;
-    job.stage = 'Inspecting video stream geometry...';
+    job.progress = 8;
+    job.stage = 'Inspecting video metadata...';
+    job.updatedAt = Date.now();
 
-    const { bin, ffprobeBin, hasSvtAv1, hasOpus } = await getFfmpegCapabilities();
+    const { bin, ffprobeBin, hasSvtAv1, hasAomAv1, hasOpus } = await getFfmpegCapabilities();
     if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
     const meta = await probeVideoMetadata(ffprobeBin, params.rawPath);
-    if (meta.durationSec > 0) {
-      job.durationSec = Math.round(meta.durationSec * 10) / 10;
+    const dur = meta.durationSec > 0 ? Math.round(meta.durationSec * 10) / 10 : 10;
+    job.durationSec = dur;
+    job.width = meta.width;
+    job.height = meta.height;
+
+    const produce1080p = meta.height >= 900 || meta.width >= 1600;
+    const resolutionsToEncode: Array<{ label: '1080p' | '720p'; maxW: number; maxH: number }> = produce1080p
+      ? [
+          { label: '1080p', maxW: 1920, maxH: 1080 },
+          { label: '720p', maxW: 1280, maxH: 720 },
+        ]
+      : [{ label: '720p', maxW: 1280, maxH: 720 }];
+    job.resolution = produce1080p ? '1080p / 720p' : '720p';
+
+    const buildScaleFilter = (maxW: number, maxH: number) =>
+      [
+        `scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`,
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        'hqdn3d=0.6:0.6:2.2:2.2',
+        'unsharp=3:3:0.3:3:3:0.0',
+      ].join(',');
+
+    const h264AudioArgs = meta.hasAudio ? ['-c:a', 'aac', '-b:a', '112k', '-ac', '2'] : ['-an'];
+    const av1AudioArgs = meta.hasAudio
+      ? hasOpus
+        ? ['-c:a', 'libopus', '-b:a', '80k', '-ac', '2']
+        : ['-c:a', 'aac', '-b:a', '96k', '-ac', '2']
+      : ['-an'];
+
+    // Stage 1: Automatic Poster Thumbnail + Storyboard Sprite & VTT
+    job.progress = 14;
+    job.stage = 'Capturing poster thumbnail & timeline sprite...';
+    job.updatedAt = Date.now();
+
+    const posterRawPath = path.join(MEDIA_TEMP_DIR, `poster_raw_${params.jobId}.png`);
+    const posterWebpPath = path.join(MEDIA_TEMP_DIR, `poster_${params.jobId}.webp`);
+    try {
+      const seekAt = dur > 2 ? Math.min(2, dur * 0.25).toFixed(2) : '0.1';
+      await runProcess(bin, [
+        '-y',
+        '-ss', seekAt,
+        '-i', params.rawPath,
+        '-frames:v', '1',
+        '-vf', "scale='min(1280,iw)':-2:flags=lanczos",
+        posterRawPath,
+      ]);
+      const sharpMod = await import('sharp');
+      const sharpFn = sharpMod.default || (sharpMod as any);
+      const posterBuf = await sharpFn(posterRawPath, { failOn: 'none' })
+        .sharpen({ sigma: 0.6, m1: 0.5, m2: 1.8 })
+        .webp({ quality: 82 })
+        .toBuffer();
+      await fs.promises.writeFile(posterWebpPath, posterBuf);
+      await registerArtifact('poster', posterWebpPath, `${baseStem}_poster.webp`, 'image/webp');
+    } catch (posterErr) {
+      console.warn(`[Video Job ${params.jobId}] Poster capture skipped:`, posterErr);
+    } finally {
+      await safeUnlink(posterRawPath);
     }
 
-    const maxW = params.maxHeight === 720 ? 1280 : 1920;
-    const maxH = params.maxHeight === 720 ? 720 : 1080;
-    const needsResize = meta.width > maxW || meta.height > maxH || meta.width % 2 !== 0 || meta.height % 2 !== 0;
-
-    // Sharp Lanczos resize + gentle denoise & unsharp masking so compressed frames look crisp and small
-    const filterSteps: string[] = [];
-    if (needsResize) {
-      filterSteps.push(`scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`);
-      filterSteps.push(`scale=trunc(iw/2)*2:trunc(ih/2)*2`);
+    const spritePath = path.join(MEDIA_TEMP_DIR, `sprite_${params.jobId}.jpg`);
+    let spriteInterval = Math.max(1, Math.ceil(dur / 12));
+    let spriteFrames = Math.min(12, Math.max(1, Math.floor(dur / spriteInterval) || 1));
+    try {
+      await runProcess(bin, [
+        '-y',
+        '-i', params.rawPath,
+        '-vf', `fps=1/${spriteInterval},scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tile=4x3`,
+        '-frames:v', '1',
+        '-q:v', '6',
+        spritePath,
+      ]);
+      if (fs.existsSync(spritePath)) {
+        await registerArtifact('sprite', spritePath, `${baseStem}_sprite.jpg`, 'image/jpeg');
+      } else {
+        spriteFrames = 0;
+      }
+    } catch {
+      spriteFrames = 0;
     }
-    filterSteps.push('hqdn3d=0.8:0.8:2.8:2.8');
-    filterSteps.push('unsharp=3:3:0.35:3:3:0.0');
-    const vfChain = filterSteps.join(',');
 
-    job.progress = 20;
-    job.stage = 'Optimizing video stream (compact high-clarity compression)...';
+    if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
-    // Single-pass fast encoding tuned for noticeable size reduction while retaining crisp sharpness:
-    // - SVT-AV1 preset 8 CRF 31 + Opus 80k (very small file size, fast multi-threaded AV1 in MP4)
-    // - libx264 High Profile CRF 25 preset veryfast with bitrate ceiling 1600k + AAC 96k (fast, compact & crisp)
-    const videoArgs = hasSvtAv1
-      ? ['-c:v', 'libsvtav1', '-crf', '31', '-preset', '8', '-g', '120', '-pix_fmt', 'yuv420p']
-      : [
+    // Stage 2: Encode H.264 MP4 Fallback Renditions (fast baseline compatibility)
+    let progressCursor = 20;
+    const stepSpan = (hasSvtAv1 || hasAomAv1) ? 30 / resolutionsToEncode.length : 65 / resolutionsToEncode.length;
+
+    for (const resSpec of resolutionsToEncode) {
+      if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+      const outH264 = path.join(MEDIA_TEMP_DIR, `h264_${resSpec.label}_${params.jobId}.mp4`);
+      job.stage = `Encoding H.264 MP4 ${resSpec.label} fallback...`;
+      job.updatedAt = Date.now();
+      const baseP = progressCursor;
+      await runProcess(
+        bin,
+        [
+          '-y',
+          '-threads', '0',
+          '-i', params.rawPath,
+          '-vf', buildScaleFilter(resSpec.maxW, resSpec.maxH),
+          '-map_metadata', '-1',
           '-c:v', 'libx264',
           '-profile:v', 'high',
           '-level:v', '4.1',
-          '-crf', '25',
-          '-maxrate', '1600k',
-          '-bufsize', '3200k',
+          '-crf', resSpec.label === '1080p' ? '23' : '24',
+          '-maxrate', resSpec.label === '1080p' ? '2800k' : '1500k',
+          '-bufsize', resSpec.label === '1080p' ? '5600k' : '3000k',
           '-preset', 'veryfast',
-          '-threads', '0',
+          '-g', '60',
           '-pix_fmt', 'yuv420p',
-        ];
-
-    const audioArgs = meta.hasAudio
-      ? hasSvtAv1 && hasOpus
-        ? ['-c:a', 'libopus', '-b:a', '80k']
-        : ['-c:a', 'aac', '-b:a', '96k']
-      : ['-an'];
-
-    await runProcess(
-      bin,
-      [
-        '-y',
-        '-threads', '0',
-        '-i', params.rawPath,
-        '-vf', vfChain,
-        '-map_metadata', '-1',
-        ...videoArgs,
-        ...audioArgs,
-        '-movflags', '+faststart',
-        outPath,
-      ],
-      meta.durationSec,
-      (encodePct) => {
-        if (!job.cancelled) {
-          job.progress = Math.min(86, Math.max(20, Math.round(20 + encodePct * 0.66)));
+          ...h264AudioArgs,
+          '-movflags', '+faststart',
+          outH264,
+        ],
+        dur,
+        (pct) => {
+          if (!job.cancelled) {
+            job.progress = Math.min(86, Math.round(baseP + (pct / 100) * stepSpan));
+          }
+        },
+        (child) => {
+          job.activeChild = child;
+          if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
         }
-      },
-      (child) => {
-        job.activeChild = child;
-        if (job.cancelled) {
-          try { child.kill('SIGKILL'); } catch {}
-        }
-      }
-    );
-    job.activeChild = undefined;
-
-    if (job.cancelled) {
-      throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+      );
+      job.activeChild = undefined;
+      await registerArtifact(
+        `h264_${resSpec.label}`,
+        outH264,
+        `${baseStem}_h264_${resSpec.label}.mp4`,
+        'video/mp4'
+      );
+      progressCursor += stepSpan;
     }
 
-    job.status = 'uploading';
-    job.progress = 88;
-    job.stage = `Uploading optimized MP4 to "${params.bucket}" bucket...`;
+    // Stage 3: Encode AV1 Primary Renditions (SVT-AV1 preferred, libaom-av1 fast row-mt fallback)
+    let encodedAnyAv1 = false;
+    if (hasSvtAv1 || hasAomAv1) {
+      const av1StepSpan = 35 / resolutionsToEncode.length;
+      for (const resSpec of resolutionsToEncode) {
+        if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+        const outAv1 = path.join(MEDIA_TEMP_DIR, `av1_${resSpec.label}_${params.jobId}.mp4`);
+        job.stage = `Encoding AV1 ${resSpec.label} stream...`;
+        job.updatedAt = Date.now();
+        const baseP = progressCursor;
 
-    const finalBuffer = await fs.promises.readFile(outPath);
-    const finalFileName = `${baseStem}.mp4`;
-    const storagePath = `${params.folderPrefix || 'videos'}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
+        const av1VideoArgs = hasSvtAv1
+          ? [
+              '-c:v', 'libsvtav1',
+              '-crf', resSpec.label === '1080p' ? '30' : '32',
+              '-preset', '8',
+              '-g', '120',
+              '-pix_fmt', 'yuv420p',
+            ]
+          : [
+              '-c:v', 'libaom-av1',
+              '-crf', resSpec.label === '1080p' ? '33' : '35',
+              '-b:v', '0',
+              '-cpu-used', '8',
+              '-row-mt', '1',
+              '-tiles', '2x2',
+              '-g', '120',
+              '-pix_fmt', 'yuv420p',
+            ];
+
+        try {
+          await runProcess(
+            bin,
+            [
+              '-y',
+              '-threads', '0',
+              '-i', params.rawPath,
+              '-vf', buildScaleFilter(resSpec.maxW, resSpec.maxH),
+              '-map_metadata', '-1',
+              ...av1VideoArgs,
+              ...av1AudioArgs,
+              '-movflags', '+faststart',
+              outAv1,
+            ],
+            dur,
+            (pct) => {
+              if (!job.cancelled) {
+                job.progress = Math.min(88, Math.round(baseP + (pct / 100) * av1StepSpan));
+              }
+            },
+            (child) => {
+              job.activeChild = child;
+              if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
+            }
+          );
+          job.activeChild = undefined;
+          await registerArtifact(
+            `av1_${resSpec.label}`,
+            outAv1,
+            `${baseStem}_av1_${resSpec.label}.mp4`,
+            'video/mp4'
+          );
+          encodedAnyAv1 = true;
+        } catch (av1Err: any) {
+          if (job.cancelled || av1Err?.isCancelled) throw av1Err;
+          console.warn(`[Video Job ${params.jobId}] AV1 ${resSpec.label} encode skipped cleanly, keeping H.264:`, av1Err?.message);
+          await safeUnlink(outAv1);
+        }
+        progressCursor += av1StepSpan;
+      }
+    }
+
+    if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+
+    job.format = encodedAnyAv1 ? 'av1+h264' : 'h264';
+    const primaryArtifact =
+      artifacts.av1_1080p ||
+      artifacts.av1_720p ||
+      artifacts.h264_1080p ||
+      artifacts.h264_720p;
+
+    if (!primaryArtifact) {
+      throw new Error('FFmpeg did not produce a valid output video stream.');
+    }
+
+    job.bytes = primaryArtifact.bytes;
+    job.originalBytes = params.originalSize;
+    job.fileSize = formatMediaBytes(primaryArtifact.bytes);
+    job.fileName = primaryArtifact.fileName;
+    job.storagePath = primaryArtifact.storagePath;
+    job.compressionPct =
+      params.originalSize > 0
+        ? Math.round(((params.originalSize - primaryArtifact.bytes) / params.originalSize) * 1000) / 10
+        : 0;
+
+    // Stage 4: Upload ALL optimized renditions + poster + sprite/vtt directly to Supabase Storage (or hand off to client)
+    job.status = 'uploading';
+    job.progress = 90;
+    job.stage = `Uploading optimized renditions to "${params.bucket}" storage...`;
+    job.updatedAt = Date.now();
 
     try {
-      const publicUrl = await uploadMediaToSupabaseStorage({
-        supabaseUrl: params.supabaseUrl,
-        anonKey: params.anonKey,
-        authHeader: params.authHeader,
-        bucket: params.bucket,
-        storagePath,
-        data: finalBuffer,
-        contentType: 'video/mp4',
-      });
+      const uploadArtifact = async (art: JobArtifactDescriptor): Promise<string> => {
+        const buf = await fs.promises.readFile(art.localPath);
+        const url = await uploadMediaToSupabaseStorage({
+          supabaseUrl: params.supabaseUrl,
+          anonKey: params.anonKey,
+          authHeader: params.authHeader,
+          bucket: params.bucket,
+          storagePath: art.storagePath,
+          data: buf,
+          contentType: art.contentType,
+        });
+        art.publicUrl = url;
+        return url;
+      };
 
-      if (job.cancelled) {
-        throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+      const uploadedUrls: Record<string, string> = {};
+      for (const art of Object.values(artifacts)) {
+        if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+        uploadedUrls[art.key] = await uploadArtifact(art);
       }
 
+      // Generate & upload WebVTT thumbnails referencing the uploaded Supabase sprite URL
+      let vttUrl: string | undefined;
+      if (uploadedUrls.sprite && spriteFrames > 0) {
+        const vttText = buildStoryboardVtt(uploadedUrls.sprite, dur, spriteFrames, spriteInterval);
+        const vttStoragePath = `${uniquePrefix}_${baseStem}_thumbnails.vtt`;
+        vttUrl = await uploadMediaToSupabaseStorage({
+          supabaseUrl: params.supabaseUrl,
+          anonKey: params.anonKey,
+          authHeader: params.authHeader,
+          bucket: params.bucket,
+          storagePath: vttStoragePath,
+          data: Buffer.from(vttText, 'utf8'),
+          contentType: 'text/vtt',
+        });
+      }
+
+      job.av1Urls = {
+        ...(uploadedUrls.av1_720p ? { '720p': uploadedUrls.av1_720p } : {}),
+        ...(uploadedUrls.av1_1080p ? { '1080p': uploadedUrls.av1_1080p } : {}),
+      };
+      job.h264Urls = {
+        ...(uploadedUrls.h264_720p ? { '720p': uploadedUrls.h264_720p } : {}),
+        ...(uploadedUrls.h264_1080p ? { '1080p': uploadedUrls.h264_1080p } : {}),
+      };
+      job.posterUrl = uploadedUrls.poster;
+      job.spriteUrl = uploadedUrls.sprite;
+      job.vttThumbnailsUrl = vttUrl;
+      job.publicUrl =
+        uploadedUrls.av1_1080p ||
+        uploadedUrls.av1_720p ||
+        uploadedUrls.h264_1080p ||
+        uploadedUrls.h264_720p;
       job.status = 'completed';
       job.progress = 100;
       job.stage = 'Completed';
-      job.publicUrl = publicUrl;
-      job.storagePath = storagePath;
-      job.fileName = finalFileName;
-      job.bytes = finalBuffer.length;
-      job.originalBytes = params.originalSize;
-      job.fileSize = formatMediaBytes(finalBuffer.length);
+      job.updatedAt = Date.now();
     } catch (storageErr: any) {
-      if (job.cancelled || storageErr?.isCancelled) {
-        throw storageErr;
-      }
-      keepOutFileForClient = true;
-      job.localOutPath = outPath;
-      job.storagePath = storagePath;
-      job.fileName = finalFileName;
-      job.bytes = finalBuffer.length;
-      job.originalBytes = params.originalSize;
-      job.fileSize = formatMediaBytes(finalBuffer.length);
-      job.directUploadUrl = `/api/media/job-file/${encodeURIComponent(params.jobId)}`;
+      if (job.cancelled || storageErr?.isCancelled) throw storageErr;
+
+      // Keep ONLY optimized artifacts temporarily for authenticated browser handoff; purge raw immediately!
+      keepArtifactsForClient = true;
+      job.artifactPaths = artifacts;
+      job.vttContent = spriteFrames > 0 ? buildStoryboardVtt('__SPRITE_URL__', dur, spriteFrames, spriteInterval) : undefined;
+      job.handoffArtifacts = Object.values(artifacts).map((art) => ({
+        key: art.key,
+        downloadUrl: `/api/media/job-artifact/${encodeURIComponent(params.jobId)}/${encodeURIComponent(art.key)}`,
+        storagePath: art.storagePath,
+        fileName: art.fileName,
+        contentType: art.contentType,
+        bytes: art.bytes,
+      }));
+      job.directUploadUrl = `/api/media/job-artifact/${encodeURIComponent(params.jobId)}/${encodeURIComponent(primaryArtifact.key)}`;
       job.status = 'ready_for_client_upload';
       job.progress = 94;
       job.stage = `Optimized (${job.fileSize}). Finalizing storage upload...`;
-      console.info(`[Video Pipeline Job ${params.jobId}] Handing off compressed video to authenticated client:`, storageErr?.message);
+      job.updatedAt = Date.now();
+      console.info(`[Video Job ${params.jobId}] Handoff ready (${Object.keys(artifacts).length} optimized files):`, storageErr?.message);
     }
   } catch (err: any) {
     if (job.cancelled || err?.isCancelled) {
@@ -1590,18 +1911,32 @@ async function processVideoJobAsync(params: {
       job.status = 'failed';
       job.stage = 'Optimization failed';
       job.error = err?.message || 'Video transcoding or upload failed.';
+      // Retain original raw input temporarily so Admin/Retry endpoint can re-run without re-uploading
+      if (fs.existsSync(params.rawPath)) {
+        keepRawForRetry = true;
+        job.rawRetryPath = params.rawPath;
+        job.supabaseUrl = params.supabaseUrl;
+        job.anonKey = params.anonKey;
+        job.authHeader = params.authHeader;
+      }
     }
+    job.updatedAt = Date.now();
   } finally {
     job.activeChild = undefined;
-    await safeUnlink(params.rawPath);
-    if (!keepOutFileForClient || job.cancelled) {
-      await safeUnlink(outPath);
+    if (!keepRawForRetry) {
+      await safeUnlink(params.rawPath);
+    }
+    if (!keepArtifactsForClient || job.cancelled || job.status === 'failed') {
+      await Promise.all(Object.values(artifacts).map((art) => safeUnlink(art.localPath)));
+      if (!keepArtifactsForClient) {
+        job.artifactPaths = undefined;
+      }
     }
     await cleanupPassLogs(passLogPrefix);
   }
 }
 
-// Optimize JPEG / PNG / WebP images with Sharp -> auto-rotate, strip EXIF, max 1600px Lanczos3 + crisp sharpen, compact AVIF q=68
+// Optimize images with Sharp: EXIF strip, noise reduction, sharpening, responsive AVIF + WebP + JPEG fallbacks + mobile AVIF
 app.post('/api/media/optimize-image', async (req, res) => {
   const ok = await runMulterSingle(imageUpload.single('file'), req, res);
   if (!ok) return;
@@ -1611,7 +1946,7 @@ app.post('/api/media/optimize-image', async (req, res) => {
     return res.status(400).json({ success: false, message: 'No image file provided.' });
   }
 
-  const bucket = req.body?.bucket === 'articles' ? 'articles' : 'projects';
+  const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
   const folderPrefix = String(req.body?.folderPrefix || 'images').replace(/[^a-zA-Z0-9_/-]/g, '_');
   const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
@@ -1619,63 +1954,198 @@ app.post('/api/media/optimize-image', async (req, res) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const isSvg = file.mimetype === 'image/svg+xml' || ext === '.svg';
     const rawBuffer = file.buffer || (file.path ? await fs.promises.readFile(file.path) : Buffer.alloc(0));
-
-    let outBuffer: Buffer;
-    let outMime = 'image/avif';
-    let outExt = '.avif';
+    if (!rawBuffer.length) {
+      return res.status(400).json({ success: false, message: 'Uploaded image buffer is empty.' });
+    }
+    const baseStem = file.originalname.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniqueId = `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
     if (isSvg) {
-      outBuffer = rawBuffer;
-      outMime = 'image/svg+xml';
-      outExt = '.svg';
-    } else {
-      const sharpMod = await import('sharp');
-      const sharpFn = sharpMod.default || (sharpMod as any);
-      // Auto-rotate per EXIF, strip metadata, resize max 1600w Lanczos3, crisp mild sharpen, compact AVIF q=68 effort=2
-      outBuffer = await sharpFn(rawBuffer, { failOn: 'none' })
-        .rotate()
-        .resize({ width: 1600, withoutEnlargement: true, kernel: 'lanczos3' })
-        .sharpen({ sigma: 0.65, m1: 0.6, m2: 2.0 })
-        .avif({ quality: 68, effort: 2, chromaSubsampling: '4:2:0' })
-        .toBuffer();
+      const finalFileName = `${baseStem}.svg`;
+      const storagePath = `${folderPrefix}/${uniqueId}_${finalFileName}`;
+      try {
+        const publicUrl = await uploadMediaToSupabaseStorage({
+          supabaseUrl,
+          anonKey,
+          authHeader,
+          bucket,
+          storagePath,
+          data: rawBuffer,
+          contentType: 'image/svg+xml',
+        });
+        return res.json({
+          success: true,
+          publicUrl,
+          avifUrl: publicUrl,
+          storagePath,
+          fileName: finalFileName,
+          fileSize: formatMediaBytes(rawBuffer.length),
+          mimeType: 'image/svg+xml',
+          format: 'svg',
+          originalBytes: file.size,
+          optimizedBytes: rawBuffer.length,
+          compressionPct: 0,
+        });
+      } catch (storageErr: any) {
+        return res.json({
+          success: true,
+          directUploadRequired: true,
+          optimizedBase64: rawBuffer.toString('base64'),
+          variants: [
+            {
+              key: 'avif',
+              storagePath,
+              fileName: finalFileName,
+              mimeType: 'image/svg+xml',
+              base64: rawBuffer.toString('base64'),
+              bytes: rawBuffer.length,
+            },
+          ],
+          mimeType: 'image/svg+xml',
+          format: 'svg',
+          storagePath,
+          fileName: finalFileName,
+          fileSize: formatMediaBytes(rawBuffer.length),
+          originalBytes: file.size,
+          optimizedBytes: rawBuffer.length,
+          compressionPct: 0,
+          serverNotice: storageErr?.message || 'Client storage upload handoff',
+        });
+      }
     }
 
-    const baseStem = file.originalname.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const finalFileName = `${baseStem}${outExt}`;
-    const storagePath = `${folderPrefix}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${finalFileName}`;
+    const sharpMod = await import('sharp');
+    const sharpFn = sharpMod.default || (sharpMod as any);
+    const rotated = sharpFn(rawBuffer, { failOn: 'none' }).rotate();
+    const meta = await rotated.metadata().catch(() => ({ width: 1600, height: 900 }));
+
+    // Light denoise + Lanczos3 responsive desktop pipeline + gentle sharpening (EXIF stripped automatically)
+    const buildBasePipeline = (targetWidth: number) => {
+      let pipe = sharpFn(rawBuffer, { failOn: 'none' }).rotate();
+      if ((meta.width || 0) >= 1200) {
+        pipe = pipe.median(3);
+      }
+      return pipe
+        .resize({ width: targetWidth, withoutEnlargement: true, kernel: 'lanczos3' })
+        .sharpen({ sigma: 0.72, m1: 0.65, m2: 2.1 });
+    };
+
+    const [avifResult, webpBuf, jpegBuf, mobileAvifBuf] = await Promise.all([
+      buildBasePipeline(1600)
+        .avif({ quality: 72, effort: 3, chromaSubsampling: '4:2:0' })
+        .toBuffer({ resolveWithObject: true }),
+      buildBasePipeline(1600)
+        .webp({ quality: 82, effort: 3 })
+        .toBuffer(),
+      buildBasePipeline(1600)
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 84, mozjpeg: true })
+        .toBuffer(),
+      (meta.width || 0) > 900
+        ? buildBasePipeline(768)
+            .avif({ quality: 70, effort: 2, chromaSubsampling: '4:2:0' })
+            .toBuffer()
+        : Promise.resolve(null),
+    ]);
+
+    const outAvif = avifResult.data;
+    const outW = avifResult.info?.width || Math.min(1600, meta.width || 1600);
+    const outH = avifResult.info?.height || meta.height || 900;
+    const compressionPct =
+      file.size > 0 ? Math.round(((file.size - outAvif.length) / file.size) * 1000) / 10 : 0;
+
+    const variantSpecs = [
+      {
+        key: 'avif',
+        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.avif`,
+        fileName: `${baseStem}.avif`,
+        mimeType: 'image/avif',
+        buffer: outAvif,
+      },
+      {
+        key: 'webp',
+        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.webp`,
+        fileName: `${baseStem}.webp`,
+        mimeType: 'image/webp',
+        buffer: webpBuf,
+      },
+      {
+        key: 'jpeg',
+        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.jpg`,
+        fileName: `${baseStem}.jpg`,
+        mimeType: 'image/jpeg',
+        buffer: jpegBuf,
+      },
+      ...(mobileAvifBuf
+        ? [
+            {
+              key: 'mobile',
+              storagePath: `${folderPrefix}/${uniqueId}_${baseStem}_768w.avif`,
+              fileName: `${baseStem}_768w.avif`,
+              mimeType: 'image/avif',
+              buffer: mobileAvifBuf,
+            },
+          ]
+        : []),
+    ];
 
     try {
-      const publicUrl = await uploadMediaToSupabaseStorage({
-        supabaseUrl,
-        anonKey,
-        authHeader,
-        bucket,
-        storagePath,
-        data: outBuffer,
-        contentType: outMime,
-      });
+      const uploadedMap: Record<string, string> = {};
+      for (const spec of variantSpecs) {
+        uploadedMap[spec.key] = await uploadMediaToSupabaseStorage({
+          supabaseUrl,
+          anonKey,
+          authHeader,
+          bucket,
+          storagePath: spec.storagePath,
+          data: spec.buffer,
+          contentType: spec.mimeType,
+        });
+      }
 
       return res.json({
         success: true,
-        publicUrl,
-        storagePath,
-        fileName: finalFileName,
-        fileSize: formatMediaBytes(outBuffer.length),
-        mimeType: outMime,
+        publicUrl: uploadedMap.avif,
+        avifUrl: uploadedMap.avif,
+        webpUrl: uploadedMap.webp,
+        jpegUrl: uploadedMap.jpeg,
+        mobileUrl: uploadedMap.mobile || uploadedMap.avif,
+        storagePath: variantSpecs[0].storagePath,
+        fileName: variantSpecs[0].fileName,
+        fileSize: formatMediaBytes(outAvif.length),
+        mimeType: 'image/avif',
+        format: 'avif',
+        width: outW,
+        height: outH,
+        resolution: `${outW}x${outH}`,
         originalBytes: file.size,
-        optimizedBytes: outBuffer.length,
+        optimizedBytes: outAvif.length,
+        compressionPct,
       });
     } catch (storageErr: any) {
       return res.json({
         success: true,
         directUploadRequired: true,
-        optimizedBase64: outBuffer.toString('base64'),
-        mimeType: outMime,
-        storagePath,
-        fileName: finalFileName,
-        fileSize: formatMediaBytes(outBuffer.length),
+        optimizedBase64: outAvif.toString('base64'),
+        variants: variantSpecs.map((v) => ({
+          key: v.key,
+          storagePath: v.storagePath,
+          fileName: v.fileName,
+          mimeType: v.mimeType,
+          base64: v.buffer.toString('base64'),
+          bytes: v.buffer.length,
+        })),
+        mimeType: 'image/avif',
+        format: 'avif',
+        width: outW,
+        height: outH,
+        resolution: `${outW}x${outH}`,
+        storagePath: variantSpecs[0].storagePath,
+        fileName: variantSpecs[0].fileName,
+        fileSize: formatMediaBytes(outAvif.length),
         originalBytes: file.size,
-        optimizedBytes: outBuffer.length,
+        optimizedBytes: outAvif.length,
+        compressionPct,
         serverNotice: storageErr?.message || 'Client storage upload handoff',
       });
     }
@@ -1690,7 +2160,7 @@ app.post('/api/media/optimize-image', async (req, res) => {
   }
 });
 
-// Enqueue background video optimization job so request never times out
+// Enqueue background video optimization job (AV1 + H.264 720p/1080p + Poster + VTT)
 app.post('/api/media/optimize-video', async (req, res) => {
   const ok = await runMulterSingle(videoUpload.single('file'), req, res);
   if (!ok) return;
@@ -1702,18 +2172,22 @@ app.post('/api/media/optimize-video', async (req, res) => {
 
   const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
   const folderPrefix = String(req.body?.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_');
-  const maxHeight: 720 | 1080 = req.body?.maxHeight === '1080' ? 1080 : 720;
   const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
   const jobId = `vjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const now = Date.now();
   const job: VideoOptimizationJob = {
     jobId,
     bucket,
+    folderPrefix,
+    originalName: file.originalname,
     status: 'queued',
     progress: 5,
     stage: 'Queued for background video optimization...',
+    format: 'av1+h264',
     originalBytes: file.size,
-    createdAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
   };
   videoJobs.set(jobId, job);
 
@@ -1725,7 +2199,6 @@ app.post('/api/media/optimize-video', async (req, res) => {
       originalSize: file.size,
       bucket,
       folderPrefix,
-      maxHeight,
       supabaseUrl,
       anonKey,
       authHeader,
@@ -1741,18 +2214,66 @@ app.post('/api/media/optimize-video', async (req, res) => {
   });
 });
 
+// List recent optimization jobs for Media Management Dashboard monitoring
+app.get('/api/media/jobs', (_req, res) => {
+  const jobs = Array.from(videoJobs.values())
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 60)
+    .map(serializePublicJob);
+  res.json({ success: true, jobs });
+});
+
 // Poll background video optimization job status
 app.get('/api/media/jobs/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job) {
     return res.status(404).json({ success: false, message: 'Video processing job not found or expired.' });
   }
-  const { localOutPath: _omit, activeChild: _omitChild, ...publicJob } = job;
-  res.json({ success: true, job: publicJob });
+  res.json({ success: true, job: serializePublicJob(job) });
+});
+
+// Retry failed video optimization job if retained raw temp source exists
+app.post('/api/media/jobs/:jobId/retry', (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, message: 'Video job not found or expired.' });
+  }
+  if (job.status !== 'failed') {
+    return res.status(400).json({ success: false, message: `Job cannot be retried in state "${job.status}".` });
+  }
+  if (!job.rawRetryPath || !fs.existsSync(job.rawRetryPath)) {
+    return res.status(410).json({ success: false, message: 'Source video temp file expired. Please re-select the file.' });
+  }
+
+  const retryRawPath = job.rawRetryPath;
+  job.rawRetryPath = undefined;
+  job.cancelled = false;
+  job.error = undefined;
+  job.status = 'queued';
+  job.progress = 6;
+  job.stage = 'Retrying video optimization...';
+  job.updatedAt = Date.now();
+
+  const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
+  setImmediate(() => {
+    void processVideoJobAsync({
+      jobId: job.jobId,
+      rawPath: retryRawPath,
+      originalName: job.originalName,
+      originalSize: job.originalBytes || 0,
+      bucket: job.bucket,
+      folderPrefix: job.folderPrefix,
+      supabaseUrl: job.supabaseUrl || supabaseUrl,
+      anonKey: job.anonKey || anonKey,
+      authHeader: job.authHeader || authHeader,
+    });
+  });
+
+  res.status(202).json({ success: true, job: serializePublicJob(job) });
 });
 
 // Cancel active background video optimization job immediately
-app.post('/api/media/jobs/:jobId/cancel', (req, res) => {
+app.post('/api/media/jobs/:jobId/cancel', async (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job) {
     return res.json({ success: true, status: 'not_found' });
@@ -1760,37 +2281,84 @@ app.post('/api/media/jobs/:jobId/cancel', (req, res) => {
   job.cancelled = true;
   job.status = 'cancelled';
   job.stage = 'Cancelled';
+  job.updatedAt = Date.now();
   if (job.activeChild) {
     try {
       job.activeChild.kill('SIGKILL');
     } catch {}
   }
-  if (job.localOutPath) {
-    safeUnlink(job.localOutPath).catch(() => {});
-    job.localOutPath = undefined;
-  }
+  await cleanupJobTempArtifacts(job, false);
   res.json({ success: true, status: 'cancelled' });
 });
 
-// Stream optimized video to authenticated client when server-side storage handoff is needed
-app.get('/api/media/job-file/:jobId', async (req, res) => {
+// Complete client storage handoff -> wipe temp optimized artifacts immediately & mark job completed
+app.post('/api/media/jobs/:jobId/complete-handoff', async (req, res) => {
   const job = videoJobs.get(req.params.jobId);
-  if (!job || !job.localOutPath || !fs.existsSync(job.localOutPath)) {
-    return res.status(404).json({ success: false, message: 'Optimized video file not found.' });
+  if (!job) {
+    return res.json({ success: true, status: 'not_found' });
   }
-  const filePath = job.localOutPath;
+  const { publicUrl, av1Urls, h264Urls, posterUrl, vttThumbnailsUrl, spriteUrl } = req.body || {};
+  if (publicUrl) job.publicUrl = publicUrl;
+  if (av1Urls) job.av1Urls = av1Urls;
+  if (h264Urls) job.h264Urls = h264Urls;
+  if (posterUrl) job.posterUrl = posterUrl;
+  if (vttThumbnailsUrl) job.vttThumbnailsUrl = vttThumbnailsUrl;
+  if (spriteUrl) job.spriteUrl = spriteUrl;
+  job.status = 'completed';
+  job.progress = 100;
+  job.stage = 'Completed';
+  job.updatedAt = Date.now();
+  await cleanupJobTempArtifacts(job, false);
+  res.json({ success: true, job: serializePublicJob(job) });
+});
+
+// Stream an optimized video/poster/sprite artifact to authenticated client for storage handoff
+app.get('/api/media/job-artifact/:jobId/:variantKey', async (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  const art = job?.artifactPaths?.[req.params.variantKey];
+  if (!job || !art || !fs.existsSync(art.localPath)) {
+    return res.status(404).json({ success: false, message: 'Optimized media artifact not found.' });
+  }
   try {
-    const stat = await fs.promises.stat(filePath);
+    const stat = await fs.promises.stat(art.localPath);
     res.setHeader('Content-Length', String(stat.size));
   } catch {}
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(job.fileName || 'video.mp4')}"`);
-  const stream = fs.createReadStream(filePath);
+  res.setHeader('Content-Type', art.contentType);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(art.fileName)}"`);
+  const stream = fs.createReadStream(art.localPath);
   stream.on('close', () => {
-    safeUnlink(filePath).catch(() => {});
-    job.localOutPath = undefined;
+    safeUnlink(art.localPath).catch(() => {});
   });
   stream.pipe(res);
+});
+
+// Retrieve VTT template when finishing client-side upload handoff
+app.get('/api/media/jobs/:jobId/vtt-template', (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job || !job.vttContent) {
+    return res.status(404).json({ success: false, message: 'VTT template not available.' });
+  }
+  res.json({ success: true, vttContent: job.vttContent });
+});
+
+// Legacy single-file artifact fallback route
+app.get('/api/media/job-file/:jobId', async (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  const art =
+    job?.artifactPaths?.av1_1080p ||
+    job?.artifactPaths?.av1_720p ||
+    job?.artifactPaths?.h264_1080p ||
+    job?.artifactPaths?.h264_720p;
+  if (!job || !art || !fs.existsSync(art.localPath)) {
+    return res.status(404).json({ success: false, message: 'Optimized video file not found.' });
+  }
+  try {
+    const stat = await fs.promises.stat(art.localPath);
+    res.setHeader('Content-Length', String(stat.size));
+  } catch {}
+  res.setHeader('Content-Type', art.contentType);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(art.fileName)}"`);
+  fs.createReadStream(art.localPath).pipe(res);
 });
 
 // Global JSON error handler for all /api/* routes so Express never emits HTML 500 pages

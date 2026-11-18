@@ -196,11 +196,13 @@ export const ProjectsView: React.FC = () => {
           </div>
 
           {selectedProject.thumbnailUrl && (
-            <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-900 max-h-[420px] flex items-center justify-center">
+            <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-900 max-h-[220px] sm:max-h-[420px] flex items-center justify-center">
               <img
                 src={selectedProject.thumbnailUrl}
                 alt={selectedProject.title}
-                className="w-full max-h-[420px] object-contain"
+                loading="lazy"
+                decoding="async"
+                className="w-full max-h-[220px] sm:max-h-[420px] object-contain"
               />
             </div>
           )}
@@ -349,27 +351,42 @@ export const ProjectsView: React.FC = () => {
                 <span>Media Gallery</span>
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                {selectedProject.images.map((img, i) => (
-                  <div key={i} className="w-full rounded-lg border border-slate-200 bg-white overflow-hidden flex flex-col">
-                    <img
-                      src={img.url}
-                      alt={img.note || img.title || `Project Image ${i + 1}`}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full max-h-96 object-contain block"
-                    />
-                    {img.note && img.note.trim() && (
-                      <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-center">
-                        {img.note.trim()}
-                      </p>
-                    )}
-                  </div>
-                ))}
+                {selectedProject.images.map((img, i) => {
+                  const avifSrcSet = img.mobileUrl && img.avifUrl && img.mobileUrl !== img.avifUrl
+                    ? `${img.mobileUrl} 768w, ${img.avifUrl} 1600w`
+                    : img.avifUrl;
+                  return (
+                    <div key={i} className="w-full rounded-lg border border-slate-200 bg-white overflow-hidden flex flex-col">
+                      <picture className="w-full block bg-slate-50">
+                        {avifSrcSet && (
+                          <source
+                            srcSet={avifSrcSet}
+                            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                            type="image/avif"
+                          />
+                        )}
+                        {img.webpUrl && <source srcSet={img.webpUrl} type="image/webp" />}
+                        <img
+                          src={img.jpegUrl || img.url}
+                          alt={img.note || img.title || `Project Image ${i + 1}`}
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full max-h-[210px] sm:max-h-96 object-contain block"
+                        />
+                      </picture>
+                      {img.note && img.note.trim() && (
+                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                          {img.note.trim()}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {/* Videos Gallery (Custom video player + optional note if entered) */}
+          {/* Videos Gallery (Vidstack video player + optional note if entered) */}
           {selectedProject.videos.length > 0 && (
             <div className="space-y-2">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
@@ -381,12 +398,19 @@ export const ProjectsView: React.FC = () => {
                   <div key={i} className="w-full rounded-lg border border-slate-200 bg-slate-950 overflow-hidden flex flex-col">
                     <CleanVideoPlayer
                       src={vid.url}
+                      poster={vid.posterUrl}
+                      av1Urls={vid.av1Urls}
+                      h264Urls={vid.h264Urls}
+                      vttThumbnailsUrl={vid.vttThumbnailsUrl}
+                      subtitleUrl={vid.subtitleUrl}
+                      mediaId={vid.mediaAssetId || vid.url}
+                      title={vid.title || selectedProject.title}
                       aspectRatio={videoCardControls.aspectRatio || '16/9'}
                       objectFit={videoCardControls.objectFit || 'contain'}
                       zoomLevel={videoCardControls.zoomLevel || 1}
                     />
                     {vid.note && vid.note.trim() && (
-                      <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-center">
+                      <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-justify leading-relaxed">
                         {vid.note.trim()}
                       </p>
                     )}
@@ -661,10 +685,12 @@ export const ProjectsView: React.FC = () => {
               >
                 <div>
                   {proj.thumbnailUrl && (
-                    <div className="w-full h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                    <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
                       <img
                         src={proj.thumbnailUrl}
                         alt={proj.title}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover"
                       />
                     </div>

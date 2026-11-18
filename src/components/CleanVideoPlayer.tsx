@@ -1,19 +1,39 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import '@vidstack/react/player/styles/default/theme.css';
+import '@vidstack/react/player/styles/default/layouts/video.css';
 import {
-  Play,
-  Pause,
-  Volume2,
-  VolumeX,
-  Maximize2,
-  Minimize2,
-  MoreVertical,
-  X,
-  PictureInPicture2,
-} from 'lucide-react';
-import { formatMediaDuration } from '../utils/mediaMetadata';
+  MediaPlayer,
+  MediaProvider,
+  Poster,
+  Track,
+  type MediaPlayerInstance,
+} from '@vidstack/react';
+import {
+  DefaultVideoLayout,
+  defaultLayoutIcons,
+} from '@vidstack/react/player/layouts/default';
+import { RotateCcw } from 'lucide-react';
+
+export interface VideoSubtitleTrack {
+  src: string;
+  label?: string;
+  lang?: string;
+  default?: boolean;
+}
 
 interface CleanVideoPlayerProps {
   src: string;
+  poster?: string;
+  av1Src?: string;
+  h264Src?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  vttThumbnailsUrl?: string;
+  thumbnailsVtt?: string;
+  subtitles?: VideoSubtitleTrack[];
+  subtitleUrl?: string;
+  mediaId?: string;
+  title?: string;
   aspectRatio?: string;
   objectFit?: 'contain' | 'cover' | 'fill' | 'none' | 'scale-down';
   zoomLevel?: number;
@@ -22,10 +42,43 @@ interface CleanVideoPlayerProps {
   className?: string;
 }
 
-const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 2];
+const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+function supportsAv1Playback(): boolean {
+  if (typeof document === 'undefined') return false;
+  try {
+    const v = document.createElement('video');
+    const av1Test = v.canPlayType('video/mp4; codecs="av01.0.04M.08"');
+    if (av1Test === 'probably' || av1Test === 'maybe') return true;
+    const altTest = v.canPlayType('video/mp4; codecs="av01.0.08M.08"');
+    return altTest === 'probably' || altTest === 'maybe';
+  } catch {
+    return false;
+  }
+}
+
+function hashStorageKey(input: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `fesline_vid_pos_v1_${(h >>> 0).toString(36)}`;
+}
 
 export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   src,
+  poster,
+  av1Src,
+  h264Src,
+  av1Urls,
+  h264Urls,
+  vttThumbnailsUrl,
+  thumbnailsVtt,
+  subtitles,
+  subtitleUrl,
+  mediaId,
+  title,
   aspectRatio = '16/9',
   objectFit = 'contain',
   zoomLevel = 1,
@@ -33,352 +86,270 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   onDurationResolved,
   className = '',
 }) => {
-  const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
-  const theaterVideoRef = useRef<HTMLVideoElement | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [isTheaterOpen, setIsTheaterOpen] = useState(false);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [hasStarted, setHasStarted] = useState(autoPlay);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const playerRef = useRef<MediaPlayerInstance | null>(null);
+  const lastSavedSecRef = useRef<number>(0);
+  const resumedOnceRef = useRef<boolean>(false);
+  const pendingRestoreRef = useRef<{ time: number; wasPlaying: boolean } | null>(null);
 
-  const activeVideo = isTheaterOpen ? theaterVideoRef.current : inlineVideoRef.current;
+  const hasAv1Variants = Boolean(av1Urls?.['1080p'] || av1Urls?.['720p'] || av1Src);
+  const hasH264Variants = Boolean(h264Urls?.['1080p'] || h264Urls?.['720p'] || h264Src);
+  const isAdaptiveManifest = /\.(m3u8|mpd)(\?|$)/i.test(src || '');
 
+  const [codecMode, setCodecMode] = useState<'av1' | 'h264'>(() =>
+    hasAv1Variants && supportsAv1Playback() ? 'av1' : 'h264'
+  );
+  const [selectedQuality, setSelectedQuality] = useState<'auto' | '1080p' | '720p'>('auto');
+  const [hasError, setHasError] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
+
+  const resumeKey = useMemo(
+    () => hashStorageKey(mediaId || h264Urls?.['720p'] || av1Urls?.['720p'] || src || 'vid'),
+    [mediaId, h264Urls, av1Urls, src]
+  );
+
+  // Sync default codec when source changes
   useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setIsMenuOpen(false);
+    resumedOnceRef.current = false;
+    pendingRestoreRef.current = null;
+    setHasError(false);
+    setSelectedQuality('auto');
+    setCodecMode(hasAv1Variants && supportsAv1Playback() ? 'av1' : 'h264');
+  }, [src, av1Src, h264Src, hasAv1Variants]);
+
+  const availableResolutions = useMemo(() => {
+    const activeMap = codecMode === 'av1' ? av1Urls : h264Urls;
+    const opts: Array<'1080p' | '720p'> = [];
+    if (activeMap?.['1080p'] || h264Urls?.['1080p'] || av1Urls?.['1080p']) opts.push('1080p');
+    if (activeMap?.['720p'] || h264Urls?.['720p'] || av1Urls?.['720p']) opts.push('720p');
+    return opts;
+  }, [codecMode, av1Urls, h264Urls]);
+
+  const resolvedSrc = useMemo(() => {
+    if (isAdaptiveManifest) return src;
+    const preferMobile720 =
+      typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 640;
+
+    const pickFrom = (
+      primaryMap?: { '720p'?: string; '1080p'?: string },
+      fallbackSingle?: string
+    ): string | undefined => {
+      if (selectedQuality === '1080p') {
+        return primaryMap?.['1080p'] || primaryMap?.['720p'] || fallbackSingle;
       }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, []);
-
-  useEffect(() => {
-    if (!isTheaterOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        closeTheater();
+      if (selectedQuality === '720p') {
+        return primaryMap?.['720p'] || primaryMap?.['1080p'] || fallbackSingle;
       }
+      if (preferMobile720) {
+        return primaryMap?.['720p'] || primaryMap?.['1080p'] || fallbackSingle;
+      }
+      return primaryMap?.['1080p'] || primaryMap?.['720p'] || fallbackSingle;
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isTheaterOpen]);
 
-  useEffect(() => {
-    setIsPlaying(false);
-    setCurrentTime(0);
-    setDuration(0);
-    setHasStarted(autoPlay);
-  }, [src, autoPlay]);
+    if (codecMode === 'av1') {
+      return (
+        pickFrom(av1Urls, av1Src) ||
+        pickFrom(h264Urls, h264Src) ||
+        src
+      );
+    }
+    return (
+      pickFrom(h264Urls, h264Src) ||
+      src ||
+      pickFrom(av1Urls, av1Src) ||
+      ''
+    );
+  }, [isAdaptiveManifest, src, codecMode, selectedQuality, av1Urls, h264Urls, av1Src, h264Src]);
 
-  const syncPlayPause = (vid: HTMLVideoElement | null) => {
-    if (!vid) return;
-    setHasStarted(true);
-    if (vid.paused) {
-      vid.play().catch(() => {});
-    } else {
-      vid.pause();
+  const effectiveThumbnails = vttThumbnailsUrl || thumbnailsVtt || undefined;
+
+  const effectiveSubtitles = useMemo<VideoSubtitleTrack[]>(() => {
+    if (Array.isArray(subtitles) && subtitles.length > 0) return subtitles;
+    if (subtitleUrl && subtitleUrl.trim()) {
+      return [{ src: subtitleUrl.trim(), label: 'English', lang: 'en', default: false }];
+    }
+    return [];
+  }, [subtitles, subtitleUrl]);
+
+  const handleQualitySwitch = (nextQuality: 'auto' | '1080p' | '720p') => {
+    if (nextQuality === selectedQuality) return;
+    const player = playerRef.current;
+    if (player) {
+      pendingRestoreRef.current = {
+        time: Number.isFinite(player.currentTime) ? player.currentTime : 0,
+        wasPlaying: !player.paused,
+      };
+    }
+    setHasError(false);
+    setSelectedQuality(nextQuality);
+  };
+
+  const handlePlayerError = () => {
+    const player = playerRef.current;
+    if (codecMode === 'av1' && (hasH264Variants || (src && src !== resolvedSrc))) {
+      if (player) {
+        pendingRestoreRef.current = {
+          time: Number.isFinite(player.currentTime) ? player.currentTime : 0,
+          wasPlaying: !player.paused,
+        };
+      }
+      setCodecMode('h264');
+      setHasError(false);
+      return;
+    }
+    setHasError(true);
+  };
+
+  const handleRetry = () => {
+    setHasError(false);
+    setRetryNonce((n) => n + 1);
+    const player = playerRef.current;
+    if (player) {
+      try {
+        player.play().catch(() => {});
+      } catch {}
     }
   };
 
-  const handleToggleMute = (vid: HTMLVideoElement | null) => {
-    if (!vid) return;
-    const next = !vid.muted;
-    vid.muted = next;
-    setIsMuted(next);
-  };
-
-  const handleSeek = (vid: HTMLVideoElement | null, value: number) => {
-    if (!vid) return;
-    vid.currentTime = value;
-    setCurrentTime(value);
-  };
-
-  const handleSpeedChange = (rate: number) => {
-    setPlaybackRate(rate);
-    if (inlineVideoRef.current) inlineVideoRef.current.playbackRate = rate;
-    if (theaterVideoRef.current) theaterVideoRef.current.playbackRate = rate;
-    setIsMenuOpen(false);
-  };
-
-  const handlePiP = async (vid: HTMLVideoElement | null) => {
-    setIsMenuOpen(false);
-    if (!vid) return;
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else if (typeof vid.requestPictureInPicture === 'function') {
-        await vid.requestPictureInPicture();
-      }
-    } catch {}
-  };
-
-  const openTheater = () => {
-    setIsMenuOpen(false);
-    const inVid = inlineVideoRef.current;
-    const t = inVid?.currentTime || currentTime;
-    const wasPlaying = inVid ? !inVid.paused : isPlaying;
-    if (inVid && !inVid.paused) inVid.pause();
-    setIsTheaterOpen(true);
-    requestAnimationFrame(() => {
-      const thVid = theaterVideoRef.current;
-      if (thVid) {
-        thVid.currentTime = t;
-        thVid.muted = isMuted;
-        thVid.playbackRate = playbackRate;
-        if (wasPlaying) {
-          thVid.play().catch(() => {});
-        }
-      }
-    });
-  };
-
-  const closeTheater = () => {
-    setIsMenuOpen(false);
-    const thVid = theaterVideoRef.current;
-    const t = thVid?.currentTime || currentTime;
-    const wasPlaying = thVid ? !thVid.paused : false;
-    if (thVid && !thVid.paused) thVid.pause();
-    setIsTheaterOpen(false);
-    requestAnimationFrame(() => {
-      const inVid = inlineVideoRef.current;
-      if (inVid) {
-        inVid.currentTime = t;
-        inVid.muted = isMuted;
-        inVid.playbackRate = playbackRate;
-        if (wasPlaying) {
-          inVid.play().catch(() => {});
-        }
-      }
-    });
-  };
-
-  const renderControlsBar = (vidRef: React.RefObject<HTMLVideoElement | null>, expanded: boolean) => {
-    const safeDur = duration > 0 ? duration : 0;
-    const pct = safeDur > 0 ? Math.min(100, Math.max(0, (currentTime / safeDur) * 100)) : 0;
-    return (
-      <div
-        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-2.5 pb-2 pt-5 flex flex-col gap-1.5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <input
-          type="range"
-          min={0}
-          max={safeDur || 100}
-          step={0.1}
-          value={safeDur > 0 ? currentTime : 0}
-          onChange={(e) => handleSeek(vidRef.current, Number(e.target.value))}
-          aria-label="Seek video"
-          className="w-full h-1 accent-cyan-400 cursor-pointer"
-          style={{
-            background: `linear-gradient(to right, #22d3ee ${pct}%, rgba(255,255,255,0.28) ${pct}%)`,
-          }}
-        />
-        <div className="flex items-center justify-between gap-2 text-white">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => syncPlayPause(vidRef.current)}
-              className="p-1 rounded hover:bg-white/15 cursor-pointer"
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-white" />}
-            </button>
-
-            <span className="text-[10.5px] font-mono tabular-nums text-white/90 whitespace-nowrap">
-              {formatMediaDuration(currentTime) || '0:00'} / {formatMediaDuration(safeDur) || '0:00'}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1 relative" ref={expanded ? undefined : menuRef}>
-            <button
-              type="button"
-              onClick={() => handleToggleMute(vidRef.current)}
-              className="p-1 rounded hover:bg-white/15 cursor-pointer"
-              aria-label={isMuted ? 'Unmute' : 'Mute'}
-            >
-              {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => (expanded ? closeTheater() : openTheater())}
-              className="p-1 rounded hover:bg-white/15 cursor-pointer"
-              aria-label={expanded ? 'Exit full view' : 'Expand view'}
-              title={expanded ? 'Exit full view' : 'Full view'}
-            >
-              {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-            </button>
-
-            <div className="relative" ref={expanded ? menuRef : undefined}>
-              <button
-                type="button"
-                onClick={() => setIsMenuOpen((prev) => !prev)}
-                className="p-1 rounded hover:bg-white/15 cursor-pointer"
-                aria-label="Video options"
-              >
-                <MoreVertical className="w-3.5 h-3.5" />
-              </button>
-
-              {isMenuOpen && (
-                <div className="absolute right-0 bottom-7 w-28 bg-slate-900/95 border border-white/15 rounded-lg shadow-xl py-1 text-[10.5px] text-white z-30">
-                  <div className="px-2 py-0.5 text-[9.5px] text-slate-400 uppercase tracking-wider font-semibold">
-                    Speed
-                  </div>
-                  <div className="px-1.5 pb-1 flex flex-wrap gap-1 border-b border-white/10">
-                    {SPEED_OPTIONS.map((rate) => (
-                      <button
-                        key={rate}
-                        type="button"
-                        onClick={() => handleSpeedChange(rate)}
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer ${
-                          playbackRate === rate
-                            ? 'bg-cyan-500 text-slate-950 font-bold'
-                            : 'hover:bg-white/15 text-slate-200'
-                        }`}
-                      >
-                        {rate}x
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handlePiP(vidRef.current)}
-                    className="w-full px-2 py-1 text-left hover:bg-white/10 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <PictureInPicture2 className="w-3 h-3" />
-                    <span>PiP</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  const normalizedAspect = (aspectRatio || '16/9').replace(':', '/');
 
   return (
-    <>
-      <div
-        className={`relative w-full overflow-hidden bg-slate-950 flex items-center justify-center group select-none ${className}`}
-        style={{ aspectRatio }}
-        onClick={() => syncPlayPause(inlineVideoRef.current)}
-      >
-        <video
-          ref={inlineVideoRef}
-          src={src}
-          autoPlay={autoPlay}
-          playsInline
-          preload="metadata"
-          onLoadedMetadata={(e) => {
-            const dur = e.currentTarget.duration;
-            if (dur && Number.isFinite(dur) && dur > 0) {
-              setDuration(dur);
-              onDurationResolved?.(dur);
+    <div
+      className={`fesline-vidstack-wrap relative w-full overflow-hidden bg-slate-950 max-h-[210px] sm:max-h-[420px] flex items-center justify-center ${className}`}
+      style={{
+        aspectRatio: normalizedAspect,
+        ['--media-brand' as string]: 'var(--primary-color, #164e63)',
+        ['--fesline-vid-fit' as string]: objectFit,
+        ['--fesline-vid-scale' as string]: String(zoomLevel || 1),
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <MediaPlayer
+        key={`${resumeKey}_${retryNonce}`}
+        ref={playerRef}
+        title={title || 'Engineering Video'}
+        src={resolvedSrc}
+        playsInline
+        crossOrigin="anonymous"
+        load="visible"
+        posterLoad="visible"
+        autoPlay={autoPlay}
+        streamType="on-demand"
+        keyTarget="player"
+        className="w-full h-full max-h-[210px] sm:max-h-[420px] fesline-vidstack-player"
+        onLoadedMetadata={() => {
+          const player = playerRef.current;
+          const dur = player?.duration || 0;
+          if (dur && Number.isFinite(dur) && dur > 0) {
+            onDurationResolved?.(dur);
+          }
+
+          if (!resumedOnceRef.current && !pendingRestoreRef.current && player && dur > 6) {
+            resumedOnceRef.current = true;
+            try {
+              const saved = Number(localStorage.getItem(resumeKey) || '0');
+              if (Number.isFinite(saved) && saved > 2 && saved < dur - 2) {
+                player.currentTime = saved;
+              }
+            } catch {}
+          }
+        }}
+        onCanPlay={() => {
+          const pending = pendingRestoreRef.current;
+          const player = playerRef.current;
+          if (pending && player) {
+            pendingRestoreRef.current = null;
+            if (pending.time > 0) {
+              player.currentTime = pending.time;
             }
-          }}
-          onTimeUpdate={(e) => {
-            if (!isTheaterOpen) setCurrentTime(e.currentTarget.currentTime);
-          }}
-          onPlay={() => {
-            setHasStarted(true);
-            setIsPlaying(true);
-          }}
-          onPause={() => setIsPlaying(false)}
-          onEnded={() => setIsPlaying(false)}
-          className="w-full h-full transition-transform duration-200 cursor-pointer"
-          style={{
-            objectFit,
-            transform: `scale(${zoomLevel || 1})`,
-          }}
-        />
-
-        {(!isPlaying || !hasStarted) && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              syncPlayPause(inlineVideoRef.current);
-            }}
-            aria-label="Play video"
-            className="absolute inset-0 m-auto w-11 h-11 rounded-full bg-white/95 hover:bg-white text-slate-950 flex items-center justify-center shadow-lg transition-transform group-hover:scale-105 cursor-pointer z-10"
-          >
-            <Play className="w-5 h-5 fill-slate-950 ml-0.5" />
-          </button>
-        )}
-
-        {renderControlsBar(inlineVideoRef, false)}
-      </div>
-
-      {/* Custom In-Viewport Theater Mode — eliminates Chrome/Android native fullscreen exit banner */}
-      {isTheaterOpen && (
-        <div
-          className="fixed inset-0 z-[120] bg-black/95 flex items-center justify-center p-2 sm:p-4 select-none"
-          onClick={closeTheater}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Video player full view"
-        >
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              closeTheater();
-            }}
-            aria-label="Close full view"
-            className="absolute top-3 right-3 z-30 w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-
-          <div
-            className="relative w-full max-w-5xl max-h-[88vh] aspect-video bg-black rounded-xl overflow-hidden flex items-center justify-center shadow-2xl"
-            onClick={(e) => {
-              e.stopPropagation();
-              syncPlayPause(theaterVideoRef.current);
-            }}
-          >
-            <video
-              ref={theaterVideoRef}
-              src={src}
-              playsInline
-              preload="metadata"
-              onLoadedMetadata={(e) => {
-                const dur = e.currentTarget.duration;
-                if (dur && Number.isFinite(dur) && dur > 0) {
-                  setDuration(dur);
-                }
-              }}
-              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onEnded={() => setIsPlaying(false)}
-              className="w-full h-full object-contain cursor-pointer"
+            if (pending.wasPlaying) {
+              player.play().catch(() => {});
+            }
+          }
+        }}
+        onTimeUpdate={(detail) => {
+          const cur = detail?.currentTime || 0;
+          if (cur > 0 && Math.abs(cur - lastSavedSecRef.current) >= 1.5) {
+            lastSavedSecRef.current = cur;
+            try {
+              localStorage.setItem(resumeKey, String(Math.floor(cur)));
+            } catch {}
+          }
+        }}
+        onEnded={() => {
+          try {
+            localStorage.removeItem(resumeKey);
+          } catch {}
+        }}
+        onError={handlePlayerError}
+      >
+        <MediaProvider>
+          {poster && (
+            <Poster
+              src={poster}
+              alt={title || 'Video poster'}
+              className="vds-poster object-cover w-full h-full"
             />
+          )}
+          {effectiveSubtitles.map((track, idx) => (
+            <Track
+              key={`${track.src}_${idx}`}
+              src={track.src}
+              kind="subtitles"
+              label={track.label || 'Subtitles'}
+              lang={track.lang || 'en'}
+              default={Boolean(track.default)}
+            />
+          ))}
+        </MediaProvider>
 
-            {!isPlaying && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  syncPlayPause(theaterVideoRef.current);
-                }}
-                aria-label="Play video"
-                className="absolute inset-0 m-auto w-12 h-12 rounded-full bg-white/95 hover:bg-white text-slate-950 flex items-center justify-center shadow-xl cursor-pointer z-10"
-              >
-                <Play className="w-5 h-5 fill-slate-950 ml-0.5" />
-              </button>
-            )}
+        <DefaultVideoLayout
+          icons={defaultLayoutIcons}
+          thumbnails={effectiveThumbnails}
+          playbackRates={SPEED_OPTIONS}
+          seekStep={10}
+          colorScheme="dark"
+          smallLayoutWhen={({ width, height }) => width < 520 || height < 300}
+        />
+      </MediaPlayer>
 
-            {renderControlsBar(theaterVideoRef, true)}
-          </div>
+      {/* Progressive Multi-Resolution Selector (Auto / 1080p / 720p) */}
+      {!isAdaptiveManifest && availableResolutions.length > 1 && !hasError && (
+        <div
+          className="absolute top-2 right-2 z-20 flex items-center gap-0.5 bg-slate-950/75 backdrop-blur-xs border border-white/15 rounded-md p-0.5 text-[10px] font-mono text-white"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {(['auto', ...availableResolutions] as Array<'auto' | '1080p' | '720p'>).map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => handleQualitySwitch(q)}
+              className={`px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
+                selectedQuality === q
+                  ? 'bg-cyan-700 text-white font-bold'
+                  : 'text-slate-200 hover:bg-white/15'
+              }`}
+              title={`Switch stream quality to ${q}`}
+            >
+              {q === 'auto' ? 'Auto' : q}
+            </button>
+          ))}
         </div>
       )}
-    </>
+
+      {/* Playback Error + Retry Overlay */}
+      {hasError && (
+        <div className="absolute inset-0 z-30 bg-slate-950/90 flex flex-col items-center justify-center gap-2 p-4 text-center text-white">
+          <p className="text-xs text-slate-200">Unable to load video stream.</p>
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-800 hover:bg-cyan-700 text-white text-xs font-semibold cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
+    </div>
   );
 };

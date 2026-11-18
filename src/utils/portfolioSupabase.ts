@@ -23,6 +23,76 @@ export interface MediaAssetItem {
   fileName?: string;
   fileSize?: string;
   fileType?: string;
+  avifUrl?: string;
+  webpUrl?: string;
+  jpegUrl?: string;
+  mobileUrl?: string;
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  subtitleUrl?: string;
+  mediaAssetId?: string;
+  width?: number;
+  height?: number;
+  resolution?: string;
+  originalBytes?: number;
+  optimizedBytes?: number;
+  compressionPct?: number;
+  format?: string;
+}
+
+export interface MediaAssetRecord {
+  id: string;
+  bucket: string;
+  storagePath: string;
+  mediaType: 'image' | 'video' | 'document';
+  fileName: string;
+  format: string;
+  resolution?: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  originalBytes: number;
+  optimizedBytes: number;
+  compressionPct: number;
+  status: 'processing' | 'completed' | 'failed';
+  primaryUrl: string;
+  avifUrl?: string;
+  webpUrl?: string;
+  jpegUrl?: string;
+  mobileUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface UploadBucketResult {
+  publicUrl: string;
+  storagePath: string;
+  fileName: string;
+  fileSize: string;
+  durationSec?: number;
+  avifUrl?: string;
+  webpUrl?: string;
+  jpegUrl?: string;
+  mobileUrl?: string;
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  width?: number;
+  height?: number;
+  resolution?: string;
+  originalBytes?: number;
+  optimizedBytes?: number;
+  compressionPct?: number;
+  format?: string;
+  mediaAssetId?: string;
 }
 
 export interface LinkItem {
@@ -63,6 +133,16 @@ export interface ArticleHeroMedia {
   url?: string;
   caption?: string;
   cadModelType?: 'harmonic_actuator' | 'gimbal_bracket' | 'planetary_gearbox' | 'chassis_suspension';
+  avifUrl?: string;
+  webpUrl?: string;
+  jpegUrl?: string;
+  mobileUrl?: string;
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  subtitleUrl?: string;
+  mediaAssetId?: string;
 }
 
 export interface ArticleCodeBlock {
@@ -446,6 +526,23 @@ export interface BucketFileItem {
   mediaKind: BucketMediaKind;
   createdAt?: string;
   updatedAt?: string;
+  avifUrl?: string;
+  webpUrl?: string;
+  jpegUrl?: string;
+  mobileUrl?: string;
+  responsiveUrl?: string;
+  originalUrl?: string;
+  posterUrl?: string;
+  vttThumbnailsUrl?: string;
+  av1Urls?: { '720p'?: string; '1080p'?: string };
+  h264Urls?: { '720p'?: string; '1080p'?: string };
+  fallbackVideoUrl?: string;
+  hdVideoUrl?: string;
+  format?: string;
+  optimizedResolution?: string;
+  originalBytes?: number;
+  optimizedBytes?: number;
+  compressionPct?: number;
 }
 
 export function inferBucketMediaKind(name: string, mimeType?: string): BucketMediaKind {
@@ -704,16 +801,170 @@ async function cancelServerVideoJob(jobId: string): Promise<void> {
   } catch {}
 }
 
+const STORAGE_KEY_MEDIA_ASSETS_CACHE = 'fesline_media_assets_v1';
+let memoryMediaAssetsCache: MediaAssetRecord[] | null = null;
+
+function hydrateLocalMediaAssets(): MediaAssetRecord[] {
+  if (memoryMediaAssetsCache) return memoryMediaAssetsCache;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_MEDIA_ASSETS_CACHE);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        memoryMediaAssetsCache = parsed;
+        return parsed;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+function persistLocalMediaAssets(list: MediaAssetRecord[]) {
+  memoryMediaAssetsCache = list.slice(0, 200);
+  try {
+    localStorage.setItem(STORAGE_KEY_MEDIA_ASSETS_CACHE, JSON.stringify(memoryMediaAssetsCache));
+  } catch {}
+}
+
+export async function saveMediaAssetRecord(record: MediaAssetRecord): Promise<void> {
+  const existing = hydrateLocalMediaAssets();
+  const next = [record, ...existing.filter((r) => r.id !== record.id)];
+  persistLocalMediaAssets(next);
+
+  try {
+    await supabase.from('media_assets').upsert(
+      {
+        id: record.id,
+        bucket: record.bucket,
+        storage_path: record.storagePath,
+        media_type: record.mediaType,
+        file_name: record.fileName,
+        format: record.format,
+        resolution: record.resolution || '',
+        width: record.width || null,
+        height: record.height || null,
+        duration_sec: record.durationSec || null,
+        original_bytes: record.originalBytes || 0,
+        optimized_bytes: record.optimizedBytes || 0,
+        compression_pct: record.compressionPct || 0,
+        status: record.status,
+        primary_url: record.primaryUrl,
+        fallback_urls: {
+          avifUrl: record.avifUrl,
+          webpUrl: record.webpUrl,
+          jpegUrl: record.jpegUrl,
+          mobileUrl: record.mobileUrl,
+          av1Urls: record.av1Urls,
+          h264Urls: record.h264Urls,
+        },
+        poster_url: record.posterUrl || null,
+        vtt_thumbnails_url: record.vttThumbnailsUrl || null,
+        error_message: record.errorMessage || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+  } catch {}
+}
+
+export async function fetchMediaAssetsFromSupabase(bucket?: string): Promise<MediaAssetRecord[]> {
+  const local = hydrateLocalMediaAssets();
+  const filteredLocal = bucket ? local.filter((r) => r.bucket === bucket) : local;
+  try {
+    let query = supabase
+      .from('media_assets')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(150);
+    if (bucket) {
+      query = query.eq('bucket', bucket);
+    }
+    const { data, error } = await query;
+    if (error || !Array.isArray(data)) return filteredLocal;
+    const mapped: MediaAssetRecord[] = data.map((row: any) => {
+      const fb = row.fallback_urls && typeof row.fallback_urls === 'object' ? row.fallback_urls : {};
+      return {
+        id: row.id,
+        bucket: row.bucket || 'projects',
+        storagePath: row.storage_path || '',
+        mediaType: (row.media_type as MediaAssetRecord['mediaType']) || 'image',
+        fileName: row.file_name || 'asset',
+        format: row.format || 'avif',
+        resolution: row.resolution || '',
+        width: typeof row.width === 'number' ? row.width : undefined,
+        height: typeof row.height === 'number' ? row.height : undefined,
+        durationSec: typeof row.duration_sec === 'number' ? row.duration_sec : undefined,
+        originalBytes: Number(row.original_bytes) || 0,
+        optimizedBytes: Number(row.optimized_bytes) || 0,
+        compressionPct: Number(row.compression_pct) || 0,
+        status: (row.status as MediaAssetRecord['status']) || 'completed',
+        primaryUrl: row.primary_url || '',
+        avifUrl: fb.avifUrl,
+        webpUrl: fb.webpUrl,
+        jpegUrl: fb.jpegUrl,
+        mobileUrl: fb.mobileUrl,
+        av1Urls: fb.av1Urls,
+        h264Urls: fb.h264Urls,
+        posterUrl: row.poster_url || undefined,
+        vttThumbnailsUrl: row.vtt_thumbnails_url || undefined,
+        errorMessage: row.error_message || undefined,
+        createdAt: row.created_at || new Date().toISOString(),
+        updatedAt: row.updated_at,
+      };
+    });
+    persistLocalMediaAssets(mapped);
+    return mapped;
+  } catch {
+    return local;
+  }
+}
+
+export async function deleteMediaAssetRecord(id: string): Promise<void> {
+  const local = hydrateLocalMediaAssets().filter((r) => r.id !== id);
+  persistLocalMediaAssets(local);
+  try {
+    await supabase.from('media_assets').delete().eq('id', id);
+  } catch {}
+}
+
+export async function fetchServerMediaJobs(): Promise<any[]> {
+  try {
+    const resp = await fetch('/api/media/jobs');
+    if (!resp.ok) return [];
+    const json = await resp.json().catch(() => null);
+    return Array.isArray(json?.jobs) ? json.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function retryServerVideoJob(jobId: string): Promise<{ success: boolean; message?: string }> {
+  try {
+    const headers = await getPipelineAuthHeaders();
+    const resp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/retry`, {
+      method: 'POST',
+      headers,
+    });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok || !json?.success) {
+      return { success: false, message: json?.message || 'Retry failed.' };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Retry request failed.' };
+  }
+}
+
 export async function uploadFileToBucket(
   bucket: 'projects' | 'articles' | 'materials' | 'avatars',
   file: File,
   folderPrefix = '',
   onProgress?: UploadProgressCallback,
   signal?: AbortSignal
-): Promise<{ publicUrl: string; storagePath: string; fileName: string; fileSize: string; durationSec?: number }> {
+): Promise<UploadBucketResult> {
   throwIfAborted(signal);
 
-  // Route Projects & Articles raster images through Sharp AVIF pipeline with resilient client handoff & canvas fallback
+  // Route Projects & Articles raster images through Sharp multi-format AVIF/WebP/JPEG pipeline
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableRasterImage(file)) {
     onProgress?.(25, 'Optimizing image...');
     try {
@@ -734,40 +985,143 @@ export async function uploadFileToBucket(
       const json = await resp.json().catch(() => null);
 
       if (resp.ok && json?.success) {
+        const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
         if (json.publicUrl) {
+          await saveMediaAssetRecord({
+            id: assetId,
+            bucket,
+            storagePath: json.storagePath,
+            mediaType: 'image',
+            fileName: json.fileName,
+            format: json.format || 'avif',
+            resolution: json.resolution,
+            width: json.width,
+            height: json.height,
+            originalBytes: json.originalBytes || file.size,
+            optimizedBytes: json.optimizedBytes || 0,
+            compressionPct: json.compressionPct || 0,
+            status: 'completed',
+            primaryUrl: json.publicUrl,
+            avifUrl: json.avifUrl || json.publicUrl,
+            webpUrl: json.webpUrl,
+            jpegUrl: json.jpegUrl,
+            mobileUrl: json.mobileUrl,
+            createdAt: new Date().toISOString(),
+          });
           onProgress?.(100, `Saved optimized AVIF (${json.fileSize})`);
           return {
             publicUrl: json.publicUrl,
+            avifUrl: json.avifUrl || json.publicUrl,
+            webpUrl: json.webpUrl,
+            jpegUrl: json.jpegUrl,
+            mobileUrl: json.mobileUrl,
             storagePath: json.storagePath,
             fileName: json.fileName,
             fileSize: json.fileSize,
+            width: json.width,
+            height: json.height,
+            resolution: json.resolution,
+            originalBytes: json.originalBytes || file.size,
+            optimizedBytes: json.optimizedBytes,
+            compressionPct: json.compressionPct,
+            format: json.format || 'avif',
+            mediaAssetId: assetId,
           };
         }
-        if (json.directUploadRequired && json.optimizedBase64) {
-          onProgress?.(75, `Uploading optimized AVIF (${json.fileSize}) to "${bucket}"...`);
-          const avifBlob = base64ToBlob(json.optimizedBase64, json.mimeType || 'image/avif');
-          throwIfAborted(signal);
-          const uploaded = await uploadBlobDirectToBucket({
-            bucket,
-            blob: avifBlob,
-            fileName: json.fileName || `${file.name}.avif`,
-            contentType: json.mimeType || 'image/avif',
-            folderPrefix: folderPrefix || 'images',
-            explicitStoragePath: json.storagePath,
-          });
-          onProgress?.(100, `Saved optimized AVIF (${uploaded.fileSize})`);
-          return uploaded;
+
+        if (json.directUploadRequired) {
+          onProgress?.(72, `Uploading optimized variants (${json.fileSize}) to "${bucket}"...`);
+          const variantUrls: Record<string, string> = {};
+          let primaryUploaded: { publicUrl: string; storagePath: string; fileName: string; fileSize: string } | null = null;
+
+          const variants: Array<{
+            key: string;
+            storagePath: string;
+            fileName: string;
+            mimeType: string;
+            base64: string;
+          }> = Array.isArray(json.variants) && json.variants.length > 0
+            ? json.variants
+            : json.optimizedBase64
+            ? [
+                {
+                  key: 'avif',
+                  storagePath: json.storagePath,
+                  fileName: json.fileName || `${file.name}.avif`,
+                  mimeType: json.mimeType || 'image/avif',
+                  base64: json.optimizedBase64,
+                },
+              ]
+            : [];
+
+          for (const v of variants) {
+            throwIfAborted(signal);
+            const blob = base64ToBlob(v.base64, v.mimeType);
+            const uploaded = await uploadBlobDirectToBucket({
+              bucket,
+              blob,
+              fileName: v.fileName,
+              contentType: v.mimeType,
+              folderPrefix: folderPrefix || 'images',
+              explicitStoragePath: v.storagePath,
+            });
+            variantUrls[v.key] = uploaded.publicUrl;
+            if (v.key === 'avif' || !primaryUploaded) {
+              primaryUploaded = uploaded;
+            }
+          }
+
+          if (primaryUploaded) {
+            await saveMediaAssetRecord({
+              id: assetId,
+              bucket,
+              storagePath: primaryUploaded.storagePath,
+              mediaType: 'image',
+              fileName: primaryUploaded.fileName,
+              format: json.format || 'avif',
+              resolution: json.resolution,
+              width: json.width,
+              height: json.height,
+              originalBytes: json.originalBytes || file.size,
+              optimizedBytes: json.optimizedBytes || 0,
+              compressionPct: json.compressionPct || 0,
+              status: 'completed',
+              primaryUrl: primaryUploaded.publicUrl,
+              avifUrl: variantUrls.avif || primaryUploaded.publicUrl,
+              webpUrl: variantUrls.webp,
+              jpegUrl: variantUrls.jpeg,
+              mobileUrl: variantUrls.mobile || variantUrls.avif,
+              createdAt: new Date().toISOString(),
+            });
+            onProgress?.(100, `Saved optimized AVIF (${primaryUploaded.fileSize})`);
+            return {
+              ...primaryUploaded,
+              avifUrl: variantUrls.avif || primaryUploaded.publicUrl,
+              webpUrl: variantUrls.webp,
+              jpegUrl: variantUrls.jpeg,
+              mobileUrl: variantUrls.mobile || variantUrls.avif,
+              width: json.width,
+              height: json.height,
+              resolution: json.resolution,
+              originalBytes: json.originalBytes || file.size,
+              optimizedBytes: json.optimizedBytes,
+              compressionPct: json.compressionPct,
+              format: json.format || 'avif',
+              mediaAssetId: assetId,
+            };
+          }
         }
       }
     } catch (serverImgErr) {
       if (isAbortError(serverImgErr) || signal?.aborted) {
         throw new DOMException('Upload cancelled', 'AbortError');
       }
-      console.warn('[Image Pipeline] Server optimization unavailable, using client optimizer fallback:', serverImgErr);
+      console.warn('[Image Pipeline] Server optimization failed, using EXIF-stripped canvas AVIF/WebP optimizer:', serverImgErr);
     }
 
     throwIfAborted(signal);
-    // Resilient Client-Side EXIF-stripped 1600px Optimization Fallback
+    // Client EXIF-stripped 1600px optimized fallback (never uploads raw unoptimized file)
     onProgress?.(55, 'Optimizing image...');
     const optimized = await optimizeImageInBrowserCanvas(file);
     throwIfAborted(signal);
@@ -779,134 +1133,302 @@ export async function uploadFileToBucket(
       contentType: optimized.mimeType,
       folderPrefix: folderPrefix || 'images',
     });
+    const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const pct = file.size > 0 ? Math.round(((file.size - optimized.blob.size) / file.size) * 1000) / 10 : 0;
+    await saveMediaAssetRecord({
+      id: assetId,
+      bucket,
+      storagePath: directRes.storagePath,
+      mediaType: 'image',
+      fileName: directRes.fileName,
+      format: optimized.mimeType.split('/')[1] || 'webp',
+      originalBytes: file.size,
+      optimizedBytes: optimized.blob.size,
+      compressionPct: pct,
+      status: 'completed',
+      primaryUrl: directRes.publicUrl,
+      createdAt: new Date().toISOString(),
+    });
     onProgress?.(100, `Saved optimized image (${directRes.fileSize})`);
-    return directRes;
+    return {
+      ...directRes,
+      originalBytes: file.size,
+      optimizedBytes: optimized.blob.size,
+      compressionPct: pct,
+      format: optimized.mimeType.split('/')[1] || 'webp',
+      mediaAssetId: assetId,
+    };
   }
 
-  // Route Projects & Articles videos through fast Background FFmpeg pipeline with resilient fallback
+  // Route Projects & Articles videos through Background FFmpeg AV1 + H.264 pipeline (no raw files stored in bucket)
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
-    onProgress?.(8, 'Uploading video...');
+    onProgress?.(8, 'Uploading video for optimization...');
     const localDurationPromise = probeLocalFileDuration(file);
-    try {
-      const authHeaders = await getPipelineAuthHeaders();
-      throwIfAborted(signal);
-      const formData = new FormData();
-      formData.append('bucket', bucket);
-      formData.append('folderPrefix', folderPrefix || 'videos');
-      formData.append('maxHeight', '720');
-      formData.append('file', file);
+    const authHeaders = await getPipelineAuthHeaders();
+    throwIfAborted(signal);
+    const formData = new FormData();
+    formData.append('bucket', bucket);
+    formData.append('folderPrefix', folderPrefix || 'videos');
+    formData.append('file', file);
 
-      const startResp = await fetch('/api/media/optimize-video', {
-        method: 'POST',
-        headers: authHeaders,
-        body: formData,
-        signal,
-      });
-      throwIfAborted(signal);
-      const startJson = await startResp.json().catch(() => null);
+    const startResp = await fetch('/api/media/optimize-video', {
+      method: 'POST',
+      headers: authHeaders,
+      body: formData,
+      signal,
+    });
+    throwIfAborted(signal);
+    const startJson = await startResp.json().catch(() => null);
 
-      if (startResp.ok && startJson?.success && startJson?.jobId) {
-        const jobId: string = startJson.jobId;
-        const onAbort = () => {
-          void cancelServerVideoJob(jobId);
-        };
-        signal?.addEventListener('abort', onAbort, { once: true });
-
-        try {
-          onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
-
-          const maxWaitMs = 45 * 60 * 1000;
-          const startedAt = Date.now();
-          let consecutivePollErrors = 0;
-
-          while (Date.now() - startedAt < maxWaitMs) {
-            throwIfAborted(signal);
-            await new Promise((r) => setTimeout(r, 350));
-            throwIfAborted(signal);
-            const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`, { signal });
-            const statusJson = await statusResp.json().catch(() => null);
-
-            if (!statusResp.ok || !statusJson?.job) {
-              consecutivePollErrors++;
-              if (consecutivePollErrors >= 5) {
-                throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
-              }
-              continue;
-            }
-            consecutivePollErrors = 0;
-
-            const job = statusJson.job;
-            onProgress?.(job.progress || 50, job.stage || 'Processing video...');
-
-            if (job.status === 'cancelled') {
-              throw new DOMException('Upload cancelled', 'AbortError');
-            }
-
-            if (job.status === 'completed' && job.publicUrl) {
-              const localDur = await localDurationPromise;
-              const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
-              if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
-              return {
-                publicUrl: job.publicUrl,
-                storagePath: job.storagePath,
-                fileName: job.fileName || file.name,
-                fileSize: job.fileSize || formatBytes(file.size),
-                durationSec: resolvedDuration,
-              };
-            }
-
-            if (job.status === 'ready_for_client_upload' && job.directUploadUrl) {
-              onProgress?.(95, `Uploading compressed video (${job.fileSize || ''}) to "${bucket}"...`);
-              const blobResp = await fetch(job.directUploadUrl, { signal });
-              if (!blobResp.ok) {
-                throw new Error('Failed to retrieve transcoded video from server.');
-              }
-              const compressedBlob = await blobResp.blob();
-              throwIfAborted(signal);
-              const uploaded = await uploadBlobDirectToBucket({
-                bucket,
-                blob: compressedBlob,
-                fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
-                contentType: 'video/mp4',
-                folderPrefix: folderPrefix || 'videos',
-                explicitStoragePath: job.storagePath,
-              });
-              const localDur = await localDurationPromise;
-              const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
-              if (resolvedDuration) setCachedMediaDuration(uploaded.publicUrl, resolvedDuration);
-              onProgress?.(100, `Saved optimized video (${uploaded.fileSize})`);
-              return { ...uploaded, durationSec: resolvedDuration };
-            }
-
-            if (job.status === 'failed') {
-              throw new Error(job.error || 'Background video optimization failed.');
-            }
-          }
-        } finally {
-          signal?.removeEventListener('abort', onAbort);
-        }
-      }
-    } catch (videoPipeErr) {
-      if (isAbortError(videoPipeErr) || signal?.aborted) {
-        throw new DOMException('Upload cancelled', 'AbortError');
-      }
-      console.warn('[Video Pipeline] Background optimization unavailable, falling back to direct bucket upload:', videoPipeErr);
+    if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
+      throw new Error(startJson?.message || 'Unable to start server video optimization job.');
     }
 
-    throwIfAborted(signal);
-    // Resilient direct storage upload fallback so valid videos always publish
-    onProgress?.(60, `Uploading "${file.name}" directly to "${bucket}" storage...`);
-    const directVid = await uploadBlobDirectToBucket({
-      bucket,
-      blob: file,
-      fileName: file.name,
-      contentType: file.type || 'video/mp4',
-      folderPrefix: folderPrefix || 'videos',
-    });
-    const localDur = await localDurationPromise;
-    if (localDur) setCachedMediaDuration(directVid.publicUrl, localDur);
-    onProgress?.(100, `Uploaded (${directVid.fileSize})`);
-    return { ...directVid, durationSec: localDur };
+    const jobId: string = startJson.jobId;
+    const onAbort = () => {
+      void cancelServerVideoJob(jobId);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
+
+      const maxWaitMs = 45 * 60 * 1000;
+      const startedAt = Date.now();
+      let consecutivePollErrors = 0;
+
+      while (Date.now() - startedAt < maxWaitMs) {
+        throwIfAborted(signal);
+        await new Promise((r) => setTimeout(r, 450));
+        throwIfAborted(signal);
+        const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`, { signal });
+        const statusJson = await statusResp.json().catch(() => null);
+
+        if (!statusResp.ok || !statusJson?.job) {
+          consecutivePollErrors++;
+          if (consecutivePollErrors >= 6) {
+            throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
+          }
+          continue;
+        }
+        consecutivePollErrors = 0;
+
+        const job = statusJson.job;
+        onProgress?.(job.progress || 50, job.stage || 'Processing video...');
+
+        if (job.status === 'cancelled') {
+          throw new DOMException('Upload cancelled', 'AbortError');
+        }
+
+        if (job.status === 'completed' && job.publicUrl) {
+          const localDur = await localDurationPromise;
+          const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+          if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
+          await saveMediaAssetRecord({
+            id: job.jobId,
+            bucket,
+            storagePath: job.storagePath || '',
+            mediaType: 'video',
+            fileName: job.fileName || file.name,
+            format: job.format || 'av1+h264',
+            resolution: job.resolution,
+            width: job.width,
+            height: job.height,
+            durationSec: resolvedDuration,
+            originalBytes: job.originalBytes || file.size,
+            optimizedBytes: job.bytes || 0,
+            compressionPct: job.compressionPct || 0,
+            status: 'completed',
+            primaryUrl: job.publicUrl,
+            av1Urls: job.av1Urls,
+            h264Urls: job.h264Urls,
+            posterUrl: job.posterUrl,
+            vttThumbnailsUrl: job.vttThumbnailsUrl,
+            createdAt: new Date().toISOString(),
+          });
+          return {
+            publicUrl: job.publicUrl,
+            storagePath: job.storagePath,
+            fileName: job.fileName || file.name,
+            fileSize: job.fileSize || formatBytes(job.bytes || file.size),
+            durationSec: resolvedDuration,
+            av1Urls: job.av1Urls,
+            h264Urls: job.h264Urls,
+            posterUrl: job.posterUrl,
+            vttThumbnailsUrl: job.vttThumbnailsUrl,
+            width: job.width,
+            height: job.height,
+            resolution: job.resolution,
+            originalBytes: job.originalBytes || file.size,
+            optimizedBytes: job.bytes,
+            compressionPct: job.compressionPct,
+            format: job.format,
+            mediaAssetId: job.jobId,
+          };
+        }
+
+        if (job.status === 'ready_for_client_upload') {
+          onProgress?.(94, `Uploading optimized streams (${job.fileSize || ''}) to "${bucket}"...`);
+          const artifactsList: Array<{
+            key: string;
+            downloadUrl: string;
+            storagePath: string;
+            fileName: string;
+            contentType: string;
+            bytes: number;
+          }> = Array.isArray(job.handoffArtifacts) && job.handoffArtifacts.length > 0
+            ? job.handoffArtifacts
+            : [
+                {
+                  key: 'h264_720p',
+                  downloadUrl: job.directUploadUrl,
+                  storagePath: job.storagePath,
+                  fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
+                  contentType: 'video/mp4',
+                  bytes: job.bytes || 0,
+                },
+              ];
+
+          const uploadedByKey: Record<string, { publicUrl: string; storagePath: string; fileName: string; fileSize: string }> = {};
+          for (const art of artifactsList) {
+            throwIfAborted(signal);
+            const blobResp = await fetch(art.downloadUrl, { signal });
+            if (!blobResp.ok) {
+              throw new Error(`Failed to retrieve optimized artifact (${art.key}) from server.`);
+            }
+            const artBlob = await blobResp.blob();
+            throwIfAborted(signal);
+            uploadedByKey[art.key] = await uploadBlobDirectToBucket({
+              bucket,
+              blob: artBlob,
+              fileName: art.fileName,
+              contentType: art.contentType,
+              folderPrefix: folderPrefix || 'videos',
+              explicitStoragePath: art.storagePath,
+            });
+          }
+
+          // Re-write and upload VTT storyboard file pointing at uploaded Supabase sprite URL
+          let vttThumbnailsUrl: string | undefined;
+          if (uploadedByKey.sprite?.publicUrl) {
+            try {
+              const vttResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/vtt-template`, { signal });
+              const vttJson = await vttResp.json().catch(() => null);
+              if (vttResp.ok && vttJson?.vttContent) {
+                const finalVtt = String(vttJson.vttContent).replaceAll('__SPRITE_URL__', uploadedByKey.sprite.publicUrl);
+                const vttBlob = new Blob([finalVtt], { type: 'text/vtt' });
+                const vttRes = await uploadBlobDirectToBucket({
+                  bucket,
+                  blob: vttBlob,
+                  fileName: `${(job.fileName || 'video').replace(/\.[^/.]+$/, '')}_thumbnails.vtt`,
+                  contentType: 'text/vtt',
+                  folderPrefix: folderPrefix || 'videos',
+                });
+                vttThumbnailsUrl = vttRes.publicUrl;
+              }
+            } catch {}
+          }
+
+          const av1Urls = {
+            ...(uploadedByKey.av1_720p ? { '720p': uploadedByKey.av1_720p.publicUrl } : {}),
+            ...(uploadedByKey.av1_1080p ? { '1080p': uploadedByKey.av1_1080p.publicUrl } : {}),
+          };
+          const h264Urls = {
+            ...(uploadedByKey.h264_720p ? { '720p': uploadedByKey.h264_720p.publicUrl } : {}),
+            ...(uploadedByKey.h264_1080p ? { '1080p': uploadedByKey.h264_1080p.publicUrl } : {}),
+          };
+          const primary =
+            uploadedByKey.av1_1080p ||
+            uploadedByKey.av1_720p ||
+            uploadedByKey.h264_1080p ||
+            uploadedByKey.h264_720p ||
+            Object.values(uploadedByKey)[0];
+
+          const posterUrl = uploadedByKey.poster?.publicUrl;
+
+          // Signal server to clear any remaining temp files immediately
+          await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/complete-handoff`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              publicUrl: primary.publicUrl,
+              av1Urls,
+              h264Urls,
+              posterUrl,
+              vttThumbnailsUrl,
+              spriteUrl: uploadedByKey.sprite?.publicUrl,
+            }),
+          }).catch(() => {});
+
+          const localDur = await localDurationPromise;
+          const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+          if (resolvedDuration) setCachedMediaDuration(primary.publicUrl, resolvedDuration);
+
+          await saveMediaAssetRecord({
+            id: jobId,
+            bucket,
+            storagePath: primary.storagePath,
+            mediaType: 'video',
+            fileName: primary.fileName,
+            format: job.format || 'av1+h264',
+            resolution: job.resolution,
+            width: job.width,
+            height: job.height,
+            durationSec: resolvedDuration,
+            originalBytes: job.originalBytes || file.size,
+            optimizedBytes: job.bytes || 0,
+            compressionPct: job.compressionPct || 0,
+            status: 'completed',
+            primaryUrl: primary.publicUrl,
+            av1Urls,
+            h264Urls,
+            posterUrl,
+            vttThumbnailsUrl,
+            createdAt: new Date().toISOString(),
+          });
+
+          onProgress?.(100, `Saved optimized video (${primary.fileSize})`);
+          return {
+            ...primary,
+            durationSec: resolvedDuration,
+            av1Urls,
+            h264Urls,
+            posterUrl,
+            vttThumbnailsUrl,
+            width: job.width,
+            height: job.height,
+            resolution: job.resolution,
+            originalBytes: job.originalBytes || file.size,
+            optimizedBytes: job.bytes,
+            compressionPct: job.compressionPct,
+            format: job.format,
+            mediaAssetId: jobId,
+          };
+        }
+
+        if (job.status === 'failed') {
+          await saveMediaAssetRecord({
+            id: jobId,
+            bucket,
+            storagePath: '',
+            mediaType: 'video',
+            fileName: file.name,
+            format: 'av1+h264',
+            originalBytes: file.size,
+            optimizedBytes: 0,
+            compressionPct: 0,
+            status: 'failed',
+            primaryUrl: '',
+            errorMessage: job.error || 'Background video optimization failed.',
+            createdAt: new Date().toISOString(),
+          });
+          throw new Error(job.error || 'Background video optimization failed.');
+        }
+      }
+      throw new Error('Video optimization timed out.');
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   throwIfAborted(signal);
@@ -922,7 +1444,7 @@ export async function uploadFileToBucket(
   const localDur = file.type.startsWith('video/') || file.type.startsWith('audio/') ? await probeLocalFileDuration(file) : undefined;
   if (localDur) setCachedMediaDuration(uploadedAsset.publicUrl, localDur);
   onProgress?.(100, 'Uploaded');
-  return uploadedAsset;
+  return { ...uploadedAsset, durationSec: localDur };
 }
 
 // ============================================================================
@@ -1480,7 +2002,8 @@ export async function submitArticleComment(params: {
   hydrateCommentsByArticleStorage();
   const now = new Date().toISOString();
   const id = `cmt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const status: ArticleComment['status'] = params.isOwnerPosting ? 'approved' : 'pending';
+  // Publish comments immediately without requiring admin approval
+  const status: ArticleComment['status'] = 'approved';
   const payload = {
     id,
     article_id: params.articleId,
@@ -1901,7 +2424,9 @@ export function applyWebsiteSettingsLocally(settings: WebsiteSettings): void {
   }
 
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(EVENT_WEBSITE_SETTINGS_UPDATED, { detail: normalized }));
+    queueMicrotask(() => {
+      window.dispatchEvent(new CustomEvent(EVENT_WEBSITE_SETTINGS_UPDATED, { detail: normalized }));
+    });
   }
 }
 
@@ -2023,10 +2548,43 @@ export async function listBucketMediaFiles(
 ): Promise<BucketFileItem[]> {
   try {
     const results: BucketFileItem[] = [];
-    const { data: rootItems, error } = await supabase.storage
-      .from(bucket)
-      .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } });
+    const [{ data: rootItems, error }, assetRecords] = await Promise.all([
+      supabase.storage
+        .from(bucket)
+        .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } }),
+      fetchMediaAssetsFromSupabase(bucket).catch(() => []),
+    ]);
     if (error || !Array.isArray(rootItems)) return [];
+
+    const metaByKey = new Map<string, MediaAssetRecord>();
+    for (const rec of assetRecords) {
+      if (rec.primaryUrl) metaByKey.set(rec.primaryUrl, rec);
+      if (rec.storagePath) metaByKey.set(rec.storagePath, rec);
+    }
+
+    const attachOptimizationMeta = (item: BucketFileItem): BucketFileItem => {
+      const rec = metaByKey.get(item.publicUrl) || metaByKey.get(item.path);
+      if (!rec) return item;
+      return {
+        ...item,
+        avifUrl: rec.avifUrl,
+        webpUrl: rec.webpUrl,
+        jpegUrl: rec.jpegUrl,
+        mobileUrl: rec.mobileUrl,
+        responsiveUrl: rec.mobileUrl,
+        posterUrl: rec.posterUrl,
+        vttThumbnailsUrl: rec.vttThumbnailsUrl,
+        av1Urls: rec.av1Urls,
+        h264Urls: rec.h264Urls,
+        fallbackVideoUrl: rec.h264Urls?.['1080p'] || rec.h264Urls?.['720p'],
+        hdVideoUrl: rec.av1Urls?.['1080p'] || rec.h264Urls?.['1080p'],
+        format: rec.format,
+        optimizedResolution: rec.resolution,
+        originalBytes: rec.originalBytes,
+        optimizedBytes: rec.optimizedBytes,
+        compressionPct: rec.compressionPct,
+      };
+    };
 
     const folderNames: string[] = [];
     for (const item of rootItems) {
@@ -2036,17 +2594,19 @@ export async function listBucketMediaFiles(
       } else {
         const { data: pub } = supabase.storage.from(bucket).getPublicUrl(item.name);
         const mimeType = (item.metadata as any)?.mimetype;
-        results.push({
-          bucket,
-          name: item.name,
-          path: item.name,
-          publicUrl: pub?.publicUrl || '',
-          size: (item.metadata as any)?.size,
-          mimeType,
-          mediaKind: inferBucketMediaKind(item.name, mimeType),
-          createdAt: item.created_at || item.updated_at || undefined,
-          updatedAt: item.updated_at || item.created_at || undefined,
-        });
+        results.push(
+          attachOptimizationMeta({
+            bucket,
+            name: item.name,
+            path: item.name,
+            publicUrl: pub?.publicUrl || '',
+            size: (item.metadata as any)?.size,
+            mimeType,
+            mediaKind: inferBucketMediaKind(item.name, mimeType),
+            createdAt: item.created_at || item.updated_at || undefined,
+            updatedAt: item.updated_at || item.created_at || undefined,
+          })
+        );
       }
     }
 
@@ -2065,17 +2625,19 @@ export async function listBucketMediaFiles(
           const fullPath = `${folder}/${sub.name}`;
           const { data: pub } = supabase.storage.from(bucket).getPublicUrl(fullPath);
           const mimeType = (sub.metadata as any)?.mimetype;
-          results.push({
-            bucket,
-            name: sub.name,
-            path: fullPath,
-            publicUrl: pub?.publicUrl || '',
-            size: (sub.metadata as any)?.size,
-            mimeType,
-            mediaKind: inferBucketMediaKind(sub.name, mimeType),
-            createdAt: sub.created_at || sub.updated_at || undefined,
-            updatedAt: sub.updated_at || sub.created_at || undefined,
-          });
+          results.push(
+            attachOptimizationMeta({
+              bucket,
+              name: sub.name,
+              path: fullPath,
+              publicUrl: pub?.publicUrl || '',
+              size: (sub.metadata as any)?.size,
+              mimeType,
+              mediaKind: inferBucketMediaKind(sub.name, mimeType),
+              createdAt: sub.created_at || sub.updated_at || undefined,
+              updatedAt: sub.updated_at || sub.created_at || undefined,
+            })
+          );
         }
       }
     }

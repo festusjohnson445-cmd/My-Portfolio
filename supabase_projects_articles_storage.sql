@@ -219,9 +219,12 @@ CREATE TABLE IF NOT EXISTS public.article_comments (
   author_name TEXT NOT NULL,
   author_role TEXT DEFAULT 'Visitor',
   content_markdown TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'archived')),
+  status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending', 'approved', 'rejected', 'archived')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.article_comments
+  ALTER COLUMN status SET DEFAULT 'approved';
 
 -- Non-destructive upgrade if article_comments already exists without 'archived' in its CHECK constraint
 DO $$
@@ -253,9 +256,10 @@ ON public.article_comments FOR SELECT TO public
 USING (status = 'approved' OR public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Public Submit Pending Comment or Owner Approved" ON public.article_comments;
-CREATE POLICY "Public Submit Pending Comment or Owner Approved"
+DROP POLICY IF EXISTS "Public Submit Comment Immediately" ON public.article_comments;
+CREATE POLICY "Public Submit Comment Immediately"
 ON public.article_comments FOR INSERT TO public
-WITH CHECK (status = 'pending' OR public.is_portfolio_owner());
+WITH CHECK (status IN ('approved', 'pending') OR public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Owner Update Comments" ON public.article_comments;
 CREATE POLICY "Owner Update Comments"
@@ -377,7 +381,62 @@ CREATE POLICY "Owner Manage Website Settings Insert" ON public.website_settings 
 DROP POLICY IF EXISTS "Owner Manage Website Settings Update" ON public.website_settings;
 CREATE POLICY "Owner Manage Website Settings Update" ON public.website_settings FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
 
--- 7. ENABLE REALTIME PUBLICATIONS SAFELY
+-- 7. OPTIMIZED MEDIA ASSETS METADATA TABLE & RLS
+CREATE TABLE IF NOT EXISTS public.media_assets (
+  id TEXT PRIMARY KEY,
+  bucket TEXT NOT NULL CHECK (bucket IN ('projects', 'articles', 'materials', 'avatars')),
+  storage_path TEXT NOT NULL DEFAULT '',
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+  file_name TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT '',
+  resolution TEXT DEFAULT '',
+  width INTEGER DEFAULT 0,
+  height INTEGER DEFAULT 0,
+  duration_sec NUMERIC(10, 2) DEFAULT 0,
+  original_bytes BIGINT DEFAULT 0,
+  optimized_bytes BIGINT DEFAULT 0,
+  compression_pct NUMERIC(6, 2) DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('queued', 'processing', 'uploading', 'completed', 'failed', 'cancelled')),
+  primary_url TEXT NOT NULL DEFAULT '',
+  fallback_urls JSONB DEFAULT '{}'::jsonb,
+  poster_url TEXT DEFAULT '',
+  vtt_thumbnails_url TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Non-destructive upgrade if media_assets already existed before fallback_urls column
+ALTER TABLE public.media_assets
+  ADD COLUMN IF NOT EXISTS fallback_urls JSONB DEFAULT '{}'::jsonb;
+
+ALTER TABLE public.media_assets ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Media Assets" ON public.media_assets;
+CREATE POLICY "Public Read Media Assets"
+ON public.media_assets FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Insert Media Assets" ON public.media_assets;
+CREATE POLICY "Public Insert Media Assets"
+ON public.media_assets FOR INSERT TO public
+WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Owner Update Media Assets" ON public.media_assets;
+CREATE POLICY "Owner Update Media Assets"
+ON public.media_assets FOR UPDATE TO authenticated
+USING (public.is_portfolio_owner())
+WITH CHECK (public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Owner Delete Media Assets" ON public.media_assets;
+CREATE POLICY "Owner Delete Media Assets"
+ON public.media_assets FOR DELETE TO authenticated
+USING (public.is_portfolio_owner());
+
+CREATE INDEX IF NOT EXISTS idx_media_assets_bucket_created ON public.media_assets(bucket, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_media_assets_status ON public.media_assets(status);
+
+-- 8. ENABLE REALTIME PUBLICATIONS SAFELY
 DO $$
 BEGIN
   BEGIN
@@ -406,6 +465,10 @@ BEGIN
   END;
   BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.website_settings;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.media_assets;
   EXCEPTION WHEN duplicate_object THEN NULL;
   END;
 END $$;

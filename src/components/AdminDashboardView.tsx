@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -39,6 +39,7 @@ import {
   Music,
   Video as VideoIcon,
   RefreshCw,
+  RotateCcw,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -63,6 +64,10 @@ import {
   listBucketMediaFiles,
   deleteBucketMediaFile,
   uploadFileToBucket,
+  fetchMediaAssetsFromSupabase,
+  deleteMediaAssetRecord,
+  fetchServerMediaJobs,
+  retryServerVideoJob,
   applyWebsiteSettingsLocally,
   getCachedWebsiteSettings,
   getCachedProjects,
@@ -93,6 +98,7 @@ import {
   type FooterLockPosition,
   type CustomFooterSection,
   type BucketFileItem,
+  type MediaAssetRecord,
 } from '../utils/portfolioSupabase';
 import {
   useProfileSync,
@@ -169,6 +175,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     return c.length > 0 ? c : (bio.achievements as ProfileAchievement[]) || [];
   });
   const [siteSettings, setSiteSettings] = useState<WebsiteSettings>(() => getCachedWebsiteSettings());
+  const siteSettingsRef = useRef(siteSettings);
+  useEffect(() => {
+    siteSettingsRef.current = siteSettings;
+  }, [siteSettings]);
   const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(true).length === 0);
 
   // Forms open state
@@ -321,6 +331,25 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   // Media Library
   const [mediaBucket, setMediaBucket] = useState<'projects' | 'articles' | 'materials' | 'avatars'>('projects');
   const [mediaFiles, setMediaFiles] = useState<BucketFileItem[]>([]);
+  const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([]);
+  const [serverMediaJobs, setServerMediaJobs] = useState<
+    Array<{
+      jobId: string;
+      bucket: string;
+      originalName: string;
+      fileName?: string;
+      status: string;
+      progress: number;
+      stage: string;
+      format: string;
+      resolution?: string;
+      originalBytes?: number;
+      bytes?: number;
+      compressionPct?: number;
+      error?: string;
+    }>
+  >([]);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [copiedMediaUrl, setCopiedMediaUrl] = useState<string | null>(null);
@@ -388,8 +417,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const loadMedia = async (bucket: 'projects' | 'articles' | 'materials' | 'avatars') => {
     setMediaLoading(true);
     try {
-      const files = await listBucketMediaFiles(bucket);
+      const [files, assetRecords, activeJobs] = await Promise.all([
+        listBucketMediaFiles(bucket),
+        fetchMediaAssetsFromSupabase(bucket),
+        fetchServerMediaJobs(),
+      ]);
       setMediaFiles(files);
+      setMediaAssets(assetRecords);
+      setServerMediaJobs(activeJobs);
 
       const initialDurs: Record<string, number> = {};
       const toProbe: BucketFileItem[] = [];
@@ -425,6 +460,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       loadMedia(mediaBucket);
     }
   }, [isOwner, activeTab, mediaBucket]);
+
+  const mediaAssetMetaByUrl = useMemo(() => {
+    const map = new Map<string, MediaAssetRecord>();
+    for (const rec of mediaAssets) {
+      if (rec.primaryUrl) map.set(rec.primaryUrl, rec);
+      if (rec.avifUrl) map.set(rec.avifUrl, rec);
+      if (rec.webpUrl) map.set(rec.webpUrl, rec);
+      if (rec.jpegUrl) map.set(rec.jpegUrl, rec);
+      if (rec.mobileUrl) map.set(rec.mobileUrl, rec);
+      if (rec.av1Urls?.['1080p']) map.set(rec.av1Urls['1080p'], rec);
+      if (rec.av1Urls?.['720p']) map.set(rec.av1Urls['720p'], rec);
+      if (rec.h264Urls?.['1080p']) map.set(rec.h264Urls['1080p'], rec);
+      if (rec.h264Urls?.['720p']) map.set(rec.h264Urls['720p'], rec);
+    }
+    return map;
+  }, [mediaAssets]);
 
   const filteredMediaFiles = useMemo(() => {
     const q = mediaSearch.trim().toLowerCase();
@@ -567,14 +618,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const updateAppearance = (
     updater: (prev: WebsiteAppearanceConfig) => WebsiteAppearanceConfig
   ) => {
-    setSiteSettings((prev) => {
-      const next: WebsiteSettings = {
-        ...prev,
-        appearanceConfig: updater(prev.appearanceConfig),
-      };
-      applyWebsiteSettingsLocally(next);
-      return next;
-    });
+    const prev = siteSettingsRef.current;
+    const next: WebsiteSettings = {
+      ...prev,
+      appearanceConfig: updater(prev.appearanceConfig),
+    };
+    siteSettingsRef.current = next;
+    setSiteSettings(next);
+    applyWebsiteSettingsLocally(next);
   };
 
   const handleImportThemeObject = (rawObj: any) => {
@@ -2116,6 +2167,76 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     </div>
                   </div>
 
+                  {/* Active / Failed Video Optimization Jobs & Failed Assets */}
+                  {(serverMediaJobs.length > 0 || mediaAssets.some((a) => a.status === 'failed')) && (
+                    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900">Optimization Pipeline Activity</span>
+                        <span className="text-[10.5px] text-slate-500 font-mono">
+                          {serverMediaJobs.filter((j) => j.status === 'processing' || j.status === 'queued').length} active
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {serverMediaJobs.slice(0, 5).map((job) => (
+                          <div
+                            key={job.jobId}
+                            className="p-2 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-semibold text-slate-900 truncate">
+                                {job.fileName || job.originalName}
+                              </div>
+                              <div className="text-[10.5px] text-slate-600 flex flex-wrap items-center gap-1.5 mt-0.5">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded font-bold uppercase text-[9.5px] ${
+                                    job.status === 'completed'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : job.status === 'failed'
+                                      ? 'bg-rose-100 text-rose-800'
+                                      : 'bg-cyan-100 text-cyan-900'
+                                  }`}
+                                >
+                                  {job.status}
+                                </span>
+                                <span>{job.stage}</span>
+                                {job.resolution && <span className="font-mono">{job.resolution}</span>}
+                                {typeof job.compressionPct === 'number' && job.compressionPct > 0 && (
+                                  <span className="text-emerald-700 font-semibold">
+                                    {job.compressionPct}% saved
+                                  </span>
+                                )}
+                              </div>
+                              {job.error && (
+                                <p className="text-[10.5px] text-rose-700 mt-0.5 break-words">{job.error}</p>
+                              )}
+                            </div>
+                            {job.status === 'failed' && (
+                              <button
+                                type="button"
+                                disabled={retryingJobId === job.jobId}
+                                onClick={async () => {
+                                  setRetryingJobId(job.jobId);
+                                  const res = await retryServerVideoJob(job.jobId);
+                                  setRetryingJobId(null);
+                                  if (res.success) {
+                                    showNotice('Retry started.');
+                                    await loadMedia(mediaBucket);
+                                  } else {
+                                    showNotice(res.message || 'Retry failed.');
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Retry</span>
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {mediaLoading ? (
                     <p className="text-xs text-slate-500 text-center py-6">Loading bucket files...</p>
                   ) : filteredMediaFiles.length === 0 ? (
@@ -2130,6 +2251,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         const durationText = formatMediaDuration(durationVal);
                         const savedTimestamp = formatMediaTimestamp(f.createdAt || f.updatedAt);
                         const fileSizeText = f.size ? formatBytes(f.size) : '';
+                        const optMeta = mediaAssetMetaByUrl.get(f.publicUrl);
 
                         return (
                           <div
@@ -2197,11 +2319,47 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                       </span>
                                     </>
                                   )}
-                                  {fileSizeText && (
+                                  {optMeta ? (
                                     <>
                                       <span aria-hidden="true">·</span>
-                                      <span>{fileSizeText}</span>
+                                      <span className="font-mono uppercase text-cyan-900 font-semibold">
+                                        {optMeta.format}
+                                      </span>
+                                      {optMeta.resolution && (
+                                        <>
+                                          <span aria-hidden="true">·</span>
+                                          <span className="font-mono">{optMeta.resolution}</span>
+                                        </>
+                                      )}
+                                      {optMeta.originalBytes > 0 && optMeta.optimizedBytes > 0 && (
+                                        <>
+                                          <span aria-hidden="true">·</span>
+                                          <span>
+                                            {formatBytes(optMeta.originalBytes)} → {formatBytes(optMeta.optimizedBytes)}
+                                            {optMeta.compressionPct > 0 ? ` (-${optMeta.compressionPct}%)` : ''}
+                                          </span>
+                                        </>
+                                      )}
+                                      <span aria-hidden="true">·</span>
+                                      <span
+                                        className={`px-1 py-0.2 rounded text-[9.5px] font-bold uppercase ${
+                                          optMeta.status === 'completed'
+                                            ? 'bg-emerald-50 text-emerald-700'
+                                            : optMeta.status === 'failed'
+                                            ? 'bg-rose-50 text-rose-700'
+                                            : 'bg-cyan-50 text-cyan-800'
+                                        }`}
+                                      >
+                                        {optMeta.status}
+                                      </span>
                                     </>
+                                  ) : (
+                                    fileSizeText && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <span>{fileSizeText}</span>
+                                      </>
+                                    )
                                   )}
                                   {savedTimestamp && (
                                     <>
@@ -2242,6 +2400,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                 type="button"
                                 onClick={async () => {
                                   await deleteBucketMediaFile(mediaBucket, f.path);
+                                  if (optMeta?.id) {
+                                    await deleteMediaAssetRecord(optMeta.id);
+                                    setMediaAssets((prev) => prev.filter((x) => x.id !== optMeta.id));
+                                  }
                                   setMediaFiles((prev) => prev.filter((x) => x.path !== f.path));
                                   showNotice('File deleted.');
                                 }}

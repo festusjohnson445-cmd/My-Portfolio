@@ -17,6 +17,7 @@ import {
   BarChart3,
   Table as TableIcon,
   ShieldCheck,
+  Plus,
 } from 'lucide-react';
 import {
   fetchArticlesFromSupabase,
@@ -499,12 +500,8 @@ export const ArticlesView: React.FC = () => {
         contentMarkdown: commentText.trim(),
         isOwnerPosting: isOwner,
       });
-      if (created.status === 'approved' || isOwner) {
-        setComments((prev) => [created, ...prev]);
-        setCommentNotice('Comment published.');
-      } else {
-        setCommentNotice('Comment submitted and awaiting Chief Admin moderation.');
-      }
+      setComments((prev) => [created, ...prev]);
+      setCommentNotice('Comment published.');
       setCommentAuthor('');
       setCommentText('');
     } catch (err: any) {
@@ -645,6 +642,13 @@ export const ArticlesView: React.FC = () => {
                 <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
                   <CleanVideoPlayer
                     src={selectedArticle.heroMedia.url}
+                    poster={selectedArticle.heroMedia.posterUrl}
+                    av1Urls={selectedArticle.heroMedia.av1Urls}
+                    h264Urls={selectedArticle.heroMedia.h264Urls}
+                    vttThumbnailsUrl={selectedArticle.heroMedia.vttThumbnailsUrl}
+                    subtitleUrl={selectedArticle.heroMedia.subtitleUrl}
+                    mediaId={selectedArticle.heroMedia.mediaAssetId || selectedArticle.heroMedia.url}
+                    title={selectedArticle.title}
                     aspectRatio={videoCardControls.aspectRatio || '16/9'}
                     objectFit={videoCardControls.objectFit || 'cover'}
                     zoomLevel={videoCardControls.zoomLevel || 1}
@@ -652,17 +656,36 @@ export const ArticlesView: React.FC = () => {
                 </div>
               ) : selectedArticle.heroMedia.url ? (
                 <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
-                  <img
-                    src={selectedArticle.heroMedia.url}
-                    alt={selectedArticle.heroMedia.caption || selectedArticle.title}
-                    loading="lazy"
-                    decoding="async"
-                    className="max-h-[380px] object-contain"
-                  />
+                  <picture className="w-full flex justify-center">
+                    {selectedArticle.heroMedia.avifUrl && (
+                      <source
+                        srcSet={
+                          selectedArticle.heroMedia.mobileUrl &&
+                          selectedArticle.heroMedia.mobileUrl !== selectedArticle.heroMedia.avifUrl
+                            ? `${selectedArticle.heroMedia.mobileUrl} 768w, ${selectedArticle.heroMedia.avifUrl} 1600w`
+                            : selectedArticle.heroMedia.avifUrl
+                        }
+                        sizes="(max-width: 640px) 100vw, 1000px"
+                        type="image/avif"
+                      />
+                    )}
+                    {selectedArticle.heroMedia.webpUrl && (
+                      <source srcSet={selectedArticle.heroMedia.webpUrl} type="image/webp" />
+                    )}
+                    <img
+                      src={selectedArticle.heroMedia.jpegUrl || selectedArticle.heroMedia.url}
+                      alt={selectedArticle.heroMedia.caption || selectedArticle.title}
+                      loading="lazy"
+                      decoding="async"
+                      className="max-h-[220px] sm:max-h-[380px] object-contain"
+                    />
+                  </picture>
                 </div>
               ) : null}
               {selectedArticle.heroMedia.caption && (
-                <p className="text-[11px] text-slate-500 text-center italic">{selectedArticle.heroMedia.caption}</p>
+                <p className="text-[11px] text-slate-500 text-justify italic leading-relaxed">
+                  {selectedArticle.heroMedia.caption}
+                </p>
               )}
             </div>
           ) : selectedArticle.thumbnailUrl ? (
@@ -672,7 +695,7 @@ export const ArticlesView: React.FC = () => {
                 alt={selectedArticle.title}
                 loading="lazy"
                 decoding="async"
-                className="max-h-[340px] object-contain"
+                className="max-h-[220px] sm:max-h-[340px] object-contain"
               />
             </div>
           ) : null}
@@ -710,7 +733,7 @@ export const ArticlesView: React.FC = () => {
                   {selectedArticle.diagrams.length > 0 && (
                     <li>
                       <a href="#article-schematics" className="text-slate-700 hover:text-cyan-900 hover:underline">
-                        Vector Schematics
+                        Illustrations
                       </a>
                     </li>
                   )}
@@ -776,30 +799,46 @@ export const ArticlesView: React.FC = () => {
                 </div>
               )}
 
-              {/* Vector Schematics & Technical Illustrations */}
+              {/* Illustrations */}
               {selectedArticle.diagrams.length > 0 && (
                 <section id="article-schematics" className="space-y-2 pt-2 border-t border-slate-200">
                   <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-cyan-800" />
-                    <span>Vector Schematics &amp; Technical Illustrations</span>
+                    <span>Illustrations</span>
                   </h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {selectedArticle.diagrams.map((diag, idx) => (
-                      <div key={idx} className="w-full rounded-xl bg-white border border-slate-200 overflow-hidden flex flex-col">
-                        <img
-                          src={diag.url}
-                          alt={diag.note || diag.title || `Diagram ${idx + 1}`}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-full max-h-96 object-contain block"
-                        />
-                        {diag.note && diag.note.trim() && (
-                          <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-center">
-                            {diag.note.trim()}
-                          </p>
-                        )}
-                      </div>
-                    ))}
+                    {selectedArticle.diagrams.map((diag, idx) => {
+                      const avifSrcSet =
+                        diag.mobileUrl && diag.avifUrl && diag.mobileUrl !== diag.avifUrl
+                          ? `${diag.mobileUrl} 768w, ${diag.avifUrl} 1600w`
+                          : diag.avifUrl;
+                      return (
+                        <div key={idx} className="w-full rounded-xl bg-white border border-slate-200 overflow-hidden flex flex-col">
+                          <picture className="w-full block bg-slate-50">
+                            {avifSrcSet && (
+                              <source
+                                srcSet={avifSrcSet}
+                                sizes="(max-width: 640px) 100vw, 50vw"
+                                type="image/avif"
+                              />
+                            )}
+                            {diag.webpUrl && <source srcSet={diag.webpUrl} type="image/webp" />}
+                            <img
+                              src={diag.jpegUrl || diag.url}
+                              alt={diag.note || diag.title || `Diagram ${idx + 1}`}
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full max-h-[210px] sm:max-h-96 object-contain block"
+                            />
+                          </picture>
+                          {diag.note && diag.note.trim() && (
+                            <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                              {diag.note.trim()}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               )}
@@ -807,22 +846,38 @@ export const ArticlesView: React.FC = () => {
               {/* Embedded Article Images & Videos */}
               {selectedArticle.images.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
-                  {selectedArticle.images.map((im, idx) => (
-                    <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-white flex flex-col">
-                      <img
-                        src={im.url}
-                        alt={im.note || im.title || `Article Image ${idx + 1}`}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-full max-h-96 object-contain block"
-                      />
-                      {im.note && im.note.trim() && (
-                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-center">
-                          {im.note.trim()}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                  {selectedArticle.images.map((im, idx) => {
+                    const avifSrcSet =
+                      im.mobileUrl && im.avifUrl && im.mobileUrl !== im.avifUrl
+                        ? `${im.mobileUrl} 768w, ${im.avifUrl} 1600w`
+                        : im.avifUrl;
+                    return (
+                      <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-white flex flex-col">
+                        <picture className="w-full block bg-slate-50">
+                          {avifSrcSet && (
+                            <source
+                              srcSet={avifSrcSet}
+                              sizes="(max-width: 640px) 100vw, 50vw"
+                              type="image/avif"
+                            />
+                          )}
+                          {im.webpUrl && <source srcSet={im.webpUrl} type="image/webp" />}
+                          <img
+                            src={im.jpegUrl || im.url}
+                            alt={im.note || im.title || `Article Image ${idx + 1}`}
+                            loading="lazy"
+                            decoding="async"
+                            className="w-full max-h-[210px] sm:max-h-96 object-contain block"
+                          />
+                        </picture>
+                        {im.note && im.note.trim() && (
+                          <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                            {im.note.trim()}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -832,12 +887,19 @@ export const ArticlesView: React.FC = () => {
                     <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-slate-950 flex flex-col">
                       <CleanVideoPlayer
                         src={v.url}
+                        poster={v.posterUrl}
+                        av1Urls={v.av1Urls}
+                        h264Urls={v.h264Urls}
+                        vttThumbnailsUrl={v.vttThumbnailsUrl}
+                        subtitleUrl={v.subtitleUrl}
+                        mediaId={v.mediaAssetId || v.url}
+                        title={v.title || selectedArticle.title}
                         aspectRatio={videoCardControls.aspectRatio || '16/9'}
                         objectFit={videoCardControls.objectFit || 'contain'}
                         zoomLevel={videoCardControls.zoomLevel || 1}
                       />
                       {v.note && v.note.trim() && (
-                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-center">
+                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-justify leading-relaxed">
                           {v.note.trim()}
                         </p>
                       )}
@@ -1006,7 +1068,7 @@ export const ArticlesView: React.FC = () => {
                     required
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
-                    placeholder="Write a comment (Markdown supported: **bold**, `code`, lists)..."
+                    placeholder="comment here"
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
                   />
                   <div className="flex justify-end">
@@ -1177,9 +1239,10 @@ export const ArticlesView: React.FC = () => {
               setEditingArticle(null);
               setIsPostOpen(!isPostOpen);
             }}
-            className="px-3 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
+            className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
           >
-            Post
+            <Plus className="w-3 h-3" />
+            <span>Post</span>
           </button>
         </div>
       </div>
@@ -1299,10 +1362,12 @@ export const ArticlesView: React.FC = () => {
                 >
                   <div>
                     {art.thumbnailUrl && (
-                      <div className="w-full h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                      <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
                         <img
                           src={art.thumbnailUrl}
                           alt={art.title}
+                          loading="lazy"
+                          decoding="async"
                           className="w-full h-full object-cover"
                         />
                       </div>

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon } from 'lucide-react';
+import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon, RotateCcw } from 'lucide-react';
 import {
   uploadFileToBucket,
   upsertProjectToSupabase,
@@ -74,6 +74,11 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [uploadStage, setUploadStage] = useState<string>('');
   const [customCategoryMode, setCustomCategoryMode] = useState(false);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const lastFailedUploadRef = useRef<{
+    files: File[];
+    target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document';
+  } | null>(null);
+  const [canRetryUpload, setCanRetryUpload] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
     'thumbnail' | 'image' | 'video' | 'cad' | 'document' | null
   >(null);
@@ -102,15 +107,16 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     setUploadStage('');
   };
 
-  const handleBucketUpload = async (
-    files: FileList | null,
+  const runUploadFiles = async (
+    fileArr: File[],
     target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document'
   ) => {
-    if (!files || files.length === 0) return;
-    const fileArr = Array.from(files);
+    if (!fileArr || fileArr.length === 0) return;
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
+    lastFailedUploadRef.current = { files: fileArr, target };
+    setCanRetryUpload(false);
 
     setUploadingField(target);
     setUploadProgress(5);
@@ -136,10 +142,29 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
           fileName: res.fileName,
           fileSize: res.fileSize,
           fileType: file.type,
+          avifUrl: res.avifUrl,
+          webpUrl: res.webpUrl,
+          jpegUrl: res.jpegUrl,
+          mobileUrl: res.mobileUrl,
+          posterUrl: res.posterUrl,
+          vttThumbnailsUrl: res.vttThumbnailsUrl,
+          av1Urls: res.av1Urls,
+          h264Urls: res.h264Urls,
+          width: res.width,
+          height: res.height,
+          resolution: res.resolution,
+          originalBytes: res.originalBytes,
+          optimizedBytes: res.optimizedBytes,
+          compressionPct: res.compressionPct,
+          format: res.format,
+          mediaAssetId: res.mediaAssetId,
         } as MediaAssetItem;
       });
 
       if (controller.signal.aborted) return;
+
+      lastFailedUploadRef.current = null;
+      setCanRetryUpload(false);
 
       if (target === 'thumbnail') {
         const first = uploadedAssets[0];
@@ -157,6 +182,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     } catch (err: any) {
       if (!isAbortError(err) && !controller.signal.aborted) {
         setErrorMsg(err?.message || 'File upload to projects bucket failed.');
+        setCanRetryUpload(true);
       }
     } finally {
       if (uploadAbortRef.current === controller) {
@@ -166,6 +192,20 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         setUploadStage('');
       }
     }
+  };
+
+  const handleBucketUpload = async (
+    files: FileList | null,
+    target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document'
+  ) => {
+    if (!files || files.length === 0) return;
+    await runUploadFiles(Array.from(files), target);
+  };
+
+  const handleRetryFailedUpload = async () => {
+    const failed = lastFailedUploadRef.current;
+    if (!failed) return;
+    await runUploadFiles(failed.files, failed.target);
   };
 
   const handleMediaLibrarySelect = (
@@ -275,8 +315,18 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       )}
 
       {errorMsg && (
-        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs break-words">
-          {errorMsg}
+        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs break-words flex items-center justify-between gap-2">
+          <span className="flex-1 min-w-0">{errorMsg}</span>
+          {canRetryUpload && lastFailedUploadRef.current && (
+            <button
+              type="button"
+              onClick={handleRetryFailedUpload}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-semibold cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Retry</span>
+            </button>
+          )}
         </div>
       )}
 

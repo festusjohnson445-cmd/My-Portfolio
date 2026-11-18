@@ -133,12 +133,12 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     fileInputRef.current?.click();
   };
 
-  // 1. RENDER PDF CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, no floating badges or filename overlay)
+  // 1. RENDER PDF CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, uniform card height, zero extra text)
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-56 sm:h-64 bg-[#f8fafc] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
+        className="w-full h-52 sm:h-56 bg-[#f8fafc] border-b border-slate-200 p-2 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Preview document"
       >
         {renderedPdfImage ? (
@@ -147,7 +147,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             alt={doc.title}
             loading="lazy"
             decoding="async"
-            className="w-full h-full object-contain block transition-transform duration-300 group-hover/pdf:scale-[1.01]"
+            className="w-full h-full object-contain block rounded-md transition-transform duration-300 group-hover/pdf:scale-[1.01]"
           />
         ) : (
           <div className="flex flex-col items-center justify-center text-center p-4 z-10 animate-fade-in">
@@ -166,7 +166,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     );
   }
 
-  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, no badges or overlay)
+  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED TOP (Full fit inside uniform height frame)
   if (isImage && (doc.attachmentDataUrl || doc.previewImageDataUrl)) {
     const rawSrc = doc.previewImageDataUrl || doc.attachmentDataUrl;
     const imgSrc = rawSrc && !isMockDrawingPreview(rawSrc) ? rawSrc : null;
@@ -174,7 +174,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return (
         <div
           onClick={() => onOpenPreview(doc)}
-          className="w-full h-56 sm:h-64 bg-[#f8fafc] border-b border-slate-200 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          className="w-full h-52 sm:h-56 bg-[#f8fafc] border-b border-slate-200 p-2 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
           title="Preview image"
         >
           <img
@@ -182,7 +182,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             alt={doc.title}
             loading="lazy"
             decoding="async"
-            className="w-full h-full object-contain block transition-transform duration-300 group-hover/img:scale-[1.01]"
+            className="w-full h-full object-contain block rounded-md transition-transform duration-300 group-hover/img:scale-[1.01]"
           />
         </div>
       );
@@ -194,7 +194,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     return (
       <div
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-52 sm:h-56 bg-gradient-to-br from-[#f8fafc] via-[#eef4fa] to-[#e2ecf5] p-5 border-b border-slate-200 flex flex-col justify-between text-slate-900 relative cursor-pointer"
+        className="w-full h-52 sm:h-56 bg-gradient-to-br from-[#f8fafc] via-[#eef4fa] to-[#e2ecf5] p-4 sm:p-5 border-b border-slate-200 flex flex-col justify-between text-slate-900 relative cursor-pointer"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -260,7 +260,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
 
   // 4. FALLBACK / NO FILE YET: LIGHT-COLORED TOP BANNER WITH OWNER-ONLY UPLOAD OPTION
   return (
-    <div className="w-full h-50 sm:h-56 bg-gradient-to-br from-[#f8fafc] via-[#eff4fa] to-[#e4ecf5] p-5 border-b border-slate-200 flex flex-col justify-between text-slate-900 relative">
+    <div className="w-full h-52 sm:h-56 bg-gradient-to-br from-[#f8fafc] via-[#eff4fa] to-[#e4ecf5] p-4 sm:p-5 border-b border-slate-200 flex flex-col justify-between text-slate-900 relative">
       <input
         type="file"
         ref={fileInputRef}

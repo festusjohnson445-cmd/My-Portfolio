@@ -38,6 +38,14 @@ export default defineConfig(() => {
             if (id.includes('node_modules/lucide-react')) {
               return 'vendor-lucide';
             }
+            if (
+              id.includes('node_modules/@vidstack') ||
+              id.includes('node_modules/vidstack') ||
+              id.includes('node_modules/media-captions') ||
+              id.includes('node_modules/media-icons')
+            ) {
+              return 'vendor-vidstack';
+            }
           },
         },
       },

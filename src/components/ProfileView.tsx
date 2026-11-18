@@ -2340,8 +2340,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             const renderDocCard = (doc: DocumentItem, isCompactSub = false) => (
               <div
                 key={doc.id}
-                className={`rounded-xl bg-white border border-slate-200 shadow-2xs overflow-hidden flex flex-col justify-between ${
-                  isCompactSub ? 'border-cyan-200/80' : ''
+                className={`rounded-xl bg-white border shadow-2xs hover:shadow-sm transition-shadow overflow-hidden flex flex-col justify-between ${
+                  isCompactSub ? 'border-cyan-200/80' : 'border-slate-200/90'
                 }`}
               >
                 <DocumentTopMedia
@@ -2353,27 +2353,29 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   onUpdatePreviewUrl={handleUpdateDocPreview}
                   onDirectAttachFile={handleDirectAttachFile}
                 />
-                <div className="p-3 space-y-1.5 text-xs flex-1 flex flex-col justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-1 text-[10px] text-slate-500">
-                      <span className="font-bold text-cyan-900">
+                <div className="p-3.5 text-xs flex-1 flex flex-col justify-between gap-2.5">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[10.5px] text-slate-500">
+                      <span className="font-bold text-cyan-900 truncate">
                         {doc.credentialGroup || doc.category}
                       </span>
-                      {doc.date && <span>{doc.date}</span>}
+                      {doc.date && <span className="shrink-0 tabular-nums">{doc.date}</span>}
                     </div>
-                    <h3 className="text-xs font-bold text-slate-950 text-left">{doc.title}</h3>
-                    <div className="text-[10.5px] text-slate-600 text-left">{doc.issuer}</div>
-                    <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
-                      {doc.description}
-                    </p>
+                    <h3 className="text-xs font-bold text-slate-950 text-left leading-snug">{doc.title}</h3>
+                    <div className="text-[10.5px] font-medium text-slate-600 text-left">{doc.issuer}</div>
+                    {doc.description && (
+                      <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
+                        {doc.description}
+                      </p>
+                    )}
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => setSelectedPreviewDoc(doc)}
-                        className="px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-800 font-semibold cursor-pointer"
+                        className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-semibold cursor-pointer"
                       >
                         Preview
                       </button>
@@ -2383,25 +2385,25 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           download={doc.attachmentName || doc.title}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-2 py-0.5 rounded bg-cyan-900 text-white font-semibold"
+                          className="px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white font-semibold"
                         >
                           Download
                         </a>
                       )}
                     </div>
                     {isOwnerAuthenticated && (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => handleOpenEditDocument(doc)}
-                          className="px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-800 cursor-pointer"
+                          className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 cursor-pointer"
                         >
                           Edit
                         </button>
                         <button
                           type="button"
                           onClick={() => setDocToDelete({ id: doc.id, title: doc.title })}
-                          className="px-2 py-0.5 rounded bg-rose-600 text-white cursor-pointer"
+                          className="px-2.5 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
                         >
                           Delete
                         </button>
@@ -2430,30 +2432,30 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           return (
                             <div
                               key={spec.id}
-                              className="p-3 rounded-xl bg-white border border-[#b8c6d4] space-y-3"
+                              className="p-3.5 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-3"
                             >
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <button
                                   type="button"
                                   onClick={() => toggleSpecialization(String(spec.id))}
-                                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left"
+                                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left min-w-0"
                                 >
                                   {isExpanded ? (
                                     <ChevronDown className="w-4 h-4 text-cyan-800 shrink-0" />
                                   ) : (
                                     <ChevronRight className="w-4 h-4 text-cyan-800 shrink-0" />
                                   )}
-                                  <span>{spec.title}</span>
-                                  <span className="text-[10px] font-normal text-slate-500">
+                                  <span className="truncate">{spec.title}</span>
+                                  <span className="text-[10px] font-normal text-slate-500 shrink-0">
                                     ({linkedCourses.length} Course{linkedCourses.length === 1 ? '' : 's'})
                                   </span>
                                 </button>
 
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-1.5 shrink-0">
                                   <button
                                     type="button"
                                     onClick={() => toggleSpecialization(String(spec.id))}
-                                    className="px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-semibold text-slate-800 cursor-pointer"
+                                    className="px-2.5 py-1 rounded-md bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-semibold text-slate-800 cursor-pointer"
                                   >
                                     {isExpanded ? 'Hide Details' : 'View Certificate & Courses'}
                                   </button>
@@ -2461,7 +2463,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                     <button
                                       type="button"
                                       onClick={() => handleOpenAddCourseForSpecialization(spec.id)}
-                                      className="px-2 py-0.5 rounded bg-cyan-900 text-white text-[10px] font-semibold cursor-pointer"
+                                      className="px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[10px] font-semibold cursor-pointer"
                                     >
                                       + Add Course
                                     </button>
@@ -2470,12 +2472,12 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                               </div>
 
                               {isExpanded && (
-                                <div className="space-y-3 pt-2 border-t border-slate-200">
+                                <div className="space-y-3 pt-3 border-t border-slate-200">
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     {renderDocCard(spec)}
                                   </div>
                                   {linkedCourses.length > 0 && (
-                                    <div className="space-y-2 pl-2 sm:pl-4 border-t border-slate-100 pt-2">
+                                    <div className="space-y-2.5 pl-2 sm:pl-4 border-t border-slate-100 pt-3">
                                       <h4 className="text-xs font-bold text-slate-900 text-center">
                                         Courses Under This Specialization ({linkedCourses.length})
                                       </h4>
