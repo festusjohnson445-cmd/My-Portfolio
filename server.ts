@@ -1237,10 +1237,28 @@ export interface VideoOptimizationJob {
 
 const videoJobs = new Map<string, VideoOptimizationJob>();
 
+const chunkedVideoSessions = new Map<
+  string,
+  {
+    jobId: string;
+    rawPath: string;
+    bucket: 'projects' | 'articles';
+    folderPrefix: string;
+    originalName: string;
+    originalSize: number;
+    receivedBytes: number;
+    supabaseUrl: string;
+    anonKey: string;
+    authHeader: string;
+    createdAt: number;
+  }
+>();
+
 // Prune completed/failed job metadata & stale temp files periodically
 setInterval(() => {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000;
   const failedRetryCutoff = Date.now() - 45 * 60 * 1000;
+  const chunkSessionCutoff = Date.now() - 30 * 60 * 1000;
   for (const [id, job] of videoJobs.entries()) {
     if (job.rawRetryPath && (job.createdAt < failedRetryCutoff || job.status !== 'failed')) {
       safeUnlink(job.rawRetryPath).catch(() => {});
@@ -1254,6 +1272,12 @@ setInterval(() => {
       }
       safeUnlink(job.rawRetryPath).catch(() => {});
       videoJobs.delete(id);
+    }
+  }
+  for (const [id, session] of chunkedVideoSessions.entries()) {
+    if (session.createdAt < chunkSessionCutoff) {
+      safeUnlink(session.rawPath).catch(() => {});
+      chunkedVideoSessions.delete(id);
     }
   }
 }, 10 * 60 * 1000).unref?.();
@@ -1577,11 +1601,11 @@ async function processVideoJobAsync(params: {
 
   try {
     job.status = 'processing';
-    job.progress = 8;
+    job.progress = 42;
     job.stage = 'Inspecting video metadata...';
     job.updatedAt = Date.now();
 
-    const { bin, ffprobeBin, hasSvtAv1, hasAomAv1, hasOpus } = await getFfmpegCapabilities();
+    const { bin, ffprobeBin } = await getFfmpegCapabilities();
     if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
     const meta = await probeVideoMetadata(ffprobeBin, params.rawPath);
@@ -1590,221 +1614,69 @@ async function processVideoJobAsync(params: {
     job.width = meta.width;
     job.height = meta.height;
 
-    const produce1080p = meta.height >= 900 || meta.width >= 1600;
-    const resolutionsToEncode: Array<{ label: '1080p' | '720p'; maxW: number; maxH: number }> = produce1080p
-      ? [
-          { label: '1080p', maxW: 1920, maxH: 1080 },
-          { label: '720p', maxW: 1280, maxH: 720 },
-        ]
-      : [{ label: '720p', maxW: 1280, maxH: 720 }];
-    job.resolution = produce1080p ? '1080p / 720p' : '720p';
+    // Single fast, low-bandwidth, universally compatible 720p H.264 MP4 stream
+    const targetMaxW = 1280;
+    const targetMaxH = 720;
+    const resLabel = meta.height >= 720 || meta.width >= 1280 ? '720p' : `${meta.height || 480}p`;
+    job.resolution = resLabel;
 
-    const buildScaleFilter = (maxW: number, maxH: number) =>
-      [
-        `scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`,
-        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-        'hqdn3d=0.6:0.6:2.2:2.2',
-        'unsharp=3:3:0.3:3:3:0.0',
-      ].join(',');
+    const scaleFilter = [
+      `scale='min(${targetMaxW},iw)':'min(${targetMaxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`,
+      'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+    ].join(',');
 
-    const h264AudioArgs = meta.hasAudio ? ['-c:a', 'aac', '-b:a', '112k', '-ac', '2'] : ['-an'];
-    const av1AudioArgs = meta.hasAudio
-      ? hasOpus
-        ? ['-c:a', 'libopus', '-b:a', '80k', '-ac', '2']
-        : ['-c:a', 'aac', '-b:a', '96k', '-ac', '2']
-      : ['-an'];
+    const audioArgs = meta.hasAudio ? ['-c:a', 'aac', '-b:a', '96k', '-ac', '2'] : ['-an'];
 
-    // Stage 1: Automatic Poster Thumbnail + Storyboard Sprite & VTT
-    job.progress = 14;
-    job.stage = 'Capturing poster thumbnail & timeline sprite...';
+    if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
+
+    const outMp4 = path.join(MEDIA_TEMP_DIR, `opt_${params.jobId}.mp4`);
+    job.stage = 'Optimizing video...';
     job.updatedAt = Date.now();
 
-    const posterRawPath = path.join(MEDIA_TEMP_DIR, `poster_raw_${params.jobId}.png`);
-    const posterWebpPath = path.join(MEDIA_TEMP_DIR, `poster_${params.jobId}.webp`);
-    try {
-      const seekAt = dur > 2 ? Math.min(2, dur * 0.25).toFixed(2) : '0.1';
-      await runProcess(bin, [
+    await runProcess(
+      bin,
+      [
         '-y',
-        '-ss', seekAt,
+        '-threads', '0',
         '-i', params.rawPath,
-        '-frames:v', '1',
-        '-vf', "scale='min(1280,iw)':-2:flags=lanczos",
-        posterRawPath,
-      ]);
-      const sharpMod = await import('sharp');
-      const sharpFn = sharpMod.default || (sharpMod as any);
-      const posterBuf = await sharpFn(posterRawPath, { failOn: 'none' })
-        .sharpen({ sigma: 0.6, m1: 0.5, m2: 1.8 })
-        .webp({ quality: 82 })
-        .toBuffer();
-      await fs.promises.writeFile(posterWebpPath, posterBuf);
-      await registerArtifact('poster', posterWebpPath, `${baseStem}_poster.webp`, 'image/webp');
-    } catch (posterErr) {
-      console.warn(`[Video Job ${params.jobId}] Poster capture skipped:`, posterErr);
-    } finally {
-      await safeUnlink(posterRawPath);
-    }
-
-    const spritePath = path.join(MEDIA_TEMP_DIR, `sprite_${params.jobId}.jpg`);
-    let spriteInterval = Math.max(1, Math.ceil(dur / 12));
-    let spriteFrames = Math.min(12, Math.max(1, Math.floor(dur / spriteInterval) || 1));
-    try {
-      await runProcess(bin, [
-        '-y',
-        '-i', params.rawPath,
-        '-vf', `fps=1/${spriteInterval},scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tile=4x3`,
-        '-frames:v', '1',
-        '-q:v', '6',
-        spritePath,
-      ]);
-      if (fs.existsSync(spritePath)) {
-        await registerArtifact('sprite', spritePath, `${baseStem}_sprite.jpg`, 'image/jpeg');
-      } else {
-        spriteFrames = 0;
+        '-vf', scaleFilter,
+        '-map_metadata', '-1',
+        '-c:v', 'libx264',
+        '-profile:v', 'high',
+        '-level:v', '4.1',
+        '-crf', '25',
+        '-maxrate', '1400k',
+        '-bufsize', '2800k',
+        '-preset', 'veryfast',
+        '-g', '60',
+        '-pix_fmt', 'yuv420p',
+        ...audioArgs,
+        '-movflags', '+faststart',
+        outMp4,
+      ],
+      dur,
+      (pct) => {
+        if (!job.cancelled) {
+          job.progress = Math.min(89, Math.round(45 + (pct / 100) * 44));
+        }
+      },
+      (child) => {
+        job.activeChild = child;
+        if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
       }
-    } catch {
-      spriteFrames = 0;
-    }
+    );
+    job.activeChild = undefined;
+
+    await registerArtifact('video', outMp4, `${baseStem}.mp4`, 'video/mp4');
 
     if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
-    // Stage 2: Encode H.264 MP4 Fallback Renditions (fast baseline compatibility)
-    let progressCursor = 20;
-    const stepSpan = (hasSvtAv1 || hasAomAv1) ? 30 / resolutionsToEncode.length : 65 / resolutionsToEncode.length;
-
-    for (const resSpec of resolutionsToEncode) {
-      if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
-      const outH264 = path.join(MEDIA_TEMP_DIR, `h264_${resSpec.label}_${params.jobId}.mp4`);
-      job.stage = `Encoding H.264 MP4 ${resSpec.label} fallback...`;
-      job.updatedAt = Date.now();
-      const baseP = progressCursor;
-      await runProcess(
-        bin,
-        [
-          '-y',
-          '-threads', '0',
-          '-i', params.rawPath,
-          '-vf', buildScaleFilter(resSpec.maxW, resSpec.maxH),
-          '-map_metadata', '-1',
-          '-c:v', 'libx264',
-          '-profile:v', 'high',
-          '-level:v', '4.1',
-          '-crf', resSpec.label === '1080p' ? '23' : '24',
-          '-maxrate', resSpec.label === '1080p' ? '2800k' : '1500k',
-          '-bufsize', resSpec.label === '1080p' ? '5600k' : '3000k',
-          '-preset', 'veryfast',
-          '-g', '60',
-          '-pix_fmt', 'yuv420p',
-          ...h264AudioArgs,
-          '-movflags', '+faststart',
-          outH264,
-        ],
-        dur,
-        (pct) => {
-          if (!job.cancelled) {
-            job.progress = Math.min(86, Math.round(baseP + (pct / 100) * stepSpan));
-          }
-        },
-        (child) => {
-          job.activeChild = child;
-          if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
-        }
-      );
-      job.activeChild = undefined;
-      await registerArtifact(
-        `h264_${resSpec.label}`,
-        outH264,
-        `${baseStem}_h264_${resSpec.label}.mp4`,
-        'video/mp4'
-      );
-      progressCursor += stepSpan;
-    }
-
-    // Stage 3: Encode AV1 Primary Renditions (SVT-AV1 preferred, libaom-av1 fast row-mt fallback)
-    let encodedAnyAv1 = false;
-    if (hasSvtAv1 || hasAomAv1) {
-      const av1StepSpan = 35 / resolutionsToEncode.length;
-      for (const resSpec of resolutionsToEncode) {
-        if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
-        const outAv1 = path.join(MEDIA_TEMP_DIR, `av1_${resSpec.label}_${params.jobId}.mp4`);
-        job.stage = `Encoding AV1 ${resSpec.label} stream...`;
-        job.updatedAt = Date.now();
-        const baseP = progressCursor;
-
-        const av1VideoArgs = hasSvtAv1
-          ? [
-              '-c:v', 'libsvtav1',
-              '-crf', resSpec.label === '1080p' ? '30' : '32',
-              '-preset', '8',
-              '-g', '120',
-              '-pix_fmt', 'yuv420p',
-            ]
-          : [
-              '-c:v', 'libaom-av1',
-              '-crf', resSpec.label === '1080p' ? '33' : '35',
-              '-b:v', '0',
-              '-cpu-used', '8',
-              '-row-mt', '1',
-              '-tiles', '2x2',
-              '-g', '120',
-              '-pix_fmt', 'yuv420p',
-            ];
-
-        try {
-          await runProcess(
-            bin,
-            [
-              '-y',
-              '-threads', '0',
-              '-i', params.rawPath,
-              '-vf', buildScaleFilter(resSpec.maxW, resSpec.maxH),
-              '-map_metadata', '-1',
-              ...av1VideoArgs,
-              ...av1AudioArgs,
-              '-movflags', '+faststart',
-              outAv1,
-            ],
-            dur,
-            (pct) => {
-              if (!job.cancelled) {
-                job.progress = Math.min(88, Math.round(baseP + (pct / 100) * av1StepSpan));
-              }
-            },
-            (child) => {
-              job.activeChild = child;
-              if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
-            }
-          );
-          job.activeChild = undefined;
-          await registerArtifact(
-            `av1_${resSpec.label}`,
-            outAv1,
-            `${baseStem}_av1_${resSpec.label}.mp4`,
-            'video/mp4'
-          );
-          encodedAnyAv1 = true;
-        } catch (av1Err: any) {
-          if (job.cancelled || av1Err?.isCancelled) throw av1Err;
-          console.warn(`[Video Job ${params.jobId}] AV1 ${resSpec.label} encode skipped cleanly, keeping H.264:`, av1Err?.message);
-          await safeUnlink(outAv1);
-        }
-        progressCursor += av1StepSpan;
-      }
-    }
-
-    if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
-
-    job.format = encodedAnyAv1 ? 'av1+h264' : 'h264';
-    const primaryArtifact =
-      artifacts.av1_1080p ||
-      artifacts.av1_720p ||
-      artifacts.h264_1080p ||
-      artifacts.h264_720p;
-
+    const primaryArtifact = artifacts.video;
     if (!primaryArtifact) {
       throw new Error('FFmpeg did not produce a valid output video stream.');
     }
 
+    job.format = 'h264';
     job.bytes = primaryArtifact.bytes;
     job.originalBytes = params.originalSize;
     job.fileSize = formatMediaBytes(primaryArtifact.bytes);
@@ -1815,66 +1687,31 @@ async function processVideoJobAsync(params: {
         ? Math.round(((params.originalSize - primaryArtifact.bytes) / params.originalSize) * 1000) / 10
         : 0;
 
-    // Stage 4: Upload ALL optimized renditions + poster + sprite/vtt directly to Supabase Storage (or hand off to client)
+    // Upload ONLY the single optimized MP4 file directly to Supabase Storage (no irrelevant sprites/VTT/duplicates)
     job.status = 'uploading';
-    job.progress = 90;
-    job.stage = `Uploading optimized renditions to "${params.bucket}" storage...`;
+    job.progress = 92;
+    job.stage = `Saving optimized video to "${params.bucket}"...`;
     job.updatedAt = Date.now();
 
     try {
-      const uploadArtifact = async (art: JobArtifactDescriptor): Promise<string> => {
-        const buf = await fs.promises.readFile(art.localPath);
-        const url = await uploadMediaToSupabaseStorage({
-          supabaseUrl: params.supabaseUrl,
-          anonKey: params.anonKey,
-          authHeader: params.authHeader,
-          bucket: params.bucket,
-          storagePath: art.storagePath,
-          data: buf,
-          contentType: art.contentType,
-        });
-        art.publicUrl = url;
-        return url;
-      };
+      const buf = await fs.promises.readFile(primaryArtifact.localPath);
+      const uploadedUrl = await uploadMediaToSupabaseStorage({
+        supabaseUrl: params.supabaseUrl,
+        anonKey: params.anonKey,
+        authHeader: params.authHeader,
+        bucket: params.bucket,
+        storagePath: primaryArtifact.storagePath,
+        data: buf,
+        contentType: 'video/mp4',
+      });
+      primaryArtifact.publicUrl = uploadedUrl;
 
-      const uploadedUrls: Record<string, string> = {};
-      for (const art of Object.values(artifacts)) {
-        if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
-        uploadedUrls[art.key] = await uploadArtifact(art);
-      }
-
-      // Generate & upload WebVTT thumbnails referencing the uploaded Supabase sprite URL
-      let vttUrl: string | undefined;
-      if (uploadedUrls.sprite && spriteFrames > 0) {
-        const vttText = buildStoryboardVtt(uploadedUrls.sprite, dur, spriteFrames, spriteInterval);
-        const vttStoragePath = `${uniquePrefix}_${baseStem}_thumbnails.vtt`;
-        vttUrl = await uploadMediaToSupabaseStorage({
-          supabaseUrl: params.supabaseUrl,
-          anonKey: params.anonKey,
-          authHeader: params.authHeader,
-          bucket: params.bucket,
-          storagePath: vttStoragePath,
-          data: Buffer.from(vttText, 'utf8'),
-          contentType: 'text/vtt',
-        });
-      }
-
-      job.av1Urls = {
-        ...(uploadedUrls.av1_720p ? { '720p': uploadedUrls.av1_720p } : {}),
-        ...(uploadedUrls.av1_1080p ? { '1080p': uploadedUrls.av1_1080p } : {}),
-      };
-      job.h264Urls = {
-        ...(uploadedUrls.h264_720p ? { '720p': uploadedUrls.h264_720p } : {}),
-        ...(uploadedUrls.h264_1080p ? { '1080p': uploadedUrls.h264_1080p } : {}),
-      };
-      job.posterUrl = uploadedUrls.poster;
-      job.spriteUrl = uploadedUrls.sprite;
-      job.vttThumbnailsUrl = vttUrl;
-      job.publicUrl =
-        uploadedUrls.av1_1080p ||
-        uploadedUrls.av1_720p ||
-        uploadedUrls.h264_1080p ||
-        uploadedUrls.h264_720p;
+      job.h264Urls = { '720p': uploadedUrl };
+      job.av1Urls = undefined;
+      job.posterUrl = undefined;
+      job.spriteUrl = undefined;
+      job.vttThumbnailsUrl = undefined;
+      job.publicUrl = uploadedUrl;
       job.status = 'completed';
       job.progress = 100;
       job.stage = 'Completed';
@@ -1882,24 +1719,25 @@ async function processVideoJobAsync(params: {
     } catch (storageErr: any) {
       if (job.cancelled || storageErr?.isCancelled) throw storageErr;
 
-      // Keep ONLY optimized artifacts temporarily for authenticated browser handoff; purge raw immediately!
+      // Keep ONLY the single optimized MP4 temporarily for authenticated browser handoff; purge raw immediately!
       keepArtifactsForClient = true;
       job.artifactPaths = artifacts;
-      job.vttContent = spriteFrames > 0 ? buildStoryboardVtt('__SPRITE_URL__', dur, spriteFrames, spriteInterval) : undefined;
-      job.handoffArtifacts = Object.values(artifacts).map((art) => ({
-        key: art.key,
-        downloadUrl: `/api/media/job-artifact/${encodeURIComponent(params.jobId)}/${encodeURIComponent(art.key)}`,
-        storagePath: art.storagePath,
-        fileName: art.fileName,
-        contentType: art.contentType,
-        bytes: art.bytes,
-      }));
+      job.handoffArtifacts = [
+        {
+          key: primaryArtifact.key,
+          downloadUrl: `/api/media/job-artifact/${encodeURIComponent(params.jobId)}/${encodeURIComponent(primaryArtifact.key)}`,
+          storagePath: primaryArtifact.storagePath,
+          fileName: primaryArtifact.fileName,
+          contentType: primaryArtifact.contentType,
+          bytes: primaryArtifact.bytes,
+        },
+      ];
       job.directUploadUrl = `/api/media/job-artifact/${encodeURIComponent(params.jobId)}/${encodeURIComponent(primaryArtifact.key)}`;
       job.status = 'ready_for_client_upload';
-      job.progress = 94;
-      job.stage = `Optimized (${job.fileSize}). Finalizing storage upload...`;
+      job.progress = 95;
+      job.stage = `Finalizing storage upload (${job.fileSize})...`;
       job.updatedAt = Date.now();
-      console.info(`[Video Job ${params.jobId}] Handoff ready (${Object.keys(artifacts).length} optimized files):`, storageErr?.message);
+      console.info(`[Video Job ${params.jobId}] Single-file handoff ready:`, storageErr?.message);
     }
   } catch (err: any) {
     if (job.cancelled || err?.isCancelled) {
@@ -2019,7 +1857,7 @@ app.post('/api/media/optimize-image', async (req, res) => {
     const rotated = sharpFn(rawBuffer, { failOn: 'none' }).rotate();
     const meta = await rotated.metadata().catch(() => ({ width: 1600, height: 900 }));
 
-    // Light denoise + Lanczos3 responsive desktop pipeline + gentle sharpening (EXIF stripped automatically)
+    // Store ONLY the single optimized AVIF image in Supabase Storage (no duplicate variant clutter)
     const buildBasePipeline = (targetWidth: number) => {
       let pipe = sharpFn(rawBuffer, { failOn: 'none' }).rotate();
       if ((meta.width || 0) >= 1200) {
@@ -2030,23 +1868,9 @@ app.post('/api/media/optimize-image', async (req, res) => {
         .sharpen({ sigma: 0.72, m1: 0.65, m2: 2.1 });
     };
 
-    const [avifResult, webpBuf, jpegBuf, mobileAvifBuf] = await Promise.all([
-      buildBasePipeline(1600)
-        .avif({ quality: 72, effort: 3, chromaSubsampling: '4:2:0' })
-        .toBuffer({ resolveWithObject: true }),
-      buildBasePipeline(1600)
-        .webp({ quality: 82, effort: 3 })
-        .toBuffer(),
-      buildBasePipeline(1600)
-        .flatten({ background: '#ffffff' })
-        .jpeg({ quality: 84, mozjpeg: true })
-        .toBuffer(),
-      (meta.width || 0) > 900
-        ? buildBasePipeline(768)
-            .avif({ quality: 70, effort: 2, chromaSubsampling: '4:2:0' })
-            .toBuffer()
-        : Promise.resolve(null),
-    ]);
+    const avifResult = await buildBasePipeline(1600)
+      .avif({ quality: 72, effort: 3, chromaSubsampling: '4:2:0' })
+      .toBuffer({ resolveWithObject: true });
 
     const outAvif = avifResult.data;
     const outW = avifResult.info?.width || Math.min(1600, meta.width || 1600);
@@ -2054,64 +1878,26 @@ app.post('/api/media/optimize-image', async (req, res) => {
     const compressionPct =
       file.size > 0 ? Math.round(((file.size - outAvif.length) / file.size) * 1000) / 10 : 0;
 
-    const variantSpecs = [
-      {
-        key: 'avif',
-        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.avif`,
-        fileName: `${baseStem}.avif`,
-        mimeType: 'image/avif',
-        buffer: outAvif,
-      },
-      {
-        key: 'webp',
-        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.webp`,
-        fileName: `${baseStem}.webp`,
-        mimeType: 'image/webp',
-        buffer: webpBuf,
-      },
-      {
-        key: 'jpeg',
-        storagePath: `${folderPrefix}/${uniqueId}_${baseStem}.jpg`,
-        fileName: `${baseStem}.jpg`,
-        mimeType: 'image/jpeg',
-        buffer: jpegBuf,
-      },
-      ...(mobileAvifBuf
-        ? [
-            {
-              key: 'mobile',
-              storagePath: `${folderPrefix}/${uniqueId}_${baseStem}_768w.avif`,
-              fileName: `${baseStem}_768w.avif`,
-              mimeType: 'image/avif',
-              buffer: mobileAvifBuf,
-            },
-          ]
-        : []),
-    ];
+    const storagePath = `${folderPrefix}/${uniqueId}_${baseStem}.avif`;
+    const finalFileName = `${baseStem}.avif`;
 
     try {
-      const uploadedMap: Record<string, string> = {};
-      for (const spec of variantSpecs) {
-        uploadedMap[spec.key] = await uploadMediaToSupabaseStorage({
-          supabaseUrl,
-          anonKey,
-          authHeader,
-          bucket,
-          storagePath: spec.storagePath,
-          data: spec.buffer,
-          contentType: spec.mimeType,
-        });
-      }
+      const publicUrl = await uploadMediaToSupabaseStorage({
+        supabaseUrl,
+        anonKey,
+        authHeader,
+        bucket,
+        storagePath,
+        data: outAvif,
+        contentType: 'image/avif',
+      });
 
       return res.json({
         success: true,
-        publicUrl: uploadedMap.avif,
-        avifUrl: uploadedMap.avif,
-        webpUrl: uploadedMap.webp,
-        jpegUrl: uploadedMap.jpeg,
-        mobileUrl: uploadedMap.mobile || uploadedMap.avif,
-        storagePath: variantSpecs[0].storagePath,
-        fileName: variantSpecs[0].fileName,
+        publicUrl,
+        avifUrl: publicUrl,
+        storagePath,
+        fileName: finalFileName,
         fileSize: formatMediaBytes(outAvif.length),
         mimeType: 'image/avif',
         format: 'avif',
@@ -2127,21 +1913,23 @@ app.post('/api/media/optimize-image', async (req, res) => {
         success: true,
         directUploadRequired: true,
         optimizedBase64: outAvif.toString('base64'),
-        variants: variantSpecs.map((v) => ({
-          key: v.key,
-          storagePath: v.storagePath,
-          fileName: v.fileName,
-          mimeType: v.mimeType,
-          base64: v.buffer.toString('base64'),
-          bytes: v.buffer.length,
-        })),
+        variants: [
+          {
+            key: 'avif',
+            storagePath,
+            fileName: finalFileName,
+            mimeType: 'image/avif',
+            base64: outAvif.toString('base64'),
+            bytes: outAvif.length,
+          },
+        ],
         mimeType: 'image/avif',
         format: 'avif',
         width: outW,
         height: outH,
         resolution: `${outW}x${outH}`,
-        storagePath: variantSpecs[0].storagePath,
-        fileName: variantSpecs[0].fileName,
+        storagePath,
+        fileName: finalFileName,
         fileSize: formatMediaBytes(outAvif.length),
         originalBytes: file.size,
         optimizedBytes: outAvif.length,
@@ -2160,7 +1948,112 @@ app.post('/api/media/optimize-image', async (req, res) => {
   }
 });
 
-// Enqueue background video optimization job (AV1 + H.264 720p/1080p + Poster + VTT)
+// Chunked binary video upload endpoints (bypasses proxy 32MB request limits & avoids multipart overhead)
+
+app.post('/api/media/optimize-video/init', async (req, res) => {
+  try {
+    const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
+    const folderPrefix = String(req.body?.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_');
+    const originalName = String(req.body?.fileName || `video_${Date.now()}.mp4`);
+    const originalSize = Number(req.body?.fileSize) || 0;
+    const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
+
+    try { fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true }); } catch {}
+    const jobId = `vjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const rawPath = path.join(MEDIA_TEMP_DIR, `chunk_${jobId}_${safeName}`);
+    await fs.promises.writeFile(rawPath, Buffer.alloc(0));
+
+    chunkedVideoSessions.set(jobId, {
+      jobId,
+      rawPath,
+      bucket,
+      folderPrefix,
+      originalName,
+      originalSize,
+      receivedBytes: 0,
+      supabaseUrl,
+      anonKey,
+      authHeader,
+      createdAt: Date.now(),
+    });
+
+    res.json({ success: true, jobId });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Unable to initialize video upload.' });
+  }
+});
+
+app.post(
+  '/api/media/optimize-video/chunk/:jobId',
+  express.raw({ type: ['application/octet-stream', 'application/binary'], limit: '8mb' }),
+  async (req, res) => {
+    const session = chunkedVideoSessions.get(req.params.jobId);
+    if (!session) {
+      return res.status(404).json({ success: false, message: 'Video upload session not found or expired.' });
+    }
+    const chunkBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!chunkBuf.length) {
+      return res.status(400).json({ success: false, message: 'Empty video chunk received.' });
+    }
+    try {
+      await fs.promises.appendFile(session.rawPath, chunkBuf);
+      session.receivedBytes += chunkBuf.length;
+      res.json({ success: true, receivedBytes: session.receivedBytes });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || 'Failed to write video chunk.' });
+    }
+  }
+);
+
+app.post('/api/media/optimize-video/finish/:jobId', async (req, res) => {
+  const session = chunkedVideoSessions.get(req.params.jobId);
+  if (!session) {
+    return res.status(404).json({ success: false, message: 'Video upload session not found or expired.' });
+  }
+  chunkedVideoSessions.delete(req.params.jobId);
+
+  const now = Date.now();
+  const effectiveSize = session.originalSize || session.receivedBytes;
+  const job: VideoOptimizationJob = {
+    jobId: session.jobId,
+    bucket: session.bucket,
+    folderPrefix: session.folderPrefix,
+    originalName: session.originalName,
+    status: 'queued',
+    progress: 42,
+    stage: 'Optimizing video...',
+    format: 'h264',
+    originalBytes: effectiveSize,
+    createdAt: now,
+    updatedAt: now,
+  };
+  videoJobs.set(session.jobId, job);
+
+  setImmediate(() => {
+    void processVideoJobAsync({
+      jobId: session.jobId,
+      rawPath: session.rawPath,
+      originalName: session.originalName,
+      originalSize: effectiveSize,
+      bucket: session.bucket,
+      folderPrefix: session.folderPrefix,
+      supabaseUrl: session.supabaseUrl,
+      anonKey: session.anonKey,
+      authHeader: session.authHeader,
+    });
+  });
+
+  res.status(202).json({
+    success: true,
+    jobId: session.jobId,
+    status: job.status,
+    progress: job.progress,
+    stage: job.stage,
+  });
+});
+
+// Enqueue background video optimization job (single fast optimized MP4)
 app.post('/api/media/optimize-video', async (req, res) => {
   const ok = await runMulterSingle(videoUpload.single('file'), req, res);
   if (!ok) return;
@@ -2182,9 +2075,9 @@ app.post('/api/media/optimize-video', async (req, res) => {
     folderPrefix,
     originalName: file.originalname,
     status: 'queued',
-    progress: 5,
-    stage: 'Queued for background video optimization...',
-    format: 'av1+h264',
+    progress: 42,
+    stage: 'Optimizing video...',
+    format: 'h264',
     originalBytes: file.size,
     createdAt: now,
     updatedAt: now,
@@ -2272,8 +2165,14 @@ app.post('/api/media/jobs/:jobId/retry', (req, res) => {
   res.status(202).json({ success: true, job: serializePublicJob(job) });
 });
 
-// Cancel active background video optimization job immediately
+// Cancel active background video optimization job or chunked upload session immediately
 app.post('/api/media/jobs/:jobId/cancel', async (req, res) => {
+  const chunkSession = chunkedVideoSessions.get(req.params.jobId);
+  if (chunkSession) {
+    chunkedVideoSessions.delete(req.params.jobId);
+    await safeUnlink(chunkSession.rawPath);
+    return res.json({ success: true, status: 'cancelled' });
+  }
   const job = videoJobs.get(req.params.jobId);
   if (!job) {
     return res.json({ success: true, status: 'not_found' });
@@ -2341,10 +2240,11 @@ app.get('/api/media/jobs/:jobId/vtt-template', (req, res) => {
   res.json({ success: true, vttContent: job.vttContent });
 });
 
-// Legacy single-file artifact fallback route
+// Single-file artifact fallback route
 app.get('/api/media/job-file/:jobId', async (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   const art =
+    job?.artifactPaths?.video ||
     job?.artifactPaths?.av1_1080p ||
     job?.artifactPaths?.av1_720p ||
     job?.artifactPaths?.h264_1080p ||

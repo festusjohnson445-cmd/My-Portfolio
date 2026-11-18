@@ -18,6 +18,7 @@ import {
   Table as TableIcon,
   ShieldCheck,
   Plus,
+  Play,
 } from 'lucide-react';
 import {
   fetchArticlesFromSupabase,
@@ -1354,6 +1355,23 @@ export const ArticlesView: React.FC = () => {
           <div className={`grid ${gridColsClass} ${gapClass}`}>
             {filteredArticles.map((art) => {
               const isLiked = likedIds.has(art.id);
+              const cardImg =
+                art.thumbnailUrl ||
+                (art.heroMedia?.type === 'image' || art.heroMedia?.type === 'diagram'
+                  ? art.heroMedia.url || ''
+                  : '') ||
+                art.images?.[0]?.url ||
+                '';
+              const cardVid = !cardImg
+                ? (art.heroMedia?.type === 'video'
+                    ? art.heroMedia.h264Urls?.['720p'] || art.heroMedia.url || ''
+                    : '') ||
+                  art.videos?.[0]?.h264Urls?.['720p'] ||
+                  art.videos?.[0]?.url ||
+                  ''
+                : '';
+              const cardVidPoster =
+                art.heroMedia?.type === 'video' ? art.heroMedia.posterUrl : art.videos?.[0]?.posterUrl;
               return (
                 <article
                   key={art.id}
@@ -1361,17 +1379,33 @@ export const ArticlesView: React.FC = () => {
                   className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
                 >
                   <div>
-                    {art.thumbnailUrl && (
+                    {cardImg ? (
                       <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
                         <img
-                          src={art.thumbnailUrl}
+                          src={cardImg}
                           alt={art.title}
                           loading="lazy"
                           decoding="async"
                           className="w-full h-full object-cover"
                         />
                       </div>
-                    )}
+                    ) : cardVid ? (
+                      <div className="relative w-full h-32 sm:h-40 bg-slate-950 overflow-hidden border-b border-slate-200">
+                        <video
+                          src={cardVid}
+                          poster={cardVidPoster}
+                          preload="metadata"
+                          muted
+                          playsInline
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
+                          <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
+                            <Play className="w-4 h-4 fill-white ml-0.5" />
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className={`${padClass} space-y-2`}>
                       <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
                         <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">

@@ -283,9 +283,36 @@ html.dark .fesline-logo-subtitle {
   height: 100%;
 }
 
+.fesline-vidstack-player:not([data-fullscreen]) {
+  max-height: 245px;
+}
+
+@media (min-width: 640px) {
+  .fesline-vidstack-player:not([data-fullscreen]) {
+    max-height: 420px;
+  }
+}
+
+.fesline-vidstack-player[data-fullscreen] {
+  width: 100vw !important;
+  height: 100dvh !important;
+  max-width: none !important;
+  max-height: none !important;
+  aspect-ratio: auto !important;
+  background-color: #020617 !important;
+}
+
 .fesline-vidstack-player video {
   object-fit: var(--fesline-vid-fit, contain);
   transform: scale(var(--fesline-vid-scale, 1));
   transition: transform 0.2s ease;
+}
+
+.fesline-vidstack-player[data-fullscreen] video {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100dvh !important;
+  object-fit: contain !important;
+  transform: none !important;
 }
 

@@ -1160,38 +1160,145 @@ export async function uploadFileToBucket(
     };
   }
 
-  // Route Projects & Articles videos through Background FFmpeg AV1 + H.264 pipeline (no raw files stored in bucket)
+  // Route Projects & Articles videos through chunked upload + fast background FFmpeg pipeline
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
-    onProgress?.(8, 'Uploading video for optimization...');
+    onProgress?.(5, 'Preparing video upload...');
     const localDurationPromise = probeLocalFileDuration(file);
     const authHeaders = await getPipelineAuthHeaders();
     throwIfAborted(signal);
-    const formData = new FormData();
-    formData.append('bucket', bucket);
-    formData.append('folderPrefix', folderPrefix || 'videos');
-    formData.append('file', file);
 
-    const startResp = await fetch('/api/media/optimize-video', {
+    let jobId = '';
+    let initialProgress = 42;
+    let initialStage = 'Optimizing video...';
+    let abortListener: (() => void) | null = null;
+
+    const attachAbortListener = (id: string) => {
+      if (abortListener) return;
+      abortListener = () => {
+        void cancelServerVideoJob(id);
+      };
+      signal?.addEventListener('abort', abortListener, { once: true });
+    };
+
+    // Prefer 2.5MB chunked binary upload so large videos never hit reverse-proxy 32MB body limits
+    const CHUNK_SIZE = 2.5 * 1024 * 1024;
+    const initResp = await fetch('/api/media/optimize-video/init', {
       method: 'POST',
-      headers: authHeaders,
-      body: formData,
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        bucket,
+        folderPrefix: folderPrefix || 'videos',
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'video/mp4',
+      }),
       signal,
-    });
-    throwIfAborted(signal);
-    const startJson = await startResp.json().catch(() => null);
+    }).catch(() => null);
 
-    if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-      throw new Error(startJson?.message || 'Unable to start server video optimization job.');
+    throwIfAborted(signal);
+
+    if (initResp && initResp.ok) {
+      const initJson = await initResp.json().catch(() => null);
+      if (!initJson?.success || !initJson?.jobId) {
+        throw new Error(initJson?.message || 'Unable to initialize video upload session.');
+      }
+      jobId = initJson.jobId;
+      attachAbortListener(jobId);
+
+      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+      for (let i = 0; i < totalChunks; i++) {
+        throwIfAborted(signal);
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        const slice = file.slice(start, end);
+        const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
+        onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
+
+        let chunkOk = false;
+        let lastChunkErr = '';
+        for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
+          throwIfAborted(signal);
+          try {
+            const chunkResp = await fetch(
+              `/api/media/optimize-video/chunk/${encodeURIComponent(jobId)}`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/octet-stream',
+                },
+                body: slice,
+                signal,
+              }
+            );
+            const cJson = await chunkResp.json().catch(() => null);
+            if (chunkResp.ok && cJson?.success) {
+              chunkOk = true;
+            } else {
+              lastChunkErr = cJson?.message || `Chunk upload failed (${chunkResp.status}).`;
+            }
+          } catch (e: any) {
+            if (isAbortError(e) || signal?.aborted) throw e;
+            lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
+          }
+          if (!chunkOk && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 400));
+          }
+        }
+        if (!chunkOk) {
+          void cancelServerVideoJob(jobId);
+          throw new Error(lastChunkErr || 'Video upload failed.');
+        }
+      }
+
+      throwIfAborted(signal);
+      onProgress?.(41, 'Starting optimization...');
+      const finishResp = await fetch(
+        `/api/media/optimize-video/finish/${encodeURIComponent(jobId)}`,
+        {
+          method: 'POST',
+          headers: authHeaders,
+          signal,
+        }
+      );
+      const finishJson = await finishResp.json().catch(() => null);
+      if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
+        void cancelServerVideoJob(jobId);
+        throw new Error(finishJson?.message || `Unable to start video optimization (${finishResp.status}).`);
+      }
+      initialProgress = finishJson.progress || 42;
+      initialStage = finishJson.stage || 'Optimizing video...';
+    } else {
+      // Single-request fallback when /init is unavailable on legacy endpoint
+      onProgress?.(12, 'Uploading video...');
+      const formData = new FormData();
+      formData.append('bucket', bucket);
+      formData.append('folderPrefix', folderPrefix || 'videos');
+      formData.append('file', file);
+
+      const startResp = await fetch('/api/media/optimize-video', {
+        method: 'POST',
+        headers: authHeaders,
+        body: formData,
+        signal,
+      });
+      throwIfAborted(signal);
+      const startJson = await startResp.json().catch(() => null);
+
+      if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
+        const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
+        throw new Error(startJson?.message || `Unable to start server video optimization job${statusHint}.`);
+      }
+      jobId = startJson.jobId;
+      attachAbortListener(jobId);
+      initialProgress = startJson.progress || 42;
+      initialStage = startJson.stage || 'Optimizing video...';
     }
 
-    const jobId: string = startJson.jobId;
-    const onAbort = () => {
-      void cancelServerVideoJob(jobId);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-
     try {
-      onProgress?.(startJson.progress || 10, startJson.stage || 'Processing video...');
+      onProgress?.(initialProgress, initialStage);
 
       const maxWaitMs = 45 * 60 * 1000;
       const startedAt = Date.now();
@@ -1214,7 +1321,7 @@ export async function uploadFileToBucket(
         consecutivePollErrors = 0;
 
         const job = statusJson.job;
-        onProgress?.(job.progress || 50, job.stage || 'Processing video...');
+        onProgress?.(job.progress || 50, job.stage || 'Optimizing video...');
 
         if (job.status === 'cancelled') {
           throw new DOMException('Upload cancelled', 'AbortError');
@@ -1230,7 +1337,7 @@ export async function uploadFileToBucket(
             storagePath: job.storagePath || '',
             mediaType: 'video',
             fileName: job.fileName || file.name,
-            format: job.format || 'av1+h264',
+            format: job.format || 'h264',
             resolution: job.resolution,
             width: job.width,
             height: job.height,
@@ -1242,8 +1349,6 @@ export async function uploadFileToBucket(
             primaryUrl: job.publicUrl,
             av1Urls: job.av1Urls,
             h264Urls: job.h264Urls,
-            posterUrl: job.posterUrl,
-            vttThumbnailsUrl: job.vttThumbnailsUrl,
             createdAt: new Date().toISOString(),
           });
           return {
@@ -1254,8 +1359,6 @@ export async function uploadFileToBucket(
             durationSec: resolvedDuration,
             av1Urls: job.av1Urls,
             h264Urls: job.h264Urls,
-            posterUrl: job.posterUrl,
-            vttThumbnailsUrl: job.vttThumbnailsUrl,
             width: job.width,
             height: job.height,
             resolution: job.resolution,
@@ -1268,7 +1371,7 @@ export async function uploadFileToBucket(
         }
 
         if (job.status === 'ready_for_client_upload') {
-          onProgress?.(94, `Uploading optimized streams (${job.fileSize || ''}) to "${bucket}"...`);
+          onProgress?.(94, `Saving optimized video (${job.fileSize || ''})...`);
           const artifactsList: Array<{
             key: string;
             downloadUrl: string;
@@ -1280,7 +1383,7 @@ export async function uploadFileToBucket(
             ? job.handoffArtifacts
             : [
                 {
-                  key: 'h264_720p',
+                  key: 'video',
                   downloadUrl: job.directUploadUrl,
                   storagePath: job.storagePath,
                   fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
@@ -1294,7 +1397,7 @@ export async function uploadFileToBucket(
             throwIfAborted(signal);
             const blobResp = await fetch(art.downloadUrl, { signal });
             if (!blobResp.ok) {
-              throw new Error(`Failed to retrieve optimized artifact (${art.key}) from server.`);
+              throw new Error(`Failed to retrieve optimized video (${art.key}) from server.`);
             }
             const artBlob = await blobResp.blob();
             throwIfAborted(signal);
@@ -1308,43 +1411,18 @@ export async function uploadFileToBucket(
             });
           }
 
-          // Re-write and upload VTT storyboard file pointing at uploaded Supabase sprite URL
-          let vttThumbnailsUrl: string | undefined;
-          if (uploadedByKey.sprite?.publicUrl) {
-            try {
-              const vttResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/vtt-template`, { signal });
-              const vttJson = await vttResp.json().catch(() => null);
-              if (vttResp.ok && vttJson?.vttContent) {
-                const finalVtt = String(vttJson.vttContent).replaceAll('__SPRITE_URL__', uploadedByKey.sprite.publicUrl);
-                const vttBlob = new Blob([finalVtt], { type: 'text/vtt' });
-                const vttRes = await uploadBlobDirectToBucket({
-                  bucket,
-                  blob: vttBlob,
-                  fileName: `${(job.fileName || 'video').replace(/\.[^/.]+$/, '')}_thumbnails.vtt`,
-                  contentType: 'text/vtt',
-                  folderPrefix: folderPrefix || 'videos',
-                });
-                vttThumbnailsUrl = vttRes.publicUrl;
-              }
-            } catch {}
-          }
-
-          const av1Urls = {
-            ...(uploadedByKey.av1_720p ? { '720p': uploadedByKey.av1_720p.publicUrl } : {}),
-            ...(uploadedByKey.av1_1080p ? { '1080p': uploadedByKey.av1_1080p.publicUrl } : {}),
-          };
-          const h264Urls = {
-            ...(uploadedByKey.h264_720p ? { '720p': uploadedByKey.h264_720p.publicUrl } : {}),
-            ...(uploadedByKey.h264_1080p ? { '1080p': uploadedByKey.h264_1080p.publicUrl } : {}),
-          };
           const primary =
-            uploadedByKey.av1_1080p ||
-            uploadedByKey.av1_720p ||
-            uploadedByKey.h264_1080p ||
+            uploadedByKey.video ||
             uploadedByKey.h264_720p ||
+            uploadedByKey.h264_1080p ||
+            uploadedByKey.av1_720p ||
+            uploadedByKey.av1_1080p ||
             Object.values(uploadedByKey)[0];
 
-          const posterUrl = uploadedByKey.poster?.publicUrl;
+          const h264Urls = { '720p': primary.publicUrl };
+          const av1Urls = undefined;
+          const posterUrl = undefined;
+          const vttThumbnailsUrl = undefined;
 
           // Signal server to clear any remaining temp files immediately
           await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/complete-handoff`, {
@@ -1352,11 +1430,7 @@ export async function uploadFileToBucket(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               publicUrl: primary.publicUrl,
-              av1Urls,
               h264Urls,
-              posterUrl,
-              vttThumbnailsUrl,
-              spriteUrl: uploadedByKey.sprite?.publicUrl,
             }),
           }).catch(() => {});
 
@@ -1427,7 +1501,9 @@ export async function uploadFileToBucket(
       }
       throw new Error('Video optimization timed out.');
     } finally {
-      signal?.removeEventListener('abort', onAbort);
+      if (abortListener) {
+        signal?.removeEventListener('abort', abortListener);
+      }
     }
   }
 
@@ -2586,12 +2662,16 @@ export async function listBucketMediaFiles(
       };
     };
 
+    const isInternalSidecarFile = (fileName: string) =>
+      /_(sprite\.jpg|poster\.webp|thumbnails\.vtt|768w\.avif)$/i.test(fileName);
+
     const folderNames: string[] = [];
     for (const item of rootItems) {
       if (!item.name || item.name === '.emptyFolderPlaceholder') continue;
       if (!item.id) {
         folderNames.push(item.name);
       } else {
+        if (isInternalSidecarFile(item.name)) continue;
         const { data: pub } = supabase.storage.from(bucket).getPublicUrl(item.name);
         const mimeType = (item.metadata as any)?.mimetype;
         results.push(
@@ -2622,6 +2702,7 @@ export async function listBucketMediaFiles(
       for (const { folder, subItems } of subResults) {
         for (const sub of subItems) {
           if (!sub.name || !sub.id || sub.name === '.emptyFolderPlaceholder') continue;
+          if (isInternalSidecarFile(sub.name)) continue;
           const fullPath = `${folder}/${sub.name}`;
           const { data: pub } = supabase.storage.from(bucket).getPublicUrl(fullPath);
           const mimeType = (sub.metadata as any)?.mimetype;

@@ -12,7 +12,7 @@ import {
   DefaultVideoLayout,
   defaultLayoutIcons,
 } from '@vidstack/react/player/layouts/default';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, Repeat } from 'lucide-react';
 
 export interface VideoSubtitleTrack {
   src: string;
@@ -38,6 +38,7 @@ interface CleanVideoPlayerProps {
   objectFit?: 'contain' | 'cover' | 'fill' | 'none' | 'scale-down';
   zoomLevel?: number;
   autoPlay?: boolean;
+  defaultLoop?: boolean;
   onDurationResolved?: (seconds: number) => void;
   className?: string;
 }
@@ -83,6 +84,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   objectFit = 'contain',
   zoomLevel = 1,
   autoPlay = false,
+  defaultLoop = false,
   onDurationResolved,
   className = '',
 }) => {
@@ -99,6 +101,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
     hasAv1Variants && supportsAv1Playback() ? 'av1' : 'h264'
   );
   const [selectedQuality, setSelectedQuality] = useState<'auto' | '1080p' | '720p'>('auto');
+  const [isLooping, setIsLooping] = useState(defaultLoop);
   const [hasError, setHasError] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
 
@@ -170,6 +173,8 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
     return [];
   }, [subtitles, subtitleUrl]);
 
+  const needsCors = Boolean(effectiveThumbnails || effectiveSubtitles.length > 0);
+
   const handleQualitySwitch = (nextQuality: 'auto' | '1080p' | '720p') => {
     if (nextQuality === selectedQuality) return;
     const player = playerRef.current;
@@ -214,7 +219,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
 
   return (
     <div
-      className={`fesline-vidstack-wrap relative w-full overflow-hidden bg-slate-950 max-h-[210px] sm:max-h-[420px] flex items-center justify-center ${className}`}
+      className={`fesline-vidstack-wrap group relative w-full overflow-hidden bg-slate-950 min-h-[200px] max-h-[245px] sm:max-h-[420px] flex items-center justify-center ${className}`}
       style={{
         aspectRatio: normalizedAspect,
         ['--media-brand' as string]: 'var(--primary-color, #164e63)',
@@ -229,13 +234,14 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
         title={title || 'Engineering Video'}
         src={resolvedSrc}
         playsInline
-        crossOrigin="anonymous"
+        loop={isLooping}
+        crossOrigin={needsCors ? 'anonymous' : undefined}
         load="visible"
         posterLoad="visible"
         autoPlay={autoPlay}
         streamType="on-demand"
         keyTarget="player"
-        className="w-full h-full max-h-[210px] sm:max-h-[420px] fesline-vidstack-player"
+        className="w-full h-full fesline-vidstack-player"
         onLoadedMetadata={() => {
           const player = playerRef.current;
           const dur = player?.duration || 0;
@@ -254,6 +260,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
           }
         }}
         onCanPlay={() => {
+          setHasError(false);
           const pending = pendingRestoreRef.current;
           const player = playerRef.current;
           if (pending && player) {
@@ -308,31 +315,51 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
           playbackRates={SPEED_OPTIONS}
           seekStep={10}
           colorScheme="dark"
-          smallLayoutWhen={({ width, height }) => width < 520 || height < 300}
+          smallLayoutWhen={({ width, height }) => width < 440 || height < 240}
         />
       </MediaPlayer>
 
-      {/* Progressive Multi-Resolution Selector (Auto / 1080p / 720p) */}
-      {!isAdaptiveManifest && availableResolutions.length > 1 && !hasError && (
+      {/* Top-right compact Loop toggle + optional Resolution Selector */}
+      {!hasError && (
         <div
-          className="absolute top-2 right-2 z-20 flex items-center gap-0.5 bg-slate-950/75 backdrop-blur-xs border border-white/15 rounded-md p-0.5 text-[10px] font-mono text-white"
+          className="absolute top-2 right-2 z-20 flex items-center gap-1 opacity-85 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
           onClick={(e) => e.stopPropagation()}
         >
-          {(['auto', ...availableResolutions] as Array<'auto' | '1080p' | '720p'>).map((q) => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => handleQualitySwitch(q)}
-              className={`px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
-                selectedQuality === q
-                  ? 'bg-cyan-700 text-white font-bold'
-                  : 'text-slate-200 hover:bg-white/15'
-              }`}
-              title={`Switch stream quality to ${q}`}
-            >
-              {q === 'auto' ? 'Auto' : q}
-            </button>
-          ))}
+          <button
+            type="button"
+            onClick={() => setIsLooping((prev) => !prev)}
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold backdrop-blur-xs transition-colors cursor-pointer ${
+              isLooping
+                ? 'bg-cyan-700/90 border-cyan-400/50 text-white'
+                : 'bg-slate-950/70 border-white/15 text-slate-200 hover:bg-slate-900/90'
+            }`}
+            title={isLooping ? 'Loop On (click to turn off)' : 'Loop Off (click to repeat video)'}
+            aria-label="Toggle video loop"
+            aria-pressed={isLooping}
+          >
+            <Repeat className="w-3 h-3" />
+            <span>Loop</span>
+          </button>
+
+          {!isAdaptiveManifest && availableResolutions.length > 1 && (
+            <div className="flex items-center gap-0.5 bg-slate-950/75 backdrop-blur-xs border border-white/15 rounded-md p-0.5 text-[10px] font-mono text-white">
+              {(['auto', ...availableResolutions] as Array<'auto' | '1080p' | '720p'>).map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => handleQualitySwitch(q)}
+                  className={`px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
+                    selectedQuality === q
+                      ? 'bg-cyan-700 text-white font-bold'
+                      : 'text-slate-200 hover:bg-white/15'
+                  }`}
+                  title={`Switch stream quality to ${q}`}
+                >
+                  {q === 'auto' ? 'Auto' : q}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

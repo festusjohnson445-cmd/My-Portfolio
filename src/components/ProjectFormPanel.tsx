@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon, RotateCcw } from 'lucide-react';
+import { Upload, Plus, Trash2, Save, X, Loader2, Link as LinkIcon, RotateCcw, Play } from 'lucide-react';
 import {
   uploadFileToBucket,
   upsertProjectToSupabase,
@@ -13,6 +13,7 @@ import {
 } from '../utils/portfolioSupabase';
 import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
 import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
+import { CleanVideoPlayer } from './CleanVideoPlayer';
 
 interface ProjectFormPanelProps {
   initialProject?: PortfolioProject | null;
@@ -82,6 +83,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
     'thumbnail' | 'image' | 'video' | 'cad' | 'document' | null
   >(null);
+  const [previewVideoIdx, setPreviewVideoIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -219,6 +221,18 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       fileName: cleanDisplayFileName(item.name),
       fileSize: item.size ? formatBytes(item.size) : undefined,
       fileType: item.mimeType,
+      avifUrl: item.avifUrl,
+      webpUrl: item.webpUrl,
+      jpegUrl: item.jpegUrl,
+      mobileUrl: item.mobileUrl,
+      posterUrl: item.posterUrl,
+      vttThumbnailsUrl: item.vttThumbnailsUrl,
+      av1Urls: item.av1Urls,
+      h264Urls: item.h264Urls,
+      format: item.format,
+      originalBytes: item.originalBytes,
+      optimizedBytes: item.optimizedBytes,
+      compressionPct: item.compressionPct,
     }));
 
     if (target === 'thumbnail') {
@@ -767,16 +781,41 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             <div key={i} className="bg-white p-2 rounded border border-slate-200 space-y-1.5 min-w-0">
               <div className="flex items-center justify-between gap-2 min-w-0">
                 <span className="truncate flex-1 min-w-0 font-semibold text-slate-800">
-                  {v.title || `Uploaded Video ${i + 1}`}
+                  {v.title || 'Uploaded Video'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="text-rose-600 cursor-pointer shrink-0"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewVideoIdx((prev) => (prev === i ? null : i))}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10.5px] font-semibold cursor-pointer"
+                  >
+                    <Play className="w-2.5 h-2.5" />
+                    <span>{previewVideoIdx === i ? 'Hide' : 'Preview'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewVideoIdx((prev) => (prev === i ? null : prev));
+                      setVideos((prev) => prev.filter((_, idx) => idx !== i));
+                    }}
+                    className="text-rose-600 cursor-pointer shrink-0"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
+              {previewVideoIdx === i && v.url && (
+                <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-950">
+                  <CleanVideoPlayer
+                    src={v.url}
+                    poster={v.posterUrl}
+                    av1Urls={v.av1Urls}
+                    h264Urls={v.h264Urls}
+                    vttThumbnailsUrl={v.vttThumbnailsUrl}
+                    title={v.title || 'Project Video Preview'}
+                  />
+                </div>
+              )}
               <input
                 type="text"
                 value={v.note ?? ''}

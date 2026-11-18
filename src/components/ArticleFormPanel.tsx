@@ -14,6 +14,7 @@ import {
   Video,
   Compass,
   RotateCcw,
+  Play,
 } from 'lucide-react';
 import {
   uploadFileToBucket,
@@ -31,6 +32,7 @@ import {
 } from '../utils/portfolioSupabase';
 import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
 import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
+import { CleanVideoPlayer } from './CleanVideoPlayer';
 
 interface ArticleFormPanelProps {
   initialArticle?: PortfolioArticle | null;
@@ -101,6 +103,8 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
     'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment' | null
   >(null);
+  const [previewHeroVideo, setPreviewHeroVideo] = useState(false);
+  const [previewVideoIdx, setPreviewVideoIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -244,6 +248,18 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       fileName: cleanDisplayFileName(item.name),
       fileSize: item.size ? formatBytes(item.size) : undefined,
       fileType: item.mimeType,
+      avifUrl: item.avifUrl,
+      webpUrl: item.webpUrl,
+      jpegUrl: item.jpegUrl,
+      mobileUrl: item.mobileUrl,
+      posterUrl: item.posterUrl,
+      vttThumbnailsUrl: item.vttThumbnailsUrl,
+      av1Urls: item.av1Urls,
+      h264Urls: item.h264Urls,
+      format: item.format,
+      originalBytes: item.originalBytes,
+      optimizedBytes: item.optimizedBytes,
+      compressionPct: item.compressionPct,
     }));
 
     if (target === 'thumbnail') {
@@ -259,6 +275,14 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             ? 'image'
             : prev.type,
         url: first.publicUrl,
+        avifUrl: first.avifUrl,
+        webpUrl: first.webpUrl,
+        jpegUrl: first.jpegUrl,
+        mobileUrl: first.mobileUrl,
+        posterUrl: first.posterUrl,
+        vttThumbnailsUrl: first.vttThumbnailsUrl,
+        av1Urls: first.av1Urls,
+        h264Urls: first.h264Urls,
       }));
     } else if (target === 'image') {
       setImages((prev) => [...prev, ...mapped]);
@@ -660,18 +684,47 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
                 }
                 className="flex-1 min-w-0 w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
               />
-              {isSupabaseStorageUrl(heroMedia.url) && (
-                <button
-                  type="button"
-                  onClick={() => setHeroMedia((prev) => ({ ...prev, url: '' }))}
-                  className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
-                >
-                  Clear
-                </button>
+              {heroMedia.url && (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {heroMedia.type === 'video' && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewHeroVideo((p) => !p)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>{previewHeroVideo ? 'Hide' : 'Preview'}</span>
+                    </button>
+                  )}
+                  {isSupabaseStorageUrl(heroMedia.url) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewHeroVideo(false);
+                        setHeroMedia((prev) => ({ ...prev, url: '' }));
+                      }}
+                      className="px-2.5 py-1 rounded bg-rose-100 text-rose-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           ) : null}
         </div>
+        {heroMedia.type === 'video' && heroMedia.url && previewHeroVideo && (
+          <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-950">
+            <CleanVideoPlayer
+              src={heroMedia.url}
+              poster={heroMedia.posterUrl}
+              av1Urls={heroMedia.av1Urls}
+              h264Urls={heroMedia.h264Urls}
+              vttThumbnailsUrl={heroMedia.vttThumbnailsUrl}
+              title={title || 'Hero Video Preview'}
+            />
+          </div>
+        )}
         {heroMedia.type !== 'none' && (
           <input
             type="text"
@@ -959,16 +1012,41 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             <div key={i} className="bg-white p-2 rounded border border-slate-200 space-y-1.5 min-w-0">
               <div className="flex items-center justify-between gap-2 min-w-0">
                 <span className="truncate flex-1 min-w-0 font-semibold text-slate-800">
-                  {v.title || `Uploaded Video ${i + 1}`}
+                  {v.title || 'Uploaded Video'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setVideos((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="text-rose-600 cursor-pointer shrink-0"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewVideoIdx((prev) => (prev === i ? null : i))}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10.5px] font-semibold cursor-pointer"
+                  >
+                    <Play className="w-2.5 h-2.5" />
+                    <span>{previewVideoIdx === i ? 'Hide' : 'Preview'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewVideoIdx((prev) => (prev === i ? null : prev));
+                      setVideos((prev) => prev.filter((_, idx) => idx !== i));
+                    }}
+                    className="text-rose-600 cursor-pointer shrink-0"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
+              {previewVideoIdx === i && v.url && (
+                <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-950">
+                  <CleanVideoPlayer
+                    src={v.url}
+                    poster={v.posterUrl}
+                    av1Urls={v.av1Urls}
+                    h264Urls={v.h264Urls}
+                    vttThumbnailsUrl={v.vttThumbnailsUrl}
+                    title={v.title || 'Article Video Preview'}
+                  />
+                </div>
+              )}
               <input
                 type="text"
                 value={v.note ?? ''}

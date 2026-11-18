@@ -13,6 +13,7 @@ import {
   Wrench,
   Edit3,
   Trash2,
+  Play,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -571,21 +572,42 @@ export const ProjectsView: React.FC = () => {
             Featured Projects
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {featuredProjects.slice(0, 2).map((proj) => (
+            {featuredProjects.slice(0, 2).map((proj) => {
+              const featImg = proj.thumbnailUrl || proj.images?.[0]?.url || '';
+              const featVid = !featImg
+                ? proj.videos?.[0]?.h264Urls?.['720p'] || proj.videos?.[0]?.url || ''
+                : '';
+              return (
               <div
                 key={`feat-${proj.id}`}
                 onClick={() => openProjectDetail(proj)}
                 className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
               >
-                {proj.thumbnailUrl && (
+                {featImg ? (
                   <div className="sm:w-44 h-36 sm:h-auto bg-slate-900 shrink-0">
                     <img
-                      src={proj.thumbnailUrl}
+                      src={featImg}
                       alt={proj.title}
                       className="w-full h-full object-cover"
                     />
                   </div>
-                )}
+                ) : featVid ? (
+                  <div className="relative sm:w-44 h-36 sm:h-auto bg-slate-950 shrink-0 overflow-hidden">
+                    <video
+                      src={featVid}
+                      poster={proj.videos?.[0]?.posterUrl}
+                      preload="metadata"
+                      muted
+                      playsInline
+                      className="w-full h-full object-cover pointer-events-none"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
+                      <span className="w-8 h-8 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
+                        <Play className="w-3.5 h-3.5 fill-white ml-0.5" />
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="p-3.5 flex-1 flex flex-col justify-between space-y-2">
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2 text-[10px]">
@@ -608,7 +630,8 @@ export const ProjectsView: React.FC = () => {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -677,24 +700,45 @@ export const ProjectsView: React.FC = () => {
 
         return (
           <div className={`grid ${gridColsClass} ${gapClass}`}>
-            {filteredProjects.map((proj) => (
+            {filteredProjects.map((proj) => {
+              const cardImg = proj.thumbnailUrl || proj.images?.[0]?.url || '';
+              const cardVid = !cardImg
+                ? proj.videos?.[0]?.h264Urls?.['720p'] || proj.videos?.[0]?.url || ''
+                : '';
+              return (
               <article
                 key={proj.id}
                 onClick={() => openProjectDetail(proj)}
                 className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
               >
                 <div>
-                  {proj.thumbnailUrl && (
+                  {cardImg ? (
                     <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
                       <img
-                        src={proj.thumbnailUrl}
+                        src={cardImg}
                         alt={proj.title}
                         loading="lazy"
                         decoding="async"
                         className="w-full h-full object-cover"
                       />
                     </div>
-                  )}
+                  ) : cardVid ? (
+                    <div className="relative w-full h-32 sm:h-40 bg-slate-950 overflow-hidden border-b border-slate-200">
+                      <video
+                        src={cardVid}
+                        poster={proj.videos?.[0]?.posterUrl}
+                        preload="metadata"
+                        muted
+                        playsInline
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
+                        <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
+                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className={`${padClass} space-y-2`}>
                     <div className="flex items-center justify-between gap-1.5 text-[10px]">
                       <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
@@ -720,7 +764,8 @@ export const ProjectsView: React.FC = () => {
                   <span className="text-cyan-900 font-bold shrink-0">View →</span>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         );
       })()}
