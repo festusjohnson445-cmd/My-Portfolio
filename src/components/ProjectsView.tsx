@@ -14,10 +14,13 @@ import {
   Edit3,
   Trash2,
   Play,
+  Check,
+  X,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
   deleteProjectFromSupabase,
+  updateProjectHeroInscription,
   useWebsiteSettingsSync,
   getCachedProjects,
   hasProjectsCacheHydrated,
@@ -50,6 +53,9 @@ export const ProjectsView: React.FC = () => {
 
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<PortfolioProject | null>(null);
+  const [editingInscription, setEditingInscription] = useState(false);
+  const [inscriptionDraft, setInscriptionDraft] = useState('');
+  const [savingInscription, setSavingInscription] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
@@ -128,9 +134,26 @@ export const ProjectsView: React.FC = () => {
   const openProjectDetail = (proj: PortfolioProject) => {
     setIsFormOpen(false);
     setEditingProject(null);
+    setEditingInscription(false);
+    setInscriptionDraft(proj.heroInscription || '');
     setSelectedProject(proj);
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  };
+
+  const handleSaveHeroInscription = async () => {
+    if (!selectedProject) return;
+    setSavingInscription(true);
+    try {
+      const updated = await updateProjectHeroInscription(selectedProject, inscriptionDraft);
+      setSelectedProject(updated);
+      setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      setEditingInscription(false);
+    } catch (err) {
+      console.error('Unable to save project hero inscription:', err);
+    } finally {
+      setSavingInscription(false);
     }
   };
 
@@ -197,15 +220,83 @@ export const ProjectsView: React.FC = () => {
           </div>
 
           {selectedProject.thumbnailUrl && (
-            <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
-              <img
-                src={selectedProject.thumbnailUrl}
-                alt={selectedProject.title}
-                loading="lazy"
-                decoding="async"
-                className="w-full h-full object-contain block"
-              />
-            </div>
+            <figure className="w-full space-y-2">
+              <div
+                role="img"
+                aria-label={selectedProject.title}
+                className="w-full aspect-[16/9] min-h-[220px] sm:min-h-[320px] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100"
+                style={{
+                  backgroundImage: `url("${selectedProject.thumbnailUrl}")`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat',
+                }}
+              >
+                <img
+                  src={selectedProject.thumbnailUrl}
+                  alt={selectedProject.title}
+                  loading="lazy"
+                  decoding="async"
+                  className="sr-only"
+                />
+              </div>
+              {(selectedProject.heroInscription || isOwner) && (
+                <figcaption className="px-1 pt-0.5">
+                  {editingInscription && isOwner ? (
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-50 border border-[#b8c6d4] rounded-lg p-2">
+                      <input
+                        type="text"
+                        value={inscriptionDraft}
+                        onChange={(e) => setInscriptionDraft(e.target.value)}
+                        placeholder="Enter hero inscription text shown outside the background image container..."
+                        className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+                      />
+                      <div className="flex items-center justify-end gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={savingInscription}
+                          onClick={handleSaveHeroInscription}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+                        >
+                          <Check className="w-3 h-3" />
+                          <span>{savingInscription ? 'Saving...' : 'Save'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingInscription(false);
+                            setInscriptionDraft(selectedProject.heroInscription || '');
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                          <span>Cancel</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#edf2f8]/70 border border-[#cbd5e1]/80">
+                      <p className="text-xs text-slate-700 italic leading-relaxed flex-1 min-w-0 break-words">
+                        {selectedProject.heroInscription || 'No hero inscription added yet.'}
+                      </p>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInscriptionDraft(selectedProject.heroInscription || '');
+                            setEditingInscription(true);
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-cyan-900 text-[11px] font-semibold cursor-pointer shrink-0"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>{selectedProject.heroInscription ? 'Edit Inscription' : 'Add Inscription'}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </figcaption>
+              )}
+            </figure>
           )}
 
           {/* Overview, Objectives, Methodology, Results */}
@@ -584,13 +675,23 @@ export const ProjectsView: React.FC = () => {
                 className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
               >
                 {featImg ? (
-                  <div className="w-full sm:w-52 bg-[#f8fafc] border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden flex items-center justify-center">
+                  <div
+                    role="img"
+                    aria-label={proj.title}
+                    className="w-full sm:w-52 min-h-[176px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden"
+                    style={{
+                      backgroundImage: `url("${featImg}")`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      backgroundRepeat: 'no-repeat',
+                    }}
+                  >
                     <img
                       src={featImg}
                       alt={proj.title}
                       loading="lazy"
                       decoding="async"
-                      className="w-full h-auto max-h-48 sm:h-full object-contain block"
+                      className="sr-only"
                     />
                   </div>
                 ) : featVid ? (
@@ -715,13 +816,23 @@ export const ProjectsView: React.FC = () => {
               >
                 <div>
                   {cardImg ? (
-                    <div className="w-full bg-[#f8fafc] border-b border-slate-200 overflow-hidden flex items-center justify-center">
+                    <div
+                      role="img"
+                      aria-label={proj.title}
+                      className="w-full h-48 bg-slate-100 border-b border-slate-200 overflow-hidden"
+                      style={{
+                        backgroundImage: `url("${cardImg}")`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        backgroundRepeat: 'no-repeat',
+                      }}
+                    >
                       <img
                         src={cardImg}
                         alt={proj.title}
                         loading="lazy"
                         decoding="async"
-                        className="w-full h-auto max-h-60 object-contain block"
+                        className="sr-only"
                       />
                     </div>
                   ) : cardVid ? (

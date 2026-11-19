@@ -67,6 +67,12 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const [heroMedia, setHeroMedia] = useState<ArticleHeroMedia>(
     initialArticle?.heroMedia || { type: 'none', url: '', caption: '', cadModelType: undefined }
   );
+  const [heroInscription, setHeroInscription] = useState(
+    initialArticle?.heroInscription ||
+      initialArticle?.heroMedia?.inscription ||
+      initialArticle?.heroMedia?.caption ||
+      ''
+  );
 
   const [images, setImages] = useState<MediaAssetItem[]>(initialArticle?.images || []);
   const [videos, setVideos] = useState<MediaAssetItem[]>(initialArticle?.videos || []);
@@ -339,7 +345,12 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           authorName: authorName.trim(),
           isAdminAuthor: isOwner,
           thumbnailUrl: effectiveThumbnail,
-          heroMedia,
+          heroMedia: {
+            ...heroMedia,
+            caption: heroInscription.trim(),
+            inscription: heroInscription.trim(),
+          },
+          heroInscription: heroInscription.trim(),
           tldr: tldr.trim(),
           toc,
           images,
@@ -741,15 +752,22 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             />
           </div>
         )}
-        {heroMedia.type !== 'none' && (
+        <div className="space-y-1 pt-1">
+          <label className="block font-bold text-slate-700">
+            Hero Inscription (Rendered outside hero background container)
+          </label>
           <input
             type="text"
-            value={heroMedia.caption || ''}
-            onChange={(e) => setHeroMedia((prev) => ({ ...prev, caption: e.target.value }))}
-            placeholder="Hero figure caption (optional)"
+            value={heroInscription}
+            onChange={(e) => {
+              const val = e.target.value;
+              setHeroInscription(val);
+              setHeroMedia((prev) => ({ ...prev, caption: val, inscription: val }));
+            }}
+            placeholder="Write an editable inscription / caption shown outside the full-bleed hero card background..."
             className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
           />
-        )}
+        </div>
       </div>
 
       {/* Summary & Key Takeaway */}

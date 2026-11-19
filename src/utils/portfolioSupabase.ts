@@ -124,6 +124,7 @@ export interface PortfolioProject {
   isFeatured: boolean;
   status: 'draft' | 'published' | 'archived';
   sortOrder?: number;
+  heroInscription?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -132,6 +133,7 @@ export interface ArticleHeroMedia {
   type: 'image' | 'video' | 'diagram' | 'cad3d' | 'none';
   url?: string;
   caption?: string;
+  inscription?: string;
   cadModelType?: 'harmonic_actuator' | 'gimbal_bracket' | 'planetary_gearbox' | 'chassis_suspension';
   avifUrl?: string;
   webpUrl?: string;
@@ -180,6 +182,7 @@ export interface PortfolioArticle {
   isAdminAuthor: boolean;
   thumbnailUrl: string;
   heroMedia: ArticleHeroMedia;
+  heroInscription?: string;
   tldr: string;
   toc: string[];
   images: MediaAssetItem[];
@@ -624,12 +627,14 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
     if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 300_000) {
       const refreshed: any = await Promise.race([
         supabase.auth.refreshSession().catch(() => null),
-        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+        new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
       ]);
       if (refreshed?.data?.session) data = refreshed.data;
     }
-    if (data?.session?.access_token) {
-      headers['Authorization'] = `Bearer ${data.session.access_token}`;
+    const token = data?.session?.access_token;
+    const isExpired = data?.session?.expires_at ? data.session.expires_at * 1000 <= Date.now() + 5000 : false;
+    if (token && !isExpired) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
   } catch {}
   return headers;
@@ -782,38 +787,140 @@ async function uploadBlobDirectToBucket(params: {
   const uniquePrefix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   let ownerPrefix = params.folderPrefix || '';
+  let bearerToken = '';
+  const cfg = getResolvedSupabaseConfig();
   try {
-    const { data } = await supabase.auth.getSession();
+    let { data } = await supabase.auth.getSession();
+    if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 120_000) {
+      const refreshed: any = await Promise.race([
+        supabase.auth.refreshSession().catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
+      if (refreshed?.data?.session) data = refreshed.data;
+    }
     if (data?.session?.user && isRealOwnerUser(data.session.user)) {
       ownerPrefix = ownerPrefix || data.session.user.id;
+    }
+    const isExpired = data?.session?.expires_at ? data.session.expires_at * 1000 <= Date.now() + 5000 : false;
+    if (data?.session?.access_token && !isExpired) {
+      bearerToken = data.session.access_token;
     }
   } catch {}
 
   const pathParts = [ownerPrefix || 'submissions', `${uniquePrefix}_${cleanName}`].filter(Boolean);
   const storagePath = params.explicitStoragePath || pathParts.join('/');
+  const encodedPath = storagePath
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+  const uploadUrl = `${cfg.url}/storage/v1/object/${encodeURIComponent(params.bucket)}/${encodedPath}`;
+  const contentType = params.contentType || 'application/octet-stream';
 
-  const { error: uploadError } = await supabase.storage
-    .from(params.bucket)
-    .upload(storagePath, params.blob, {
-      contentType: params.contentType || 'application/octet-stream',
-      upsert: true,
-    });
+  let lastErrMsg = '';
+  let hadNetworkFailure = false;
 
-  if (uploadError) {
-    throw new Error(`Storage upload to "${params.bucket}" failed: ${uploadError.message}`);
+  // 1. Direct binary POST with automatic retries + JWT->anon recovery on 'articles'
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      let authToken = bearerToken || cfg.anonKey;
+      let resp = await fetchWithTimeout(uploadUrl, {
+        method: 'POST',
+        headers: {
+          apikey: cfg.anonKey,
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': contentType,
+          'x-upsert': 'true',
+        },
+        body: params.blob,
+        timeoutMs: 90_000,
+      });
+
+      if (
+        !resp.ok &&
+        params.bucket === 'articles' &&
+        authToken !== cfg.anonKey &&
+        (resp.status === 400 || resp.status === 401 || resp.status === 403)
+      ) {
+        resp = await fetchWithTimeout(uploadUrl, {
+          method: 'POST',
+          headers: {
+            apikey: cfg.anonKey,
+            Authorization: `Bearer ${cfg.anonKey}`,
+            'Content-Type': contentType,
+            'x-upsert': 'true',
+          },
+          body: params.blob,
+          timeoutMs: 90_000,
+        });
+      }
+
+      if (resp.ok) {
+        const { data: pub } = supabase.storage.from(params.bucket).getPublicUrl(storagePath);
+        const publicUrl =
+          pub?.publicUrl ||
+          `${cfg.url}/storage/v1/object/public/${encodeURIComponent(params.bucket)}/${encodedPath}`;
+        invalidateBucketMediaCache(params.bucket);
+        return {
+          publicUrl,
+          storagePath,
+          fileName: params.fileName,
+          fileSize: formatBytes(params.blob.size),
+        };
+      }
+
+      const errText = await resp.text().catch(() => resp.statusText);
+      lastErrMsg = errText || `HTTP ${resp.status}`;
+      if (resp.status >= 400 && resp.status < 500 && resp.status !== 408 && resp.status !== 429) {
+        break;
+      }
+    } catch (netErr: any) {
+      hadNetworkFailure = true;
+      lastErrMsg = netErr?.message || 'Failed to fetch';
+    }
+
+    if (attempt === 0) {
+      await new Promise((r) => setTimeout(r, 550));
+    }
   }
 
-  const { data: pub } = supabase.storage.from(params.bucket).getPublicUrl(storagePath);
-  if (!pub?.publicUrl) {
-    throw new Error(`Could not resolve public URL in bucket "${params.bucket}"`);
+  // 2. Same-origin server relay fallback when direct browser fetch fails (e.g. mobile "Failed to fetch" / CORS / TLS reset)
+  if (hadNetworkFailure || /failed to fetch|network|timeout/i.test(lastErrMsg)) {
+    try {
+      const relayHeaders = await getPipelineAuthHeaders();
+      const formData = new FormData();
+      formData.append('bucket', params.bucket);
+      formData.append('storagePath', storagePath);
+      formData.append('folderPrefix', ownerPrefix || 'uploads');
+      formData.append('contentType', contentType);
+      formData.append('file', params.blob, cleanName);
+
+      const relayResp = await fetchWithTimeout('/api/media/upload-to-bucket', {
+        method: 'POST',
+        headers: relayHeaders,
+        body: formData,
+        timeoutMs: 120_000,
+      });
+      const relayJson = await relayResp.json().catch(() => null);
+      if (relayResp.ok && relayJson?.success && relayJson?.publicUrl) {
+        invalidateBucketMediaCache(params.bucket);
+        return {
+          publicUrl: relayJson.publicUrl,
+          storagePath: relayJson.storagePath || storagePath,
+          fileName: params.fileName,
+          fileSize: relayJson.fileSize || formatBytes(params.blob.size),
+        };
+      }
+      if (relayJson?.message) {
+        lastErrMsg = relayJson.message;
+      }
+    } catch (relayErr: any) {
+      if (relayErr?.message) {
+        lastErrMsg = relayErr.message;
+      }
+    }
   }
 
-  return {
-    publicUrl: pub.publicUrl,
-    storagePath,
-    fileName: params.fileName,
-    fileSize: formatBytes(params.blob.size),
-  };
+  throw new Error(`Storage upload to "${params.bucket}" failed: ${lastErrMsg || 'Failed to fetch'}`);
 }
 
 export function isAbortError(err: unknown): boolean {
@@ -949,10 +1056,15 @@ export async function fetchMediaAssetsFromSupabase(bucket?: string): Promise<Med
         updatedAt: row.updated_at,
       };
     });
-    persistLocalMediaAssets(mapped);
+    if (bucket) {
+      const otherBuckets = local.filter((r) => r.bucket !== bucket);
+      persistLocalMediaAssets([...mapped, ...otherBuckets]);
+    } else {
+      persistLocalMediaAssets(mapped);
+    }
     return mapped;
   } catch {
-    return local;
+    return filteredLocal;
   }
 }
 
@@ -1027,6 +1139,7 @@ export async function uploadFileToBucket(
         const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
         if (json.publicUrl) {
+          invalidateBucketMediaCache(bucket);
           await saveMediaAssetRecord({
             id: assetId,
             bucket,
@@ -1047,7 +1160,7 @@ export async function uploadFileToBucket(
             jpegUrl: json.jpegUrl,
             mobileUrl: json.mobileUrl,
             createdAt: new Date().toISOString(),
-          });
+          }).catch(() => {});
           onProgress?.(100, `Saved optimized AVIF (${json.fileSize})`);
           return {
             publicUrl: json.publicUrl,
@@ -1286,6 +1399,7 @@ export async function uploadFileToBucket(
         }
 
         if (job.status === 'completed' && job.publicUrl) {
+          invalidateBucketMediaCache(bucket);
           const localDur = await localDurationPromise;
           const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
           if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
@@ -1308,7 +1422,7 @@ export async function uploadFileToBucket(
             av1Urls: job.av1Urls,
             h264Urls: job.h264Urls,
             createdAt: new Date().toISOString(),
-          });
+          }).catch(() => {});
           return {
             publicUrl: job.publicUrl,
             storagePath: job.storagePath,
@@ -1503,15 +1617,15 @@ export async function uploadFileToBucket(
         }
       }
 
-      // Helper: direct Supabase Storage upload fallback if server transcode endpoint is unavailable (HTTP 5xx/404/network)
-      const runDirectVideoUploadFallback = async (reasonMsg: string) => {
+      // Only fall back to direct upload on static serverless deploys without FFmpeg pipeline (HTTP 404) for compact MP4/WebM
+      const runDirectVideoUploadFallback = async (reasonMsg: string, isStaticDeployWithoutServer = false) => {
         throwIfAborted(signal);
         const ext = (file.name.split('.').pop() || '').toLowerCase();
-        const playableExts = ['mp4', 'webm', 'm4v', 'mov'];
-        if (!playableExts.includes(ext) && !file.type.startsWith('video/')) {
-          throw new Error(reasonMsg || 'Video optimization service unavailable.');
+        const playableExts = ['mp4', 'webm', 'm4v'];
+        if (!isStaticDeployWithoutServer || file.size > 12 * 1024 * 1024 || !playableExts.includes(ext)) {
+          throw new Error(reasonMsg || 'Video optimization failed. Please retry.');
         }
-        onProgress?.(55, `Uploading video directly to "${bucket}"...`);
+        onProgress?.(55, `Uploading compact video to "${bucket}"...`);
         const directRes = await uploadBlobDirectToBucket({
           bucket,
           blob: file,
@@ -1591,7 +1705,7 @@ export async function uploadFileToBucket(
       if (initResp && initResp.ok) {
         const initJson = await initResp.json().catch(() => null);
         if (!initJson?.success || !initJson?.jobId) {
-          return await runDirectVideoUploadFallback(initJson?.message || 'Unable to initialize video upload session.');
+          throw new Error(initJson?.message || 'Unable to initialize video optimization session.');
         }
         jobId = initJson.jobId;
         attachAbortListener(jobId);
@@ -1639,8 +1753,7 @@ export async function uploadFileToBucket(
           }
           if (!chunkOk) {
             void cancelServerVideoJob(jobId);
-            console.warn('[Video Pipeline] Chunk upload interrupted, falling back to direct storage upload:', lastChunkErr);
-            return await runDirectVideoUploadFallback(lastChunkErr);
+            throw new Error(lastChunkErr || 'Video chunk upload interrupted. Please retry.');
           }
         }
 
@@ -1659,54 +1772,43 @@ export async function uploadFileToBucket(
         const finishJson = await finishResp.json().catch(() => null);
         if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
           void cancelServerVideoJob(jobId);
-          console.warn('[Video Pipeline] Finish endpoint error, falling back to direct storage upload:', finishJson?.message);
-          return await runDirectVideoUploadFallback(finishJson?.message || `HTTP ${finishResp.status}`);
+          throw new Error(finishJson?.message || `Unable to start optimization (HTTP ${finishResp.status}).`);
         }
         initialProgress = finishJson.progress || 42;
         initialStage = finishJson.stage || 'Optimizing video...';
+      } else if (initResp?.status === 404) {
+        return await runDirectVideoUploadFallback('Server media pipeline unavailable on static host.', true);
       } else if (file.size <= 12 * 1024 * 1024) {
-        // Videos <= 12MB fall back to single-request server endpoint, then direct storage if server fails
         onProgress?.(15, 'Uploading video for fast optimization...');
         const formData = new FormData();
         formData.append('bucket', bucket);
         formData.append('folderPrefix', folderPrefix || 'videos');
         formData.append('file', file);
 
-        try {
-          const startResp = await fetchWithTimeout('/api/media/optimize-video', {
-            method: 'POST',
-            headers: authHeaders,
-            body: formData,
-            signal,
-            timeoutMs: 45_000,
-          });
-          throwIfAborted(signal);
-          const startJson = await startResp.json().catch(() => null);
-          if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-            const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
-            console.warn('[Video Pipeline] Single-request endpoint returned error, falling back to direct upload:', startJson?.message || statusHint);
-            return await runDirectVideoUploadFallback(startJson?.message || `Server upload failed${statusHint}`);
-          }
-          jobId = startJson.jobId;
-          initialProgress = startJson.progress || 42;
-          initialStage = startJson.stage || 'Optimizing video...';
-        } catch (singleErr: any) {
-          if (isAbortError(singleErr) || signal?.aborted) throw singleErr;
-          console.warn('[Video Pipeline] Single-request upload failed, using direct Supabase upload:', singleErr?.message);
-          return await runDirectVideoUploadFallback(singleErr?.message || initErrMsg);
+        const startResp = await fetchWithTimeout('/api/media/optimize-video', {
+          method: 'POST',
+          headers: authHeaders,
+          body: formData,
+          signal,
+          timeoutMs: 45_000,
+        });
+        throwIfAborted(signal);
+        if (startResp.status === 404) {
+          return await runDirectVideoUploadFallback('Server media pipeline unavailable on static host.', true);
         }
+        const startJson = await startResp.json().catch(() => null);
+        if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
+          const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
+          throw new Error(startJson?.message || `Unable to start video optimization${statusHint}.`);
+        }
+        jobId = startJson.jobId;
+        initialProgress = startJson.progress || 42;
+        initialStage = startJson.stage || 'Optimizing video...';
       } else {
-        console.warn('[Video Pipeline] Chunk init unavailable, using direct Supabase upload:', initErrMsg);
-        return await runDirectVideoUploadFallback(initErrMsg || 'Server unavailable');
+        throw new Error(initErrMsg || 'Unable to initialize video optimization upload.');
       }
 
-      try {
-        return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
-      } catch (pollErr: any) {
-        if (isAbortError(pollErr) || signal?.aborted) throw pollErr;
-        console.warn('[Video Pipeline] Server transcoding failed, falling back to direct Supabase upload:', pollErr?.message);
-        return await runDirectVideoUploadFallback(pollErr?.message || 'Video processing fallback');
-      }
+      return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
     } finally {
       if (abortListener) {
         signal?.removeEventListener('abort', abortListener);
@@ -1735,6 +1837,10 @@ export async function uploadFileToBucket(
 // ============================================================================
 
 function mapDbRowToProject(row: any): PortfolioProject {
+  const rawSpecs = Array.isArray(row.specifications) ? row.specifications : [];
+  const hiddenInscr = rawSpecs.find((s: any) => s?.label === '__hero_inscription__');
+  const cleanSpecs = rawSpecs.filter((s: any) => s?.label !== '__hero_inscription__');
+
   return {
     id: row.id,
     slug: row.slug || row.id,
@@ -1745,7 +1851,7 @@ function mapDbRowToProject(row: any): PortfolioProject {
     overview: row.overview || '',
     objectives: row.objectives || '',
     methodology: row.methodology || '',
-    specifications: Array.isArray(row.specifications) ? row.specifications : [],
+    specifications: cleanSpecs,
     cadDrawings: Array.isArray(row.cad_drawings) ? row.cad_drawings : [],
     isCadProject: Boolean(row.is_cad_project),
     cadModelType: row.cad_model_type || '',
@@ -1759,6 +1865,10 @@ function mapDbRowToProject(row: any): PortfolioProject {
     isFeatured: Boolean(row.is_featured),
     status: (row.status as PortfolioProject['status']) || 'published',
     sortOrder: typeof row.sort_order === 'number' ? row.sort_order : 0,
+    heroInscription:
+      typeof row.hero_inscription === 'string' && row.hero_inscription
+        ? row.hero_inscription
+        : hiddenInscr?.value || '',
     createdAt: row.created_at || new Date().toISOString(),
     updatedAt: row.updated_at || new Date().toISOString(),
   };
@@ -1838,7 +1948,10 @@ export async function upsertProjectToSupabase(
   const id = project.id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const slug = project.slug || slugifyText(project.title);
 
-  const dbPayload = {
+  const cleanSpecs = (project.specifications || []).filter((s) => s.label !== '__hero_inscription__');
+  const trimmedInscription = (project.heroInscription || '').trim();
+
+  const dbPayload: Record<string, any> = {
     id,
     slug,
     owner_id: user.id,
@@ -1848,7 +1961,7 @@ export async function upsertProjectToSupabase(
     overview: project.overview.trim(),
     objectives: project.objectives.trim(),
     methodology: project.methodology.trim(),
-    specifications: project.specifications || [],
+    specifications: cleanSpecs,
     cad_drawings: project.cadDrawings || [],
     is_cad_project: Boolean(project.isCadProject),
     cad_model_type: project.cadModelType || '',
@@ -1862,14 +1975,29 @@ export async function upsertProjectToSupabase(
     is_featured: Boolean(project.isFeatured),
     status: project.status || 'published',
     sort_order: project.sortOrder || 0,
+    hero_inscription: trimmedInscription,
     updated_at: now,
   };
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('projects')
     .upsert(dbPayload, { onConflict: 'id' })
     .select('*')
     .single();
+
+  if (error && /hero_inscription/i.test(error.message || '')) {
+    const { hero_inscription: _drop, ...fallbackPayload } = dbPayload;
+    fallbackPayload.specifications = trimmedInscription
+      ? [...cleanSpecs, { label: '__hero_inscription__', value: trimmedInscription }]
+      : cleanSpecs;
+    const retry = await supabase
+      .from('projects')
+      .upsert(fallbackPayload, { onConflict: 'id' })
+      .select('*')
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     throw new Error(error.message || 'Failed to save project to Supabase.');
@@ -1881,6 +2009,16 @@ export async function upsertProjectToSupabase(
     : [saved, ...current];
   setCachedProjects(updated);
   return saved;
+}
+
+export async function updateProjectHeroInscription(
+  project: PortfolioProject,
+  inscription: string
+): Promise<PortfolioProject> {
+  return upsertProjectToSupabase({
+    ...project,
+    heroInscription: inscription,
+  });
 }
 
 export async function deleteProjectFromSupabase(projectId: string): Promise<void> {
@@ -1901,6 +2039,14 @@ export async function deleteProjectFromSupabase(projectId: string): Promise<void
 // ============================================================================
 
 function mapDbRowToArticle(row: any): PortfolioArticle {
+  const heroMediaObj: ArticleHeroMedia =
+    row.hero_media && typeof row.hero_media === 'object' ? row.hero_media : { type: 'none' };
+  const resolvedInscription =
+    (typeof row.hero_inscription === 'string' && row.hero_inscription) ||
+    heroMediaObj.inscription ||
+    heroMediaObj.caption ||
+    '';
+
   return {
     id: row.id,
     slug: row.slug || row.id,
@@ -1914,7 +2060,8 @@ function mapDbRowToArticle(row: any): PortfolioArticle {
     authorName: row.author_name || 'Contributor',
     isAdminAuthor: Boolean(row.is_admin_author),
     thumbnailUrl: row.thumbnail_url || '',
-    heroMedia: row.hero_media && typeof row.hero_media === 'object' ? row.hero_media : { type: 'none' },
+    heroMedia: heroMediaObj,
+    heroInscription: resolvedInscription,
     tldr: row.tldr || '',
     toc: Array.isArray(row.toc) ? row.toc : [],
     images: Array.isArray(row.images) ? row.images : [],
@@ -2018,6 +2165,14 @@ export async function submitOrSaveArticleToSupabase(
     ? article.status || 'published'
     : 'pending';
 
+  const trimmedInscription =
+    (article.heroInscription ?? article.heroMedia?.inscription ?? article.heroMedia?.caption ?? '').trim();
+  const normalizedHeroMedia: ArticleHeroMedia = {
+    ...(article.heroMedia || { type: 'none' }),
+    caption: trimmedInscription,
+    inscription: trimmedInscription,
+  };
+
   const dbPayload: Record<string, any> = {
     id,
     slug,
@@ -2031,7 +2186,8 @@ export async function submitOrSaveArticleToSupabase(
     author_name: article.authorName.trim(),
     is_admin_author: isOwnerSubmitting,
     thumbnail_url: article.thumbnailUrl.trim(),
-    hero_media: article.heroMedia || { type: 'none' },
+    hero_media: normalizedHeroMedia,
+    hero_inscription: trimmedInscription,
     tldr: article.tldr.trim(),
     toc: article.toc || [],
     images: article.images || [],
@@ -2048,11 +2204,22 @@ export async function submitOrSaveArticleToSupabase(
   };
 
   if (isOwnerSubmitting) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('articles')
       .upsert(dbPayload, { onConflict: 'id' })
       .select('*')
       .single();
+
+    if (error && /hero_inscription/i.test(error.message || '')) {
+      const { hero_inscription: _drop, ...fallbackPayload } = dbPayload;
+      const retry = await supabase
+        .from('articles')
+        .upsert(fallbackPayload, { onConflict: 'id' })
+        .select('*')
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       throw new Error(error.message || 'Failed to save article.');
@@ -2065,12 +2232,35 @@ export async function submitOrSaveArticleToSupabase(
     setCachedArticles(updated);
     return saved;
   } else {
-    const { error } = await supabase.from('articles').insert(dbPayload);
+    let { error } = await supabase.from('articles').insert(dbPayload);
+    if (error && /hero_inscription/i.test(error.message || '')) {
+      const { hero_inscription: _drop, ...fallbackPayload } = dbPayload;
+      const retry = await supabase.from('articles').insert(fallbackPayload);
+      error = retry.error;
+    }
     if (error) {
       throw new Error(error.message || 'Failed to submit article for review.');
     }
     return mapDbRowToArticle({ ...dbPayload, likes_count: 0, created_at: now });
   }
+}
+
+export async function updateArticleHeroInscription(
+  article: PortfolioArticle,
+  inscription: string
+): Promise<PortfolioArticle> {
+  return submitOrSaveArticleToSupabase(
+    {
+      ...article,
+      heroInscription: inscription,
+      heroMedia: {
+        ...(article.heroMedia || { type: 'none' }),
+        caption: inscription,
+        inscription,
+      },
+    },
+    true
+  );
 }
 
 export async function updateArticleStatusInSupabase(
@@ -2358,18 +2548,57 @@ export async function deleteCommentFromSupabase(commentId: string): Promise<void
 // PROFILE EXTENDED SECTIONS (EXPERIENCE, PUBLICATIONS, ACHIEVEMENTS, SETTINGS)
 // ============================================================================
 
+const STORAGE_KEY_EXPERIENCES_CACHE = 'fesline_experiences_cache_v1';
+const STORAGE_KEY_PUBLICATIONS_CACHE = 'fesline_publications_cache_v1';
+const STORAGE_KEY_ACHIEVEMENTS_CACHE = 'fesline_achievements_cache_v1';
+
 let memoryExperiencesCache: ProfileExperience[] | null = null;
 let memoryPublicationsCache: ProfilePublication[] | null = null;
 let memoryAchievementsCache: ProfileAchievement[] | null = null;
 
+function readJsonCache<T>(key: string): T[] | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as T[];
+    }
+  } catch {}
+  return null;
+}
+
+function writeJsonCache<T>(key: string, val: T[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch {}
+}
+
 export function getCachedExperiences(): ProfileExperience[] {
-  return memoryExperiencesCache || [];
+  if (memoryExperiencesCache) return memoryExperiencesCache;
+  const cached = readJsonCache<ProfileExperience>(STORAGE_KEY_EXPERIENCES_CACHE);
+  if (cached) {
+    memoryExperiencesCache = cached;
+    return cached;
+  }
+  return [];
 }
 export function getCachedPublications(): ProfilePublication[] {
-  return memoryPublicationsCache || [];
+  if (memoryPublicationsCache) return memoryPublicationsCache;
+  const cached = readJsonCache<ProfilePublication>(STORAGE_KEY_PUBLICATIONS_CACHE);
+  if (cached) {
+    memoryPublicationsCache = cached;
+    return cached;
+  }
+  return [];
 }
 export function getCachedAchievements(): ProfileAchievement[] {
-  return memoryAchievementsCache || [];
+  if (memoryAchievementsCache) return memoryAchievementsCache;
+  const cached = readJsonCache<ProfileAchievement>(STORAGE_KEY_ACHIEVEMENTS_CACHE);
+  if (cached) {
+    memoryAchievementsCache = cached;
+    return cached;
+  }
+  return [];
 }
 
 export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[]> {
@@ -2379,7 +2608,7 @@ export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return memoryExperiencesCache || [];
+    if (error || !Array.isArray(data)) return getCachedExperiences();
     const mapped = data.map((r: any) => ({
       id: r.id,
       roleTitle: r.role_title || '',
@@ -2393,9 +2622,10 @@ export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[
       sortOrder: r.sort_order || 0,
     }));
     memoryExperiencesCache = mapped;
+    writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, mapped);
     return mapped;
   } catch {
-    return memoryExperiencesCache || [];
+    return getCachedExperiences();
   }
 }
 
@@ -2420,11 +2650,11 @@ export async function upsertExperienceToSupabase(item: ProfileExperience): Promi
   const { error } = await supabase.from('profile_experiences').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
   const saved = { ...item, id };
-  if (memoryExperiencesCache) {
-    memoryExperiencesCache = memoryExperiencesCache.some((x) => x.id === id)
-      ? memoryExperiencesCache.map((x) => (x.id === id ? saved : x))
-      : [saved, ...memoryExperiencesCache];
-  }
+  const base = getCachedExperiences();
+  memoryExperiencesCache = base.some((x) => x.id === id)
+    ? base.map((x) => (x.id === id ? saved : x))
+    : [saved, ...base];
+  writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, memoryExperiencesCache);
   return saved;
 }
 
@@ -2433,9 +2663,8 @@ export async function deleteExperienceFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_experiences').delete().eq('id', id);
   if (error) throw new Error(error.message);
-  if (memoryExperiencesCache) {
-    memoryExperiencesCache = memoryExperiencesCache.filter((x) => x.id !== id);
-  }
+  memoryExperiencesCache = getCachedExperiences().filter((x) => x.id !== id);
+  writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, memoryExperiencesCache);
 }
 
 export async function fetchPublicationsFromSupabase(): Promise<ProfilePublication[]> {
@@ -2445,7 +2674,7 @@ export async function fetchPublicationsFromSupabase(): Promise<ProfilePublicatio
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return memoryPublicationsCache || [];
+    if (error || !Array.isArray(data)) return getCachedPublications();
     const mapped = data.map((r: any) => ({
       id: r.id,
       title: r.title || '',
@@ -2459,9 +2688,10 @@ export async function fetchPublicationsFromSupabase(): Promise<ProfilePublicatio
       sortOrder: r.sort_order || 0,
     }));
     memoryPublicationsCache = mapped;
+    writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, mapped);
     return mapped;
   } catch {
-    return memoryPublicationsCache || [];
+    return getCachedPublications();
   }
 }
 
@@ -2486,11 +2716,11 @@ export async function upsertPublicationToSupabase(item: ProfilePublication): Pro
   const { error } = await supabase.from('profile_publications').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
   const saved = { ...item, id };
-  if (memoryPublicationsCache) {
-    memoryPublicationsCache = memoryPublicationsCache.some((x) => x.id === id)
-      ? memoryPublicationsCache.map((x) => (x.id === id ? saved : x))
-      : [saved, ...memoryPublicationsCache];
-  }
+  const base = getCachedPublications();
+  memoryPublicationsCache = base.some((x) => x.id === id)
+    ? base.map((x) => (x.id === id ? saved : x))
+    : [saved, ...base];
+  writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, memoryPublicationsCache);
   return saved;
 }
 
@@ -2499,9 +2729,8 @@ export async function deletePublicationFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_publications').delete().eq('id', id);
   if (error) throw new Error(error.message);
-  if (memoryPublicationsCache) {
-    memoryPublicationsCache = memoryPublicationsCache.filter((x) => x.id !== id);
-  }
+  memoryPublicationsCache = getCachedPublications().filter((x) => x.id !== id);
+  writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, memoryPublicationsCache);
 }
 
 export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievement[]> {
@@ -2511,7 +2740,7 @@ export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievemen
       .select('*')
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return memoryAchievementsCache || [];
+    if (error || !Array.isArray(data)) return getCachedAchievements();
     const mapped = data.map((r: any) => ({
       id: r.id,
       title: r.title || '',
@@ -2524,9 +2753,10 @@ export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievemen
       sortOrder: r.sort_order || 0,
     }));
     memoryAchievementsCache = mapped;
+    writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, mapped);
     return mapped;
   } catch {
-    return memoryAchievementsCache || [];
+    return getCachedAchievements();
   }
 }
 
@@ -2550,11 +2780,11 @@ export async function upsertAchievementToSupabase(item: ProfileAchievement): Pro
   const { error } = await supabase.from('profile_achievements').upsert(payload, { onConflict: 'id' });
   if (error) throw new Error(error.message);
   const saved = { ...item, id };
-  if (memoryAchievementsCache) {
-    memoryAchievementsCache = memoryAchievementsCache.some((x) => x.id === id)
-      ? memoryAchievementsCache.map((x) => (x.id === id ? saved : x))
-      : [saved, ...memoryAchievementsCache];
-  }
+  const base = getCachedAchievements();
+  memoryAchievementsCache = base.some((x) => x.id === id)
+    ? base.map((x) => (x.id === id ? saved : x))
+    : [saved, ...base];
+  writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, memoryAchievementsCache);
   return saved;
 }
 
@@ -2563,9 +2793,17 @@ export async function deleteAchievementFromSupabase(id: string): Promise<void> {
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.from('profile_achievements').delete().eq('id', id);
   if (error) throw new Error(error.message);
-  if (memoryAchievementsCache) {
-    memoryAchievementsCache = memoryAchievementsCache.filter((x) => x.id !== id);
-  }
+  memoryAchievementsCache = getCachedAchievements().filter((x) => x.id !== id);
+  writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, memoryAchievementsCache);
+}
+
+export async function prewarmMediaLibraryCaches(): Promise<void> {
+  await Promise.allSettled([
+    listBucketMediaFiles('projects'),
+    listBucketMediaFiles('articles'),
+    fetchMediaAssetsFromSupabase(),
+    fetchServerMediaJobs(),
+  ]);
 }
 
 export async function prewarmPortfolioCaches(isOwner = false): Promise<void> {
@@ -2576,7 +2814,7 @@ export async function prewarmPortfolioCaches(isOwner = false): Promise<void> {
     fetchExperiencesFromSupabase(),
     fetchPublicationsFromSupabase(),
     fetchAchievementsFromSupabase(),
-    ...(isOwner ? [fetchAllCommentsForAdmin()] : []),
+    ...(isOwner ? [fetchAllCommentsForAdmin(), prewarmMediaLibraryCaches()] : []),
   ]);
 }
 
@@ -2823,8 +3061,52 @@ export function useWebsiteSettingsSync(): WebsiteSettings {
 }
 
 // ============================================================================
-// MEDIA LIBRARY LISTING & DELETION
+// MEDIA LIBRARY LISTING, CACHING & DELETION
 // ============================================================================
+
+const STORAGE_KEY_BUCKET_FILES_PREFIX = 'fesline_bucket_files_v1_';
+const memoryBucketFilesCache = new Map<'projects' | 'articles' | 'materials' | 'avatars', BucketFileItem[]>();
+
+export function getCachedBucketMediaFiles(
+  bucket: 'projects' | 'articles' | 'materials' | 'avatars'
+): BucketFileItem[] {
+  const mem = memoryBucketFilesCache.get(bucket);
+  if (mem) return mem;
+  try {
+    const raw = localStorage.getItem(`${STORAGE_KEY_BUCKET_FILES_PREFIX}${bucket}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        memoryBucketFilesCache.set(bucket, parsed);
+        return parsed;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+function setCachedBucketMediaFiles(
+  bucket: 'projects' | 'articles' | 'materials' | 'avatars',
+  items: BucketFileItem[]
+): void {
+  memoryBucketFilesCache.set(bucket, items);
+  try {
+    localStorage.setItem(`${STORAGE_KEY_BUCKET_FILES_PREFIX}${bucket}`, JSON.stringify(items.slice(0, 250)));
+  } catch {}
+}
+
+export function invalidateBucketMediaCache(
+  bucket?: 'projects' | 'articles' | 'materials' | 'avatars'
+): void {
+  if (bucket) {
+    memoryBucketFilesCache.delete(bucket);
+    try {
+      localStorage.removeItem(`${STORAGE_KEY_BUCKET_FILES_PREFIX}${bucket}`);
+    } catch {}
+  } else {
+    memoryBucketFilesCache.clear();
+  }
+}
 
 export async function listBucketMediaFiles(
   bucket: 'projects' | 'articles' | 'materials' | 'avatars'
@@ -2837,7 +3119,7 @@ export async function listBucketMediaFiles(
         .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } }),
       fetchMediaAssetsFromSupabase(bucket).catch(() => []),
     ]);
-    if (error || !Array.isArray(rootItems)) return [];
+    if (error || !Array.isArray(rootItems)) return getCachedBucketMediaFiles(bucket);
 
     const metaByKey = new Map<string, MediaAssetRecord>();
     for (const rec of assetRecords) {
@@ -2935,9 +3217,10 @@ export async function listBucketMediaFiles(
       const tb = new Date(b.createdAt || b.updatedAt || 0).getTime();
       return tb - ta;
     });
+    setCachedBucketMediaFiles(bucket, results);
     return results;
   } catch {
-    return [];
+    return getCachedBucketMediaFiles(bucket);
   }
 }
 
@@ -2949,4 +3232,11 @@ export async function deleteBucketMediaFile(
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
   const { error } = await supabase.storage.from(bucket).remove([storagePath]);
   if (error) throw new Error(error.message);
+  const current = getCachedBucketMediaFiles(bucket);
+  if (current.length > 0) {
+    setCachedBucketMediaFiles(
+      bucket,
+      current.filter((item) => item.path !== storagePath)
+    );
+  }
 }

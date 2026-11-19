@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import {
   listBucketMediaFiles,
+  getCachedBucketMediaFiles,
   formatBytes,
   type BucketFileItem,
   type BucketMediaKind,
@@ -316,23 +317,28 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
   const [bucket, setBucket] = useState<MediaLibraryBucket>(defaultBucket);
   const [filterKind, setFilterKind] = useState<MediaLibraryFilter>(defaultFilter);
   const [searchQuery, setSearchQuery] = useState('');
-  const [files, setFiles] = useState<BucketFileItem[]>([]);
+  const [files, setFiles] = useState<BucketFileItem[]>(() => getCachedBucketMediaFiles(defaultBucket));
   const [loading, setLoading] = useState(false);
   const [selectedMap, setSelectedMap] = useState<Record<string, BucketFileItem>>({});
   const [durations, setDurations] = useState<Record<string, number>>({});
   const [previewItem, setPreviewItem] = useState<BucketFileItem | null>(null);
 
   const loadBucketFiles = async (targetBucket: MediaLibraryBucket) => {
-    setLoading(true);
+    const cached = getCachedBucketMediaFiles(targetBucket);
+    if (cached.length > 0) {
+      setFiles(cached);
+    } else {
+      setLoading(true);
+    }
     try {
       const items = await listBucketMediaFiles(targetBucket);
       setFiles(items);
 
       const initialDurs: Record<string, number> = {};
       for (const it of items) {
-        const cached = getCachedMediaDuration(it.publicUrl);
-        if (cached !== undefined) {
-          initialDurs[it.publicUrl] = cached;
+        const cachedDur = getCachedMediaDuration(it.publicUrl);
+        if (cachedDur !== undefined) {
+          initialDurs[it.publicUrl] = cachedDur;
         }
       }
       if (Object.keys(initialDurs).length > 0) {

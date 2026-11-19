@@ -44,6 +44,9 @@ export default function App() {
 
   // Top-level onAuthStateChange session listener — ignore anonymous / public visitor chat sessions
   useEffect(() => {
+    // Prewarm public portfolio & media caches immediately without blocking on auth network check
+    prewarmPortfolioCaches(false).catch(() => {});
+
     supabase.auth
       .getSession()
       .then(({ data: { session }, error }) => {
@@ -53,14 +56,13 @@ export default function App() {
         const ownerActive = isRealOwnerUser(session?.user);
         if (ownerActive) {
           setOwnerAuthenticated(true, session?.user?.id);
+          prewarmPortfolioCaches(true).catch(() => {});
         } else {
           setOwnerAuthenticated(false);
         }
-        prewarmPortfolioCaches(ownerActive).catch(() => {});
       })
       .catch(() => {
         setOwnerAuthenticated(false);
-        prewarmPortfolioCaches(false).catch(() => {});
       });
 
     const {

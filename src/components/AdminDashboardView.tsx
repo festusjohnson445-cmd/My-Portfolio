@@ -77,6 +77,8 @@ import {
   getCachedExperiences,
   getCachedPublications,
   getCachedAchievements,
+  getCachedBucketMediaFiles,
+  prewarmMediaLibraryCaches,
   hasProjectsCacheHydrated,
   EVENT_PROJECTS_UPDATED,
   EVENT_ARTICLES_UPDATED,
@@ -331,7 +333,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   // Media Library
   const [mediaBucket, setMediaBucket] = useState<'projects' | 'articles' | 'materials' | 'avatars'>('projects');
-  const [mediaFiles, setMediaFiles] = useState<BucketFileItem[]>([]);
+  const [mediaFiles, setMediaFiles] = useState<BucketFileItem[]>(() => getCachedBucketMediaFiles('projects'));
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([]);
   const [serverMediaJobs, setServerMediaJobs] = useState<
     Array<{
@@ -379,6 +381,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     if (!hasProjectsCacheHydrated() && projects.length === 0) {
       setLoading(true);
     }
+    void prewarmMediaLibraryCaches();
     try {
       const [projs, arts, cmts, exps, pubs, achs, settings] = await Promise.all([
         fetchProjectsFromSupabase(true),
@@ -416,7 +419,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   }, [isOwner]);
 
   const loadMedia = async (bucket: 'projects' | 'articles' | 'materials' | 'avatars') => {
-    setMediaLoading(true);
+    const cached = getCachedBucketMediaFiles(bucket);
+    if (cached.length > 0) {
+      setMediaFiles(cached);
+    } else {
+      setMediaLoading(true);
+    }
     try {
       const [files, assetRecords, activeJobs] = await Promise.all([
         listBucketMediaFiles(bucket),

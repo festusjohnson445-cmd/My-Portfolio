@@ -39,6 +39,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [methodology, setMethodology] = useState(initialProject?.methodology || '');
   const [results, setResults] = useState(initialProject?.results || '');
   const [thumbnailUrl, setThumbnailUrl] = useState(initialProject?.thumbnailUrl || '');
+  const [heroInscription, setHeroInscription] = useState(initialProject?.heroInscription || '');
   const [toolsText, setToolsText] = useState(initialProject?.toolsUsed?.join(', ') || '');
   const [isFeatured, setIsFeatured] = useState(Boolean(initialProject?.isFeatured));
   const [isCadProject, setIsCadProject] = useState(Boolean(initialProject?.isCadProject));
@@ -275,6 +276,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         methodology: methodology.trim(),
         results: results.trim(),
         thumbnailUrl: thumbnailUrl.trim(),
+        heroInscription: heroInscription.trim(),
         toolsUsed: toolsText
           .split(',')
           .map((t) => t.trim())
@@ -479,6 +481,18 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             </button>
           </div>
         )}
+        <div className="space-y-1 pt-1">
+          <label className="block font-bold text-slate-700">
+            Hero Inscription (Rendered outside hero background container)
+          </label>
+          <input
+            type="text"
+            value={heroInscription}
+            onChange={(e) => setHeroInscription(e.target.value)}
+            placeholder="Write an editable inscription / caption shown outside the full-bleed hero card background..."
+            className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
+          />
+        </div>
       </div>
 
       <div className="text-xs min-w-0">

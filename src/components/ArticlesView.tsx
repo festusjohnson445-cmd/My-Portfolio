@@ -19,10 +19,12 @@ import {
   ShieldCheck,
   Plus,
   Play,
+  X,
 } from 'lucide-react';
 import {
   fetchArticlesFromSupabase,
   deleteArticleFromSupabase,
+  updateArticleHeroInscription,
   toggleArticleLikeInSupabase,
   fetchCommentsForArticle,
   getCachedCommentsForArticle,
@@ -328,6 +330,9 @@ export const ArticlesView: React.FC = () => {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
+  const [editingInscription, setEditingInscription] = useState(false);
+  const [inscriptionDraft, setInscriptionDraft] = useState('');
+  const [savingInscription, setSavingInscription] = useState(false);
   const [likedIds, setLikedIds] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('fesline_liked_articles_v1');
@@ -367,11 +372,30 @@ export const ArticlesView: React.FC = () => {
     setCommentNotice(null);
     setCopiedCodeIdx(null);
     setCopiedShare(false);
+    setEditingInscription(false);
+    setInscriptionDraft(
+      art.heroInscription || art.heroMedia?.inscription || art.heroMedia?.caption || ''
+    );
     // Instantly hydrate cached comments synchronously for immediate display
     setComments(getCachedCommentsForArticle(art.id, isOwner));
     setSelectedArticle(art);
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  };
+
+  const handleSaveHeroInscription = async () => {
+    if (!selectedArticle) return;
+    setSavingInscription(true);
+    try {
+      const updated = await updateArticleHeroInscription(selectedArticle, inscriptionDraft);
+      setSelectedArticle(updated);
+      setArticles((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      setEditingInscription(false);
+    } catch (err) {
+      console.error('Unable to save article hero inscription:', err);
+    } finally {
+      setSavingInscription(false);
     }
   };
 
@@ -634,72 +658,140 @@ export const ArticlesView: React.FC = () => {
             </h1>
           </header>
 
-          {/* Flexible Visual Hero */}
-          {selectedArticle.heroMedia && selectedArticle.heroMedia.type !== 'none' ? (
-            <div className="space-y-1.5">
-              {selectedArticle.heroMedia.type === 'cad3d' ? (
-                <Interactive3DViewer modelType={selectedArticle.heroMedia.cadModelType || 'harmonic_actuator'} />
-              ) : selectedArticle.heroMedia.type === 'video' && selectedArticle.heroMedia.url ? (
-                <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
-                  <CleanVideoPlayer
-                    src={selectedArticle.heroMedia.url}
-                    poster={selectedArticle.heroMedia.posterUrl}
-                    av1Urls={selectedArticle.heroMedia.av1Urls}
-                    h264Urls={selectedArticle.heroMedia.h264Urls}
-                    vttThumbnailsUrl={selectedArticle.heroMedia.vttThumbnailsUrl}
-                    subtitleUrl={selectedArticle.heroMedia.subtitleUrl}
-                    mediaId={selectedArticle.heroMedia.mediaAssetId || selectedArticle.heroMedia.url}
-                    title={selectedArticle.title}
-                    aspectRatio={videoCardControls.aspectRatio || '16/9'}
-                    objectFit={videoCardControls.objectFit || 'contain'}
-                    zoomLevel={videoCardControls.zoomLevel || 1}
-                  />
-                </div>
-              ) : selectedArticle.heroMedia.url ? (
-                <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
-                  <picture className="w-full h-full flex items-center justify-center">
-                    {selectedArticle.heroMedia.avifUrl && (
-                      <source
-                        srcSet={
-                          selectedArticle.heroMedia.mobileUrl &&
-                          selectedArticle.heroMedia.mobileUrl !== selectedArticle.heroMedia.avifUrl
-                            ? `${selectedArticle.heroMedia.mobileUrl} 768w, ${selectedArticle.heroMedia.avifUrl} 1600w`
-                            : selectedArticle.heroMedia.avifUrl
-                        }
-                        sizes="(max-width: 640px) 100vw, 1000px"
-                        type="image/avif"
-                      />
-                    )}
-                    {selectedArticle.heroMedia.webpUrl && (
-                      <source srcSet={selectedArticle.heroMedia.webpUrl} type="image/webp" />
-                    )}
-                    <img
-                      src={selectedArticle.heroMedia.jpegUrl || selectedArticle.heroMedia.url}
-                      alt={selectedArticle.heroMedia.caption || selectedArticle.title}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-full h-full object-contain block"
+          {/* Flexible Visual Hero: Full-Bleed Background Container + Editable Outer Inscription */}
+          {(() => {
+            const hero = selectedArticle.heroMedia;
+            const hasSpecialHero = Boolean(hero && (hero.type === 'cad3d' || (hero.type === 'video' && hero.url)));
+            const heroBgUrl =
+              !hasSpecialHero
+                ? (hero && hero.type !== 'none' && hero.url
+                    ? hero.jpegUrl || hero.url || hero.webpUrl || hero.avifUrl || ''
+                    : '') ||
+                  selectedArticle.thumbnailUrl ||
+                  ''
+                : '';
+            const currentInscription =
+              selectedArticle.heroInscription ||
+              hero?.inscription ||
+              hero?.caption ||
+              '';
+
+            if (!hasSpecialHero && !heroBgUrl) return null;
+
+            return (
+              <figure className="w-full space-y-2">
+                {hero?.type === 'cad3d' ? (
+                  <Interactive3DViewer modelType={hero.cadModelType || 'harmonic_actuator'} />
+                ) : hero?.type === 'video' && hero.url ? (
+                  <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
+                    <CleanVideoPlayer
+                      src={hero.url}
+                      poster={hero.posterUrl}
+                      av1Urls={hero.av1Urls}
+                      h264Urls={hero.h264Urls}
+                      vttThumbnailsUrl={hero.vttThumbnailsUrl}
+                      subtitleUrl={hero.subtitleUrl}
+                      mediaId={hero.mediaAssetId || hero.url}
+                      title={selectedArticle.title}
+                      aspectRatio={videoCardControls.aspectRatio || '16/9'}
+                      objectFit={videoCardControls.objectFit || 'contain'}
+                      zoomLevel={videoCardControls.zoomLevel || 1}
                     />
-                  </picture>
-                </div>
-              ) : null}
-              {selectedArticle.heroMedia.caption && (
-                <p className="text-[11px] text-slate-500 text-justify italic leading-relaxed">
-                  {selectedArticle.heroMedia.caption}
-                </p>
-              )}
-            </div>
-          ) : selectedArticle.thumbnailUrl ? (
-            <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
-              <img
-                src={selectedArticle.thumbnailUrl}
-                alt={selectedArticle.title}
-                loading="lazy"
-                decoding="async"
-                className="w-full h-full object-contain block"
-              />
-            </div>
-          ) : null}
+                  </div>
+                ) : (
+                  <div
+                    role="img"
+                    aria-label={currentInscription || selectedArticle.title}
+                    className="w-full aspect-[16/9] min-h-[220px] sm:min-h-[320px] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100"
+                    style={{
+                      backgroundImage: `url("${heroBgUrl}")`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      backgroundRepeat: 'no-repeat',
+                    }}
+                  >
+                    <picture className="sr-only">
+                      {hero?.avifUrl && (
+                        <source
+                          srcSet={
+                            hero.mobileUrl && hero.mobileUrl !== hero.avifUrl
+                              ? `${hero.mobileUrl} 768w, ${hero.avifUrl} 1600w`
+                              : hero.avifUrl
+                          }
+                          sizes="(max-width: 640px) 100vw, 1000px"
+                          type="image/avif"
+                        />
+                      )}
+                      {hero?.webpUrl && <source srcSet={hero.webpUrl} type="image/webp" />}
+                      <img
+                        src={heroBgUrl}
+                        alt={currentInscription || selectedArticle.title}
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    </picture>
+                  </div>
+                )}
+
+                {(currentInscription || isOwner) && (
+                  <figcaption className="px-1 pt-0.5">
+                    {editingInscription && isOwner ? (
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-50 border border-[#b8c6d4] rounded-lg p-2">
+                        <input
+                          type="text"
+                          value={inscriptionDraft}
+                          onChange={(e) => setInscriptionDraft(e.target.value)}
+                          placeholder="Enter hero inscription text shown outside the background image container..."
+                          className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+                        />
+                        <div className="flex items-center justify-end gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={savingInscription}
+                            onClick={handleSaveHeroInscription}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>{savingInscription ? 'Saving...' : 'Save'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingInscription(false);
+                              setInscriptionDraft(currentInscription);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Cancel</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#edf2f8]/70 border border-[#cbd5e1]/80">
+                        <p className="text-xs text-slate-700 italic leading-relaxed flex-1 min-w-0 break-words">
+                          {currentInscription || 'No hero inscription added yet.'}
+                        </p>
+                        {isOwner && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInscriptionDraft(currentInscription);
+                              setEditingInscription(true);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-cyan-900 text-[11px] font-semibold cursor-pointer shrink-0"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>{currentInscription ? 'Edit Inscription' : 'Add Inscription'}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </figcaption>
+                )}
+              </figure>
+            );
+          })()}
 
           {/* Key Points List */}
           {normalizedKeyPoints.length > 0 && (
@@ -1380,13 +1472,23 @@ export const ArticlesView: React.FC = () => {
                 >
                   <div>
                     {cardImg ? (
-                      <div className="w-full bg-[#f8fafc] border-b border-slate-200 overflow-hidden flex items-center justify-center">
+                      <div
+                        role="img"
+                        aria-label={art.title}
+                        className="w-full h-48 bg-slate-100 border-b border-slate-200 overflow-hidden"
+                        style={{
+                          backgroundImage: `url("${cardImg}")`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          backgroundRepeat: 'no-repeat',
+                        }}
+                      >
                         <img
                           src={cardImg}
                           alt={art.title}
                           loading="lazy"
                           decoding="async"
-                          className="w-full h-auto max-h-60 object-contain block"
+                          className="sr-only"
                         />
                       </div>
                     ) : cardVid ? (
