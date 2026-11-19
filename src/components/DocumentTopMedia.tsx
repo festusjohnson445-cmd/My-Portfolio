@@ -138,7 +138,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     return (
       <div
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-52 sm:h-56 bg-[#f8fafc] border-b border-slate-200 p-2 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
+        className="w-full h-56 sm:h-60 bg-[#f8fafc] border-b border-slate-200 p-1 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Preview document"
       >
         {renderedPdfImage ? (
@@ -174,7 +174,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return (
         <div
           onClick={() => onOpenPreview(doc)}
-          className="w-full h-52 sm:h-56 bg-[#f8fafc] border-b border-slate-200 p-2 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          className="w-full h-56 sm:h-60 bg-[#f8fafc] border-b border-slate-200 p-1 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
           title="Preview image"
         >
           <img

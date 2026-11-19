@@ -1751,7 +1751,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       key={optimisticAvatarUrl || profileAvatar}
                       src={optimisticAvatarUrl || withRecordVersion(profileAvatar, profileUpdatedAt)}
                       alt="Festus, Olorunsogo Johnson - Profile Photo"
-                      className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
+                      className="w-full h-full object-cover object-top transition-transform duration-300 group-hover:scale-105"
                       loading="eager"
                       decoding="sync"
                       onError={() => {
@@ -2618,8 +2618,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               {sec.template === 'media-showcase' && (
                 <div className="space-y-3">
                   {sec.mediaUrl && (
-                    <div className="rounded-xl overflow-hidden border border-slate-200 bg-white flex justify-center">
-                      <img src={sec.mediaUrl} alt={sec.title} className="max-h-64 object-contain" />
+                    <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[380px] flex items-center justify-center">
+                      <img src={sec.mediaUrl} alt={sec.title} className="w-full h-full object-contain block" />
                     </div>
                   )}
                   {sec.body && <p className="text-xs text-slate-800 text-justify">{sec.body}</p>}
@@ -2628,7 +2628,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       {sec.items.map((it, idx) => (
                         <div key={idx} className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5 text-xs">
                           {it.mediaUrl && (
-                            <img src={it.mediaUrl} alt={it.heading} className="w-full h-36 object-cover rounded border border-slate-100" />
+                            <img src={it.mediaUrl} alt={it.heading} className="w-full h-auto max-h-52 object-contain rounded border border-slate-100 bg-[#f8fafc] block" />
                           )}
                           <h3 className="font-bold text-slate-950 text-center">{it.heading}</h3>
                           {it.subheading && <p className="text-[10px] text-cyan-900 text-center">{it.subheading}</p>}

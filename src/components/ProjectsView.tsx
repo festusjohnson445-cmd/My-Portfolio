@@ -197,13 +197,13 @@ export const ProjectsView: React.FC = () => {
           </div>
 
           {selectedProject.thumbnailUrl && (
-            <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-900 max-h-[220px] sm:max-h-[420px] flex items-center justify-center">
+            <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
               <img
                 src={selectedProject.thumbnailUrl}
                 alt={selectedProject.title}
                 loading="lazy"
                 decoding="async"
-                className="w-full max-h-[220px] sm:max-h-[420px] object-contain"
+                className="w-full h-full object-contain block"
               />
             </div>
           )}
@@ -584,22 +584,24 @@ export const ProjectsView: React.FC = () => {
                 className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
               >
                 {featImg ? (
-                  <div className="sm:w-44 h-36 sm:h-auto bg-slate-900 shrink-0">
+                  <div className="w-full sm:w-52 bg-[#f8fafc] border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden flex items-center justify-center">
                     <img
                       src={featImg}
                       alt={proj.title}
-                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full h-auto max-h-48 sm:h-full object-contain block"
                     />
                   </div>
                 ) : featVid ? (
-                  <div className="relative sm:w-44 h-36 sm:h-auto bg-slate-950 shrink-0 overflow-hidden">
+                  <div className="relative w-full sm:w-52 h-40 sm:h-auto bg-slate-950 shrink-0 overflow-hidden">
                     <video
                       src={featVid}
                       poster={proj.videos?.[0]?.posterUrl}
-                      preload="metadata"
+                      preload="none"
                       muted
                       playsInline
-                      className="w-full h-full object-cover pointer-events-none"
+                      className="w-full h-full object-contain pointer-events-none"
                     />
                     <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
                       <span className="w-8 h-8 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
@@ -713,24 +715,24 @@ export const ProjectsView: React.FC = () => {
               >
                 <div>
                   {cardImg ? (
-                    <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                    <div className="w-full bg-[#f8fafc] border-b border-slate-200 overflow-hidden flex items-center justify-center">
                       <img
                         src={cardImg}
                         alt={proj.title}
                         loading="lazy"
                         decoding="async"
-                        className="w-full h-full object-cover"
+                        className="w-full h-auto max-h-60 object-contain block"
                       />
                     </div>
                   ) : cardVid ? (
-                    <div className="relative w-full h-32 sm:h-40 bg-slate-950 overflow-hidden border-b border-slate-200">
+                    <div className="relative w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-200">
                       <video
                         src={cardVid}
                         poster={proj.videos?.[0]?.posterUrl}
-                        preload="metadata"
+                        preload="none"
                         muted
                         playsInline
-                        className="w-full h-full object-cover pointer-events-none"
+                        className="w-full h-full object-contain pointer-events-none"
                       />
                       <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
                         <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">

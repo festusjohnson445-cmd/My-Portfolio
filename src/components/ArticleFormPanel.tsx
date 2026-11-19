@@ -98,6 +98,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const lastFailedUploadRef = useRef<{
     files: File[];
     target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment';
+    jobId?: string;
   } | null>(null);
   const [canRetryUpload, setCanRetryUpload] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
@@ -118,13 +119,14 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
 
   const runUploadFiles = async (
     fileArr: File[],
-    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment'
+    target: 'thumbnail' | 'hero' | 'image' | 'video' | 'diagram' | 'attachment',
+    retryJobId?: string
   ) => {
     if (!fileArr || fileArr.length === 0) return;
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
-    lastFailedUploadRef.current = { files: fileArr, target };
+    lastFailedUploadRef.current = { files: fileArr, target, jobId: retryJobId };
     setCanRetryUpload(false);
 
     setUploadingField(target);
@@ -133,7 +135,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     setErrorMsg(null);
     try {
       const concurrency = target === 'video' ? 2 : 3;
-      const results = await runWithConcurrency(fileArr, concurrency, async (file) => {
+      const results = await runWithConcurrency(fileArr, concurrency, async (file, idx) => {
         const res = await uploadFileToBucket(
           'articles',
           file,
@@ -142,7 +144,8 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             setUploadProgress(pct);
             setUploadStage(stage);
           },
-          controller.signal
+          controller.signal,
+          idx === 0 ? retryJobId : undefined
         );
         return {
           asset: {
@@ -210,6 +213,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       }
     } catch (err: any) {
       if (!isAbortError(err) && !controller.signal.aborted) {
+        if (err?.jobId && lastFailedUploadRef.current) {
+          lastFailedUploadRef.current.jobId = err.jobId;
+        }
         setErrorMsg(err?.message || 'Upload to "articles" bucket failed.');
         setCanRetryUpload(true);
       }
@@ -234,7 +240,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const handleRetryFailedUpload = async () => {
     const failed = lastFailedUploadRef.current;
     if (!failed) return;
-    await runUploadFiles(failed.files, failed.target);
+    await runUploadFiles(failed.files, failed.target, failed.jobId);
   };
 
   const handleMediaLibrarySelect = (
@@ -399,20 +405,30 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       </div>
 
       {uploadingField && (
-        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-between gap-2 text-xs text-cyan-950 font-semibold">
-          <div className="flex items-center gap-2 min-w-0">
-            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-            <span>uploading...</span>
+        <div className="w-full p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 space-y-1.5 text-xs text-cyan-950 font-semibold">
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span className="truncate">
+                {uploadStage ? `${uploadStage} (${uploadProgress}%)` : `Uploading (${uploadProgress}%)...`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelUpload}
+              className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-cyan-200/70 text-cyan-900 font-bold cursor-pointer shrink-0 leading-none"
+              title="Cancel upload"
+              aria-label="Cancel upload"
+            >
+              ×
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleCancelUpload}
-            className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-cyan-200/70 text-cyan-900 font-bold cursor-pointer shrink-0 leading-none"
-            title="Cancel upload"
-            aria-label="Cancel upload"
-          >
-            ×
-          </button>
+          <div className="w-full h-1.5 rounded-full bg-cyan-200/70 overflow-hidden">
+            <div
+              className="h-full bg-cyan-700 transition-all duration-300"
+              style={{ width: `${Math.max(4, Math.min(100, uploadProgress))}%` }}
+            />
+          </div>
         </div>
       )}
 

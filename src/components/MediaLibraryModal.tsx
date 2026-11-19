@@ -28,8 +28,6 @@ import {
   formatMediaDuration,
   formatMediaTimestamp,
   getCachedMediaDuration,
-  probeMediaDuration,
-  runWithConcurrency,
   setCachedMediaDuration,
 } from '../utils/mediaMetadata';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
@@ -331,26 +329,14 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
       setFiles(items);
 
       const initialDurs: Record<string, number> = {};
-      const toProbe: BucketFileItem[] = [];
       for (const it of items) {
         const cached = getCachedMediaDuration(it.publicUrl);
         if (cached !== undefined) {
           initialDurs[it.publicUrl] = cached;
-        } else if (it.mediaKind === 'video' || it.mediaKind === 'audio') {
-          toProbe.push(it);
         }
       }
       if (Object.keys(initialDurs).length > 0) {
         setDurations((prev) => ({ ...prev, ...initialDurs }));
-      }
-
-      if (toProbe.length > 0) {
-        void runWithConcurrency(toProbe.slice(0, 24), 3, async (vid) => {
-          const sec = await probeMediaDuration(vid.publicUrl, vid.mediaKind === 'audio' ? 'audio' : 'video');
-          if (sec && sec > 0) {
-            setDurations((prev) => ({ ...prev, [vid.publicUrl]: sec }));
-          }
-        });
       }
     } finally {
       setLoading(false);

@@ -3,7 +3,6 @@ import {
   User,
   ArrowRight,
   Layers,
-  Zap,
   MessageSquare,
   FolderKanban,
   BookOpen,
@@ -158,16 +157,6 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 <Layers className="w-4 h-4 text-cyan-800 shrink-0" />
                 <span className="truncate">Engineering Hub</span>
               </button>
-            </div>
-
-            {/* 60-Second Executive Scan Text Design (Reduced by 10%) */}
-            <div className="mt-4 flex items-center justify-center gap-1.5 text-[10.8px] font-sans text-slate-600 select-none">
-              <span className="font-medium text-slate-700">3D Modeling</span>
-              <span className="text-slate-400">•</span>
-              <span className="inline-flex items-center gap-1 font-bold text-cyan-900 bg-white/70 border border-slate-300/80 px-2.5 py-0.5 rounded-full shadow-2xs text-[10.8px]">
-                <Zap className="w-3 h-3 text-amber-600 shrink-0" />
-                <span>Launch 60-Second Executive Scan</span>
-              </span>
             </div>
           </div>
         </div>

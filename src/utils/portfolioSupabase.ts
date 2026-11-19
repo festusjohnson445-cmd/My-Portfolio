@@ -621,7 +621,7 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
   };
   try {
     let { data } = await supabase.auth.getSession();
-    if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 60_000) {
+    if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 300_000) {
       const refreshed = await supabase.auth.refreshSession().catch(() => null);
       if (refreshed?.data?.session) data = refreshed.data;
     }
@@ -630,6 +630,40 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
     }
   } catch {}
   return headers;
+}
+
+function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number }
+): Promise<Response> {
+  const { timeoutMs = 30_000, signal: callerSignal, ...rest } = init;
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort(new DOMException('Request timed out', 'TimeoutError'));
+  }, timeoutMs);
+
+  const onCallerAbort = () => {
+    timeoutController.abort(callerSignal?.reason || new DOMException('Upload cancelled', 'AbortError'));
+  };
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      clearTimeout(timer);
+      return Promise.reject(new DOMException('Upload cancelled', 'AbortError'));
+    }
+    callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+
+  return fetch(url, { ...rest, signal: timeoutController.signal }).catch((err) => {
+    if (timedOut && !callerSignal?.aborted) {
+      throw new Error('Network request timed out.');
+    }
+    throw err;
+  }).finally(() => {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', onCallerAbort);
+  });
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -960,7 +994,8 @@ export async function uploadFileToBucket(
   file: File,
   folderPrefix = '',
   onProgress?: UploadProgressCallback,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  retryJobId?: string
 ): Promise<UploadBucketResult> {
   throwIfAborted(signal);
 
@@ -975,11 +1010,12 @@ export async function uploadFileToBucket(
       formData.append('folderPrefix', folderPrefix || 'images');
       formData.append('file', file);
 
-      const resp = await fetch('/api/media/optimize-image', {
+      const resp = await fetchWithTimeout('/api/media/optimize-image', {
         method: 'POST',
         headers: authHeaders,
         body: formData,
         signal,
+        timeoutMs: 45_000,
       });
       throwIfAborted(signal);
       const json = await resp.json().catch(() => null);
@@ -1160,7 +1196,7 @@ export async function uploadFileToBucket(
     };
   }
 
-  // Route Projects & Articles videos through chunked upload + fast background FFmpeg pipeline
+  // Route Projects & Articles videos through idempotent 1.5MB chunked upload + fast background FFmpeg pipeline
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
     onProgress?.(5, 'Preparing video upload...');
     const localDurationPromise = probeLocalFileDuration(file);
@@ -1180,147 +1216,66 @@ export async function uploadFileToBucket(
       signal?.addEventListener('abort', abortListener, { once: true });
     };
 
-    // Prefer 2.5MB chunked binary upload so large videos never hit reverse-proxy 32MB body limits
-    const CHUNK_SIZE = 2.5 * 1024 * 1024;
-    const initResp = await fetch('/api/media/optimize-video/init', {
-      method: 'POST',
-      headers: {
-        ...authHeaders,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        bucket,
-        folderPrefix: folderPrefix || 'videos',
-        fileName: file.name,
-        fileSize: file.size,
-        mimeType: file.type || 'video/mp4',
-      }),
-      signal,
-    }).catch(() => null);
+    const pollVideoJobUntilDone = async (
+      activeJobId: string,
+      startProgress: number,
+      startStage: string
+    ): Promise<UploadBucketResult> => {
+      attachAbortListener(activeJobId);
+      onProgress?.(startProgress, startStage);
 
-    throwIfAborted(signal);
-
-    if (initResp && initResp.ok) {
-      const initJson = await initResp.json().catch(() => null);
-      if (!initJson?.success || !initJson?.jobId) {
-        throw new Error(initJson?.message || 'Unable to initialize video upload session.');
-      }
-      jobId = initJson.jobId;
-      attachAbortListener(jobId);
-
-      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-      for (let i = 0; i < totalChunks; i++) {
-        throwIfAborted(signal);
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(file.size, start + CHUNK_SIZE);
-        const slice = file.slice(start, end);
-        const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
-        onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
-
-        let chunkOk = false;
-        let lastChunkErr = '';
-        for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
-          throwIfAborted(signal);
-          try {
-            const chunkResp = await fetch(
-              `/api/media/optimize-video/chunk/${encodeURIComponent(jobId)}`,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/octet-stream',
-                },
-                body: slice,
-                signal,
-              }
-            );
-            const cJson = await chunkResp.json().catch(() => null);
-            if (chunkResp.ok && cJson?.success) {
-              chunkOk = true;
-            } else {
-              lastChunkErr = cJson?.message || `Chunk upload failed (${chunkResp.status}).`;
-            }
-          } catch (e: any) {
-            if (isAbortError(e) || signal?.aborted) throw e;
-            lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
-          }
-          if (!chunkOk && attempt < 2) {
-            await new Promise((r) => setTimeout(r, 400));
-          }
-        }
-        if (!chunkOk) {
-          void cancelServerVideoJob(jobId);
-          throw new Error(lastChunkErr || 'Video upload failed.');
-        }
-      }
-
-      throwIfAborted(signal);
-      onProgress?.(41, 'Starting optimization...');
-      const finishResp = await fetch(
-        `/api/media/optimize-video/finish/${encodeURIComponent(jobId)}`,
-        {
-          method: 'POST',
-          headers: authHeaders,
-          signal,
-        }
-      );
-      const finishJson = await finishResp.json().catch(() => null);
-      if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
-        void cancelServerVideoJob(jobId);
-        throw new Error(finishJson?.message || `Unable to start video optimization (${finishResp.status}).`);
-      }
-      initialProgress = finishJson.progress || 42;
-      initialStage = finishJson.stage || 'Optimizing video...';
-    } else {
-      // Single-request fallback when /init is unavailable on legacy endpoint
-      onProgress?.(12, 'Uploading video...');
-      const formData = new FormData();
-      formData.append('bucket', bucket);
-      formData.append('folderPrefix', folderPrefix || 'videos');
-      formData.append('file', file);
-
-      const startResp = await fetch('/api/media/optimize-video', {
-        method: 'POST',
-        headers: authHeaders,
-        body: formData,
-        signal,
-      });
-      throwIfAborted(signal);
-      const startJson = await startResp.json().catch(() => null);
-
-      if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-        const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
-        throw new Error(startJson?.message || `Unable to start server video optimization job${statusHint}.`);
-      }
-      jobId = startJson.jobId;
-      attachAbortListener(jobId);
-      initialProgress = startJson.progress || 42;
-      initialStage = startJson.stage || 'Optimizing video...';
-    }
-
-    try {
-      onProgress?.(initialProgress, initialStage);
-
-      const maxWaitMs = 45 * 60 * 1000;
+      const maxWaitMs = 30 * 60 * 1000;
+      const stallTimeoutMs = 4 * 60 * 1000;
       const startedAt = Date.now();
+      let lastServerUpdate = Date.now();
+      let lastObservedServerTs = 0;
       let consecutivePollErrors = 0;
 
       while (Date.now() - startedAt < maxWaitMs) {
         throwIfAborted(signal);
-        await new Promise((r) => setTimeout(r, 450));
+        await new Promise((r) => setTimeout(r, 900));
         throwIfAborted(signal);
-        const statusResp = await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}`, { signal });
-        const statusJson = await statusResp.json().catch(() => null);
 
+        let statusResp: Response;
+        try {
+          statusResp = await fetchWithTimeout(`/api/media/jobs/${encodeURIComponent(activeJobId)}`, {
+            signal,
+            timeoutMs: 15_000,
+          });
+        } catch (pollErr: any) {
+          if (isAbortError(pollErr) || signal?.aborted) throw pollErr;
+          consecutivePollErrors++;
+          if (consecutivePollErrors >= 8) {
+            const err: any = new Error('Lost connection while checking video optimization progress.');
+            err.jobId = activeJobId;
+            throw err;
+          }
+          continue;
+        }
+
+        const statusJson = await statusResp.json().catch(() => null);
         if (!statusResp.ok || !statusJson?.job) {
           consecutivePollErrors++;
-          if (consecutivePollErrors >= 6) {
-            throw new Error(statusJson?.message || 'Lost connection to video optimization job.');
+          if (statusResp.status === 404 || consecutivePollErrors >= 8) {
+            const err: any = new Error(statusJson?.message || 'Lost connection to video optimization job.');
+            if (statusResp.status !== 404) err.jobId = activeJobId;
+            throw err;
           }
           continue;
         }
         consecutivePollErrors = 0;
 
         const job = statusJson.job;
+        if (typeof job.updatedAt === 'number' && job.updatedAt > lastObservedServerTs) {
+          lastObservedServerTs = job.updatedAt;
+          lastServerUpdate = Date.now();
+        }
+        if (Date.now() - lastServerUpdate > stallTimeoutMs) {
+          const err: any = new Error('Video optimization stalled on server. Click Retry to resume.');
+          err.jobId = activeJobId;
+          throw err;
+        }
+
         onProgress?.(job.progress || 50, job.stage || 'Optimizing video...');
 
         if (job.status === 'cancelled') {
@@ -1395,9 +1350,11 @@ export async function uploadFileToBucket(
           const uploadedByKey: Record<string, { publicUrl: string; storagePath: string; fileName: string; fileSize: string }> = {};
           for (const art of artifactsList) {
             throwIfAborted(signal);
-            const blobResp = await fetch(art.downloadUrl, { signal });
+            const blobResp = await fetchWithTimeout(art.downloadUrl, { signal, timeoutMs: 90_000 });
             if (!blobResp.ok) {
-              throw new Error(`Failed to retrieve optimized video (${art.key}) from server.`);
+              const err: any = new Error(`Failed to retrieve optimized video (${art.key}) from server.`);
+              err.jobId = activeJobId;
+              throw err;
             }
             const artBlob = await blobResp.blob();
             throwIfAborted(signal);
@@ -1420,18 +1377,15 @@ export async function uploadFileToBucket(
             Object.values(uploadedByKey)[0];
 
           const h264Urls = { '720p': primary.publicUrl };
-          const av1Urls = undefined;
-          const posterUrl = undefined;
-          const vttThumbnailsUrl = undefined;
 
-          // Signal server to clear any remaining temp files immediately
-          await fetch(`/api/media/jobs/${encodeURIComponent(jobId)}/complete-handoff`, {
+          await fetchWithTimeout(`/api/media/jobs/${encodeURIComponent(activeJobId)}/complete-handoff`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               publicUrl: primary.publicUrl,
               h264Urls,
             }),
+            timeoutMs: 15_000,
           }).catch(() => {});
 
           const localDur = await localDurationPromise;
@@ -1439,12 +1393,12 @@ export async function uploadFileToBucket(
           if (resolvedDuration) setCachedMediaDuration(primary.publicUrl, resolvedDuration);
 
           await saveMediaAssetRecord({
-            id: jobId,
+            id: activeJobId,
             bucket,
             storagePath: primary.storagePath,
             mediaType: 'video',
             fileName: primary.fileName,
-            format: job.format || 'av1+h264',
+            format: job.format || 'h264',
             resolution: job.resolution,
             width: job.width,
             height: job.height,
@@ -1454,10 +1408,7 @@ export async function uploadFileToBucket(
             compressionPct: job.compressionPct || 0,
             status: 'completed',
             primaryUrl: primary.publicUrl,
-            av1Urls,
             h264Urls,
-            posterUrl,
-            vttThumbnailsUrl,
             createdAt: new Date().toISOString(),
           });
 
@@ -1465,10 +1416,7 @@ export async function uploadFileToBucket(
           return {
             ...primary,
             durationSec: resolvedDuration,
-            av1Urls,
             h264Urls,
-            posterUrl,
-            vttThumbnailsUrl,
             width: job.width,
             height: job.height,
             resolution: job.resolution,
@@ -1476,18 +1424,18 @@ export async function uploadFileToBucket(
             optimizedBytes: job.bytes,
             compressionPct: job.compressionPct,
             format: job.format,
-            mediaAssetId: jobId,
+            mediaAssetId: activeJobId,
           };
         }
 
         if (job.status === 'failed') {
           await saveMediaAssetRecord({
-            id: jobId,
+            id: activeJobId,
             bucket,
             storagePath: '',
             mediaType: 'video',
             fileName: file.name,
-            format: 'av1+h264',
+            format: 'h264',
             originalBytes: file.size,
             optimizedBytes: 0,
             compressionPct: 0,
@@ -1496,10 +1444,201 @@ export async function uploadFileToBucket(
             errorMessage: job.error || 'Background video optimization failed.',
             createdAt: new Date().toISOString(),
           });
-          throw new Error(job.error || 'Background video optimization failed.');
+          const err: any = new Error(job.error || 'Background video optimization failed.');
+          err.jobId = activeJobId;
+          throw err;
         }
       }
-      throw new Error('Video optimization timed out.');
+      const timeoutErr: any = new Error('Video optimization timed out.');
+      timeoutErr.jobId = activeJobId;
+      throw timeoutErr;
+    };
+
+    try {
+      // If a previous server jobId exists, try resuming/retrying it first without re-uploading raw video bytes
+      if (retryJobId) {
+        onProgress?.(42, 'Resuming optimization on server...');
+        try {
+          const checkResp = await fetchWithTimeout(`/api/media/jobs/${encodeURIComponent(retryJobId)}`, {
+            signal,
+            timeoutMs: 12_000,
+          });
+          const checkJson = await checkResp.json().catch(() => null);
+          const existingJob = checkJson?.job;
+          if (existingJob) {
+            if (
+              existingJob.status === 'queued' ||
+              existingJob.status === 'processing' ||
+              existingJob.status === 'uploading' ||
+              existingJob.status === 'ready_for_client_upload' ||
+              existingJob.status === 'completed'
+            ) {
+              return await pollVideoJobUntilDone(
+                retryJobId,
+                existingJob.progress || 50,
+                existingJob.stage || 'Resuming optimization...'
+              );
+            }
+            if (existingJob.status === 'failed') {
+              const retryResp = await fetchWithTimeout(
+                `/api/media/jobs/${encodeURIComponent(retryJobId)}/retry`,
+                {
+                  method: 'POST',
+                  headers: await getPipelineAuthHeaders(),
+                  signal,
+                  timeoutMs: 15_000,
+                }
+              );
+              const retryJson = await retryResp.json().catch(() => null);
+              if (retryResp.ok && retryJson?.success) {
+                return await pollVideoJobUntilDone(retryJobId, 42, 'Retrying video optimization...');
+              }
+            }
+          }
+        } catch (retryCheckErr: any) {
+          if (isAbortError(retryCheckErr) || signal?.aborted) throw retryCheckErr;
+        }
+      }
+
+      // Retry /init up to 3 times; use 1.5MB chunks so uploads never hit proxy limits or stall
+      const CHUNK_SIZE = 1.5 * 1024 * 1024;
+      let initResp: Response | null = null;
+      let initErrMsg = '';
+      for (let initAttempt = 0; initAttempt < 3; initAttempt++) {
+        throwIfAborted(signal);
+        try {
+          initResp = await fetchWithTimeout('/api/media/optimize-video/init', {
+            method: 'POST',
+            headers: {
+              ...authHeaders,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              bucket,
+              folderPrefix: folderPrefix || 'videos',
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type || 'video/mp4',
+            }),
+            signal,
+            timeoutMs: 15_000,
+          });
+          if (initResp.ok) break;
+          initErrMsg = `HTTP ${initResp.status}`;
+        } catch (err: any) {
+          if (isAbortError(err) || signal?.aborted) throw err;
+          initErrMsg = err?.message || 'Connection error';
+        }
+        if (initAttempt < 2) {
+          await new Promise((r) => setTimeout(r, 350 * (initAttempt + 1)));
+        }
+      }
+
+      throwIfAborted(signal);
+
+      if (initResp && initResp.ok) {
+        const initJson = await initResp.json().catch(() => null);
+        if (!initJson?.success || !initJson?.jobId) {
+          throw new Error(initJson?.message || 'Unable to initialize video upload session.');
+        }
+        jobId = initJson.jobId;
+        attachAbortListener(jobId);
+
+        const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+        for (let i = 0; i < totalChunks; i++) {
+          throwIfAborted(signal);
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(file.size, start + CHUNK_SIZE);
+          const slice = file.slice(start, end);
+          const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
+          onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
+
+          let chunkOk = false;
+          let lastChunkErr = '';
+          for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
+            throwIfAborted(signal);
+            try {
+              const chunkResp = await fetchWithTimeout(
+                `/api/media/optimize-video/chunk/${encodeURIComponent(jobId)}?offset=${start}&index=${i}`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/octet-stream',
+                  },
+                  body: slice,
+                  signal,
+                  timeoutMs: 45_000,
+                }
+              );
+              const cJson = await chunkResp.json().catch(() => null);
+              if (chunkResp.ok && cJson?.success) {
+                chunkOk = true;
+              } else {
+                lastChunkErr = cJson?.message || `Chunk upload failed (HTTP ${chunkResp.status}).`;
+                if (chunkResp.status === 404) break;
+              }
+            } catch (e: any) {
+              if (isAbortError(e) || signal?.aborted) throw e;
+              lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
+            }
+            if (!chunkOk && attempt < 2) {
+              await new Promise((r) => setTimeout(r, 450 * (attempt + 1)));
+            }
+          }
+          if (!chunkOk) {
+            void cancelServerVideoJob(jobId);
+            throw new Error(lastChunkErr || 'Video upload failed.');
+          }
+        }
+
+        throwIfAborted(signal);
+        onProgress?.(41, 'Starting optimization...');
+        const refreshedAuthHeaders = await getPipelineAuthHeaders();
+        const finishResp = await fetchWithTimeout(
+          `/api/media/optimize-video/finish/${encodeURIComponent(jobId)}`,
+          {
+            method: 'POST',
+            headers: refreshedAuthHeaders,
+            signal,
+            timeoutMs: 25_000,
+          }
+        );
+        const finishJson = await finishResp.json().catch(() => null);
+        if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
+          void cancelServerVideoJob(jobId);
+          throw new Error(finishJson?.message || `Unable to start video optimization (HTTP ${finishResp.status}).`);
+        }
+        initialProgress = finishJson.progress || 42;
+        initialStage = finishJson.stage || 'Optimizing video...';
+      } else if (file.size <= 3.5 * 1024 * 1024) {
+        // Only small videos (<= 3.5MB) fall back to single-request upload; large files never exceed Cloud Run 32MB body limit
+        onProgress?.(15, 'Uploading compact video...');
+        const formData = new FormData();
+        formData.append('bucket', bucket);
+        formData.append('folderPrefix', folderPrefix || 'videos');
+        formData.append('file', file);
+
+        const startResp = await fetchWithTimeout('/api/media/optimize-video', {
+          method: 'POST',
+          headers: authHeaders,
+          body: formData,
+          signal,
+          timeoutMs: 45_000,
+        });
+        throwIfAborted(signal);
+        const startJson = await startResp.json().catch(() => null);
+        if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
+          const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
+          throw new Error(startJson?.message || `Unable to start server video optimization job${statusHint}.`);
+        }
+        jobId = startJson.jobId;
+        initialProgress = startJson.progress || 42;
+        initialStage = startJson.stage || 'Optimizing video...';
+      } else {
+        throw new Error(`Unable to initialize chunked video upload (${initErrMsg || 'server unavailable'}). Please retry.`);
+      }
+
+      return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
     } finally {
       if (abortListener) {
         signal?.removeEventListener('abort', abortListener);

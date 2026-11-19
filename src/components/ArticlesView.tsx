@@ -651,13 +651,13 @@ export const ArticlesView: React.FC = () => {
                     mediaId={selectedArticle.heroMedia.mediaAssetId || selectedArticle.heroMedia.url}
                     title={selectedArticle.title}
                     aspectRatio={videoCardControls.aspectRatio || '16/9'}
-                    objectFit={videoCardControls.objectFit || 'cover'}
+                    objectFit={videoCardControls.objectFit || 'contain'}
                     zoomLevel={videoCardControls.zoomLevel || 1}
                   />
                 </div>
               ) : selectedArticle.heroMedia.url ? (
-                <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
-                  <picture className="w-full flex justify-center">
+                <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
+                  <picture className="w-full h-full flex items-center justify-center">
                     {selectedArticle.heroMedia.avifUrl && (
                       <source
                         srcSet={
@@ -678,7 +678,7 @@ export const ArticlesView: React.FC = () => {
                       alt={selectedArticle.heroMedia.caption || selectedArticle.title}
                       loading="lazy"
                       decoding="async"
-                      className="max-h-[220px] sm:max-h-[380px] object-contain"
+                      className="w-full h-full object-contain block"
                     />
                   </picture>
                 </div>
@@ -690,13 +690,13 @@ export const ArticlesView: React.FC = () => {
               )}
             </div>
           ) : selectedArticle.thumbnailUrl ? (
-            <div className="rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
+            <div className="w-full rounded-xl overflow-hidden border border-[#cbd5e1] bg-slate-950 aspect-[16/9] max-h-[420px] flex items-center justify-center">
               <img
                 src={selectedArticle.thumbnailUrl}
                 alt={selectedArticle.title}
                 loading="lazy"
                 decoding="async"
-                className="max-h-[220px] sm:max-h-[340px] object-contain"
+                className="w-full h-full object-contain block"
               />
             </div>
           ) : null}
@@ -1069,7 +1069,7 @@ export const ArticlesView: React.FC = () => {
                     required
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
-                    placeholder="comment here"
+                    placeholder="Write a technical comment..."
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
                   />
                   <div className="flex justify-end">
@@ -1380,24 +1380,24 @@ export const ArticlesView: React.FC = () => {
                 >
                   <div>
                     {cardImg ? (
-                      <div className="w-full h-32 sm:h-40 bg-slate-900 overflow-hidden border-b border-slate-200">
+                      <div className="w-full bg-[#f8fafc] border-b border-slate-200 overflow-hidden flex items-center justify-center">
                         <img
                           src={cardImg}
                           alt={art.title}
                           loading="lazy"
                           decoding="async"
-                          className="w-full h-full object-cover"
+                          className="w-full h-auto max-h-60 object-contain block"
                         />
                       </div>
                     ) : cardVid ? (
-                      <div className="relative w-full h-32 sm:h-40 bg-slate-950 overflow-hidden border-b border-slate-200">
+                      <div className="relative w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-200">
                         <video
                           src={cardVid}
                           poster={cardVidPoster}
-                          preload="metadata"
+                          preload="none"
                           muted
                           playsInline
-                          className="w-full h-full object-cover pointer-events-none"
+                          className="w-full h-full object-contain pointer-events-none"
                         />
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
                           <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">

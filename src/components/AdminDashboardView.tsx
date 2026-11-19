@@ -126,7 +126,6 @@ import {
   formatMediaDuration,
   formatMediaTimestamp,
   getCachedMediaDuration,
-  probeMediaDuration,
   runWithConcurrency,
 } from '../utils/mediaMetadata';
 import { ProjectFormPanel } from './ProjectFormPanel';
@@ -427,28 +426,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       setServerMediaJobs(activeJobs);
 
       const initialDurs: Record<string, number> = {};
-      const toProbe: BucketFileItem[] = [];
+      const durByUrl = new Map<string, number>();
+      for (const rec of assetRecords) {
+        if (typeof rec.durationSec === 'number' && rec.durationSec > 0 && rec.primaryUrl) {
+          durByUrl.set(rec.primaryUrl, rec.durationSec);
+        }
+      }
       for (const item of files) {
-        const cached = getCachedMediaDuration(item.publicUrl);
-        if (cached !== undefined) {
-          initialDurs[item.publicUrl] = cached;
-        } else if (item.mediaKind === 'video' || item.mediaKind === 'audio') {
-          toProbe.push(item);
+        const savedDur = durByUrl.get(item.publicUrl) ?? getCachedMediaDuration(item.publicUrl);
+        if (savedDur !== undefined) {
+          initialDurs[item.publicUrl] = savedDur;
         }
       }
       if (Object.keys(initialDurs).length > 0) {
         setMediaDurations((prev) => ({ ...prev, ...initialDurs }));
-      }
-      if (toProbe.length > 0) {
-        void runWithConcurrency(toProbe.slice(0, 30), 3, async (vid) => {
-          const sec = await probeMediaDuration(
-            vid.publicUrl,
-            vid.mediaKind === 'audio' ? 'audio' : 'video'
-          );
-          if (sec && sec > 0) {
-            setMediaDurations((prev) => ({ ...prev, [vid.publicUrl]: sec }));
-          }
-        });
       }
     } finally {
       setMediaLoading(false);

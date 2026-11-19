@@ -25,7 +25,6 @@ import {
   Mic,
   MicOff,
   User,
-  Volume2,
   History,
   Copy,
   Check,
@@ -62,7 +61,7 @@ import {
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
-import { generateDemoVoiceNote, formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload, safeDataUrlToBlobUrl, UniversalAudioRecorder } from '../utils/audioUtils';
+import { formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload, safeDataUrlToBlobUrl, UniversalAudioRecorder } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
@@ -2342,26 +2341,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     }
   };
 
-  const handleSendDemoAudio = async () => {
-    try {
-      setShowMailNotice('Generating engineering voice memo...');
-      const demo = await generateDemoVoiceNote(5, 'Voice Note');
-      let finalUrl = demo.url;
-      if (demo.blob) {
-        try {
-          const uploadRes = await uploadChatFileToMaterialsBucket(demo.blob, `demo_voicenote_${Date.now()}.wav`, 'voicenotes');
-          if (uploadRes?.url) {
-            finalUrl = uploadRes.url;
-          }
-        } catch {}
-      }
-      await sendVoiceNoteMessage(finalUrl, demo.duration);
-      setShowMailNotice('Voice note sent!');
-    } catch (err) {
-      console.warn(err);
-    }
-  };
-
   // Send message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3899,17 +3878,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                           <Paperclip className="w-4.5 h-4.5 text-[#243346]" />
                         </button>
                       </div>
-
-                      {/* Quick Demo Audio Memo Button */}
-                      <button
-                        type="button"
-                        onClick={handleSendDemoAudio}
-                        className="hidden md:inline-flex p-1.5 rounded-lg bg-slate-200/80 hover:bg-slate-300 text-slate-700 text-[10px] font-bold items-center gap-1 cursor-pointer shrink-0 transition-colors"
-                        title="Send sample audio memo"
-                      >
-                        <Volume2 className="w-3 h-3 text-[#243346]" />
-                        <span>Audio Memo</span>
-                      </button>
 
                       {/* Message Input Box with Engineering Symbol Picker */}
                       <div className="flex-1 relative">
