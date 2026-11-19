@@ -622,7 +622,10 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
   try {
     let { data } = await supabase.auth.getSession();
     if (data?.session?.expires_at && data.session.expires_at * 1000 < Date.now() + 300_000) {
-      const refreshed = await supabase.auth.refreshSession().catch(() => null);
+      const refreshed: any = await Promise.race([
+        supabase.auth.refreshSession().catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+      ]);
       if (refreshed?.data?.session) data = refreshed.data;
     }
     if (data?.session?.access_token) {
@@ -1500,8 +1503,56 @@ export async function uploadFileToBucket(
         }
       }
 
-      // Retry /init up to 3 times; use 1.5MB chunks so uploads never hit proxy limits or stall
-      const CHUNK_SIZE = 1.5 * 1024 * 1024;
+      // Helper: direct Supabase Storage upload fallback if server transcode endpoint is unavailable (HTTP 5xx/404/network)
+      const runDirectVideoUploadFallback = async (reasonMsg: string) => {
+        throwIfAborted(signal);
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const playableExts = ['mp4', 'webm', 'm4v', 'mov'];
+        if (!playableExts.includes(ext) && !file.type.startsWith('video/')) {
+          throw new Error(reasonMsg || 'Video optimization service unavailable.');
+        }
+        onProgress?.(55, `Uploading video directly to "${bucket}"...`);
+        const directRes = await uploadBlobDirectToBucket({
+          bucket,
+          blob: file,
+          fileName: file.name,
+          contentType: file.type || 'video/mp4',
+          folderPrefix: folderPrefix || 'videos',
+        });
+        const localDur = await probeLocalFileDuration(file);
+        if (localDur) setCachedMediaDuration(directRes.publicUrl, localDur);
+        const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        await saveMediaAssetRecord({
+          id: assetId,
+          bucket,
+          storagePath: directRes.storagePath,
+          mediaType: 'video',
+          fileName: directRes.fileName,
+          format: 'h264',
+          durationSec: localDur,
+          originalBytes: file.size,
+          optimizedBytes: file.size,
+          compressionPct: 0,
+          status: 'completed',
+          primaryUrl: directRes.publicUrl,
+          h264Urls: { '720p': directRes.publicUrl },
+          createdAt: new Date().toISOString(),
+        }).catch(() => {});
+        onProgress?.(100, `Uploaded video (${directRes.fileSize})`);
+        return {
+          ...directRes,
+          durationSec: localDur,
+          originalBytes: file.size,
+          optimizedBytes: file.size,
+          compressionPct: 0,
+          format: 'h264',
+          h264Urls: { '720p': directRes.publicUrl },
+          mediaAssetId: assetId,
+        };
+      };
+
+      // Retry /init up to 3 times; use 3MB chunks for fast round-trips safely below server/proxy limits
+      const CHUNK_SIZE = 3 * 1024 * 1024;
       let initResp: Response | null = null;
       let initErrMsg = '';
       for (let initAttempt = 0; initAttempt < 3; initAttempt++) {
@@ -1524,7 +1575,8 @@ export async function uploadFileToBucket(
             timeoutMs: 15_000,
           });
           if (initResp.ok) break;
-          initErrMsg = `HTTP ${initResp.status}`;
+          const errJson = await initResp.json().catch(() => null);
+          initErrMsg = errJson?.message || `HTTP ${initResp.status}`;
         } catch (err: any) {
           if (isAbortError(err) || signal?.aborted) throw err;
           initErrMsg = err?.message || 'Connection error';
@@ -1539,7 +1591,7 @@ export async function uploadFileToBucket(
       if (initResp && initResp.ok) {
         const initJson = await initResp.json().catch(() => null);
         if (!initJson?.success || !initJson?.jobId) {
-          throw new Error(initJson?.message || 'Unable to initialize video upload session.');
+          return await runDirectVideoUploadFallback(initJson?.message || 'Unable to initialize video upload session.');
         }
         jobId = initJson.jobId;
         attachAbortListener(jobId);
@@ -1587,7 +1639,8 @@ export async function uploadFileToBucket(
           }
           if (!chunkOk) {
             void cancelServerVideoJob(jobId);
-            throw new Error(lastChunkErr || 'Video upload failed.');
+            console.warn('[Video Pipeline] Chunk upload interrupted, falling back to direct storage upload:', lastChunkErr);
+            return await runDirectVideoUploadFallback(lastChunkErr);
           }
         }
 
@@ -1606,39 +1659,54 @@ export async function uploadFileToBucket(
         const finishJson = await finishResp.json().catch(() => null);
         if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
           void cancelServerVideoJob(jobId);
-          throw new Error(finishJson?.message || `Unable to start video optimization (HTTP ${finishResp.status}).`);
+          console.warn('[Video Pipeline] Finish endpoint error, falling back to direct storage upload:', finishJson?.message);
+          return await runDirectVideoUploadFallback(finishJson?.message || `HTTP ${finishResp.status}`);
         }
         initialProgress = finishJson.progress || 42;
         initialStage = finishJson.stage || 'Optimizing video...';
-      } else if (file.size <= 3.5 * 1024 * 1024) {
-        // Only small videos (<= 3.5MB) fall back to single-request upload; large files never exceed Cloud Run 32MB body limit
-        onProgress?.(15, 'Uploading compact video...');
+      } else if (file.size <= 12 * 1024 * 1024) {
+        // Videos <= 12MB fall back to single-request server endpoint, then direct storage if server fails
+        onProgress?.(15, 'Uploading video for fast optimization...');
         const formData = new FormData();
         formData.append('bucket', bucket);
         formData.append('folderPrefix', folderPrefix || 'videos');
         formData.append('file', file);
 
-        const startResp = await fetchWithTimeout('/api/media/optimize-video', {
-          method: 'POST',
-          headers: authHeaders,
-          body: formData,
-          signal,
-          timeoutMs: 45_000,
-        });
-        throwIfAborted(signal);
-        const startJson = await startResp.json().catch(() => null);
-        if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-          const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
-          throw new Error(startJson?.message || `Unable to start server video optimization job${statusHint}.`);
+        try {
+          const startResp = await fetchWithTimeout('/api/media/optimize-video', {
+            method: 'POST',
+            headers: authHeaders,
+            body: formData,
+            signal,
+            timeoutMs: 45_000,
+          });
+          throwIfAborted(signal);
+          const startJson = await startResp.json().catch(() => null);
+          if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
+            const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
+            console.warn('[Video Pipeline] Single-request endpoint returned error, falling back to direct upload:', startJson?.message || statusHint);
+            return await runDirectVideoUploadFallback(startJson?.message || `Server upload failed${statusHint}`);
+          }
+          jobId = startJson.jobId;
+          initialProgress = startJson.progress || 42;
+          initialStage = startJson.stage || 'Optimizing video...';
+        } catch (singleErr: any) {
+          if (isAbortError(singleErr) || signal?.aborted) throw singleErr;
+          console.warn('[Video Pipeline] Single-request upload failed, using direct Supabase upload:', singleErr?.message);
+          return await runDirectVideoUploadFallback(singleErr?.message || initErrMsg);
         }
-        jobId = startJson.jobId;
-        initialProgress = startJson.progress || 42;
-        initialStage = startJson.stage || 'Optimizing video...';
       } else {
-        throw new Error(`Unable to initialize chunked video upload (${initErrMsg || 'server unavailable'}). Please retry.`);
+        console.warn('[Video Pipeline] Chunk init unavailable, using direct Supabase upload:', initErrMsg);
+        return await runDirectVideoUploadFallback(initErrMsg || 'Server unavailable');
       }
 
-      return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
+      try {
+        return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
+      } catch (pollErr: any) {
+        if (isAbortError(pollErr) || signal?.aborted) throw pollErr;
+        console.warn('[Video Pipeline] Server transcoding failed, falling back to direct Supabase upload:', pollErr?.message);
+        return await runDirectVideoUploadFallback(pollErr?.message || 'Video processing fallback');
+      }
     } finally {
       if (abortListener) {
         signal?.removeEventListener('abort', abortListener);

@@ -146,14 +146,14 @@ function formatProfileResponse(row: any) {
     bio: {
       fullName: row.fullName || custom.fullName || 'Festus, Olorunsogo Johnson',
       email: resolvedEmail,
-      discipline: row.discipline !== undefined && row.discipline !== '' ? row.discipline : (custom.discipline || 'Mechanical Hardware & Thermal Systems'),
-      badges: row.badges !== undefined && row.badges !== '' ? row.badges : (custom.badges || 'Verified Engineer · CSWP · ASME GDTP Senior · FE EIT'),
-      country: row.country !== undefined && row.country !== '' ? row.country : (custom.country || 'United States'),
+      discipline: row.discipline !== undefined && row.discipline !== null ? row.discipline : (custom.discipline !== undefined ? custom.discipline : 'Mechanical Hardware & Thermal Systems'),
+      badges: row.badges !== undefined && row.badges !== null ? row.badges : (custom.badges !== undefined ? custom.badges : 'Verified Engineer · CSWP · ASME GDTP Senior · FE EIT'),
+      country: row.country !== undefined && row.country !== null ? row.country : (custom.country !== undefined ? custom.country : 'United States'),
       header: resolvedHeader,
-      degree: row.degree !== undefined && row.degree !== '' ? row.degree : (custom.degree || 'B.S. in Mechanical Engineering (BSME)'),
-      academicHonors: row.academicHonors !== undefined && row.academicHonors !== '' ? row.academicHonors : (custom.academicHonors || 'ABET Accredited · Honors (GPA 3.84 / 4.00)'),
-      leadership: row.leadership !== undefined && row.leadership !== '' ? row.leadership : (custom.leadership || 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead · ASME Section Officer'),
-      skills: row.skills !== undefined && row.skills !== '' ? row.skills : (custom.skills || 'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, CNC Machine, Laser Engraver/Cutter, 3D Animation, FEA Analysis'),
+      degree: row.degree !== undefined && row.degree !== null ? row.degree : (custom.degree !== undefined ? custom.degree : 'B.S. in Mechanical Engineering (BSME)'),
+      academicHonors: row.academicHonors !== undefined && row.academicHonors !== null ? row.academicHonors : (custom.academicHonors !== undefined ? custom.academicHonors : 'ABET Accredited · Honors (GPA 3.84 / 4.00)'),
+      leadership: row.leadership !== undefined && row.leadership !== null ? row.leadership : (custom.leadership !== undefined ? custom.leadership : 'Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead · ASME Section Officer'),
+      skills: row.skills !== undefined && row.skills !== null ? row.skills : (custom.skills !== undefined ? custom.skills : 'SolidWorks (CSWP/CSWE), PTC Creo, Autodesk Inventor, Siemens NX, Fusion 360, AutoCAD Mechanical, CNC Machine, Laser Engraver/Cutter, 3D Animation, FEA Analysis'),
       ...(Array.isArray(custom.certifiedSkills) ? { certifiedSkills: custom.certifiedSkills } : {}),
       ...(custom.skillStatuses && typeof custom.skillStatuses === 'object' ? { skillStatuses: custom.skillStatuses } : {}),
       ...(Array.isArray(custom.experiences) ? { experiences: custom.experiences } : {}),
@@ -161,17 +161,17 @@ function formatProfileResponse(row: any) {
       ...(Array.isArray(custom.achievements) ? { achievements: custom.achievements } : {}),
       ...(Array.isArray(custom.deletedDocIds) ? { deletedDocIds: custom.deletedDocIds } : {}),
       description: resolvedDescription,
-      shortSummary: row.shortSummary || custom.shortSummary || '',
-      availabilityStatus: row.availabilityStatus || custom.availabilityStatus || 'Active & Available for Q4 2026 Roles',
-      workClearance: row.workClearance || custom.workClearance || 'US Authorized · No Visa Sponsorship Required',
-      targetLocations: row.targetLocations || custom.targetLocations || 'San Francisco / Silicon Valley, Seattle, Austin, Boston',
-      linkedinUrl: row.linkedinUrl !== undefined ? row.linkedinUrl : (custom.linkedinUrl || 'https://linkedin.com'),
-      facebookUrl: row.facebookUrl !== undefined ? row.facebookUrl : (custom.facebookUrl || 'https://facebook.com'),
-      indeedUrl: row.indeedUrl !== undefined ? row.indeedUrl : (custom.indeedUrl || 'https://indeed.com'),
-      emailUrl: custom.emailUrl || (resolvedEmail ? `mailto:${resolvedEmail}` : 'mailto:festusjohnson028@gmail.com'),
-      twitterUrl: row.twitterUrl !== undefined ? row.twitterUrl : (custom.twitterUrl || 'https://x.com'),
-      tiktokUrl: custom.tiktokUrl || row.tiktokUrl || 'https://tiktok.com',
-      instagramUrl: row.instagramUrl !== undefined ? row.instagramUrl : (custom.instagramUrl || 'https://instagram.com'),
+      shortSummary: row.shortSummary !== undefined && row.shortSummary !== null ? row.shortSummary : (custom.shortSummary || ''),
+      availabilityStatus: row.availabilityStatus !== undefined && row.availabilityStatus !== null ? row.availabilityStatus : (custom.availabilityStatus || 'Active & Available for Q4 2026 Roles'),
+      workClearance: row.workClearance !== undefined && row.workClearance !== null ? row.workClearance : (custom.workClearance || 'US Authorized · No Visa Sponsorship Required'),
+      targetLocations: row.targetLocations !== undefined && row.targetLocations !== null ? row.targetLocations : (custom.targetLocations || 'San Francisco / Silicon Valley, Seattle, Austin, Boston'),
+      linkedinUrl: row.linkedinUrl !== undefined && row.linkedinUrl !== null ? row.linkedinUrl : (custom.linkedinUrl !== undefined ? custom.linkedinUrl : 'https://linkedin.com'),
+      facebookUrl: row.facebookUrl !== undefined && row.facebookUrl !== null ? row.facebookUrl : (custom.facebookUrl !== undefined ? custom.facebookUrl : 'https://facebook.com'),
+      indeedUrl: row.indeedUrl !== undefined && row.indeedUrl !== null ? row.indeedUrl : (custom.indeedUrl !== undefined ? custom.indeedUrl : 'https://indeed.com'),
+      emailUrl: custom.emailUrl !== undefined ? custom.emailUrl : (resolvedEmail ? `mailto:${resolvedEmail}` : 'mailto:festusjohnson028@gmail.com'),
+      twitterUrl: row.twitterUrl !== undefined && row.twitterUrl !== null ? row.twitterUrl : (custom.twitterUrl !== undefined ? custom.twitterUrl : 'https://x.com'),
+      tiktokUrl: custom.tiktokUrl !== undefined ? custom.tiktokUrl : (row.tiktokUrl !== undefined && row.tiktokUrl !== null ? row.tiktokUrl : 'https://tiktok.com'),
+      instagramUrl: row.instagramUrl !== undefined && row.instagramUrl !== null ? row.instagramUrl : (custom.instagramUrl !== undefined ? custom.instagramUrl : 'https://instagram.com'),
     },
     documents: Array.isArray(row.documents) ? row.documents : (Array.isArray(custom.documents) ? custom.documents : []),
   };
@@ -1718,7 +1718,7 @@ async function processVideoJobAsync(params: {
       meta.width <= targetMaxW &&
       meta.height > 0 &&
       meta.height <= targetMaxH &&
-      inputBytes <= 3.5 * 1024 * 1024;
+      inputBytes <= 10 * 1024 * 1024;
 
     if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
@@ -2069,15 +2069,18 @@ app.post('/api/media/optimize-image', async (req, res) => {
 
 app.post('/api/media/optimize-video/init', async (req, res) => {
   try {
-    const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
-    const folderPrefix = String(req.body?.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_');
-    const originalName = String(req.body?.fileName || `video_${Date.now()}.mp4`);
-    const originalSize = Number(req.body?.fileSize) || 0;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const bucket: 'projects' | 'articles' = body.bucket === 'articles' ? 'articles' : 'projects';
+    const folderPrefix = String(body.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_').slice(0, 64);
+    const originalName = String(body.fileName || `video_${Date.now()}.mp4`);
+    const originalSize = Number(body.fileSize) || 0;
     const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
-    try { fs.mkdirSync(MEDIA_TEMP_DIR, { recursive: true }); } catch {}
+    await fs.promises.mkdir(MEDIA_TEMP_DIR, { recursive: true });
     const jobId = `vjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const rawExt = path.extname(originalName).replace(/[^a-zA-Z0-9.]/g, '').slice(0, 10) || '.mp4';
+    const rawStem = path.basename(originalName, path.extname(originalName)).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 48) || 'video';
+    const safeName = `${rawStem}${rawExt}`;
     const rawPath = path.join(MEDIA_TEMP_DIR, `chunk_${jobId}_${safeName}`);
     await fs.promises.writeFile(rawPath, Buffer.alloc(0));
 
@@ -2086,7 +2089,7 @@ app.post('/api/media/optimize-video/init', async (req, res) => {
       rawPath,
       bucket,
       folderPrefix,
-      originalName,
+      originalName: safeName,
       originalSize,
       receivedBytes: 0,
       chunks: {},
@@ -2100,13 +2103,14 @@ app.post('/api/media/optimize-video/init', async (req, res) => {
 
     res.json({ success: true, jobId });
   } catch (err: any) {
+    console.error('[Video Init Error]:', err);
     res.status(500).json({ success: false, message: err?.message || 'Unable to initialize video upload.' });
   }
 });
 
 app.post(
   '/api/media/optimize-video/chunk/:jobId',
-  express.raw({ type: ['application/octet-stream', 'application/binary'], limit: '8mb' }),
+  express.raw({ type: ['application/octet-stream', 'application/binary'], limit: '12mb' }),
   async (req, res) => {
     const session = loadChunkSession(req.params.jobId);
     if (!session) {

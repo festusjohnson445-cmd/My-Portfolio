@@ -439,10 +439,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [skillStatusesDraft, setSkillStatusesDraft] = useState<Record<string, SkillStatus>>({});
 
   useEffect(() => {
+    if (isEditingSkillsPanel) return;
     setSkillsDraft(bioData.skills || '');
     setCertifiedSkillsDraft(bioData.certifiedSkills || []);
     setSkillStatusesDraft(bioData.skillStatuses || {});
-  }, [bioData.skills, bioData.certifiedSkills, bioData.skillStatuses]);
+  }, [bioData.skills, bioData.certifiedSkills, bioData.skillStatuses, isEditingSkillsPanel]);
 
   useEffect(() => {
     Promise.allSettled([
@@ -1404,7 +1405,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     type="text"
                     required
                     value={editBioForm.fullName}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, fullName: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, fullName: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-serif"
                     placeholder="Festus, Olorunsogo Johnson"
                   />
@@ -1419,7 +1420,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     type="email"
                     required
                     value={editBioForm.email}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, email: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, email: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="festusjohnson028@gmail.com"
                   />
@@ -1434,7 +1435,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     type="text"
                     required
                     value={editBioForm.discipline}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, discipline: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, discipline: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="Mechanical & Optomechanical Design Engineering"
                   />
@@ -1448,7 +1449,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <input
                     type="text"
                     value={editBioForm.badges}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, badges: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, badges: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="Verified Engineer · CSWP · ASME GDTP Senior · FE EIT"
                   />
@@ -1461,7 +1462,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   </label>
                   <select
                     value={editBioForm.country}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, country: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, country: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans cursor-pointer"
                   >
                     {COUNTRIES_LIST.map((c) => (
@@ -1481,7 +1482,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     rows={2}
                     required
                     value={editBioForm.header}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, header: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, header: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans font-medium"
                     placeholder="Lead Mechanical Design Engineer · Precision Mechanisms, Flight Gimbals & FEA Topology"
                   />
@@ -1511,8 +1512,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         : 'Other Engineering Course / Degree'
                     }
                     onChange={(e) => {
-                      if (e.target.value !== 'Other Engineering Course / Degree') {
-                        setEditBioForm({ ...editBioForm, degree: e.target.value });
+                      const val = e.target.value;
+                      if (val !== 'Other Engineering Course / Degree') {
+                        setEditBioForm((prev) => ({ ...prev, degree: val }));
                       }
                     }}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans cursor-pointer"
@@ -1526,7 +1528,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <input
                     type="text"
                     value={editBioForm.degree}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, degree: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, degree: e.target.value }))}
                     placeholder="Customize or enter specific engineering degree / university..."
                     className="mt-2 w-full px-3 py-1.5 rounded-lg border border-[#cbd5e1] bg-white text-slate-900 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-cyan-700"
                   />
@@ -1540,7 +1542,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <input
                     type="text"
                     value={editBioForm.academicHonors}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, academicHonors: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, academicHonors: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="ABET Accredited · Honors (GPA 3.84 / 4.00)"
                   />
@@ -1554,7 +1556,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <textarea
                     rows={2}
                     value={editBioForm.leadership}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, leadership: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, leadership: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="Lead Mechanical Hardware Engineer · Airborne Gimbal Mechanism Lead · ASME Section Officer"
                   />
@@ -1564,10 +1566,10 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <div className="md:col-span-2 min-w-0">
                   <SkillSelector
                     value={editBioForm.skills}
-                    onChange={(newSkills) => setEditBioForm({ ...editBioForm, skills: newSkills })}
+                    onChange={(newSkills) => setEditBioForm((prev) => ({ ...prev, skills: newSkills }))}
                     skillStatuses={editBioForm.skillStatuses || {}}
                     onSkillStatusesChange={(nextStatuses) =>
-                      setEditBioForm({ ...editBioForm, skillStatuses: nextStatuses })
+                      setEditBioForm((prev) => ({ ...prev, skillStatuses: nextStatuses }))
                     }
                     certifiedSkills={editBioForm.certifiedSkills || []}
                     label="Skills & Core Competencies (Core Engineering, Handful Skills & IT Skills)"
@@ -1583,7 +1585,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <textarea
                     rows={5}
                     value={editBioForm.description}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, description: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, description: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 font-serif text-xs sm:text-sm leading-relaxed"
                     placeholder="Provide your complete biography, engineering philosophy, and high-impact accomplishments..."
                   />
@@ -1613,9 +1615,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>LinkedIn Profile URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.linkedinUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, linkedinUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, linkedinUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://linkedin.com/in/festus-johnson"
                   />
@@ -1628,9 +1630,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>Facebook Profile Page URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.facebookUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, facebookUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, facebookUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://facebook.com/festus.johnson"
                   />
@@ -1643,9 +1645,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>Indeed Profile URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.indeedUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, indeedUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, indeedUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://profile.indeed.com/p/..."
                   />
@@ -1660,7 +1662,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   <input
                     type="text"
                     value={editBioForm.emailUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, emailUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, emailUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="mailto:festusjohnson028@gmail.com"
                   />
@@ -1673,9 +1675,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>Twitter / X Profile URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.twitterUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, twitterUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, twitterUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://x.com/festus_mech"
                   />
@@ -1688,9 +1690,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>TikTok Profile URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.tiktokUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, tiktokUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, tiktokUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://tiktok.com/@festus_eng"
                   />
@@ -1703,9 +1705,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <span>Instagram Profile URL</span>
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={editBioForm.instagramUrl || ''}
-                    onChange={(e) => setEditBioForm({ ...editBioForm, instagramUrl: e.target.value })}
+                    onChange={(e) => setEditBioForm((prev) => ({ ...prev, instagramUrl: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     placeholder="https://instagram.com/festus_johnson"
                   />
@@ -1774,10 +1776,10 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                         <User className="w-9 h-9 sm:w-11 sm:h-11 text-cyan-400 stroke-[1.5]" />
                       </div>
                       <span className="text-xs sm:text-sm font-sans font-bold text-white leading-tight">
-                        Festus, Olorunsogo Johnson
+                        {bioData.fullName || 'Festus, Olorunsogo Johnson'}
                       </span>
                       <span className="text-[10.5px] font-sans font-medium text-cyan-300 mt-1">
-                        {isOwnerAuthenticated ? 'Click to Upload Photo' : 'Lead Mechanical Engineer'}
+                        {isOwnerAuthenticated ? 'Click to Upload Photo' : (bioData.discipline || 'Mechanical Engineer')}
                       </span>
                     </div>
                   )}
@@ -2085,7 +2087,14 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               {isOwnerAuthenticated && (
                 <button
                   type="button"
-                  onClick={() => setIsEditingSkillsPanel(!isEditingSkillsPanel)}
+                  onClick={() => {
+                    if (!isEditingSkillsPanel) {
+                      setSkillsDraft(bioData.skills || '');
+                      setCertifiedSkillsDraft(bioData.certifiedSkills || []);
+                      setSkillStatusesDraft(bioData.skillStatuses || {});
+                    }
+                    setIsEditingSkillsPanel(!isEditingSkillsPanel);
+                  }}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-800 text-xs font-serif font-semibold border border-[#cbd5e1] cursor-pointer shrink-0"
                 >
                   <Edit3 className="w-3 h-3 text-cyan-800" />

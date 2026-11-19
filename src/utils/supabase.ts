@@ -761,18 +761,56 @@ export async function saveProfileToSupabaseTable(profileData: {
   const { user } = await getValidatedSession();
   const ownerUid = uid || user.id;
 
-  const baseBio = { ...(profileData.bioData || {}) };
-  if (profileData.documents !== undefined) {
+  const isPartialUpdate =
+    profileData.bioData === undefined &&
+    profileData.fullName === undefined &&
+    profileData.header === undefined;
+
+  if (isPartialUpdate) {
+    const partialPayload: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (profileData.avatarUrl !== undefined) {
+      partialPayload.avatar_url = profileData.avatarUrl;
+    }
+    if (profileData.documents !== undefined) {
+      partialPayload.documents = profileData.documents;
+    }
+    const { data: updatedRows, error: patchErr } = await supabase
+      .from('profiles')
+      .update(partialPayload)
+      .eq('id', ownerUid)
+      .select('id');
+
+    if (!patchErr && Array.isArray(updatedRows) && updatedRows.length > 0) {
+      cachedProfileData = null;
+      lastProfileFetchTime = 0;
+      return true;
+    }
+  }
+
+  const baseBio = profileData.bioData ? { ...profileData.bioData } : undefined;
+  if (baseBio && profileData.documents !== undefined) {
     baseBio.documents = profileData.documents;
   }
 
   const payload: any = {
     id: ownerUid,
-    full_name: profileData.fullName || 'Festus, Olorunsogo Johnson',
-    header: profileData.header || 'Lead Mechanical Design Engineer',
-    bio: baseBio,
     updated_at: new Date().toISOString(),
   };
+
+  if (profileData.fullName !== undefined) {
+    payload.full_name = profileData.fullName;
+  }
+  if (profileData.header !== undefined) {
+    payload.header = profileData.header;
+  }
+  if (baseBio !== undefined) {
+    payload.bio = baseBio;
+  } else if (profileData.documents !== undefined) {
+    // Only attach documents inside bio when no full bioData object was passed
+    payload.documents = profileData.documents;
+  }
 
   if (profileData.documents !== undefined) {
     payload.documents = profileData.documents;

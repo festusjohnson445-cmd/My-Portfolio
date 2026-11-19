@@ -134,7 +134,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     setUploadStage('Preparing media pipeline...');
     setErrorMsg(null);
     try {
-      const concurrency = target === 'video' ? 2 : 3;
+      const concurrency = target === 'video' ? 1 : 3;
       const results = await runWithConcurrency(fileArr, concurrency, async (file, idx) => {
         const res = await uploadFileToBucket(
           'articles',

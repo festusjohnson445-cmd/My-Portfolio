@@ -127,7 +127,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     setUploadStage('Preparing media pipeline...');
     setErrorMsg(null);
     try {
-      const concurrency = target === 'video' ? 2 : 3;
+      const concurrency = target === 'video' ? 1 : 3;
       const uploadedAssets = await runWithConcurrency(fileArr, concurrency, async (file, idx) => {
         const res = await uploadFileToBucket(
           'projects',

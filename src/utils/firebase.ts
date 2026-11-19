@@ -1,28 +1,28 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  initializeFirestore,
-  memoryLocalCache,
+import {
+  getFirestore,
   collection,
-  doc, 
-  getDoc, 
+  doc,
+  getDoc,
   getDocs,
-  setDoc, 
+  setDoc,
   updateDoc,
   deleteDoc,
-  onSnapshot, 
+  onSnapshot,
   getDocFromServer,
+  disableNetwork,
+  enableNetwork,
   query,
   orderBy,
-  increment
+  increment,
 } from 'firebase/firestore';
-import { 
-  getStorage, 
-  ref, 
-  uploadBytes, 
-  uploadString, 
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  uploadString,
   getDownloadURL,
-  deleteObject
+  deleteObject,
 } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
@@ -35,16 +35,7 @@ import type { Conversation, ChatMessage } from '../components/MessagingSection';
 // ============================================================================
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export const db = (() => {
-  try {
-    return initializeFirestore(app, {
-      experimentalForceLongPolling: true,
-      localCache: memoryLocalCache(),
-    }, firebaseConfig.firestoreDatabaseId);
-  } catch (_err) {
-    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
-  }
-})();
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 export const storage = getStorage(app, `gs://${firebaseConfig.storageBucket}`);
 export const auth = getAuth(app);
@@ -80,30 +71,105 @@ export const OperationType = {
 
 export type OperationType = (typeof OperationType)[keyof typeof OperationType];
 
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errMessage = error instanceof Error ? error.message : String(error);
-  if (errMessage.includes('the client is offline') || errMessage.includes('offline') || (error as any)?.code === 'unavailable') {
+  const errInfo: FirestoreErrorInfo = {
+    error: errMessage,
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+
+  if (
+    errMessage.includes('the client is offline') ||
+    errMessage.includes('offline') ||
+    (error as any)?.code === 'unavailable'
+  ) {
     console.warn(`[Firestore ${operationType.toUpperCase()} Offline on ${path}]:`, errMessage);
     return;
   }
-  console.warn(`[Firestore ${operationType.toUpperCase()} Note on ${path}]:`, errMessage);
+  console.warn('Firestore Error:', JSON.stringify(errInfo));
 }
 
+let firestoreReachable: boolean | null = null;
+let firestoreCheckPromise: Promise<boolean> | null = null;
+
 /**
- * Test connectivity to Firestore on boot
+ * Test connectivity to Firestore on boot (and disable background SDK timers before the 10s
+ * SDK timeout if backend is unreachable so Supabase & Postgres operate seamlessly offline).
  */
-export async function testFirestoreConnection(): Promise<boolean> {
-  try {
-    const connPromise = getDocFromServer(doc(db, COLLECTIONS.PROFILES, 'connection_test'));
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Firestore connection timeout')), 2500)
-    );
-    await Promise.race([connPromise, timeoutPromise]);
-    return true;
-  } catch (_error) {
-    console.warn('Firestore connection note: App is running smoothly with PostgreSQL primary database and offline cache.');
-    return false;
-  }
+export async function testFirestoreConnection(force = false): Promise<boolean> {
+  if (!force && firestoreReachable !== null) return firestoreReachable;
+  if (!force && firestoreCheckPromise) return firestoreCheckPromise;
+
+  firestoreCheckPromise = (async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      firestoreReachable = false;
+      await disableNetwork(db).catch(() => {});
+      return false;
+    }
+
+    try {
+      await enableNetwork(db).catch(() => {});
+      const connPromise = getDocFromServer(doc(db, 'test', 'connection'));
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Firestore connection timeout')), 5000)
+      );
+      await Promise.race([connPromise, timeoutPromise]);
+      firestoreReachable = true;
+      return true;
+    } catch (error) {
+      firestoreReachable = false;
+      // Cancel pending Firestore Listen/channel streams before SDK hits its 10s error log
+      await disableNetwork(db).catch(() => {});
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.warn('Firestore connection note: Please check your Firebase configuration.');
+      } else {
+        console.warn('Firestore connection note: Operating via Supabase/PostgreSQL primary database.');
+      }
+      return false;
+    } finally {
+      firestoreCheckPromise = null;
+    }
+  })();
+
+  return firestoreCheckPromise;
+}
+
+if (typeof window !== 'undefined') {
+  void testFirestoreConnection();
+  window.addEventListener('online', () => {
+    firestoreReachable = null;
+    void testFirestoreConnection(true);
+  });
 }
 
 // ============================================================================
@@ -176,8 +242,13 @@ export async function saveProfileToFirestore(
     profileQueuePromise = profileQueuePromise
       .then(async () => {
         try {
+          const online = await testFirestoreConnection();
+          if (!online) {
+            resolve(null);
+            return;
+          }
           const profileDocRef = doc(db, COLLECTIONS.PROFILES, GLOBAL_PROFILE_DOC_ID);
-          
+
           let existingData: Partial<PersistentProfileRecord> = {};
           try {
             const snap = await getDoc(profileDocRef);
@@ -189,7 +260,7 @@ export async function saveProfileToFirestore(
           }
 
           let newAvatar = updates.avatar !== undefined ? updates.avatar : (existingData.avatar || '/api/profile/picture');
-          
+
           if (updates.avatar && typeof updates.avatar === 'string' && updates.avatar.startsWith('data:image/')) {
             // Keep Firestore ultra lightweight and fast by using dedicated cloud picture URL with deterministic version
             const versionParam = updates.updatedAt ? new Date(updates.updatedAt).getTime() : '1';
@@ -240,6 +311,8 @@ export async function saveProfileToFirestore(
  */
 export async function fetchProfileFromFirestore(): Promise<PersistentProfileRecord | null> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return null;
     const profileDocRef = doc(db, COLLECTIONS.PROFILES, GLOBAL_PROFILE_DOC_ID);
     const snap = await getDoc(profileDocRef);
     if (snap.exists()) {
@@ -259,20 +332,31 @@ export function subscribeToProfile(
   onData: (data: PersistentProfileRecord) => void,
   onError?: (err: unknown) => void
 ) {
-  const profileDocRef = doc(db, COLLECTIONS.PROFILES, GLOBAL_PROFILE_DOC_ID);
-  return onSnapshot(
-    profileDocRef,
-    (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as PersistentProfileRecord;
-        onData(data);
+  let cancelled = false;
+  let unsub: (() => void) | null = null;
+
+  void testFirestoreConnection().then((online) => {
+    if (cancelled || !online) return;
+    const profileDocRef = doc(db, COLLECTIONS.PROFILES, GLOBAL_PROFILE_DOC_ID);
+    unsub = onSnapshot(
+      profileDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as PersistentProfileRecord;
+          onData(data);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, `${COLLECTIONS.PROFILES}/${GLOBAL_PROFILE_DOC_ID}`);
+        if (onError) onError(err);
       }
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.GET, `${COLLECTIONS.PROFILES}/${GLOBAL_PROFILE_DOC_ID}`);
-      if (onError) onError(err);
-    }
-  );
+    );
+  });
+
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
 }
 
 // ============================================================================
@@ -312,6 +396,8 @@ export async function uploadHubDocumentToStorage(
  */
 export async function saveHubDocumentToFirestore(document: PublicEngineeringDocument): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const docRef = doc(db, COLLECTIONS.DOCUMENTS, document.id);
     
     // Sanitize document for Firestore:
@@ -337,6 +423,8 @@ export async function saveHubDocumentToFirestore(document: PublicEngineeringDocu
  */
 export async function fetchHubDocumentsFromFirestore(): Promise<PublicEngineeringDocument[]> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return [];
     const colRef = collection(db, COLLECTIONS.DOCUMENTS);
     const snap = await getDocs(colRef);
     const docs: PublicEngineeringDocument[] = [];
@@ -357,21 +445,32 @@ export function subscribeToHubDocuments(
   onData: (docs: PublicEngineeringDocument[]) => void,
   onError?: (err: unknown) => void
 ) {
-  const colRef = collection(db, COLLECTIONS.DOCUMENTS);
-  return onSnapshot(
-    colRef,
-    (snap) => {
-      const docs: PublicEngineeringDocument[] = [];
-      snap.forEach((d) => {
-        docs.push(d.data() as PublicEngineeringDocument);
-      });
-      onData(docs);
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, COLLECTIONS.DOCUMENTS);
-      if (onError) onError(err);
-    }
-  );
+  let cancelled = false;
+  let unsub: (() => void) | null = null;
+
+  void testFirestoreConnection().then((online) => {
+    if (cancelled || !online) return;
+    const colRef = collection(db, COLLECTIONS.DOCUMENTS);
+    unsub = onSnapshot(
+      colRef,
+      (snap) => {
+        const docs: PublicEngineeringDocument[] = [];
+        snap.forEach((d) => {
+          docs.push(d.data() as PublicEngineeringDocument);
+        });
+        onData(docs);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, COLLECTIONS.DOCUMENTS);
+        if (onError) onError(err);
+      }
+    );
+  });
+
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
 }
 
 /**
@@ -379,6 +478,8 @@ export function subscribeToHubDocuments(
  */
 export async function deleteHubDocumentFromFirestore(docId: string, storagePath?: string): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const docRef = doc(db, COLLECTIONS.DOCUMENTS, docId);
     await deleteDoc(docRef);
 
@@ -401,6 +502,8 @@ export async function deleteHubDocumentFromFirestore(docId: string, storagePath?
  */
 export async function incrementHubDocumentDownload(docId: string): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const docRef = doc(db, COLLECTIONS.DOCUMENTS, docId);
     await updateDoc(docRef, {
       downloadCount: increment(1),
@@ -435,6 +538,8 @@ export async function uploadChatAttachmentToStorage(
  */
 export async function saveConversationToFirestore(conversation: Conversation): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const convRef = doc(db, COLLECTIONS.CONVERSATIONS, conversation.id);
     await setDoc(convRef, {
       ...conversation,
@@ -451,6 +556,8 @@ export async function saveConversationToFirestore(conversation: Conversation): P
  */
 export async function fetchConversationsFromFirestore(): Promise<Conversation[]> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return [];
     const colRef = collection(db, COLLECTIONS.CONVERSATIONS);
     const snap = await getDocs(colRef);
     const convs: Conversation[] = [];
@@ -471,21 +578,32 @@ export function subscribeToConversations(
   onData: (conversations: Conversation[]) => void,
   onError?: (err: unknown) => void
 ) {
-  const colRef = collection(db, COLLECTIONS.CONVERSATIONS);
-  return onSnapshot(
-    colRef,
-    (snap) => {
-      const convs: Conversation[] = [];
-      snap.forEach((d) => {
-        convs.push(d.data() as Conversation);
-      });
-      onData(convs);
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, COLLECTIONS.CONVERSATIONS);
-      if (onError) onError(err);
-    }
-  );
+  let cancelled = false;
+  let unsub: (() => void) | null = null;
+
+  void testFirestoreConnection().then((online) => {
+    if (cancelled || !online) return;
+    const colRef = collection(db, COLLECTIONS.CONVERSATIONS);
+    unsub = onSnapshot(
+      colRef,
+      (snap) => {
+        const convs: Conversation[] = [];
+        snap.forEach((d) => {
+          convs.push(d.data() as Conversation);
+        });
+        onData(convs);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, COLLECTIONS.CONVERSATIONS);
+        if (onError) onError(err);
+      }
+    );
+  });
+
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
 }
 
 /**
@@ -493,6 +611,8 @@ export function subscribeToConversations(
  */
 export async function deleteConversationFromFirestore(conversationId: string): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const convRef = doc(db, COLLECTIONS.CONVERSATIONS, conversationId);
     await deleteDoc(convRef);
   } catch (err) {
@@ -519,8 +639,10 @@ export interface DirectInquiryData {
  * Saves a direct contact or recruiter inquiry to Firestore
  */
 export async function saveDirectInquiryToFirestore(inquiry: DirectInquiryData): Promise<string> {
+  const id = inquiry.id || `inquiry-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   try {
-    const id = inquiry.id || `inquiry-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const online = await testFirestoreConnection();
+    if (!online) return id;
     const inquiryRef = doc(db, COLLECTIONS.INQUIRIES, id);
     await setDoc(inquiryRef, {
       ...inquiry,
@@ -539,6 +661,8 @@ export async function saveDirectInquiryToFirestore(inquiry: DirectInquiryData): 
  */
 export async function deleteDirectInquiryFromFirestore(inquiryId: string): Promise<void> {
   try {
+    const online = await testFirestoreConnection();
+    if (!online) return;
     const inquiryRef = doc(db, COLLECTIONS.INQUIRIES, inquiryId);
     await deleteDoc(inquiryRef);
   } catch (err) {

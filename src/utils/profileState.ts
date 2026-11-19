@@ -291,7 +291,7 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
             hasAuthoritativeSupabaseProfile = true;
             applyPersistentProfile(
               {
-                avatar: supaProfile.avatar_url || dbProfileAvatar(),
+                avatar: supaProfile.avatar_url !== undefined && supaProfile.avatar_url !== null ? supaProfile.avatar_url : dbProfileAvatar(),
                 bio: supaProfile.bio || dbProfileBio(),
                 documents: Array.isArray(supaProfile.documents) ? supaProfile.documents : [],
                 updatedAt: supaProfile.updated_at || new Date().toISOString(),
@@ -478,7 +478,9 @@ function applyPersistentProfile(
   }
   const deletedIds = getDeletedDocIds();
 
-  if (avatar !== undefined && typeof avatar === 'string') {
+  const allowNonDocFields = isAuthoritative || !hasAuthoritativeSupabaseProfile;
+
+  if (allowNonDocFields && avatar !== undefined && typeof avatar === 'string') {
     const cleanAvatar = avatar.trim();
     if (cleanAvatar !== memoryAvatar) {
       memoryAvatar = cleanAvatar;
@@ -493,7 +495,7 @@ function applyPersistentProfile(
     }
   }
 
-  if (bio && typeof bio === 'object') {
+  if (allowNonDocFields && bio && typeof bio === 'object') {
     const { documents: _ignoredNestedDocs, ...cleanIncomingBio } = bio as any;
     const combinedDeleted = Array.from(
       new Set([

@@ -40,6 +40,7 @@ import {
   Video as VideoIcon,
   RefreshCw,
   RotateCcw,
+  Database,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -132,6 +133,7 @@ import { ProjectFormPanel } from './ProjectFormPanel';
 import { ArticleFormPanel } from './ArticleFormPanel';
 import { MediaPreviewDialog, type MediaLibraryFilter } from './MediaLibraryModal';
 import { SkillSelector } from './SkillSelector';
+import { SupabaseDatabaseManager } from './SupabaseDatabaseManager';
 import { PortfolioPart } from './Navbar';
 
 type AdminTab =
@@ -244,7 +246,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   // Website Settings Sub-Tabs & Builders
   const [settingsSubTab, setSettingsSubTab] = useState<
-    'appearance' | 'projects_articles' | 'profile_sections' | 'footer' | 'moderation'
+    'appearance' | 'projects_articles' | 'profile_sections' | 'footer' | 'moderation' | 'supabase_tables'
   >('appearance');
   const [heroBgUploading, setHeroBgUploading] = useState(false);
   const [themeImportOpen, setThemeImportOpen] = useState(false);
@@ -2471,6 +2473,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       { id: 'profile_sections', label: 'Profile Section Manager', icon: <LayoutTemplate className="w-3 h-3" /> },
                       { id: 'footer', label: 'Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
                       { id: 'moderation', label: 'Comment & General Rules', icon: <Type className="w-3 h-3" /> },
+                      { id: 'supabase_tables', label: 'Supabase Database Tables', icon: <Database className="w-3 h-3" /> },
                     ].map((st) => (
                       <button
                         key={st.id}
@@ -3809,6 +3812,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         </label>
                       </div>
                     </div>
+                  )}
+
+                  {/* (f) DIRECT SUPABASE DATABASE TABLES INSPECTOR & CRUD */}
+                  {settingsSubTab === 'supabase_tables' && (
+                    <SupabaseDatabaseManager
+                      onTableMutated={() => {
+                        void loadAllAdminData();
+                      }}
+                    />
                   )}
                 </div>
               )}
