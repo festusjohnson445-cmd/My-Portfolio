@@ -67,8 +67,10 @@ import {
   uploadFileToBucket,
   fetchMediaAssetsFromSupabase,
   deleteMediaAssetRecord,
-  fetchServerMediaJobs,
-  retryServerVideoJob,
+  validateVideoSizeLimit,
+  MAX_VIDEO_MB,
+  isOptimizableVideo,
+  isAbortError,
   applyWebsiteSettingsLocally,
   getCachedWebsiteSettings,
   getCachedProjects,
@@ -335,26 +337,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   const [mediaBucket, setMediaBucket] = useState<'projects' | 'articles' | 'materials' | 'avatars'>('projects');
   const [mediaFiles, setMediaFiles] = useState<BucketFileItem[]>(() => getCachedBucketMediaFiles('projects'));
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([]);
-  const [serverMediaJobs, setServerMediaJobs] = useState<
-    Array<{
-      jobId: string;
-      bucket: string;
-      originalName: string;
-      fileName?: string;
-      status: string;
-      progress: number;
-      stage: string;
-      format: string;
-      resolution?: string;
-      originalBytes?: number;
-      bytes?: number;
-      compressionPct?: number;
-      error?: string;
-    }>
-  >([]);
-  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaUploading, setMediaUploading] = useState(false);
+  const [mediaUploadProgress, setMediaUploadProgress] = useState(0);
+  const [mediaUploadStage, setMediaUploadStage] = useState('');
+  const [mediaUploadError, setMediaUploadError] = useState<string | null>(null);
+  const [mediaCanRetry, setMediaCanRetry] = useState(false);
+  const mediaUploadAbortRef = useRef<AbortController | null>(null);
+  const lastFailedMediaFilesRef = useRef<File[] | null>(null);
   const [copiedMediaUrl, setCopiedMediaUrl] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<MediaLibraryFilter>('all');
   const [mediaSearch, setMediaSearch] = useState('');
@@ -426,14 +416,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       setMediaLoading(true);
     }
     try {
-      const [files, assetRecords, activeJobs] = await Promise.all([
+      const [files, assetRecords] = await Promise.all([
         listBucketMediaFiles(bucket),
         fetchMediaAssetsFromSupabase(bucket),
-        fetchServerMediaJobs(),
       ]);
       setMediaFiles(files);
       setMediaAssets(assetRecords);
-      setServerMediaJobs(activeJobs);
 
       const initialDurs: Record<string, number> = {};
       const durByUrl = new Map<string, number>();
@@ -2103,25 +2091,68 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       </button>
                       <label className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer">
                         {mediaUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                        <span>{mediaUploading ? 'uploading...' : 'Upload'}</span>
+                        <span>{mediaUploading ? 'Processing...' : 'Upload'}</span>
                         <input
                           type="file"
                           multiple
                           onChange={async (e) => {
-                            const files = e.target.files;
-                            if (!files || files.length === 0) return;
+                            const files = e.target.files ? Array.from(e.target.files) : [];
+                            e.currentTarget.value = '';
+                            if (files.length === 0) return;
+
+                            for (const f of files) {
+                              if (isOptimizableVideo(f)) {
+                                try {
+                                  validateVideoSizeLimit(f);
+                                } catch (sizeErr: any) {
+                                  setMediaUploadError(sizeErr?.message || `Video exceeds ${MAX_VIDEO_MB} MB maximum limit.`);
+                                  setMediaCanRetry(false);
+                                  lastFailedMediaFilesRef.current = null;
+                                  return;
+                                }
+                              }
+                            }
+
+                            mediaUploadAbortRef.current?.abort();
+                            const controller = new AbortController();
+                            mediaUploadAbortRef.current = controller;
+                            lastFailedMediaFilesRef.current = files;
+                            setMediaCanRetry(false);
+                            setMediaUploadError(null);
                             setMediaUploading(true);
+                            setMediaUploadProgress(5);
+                            setMediaUploadStage('Preparing browser media pipeline...');
+
                             try {
-                              await runWithConcurrency(Array.from(files), 2, async (f) => {
-                                await uploadFileToBucket(mediaBucket, f);
+                              await runWithConcurrency(files, 1, async (f) => {
+                                await uploadFileToBucket(
+                                  mediaBucket,
+                                  f,
+                                  '',
+                                  (pct, stage) => {
+                                    setMediaUploadProgress(pct);
+                                    setMediaUploadStage(stage);
+                                  },
+                                  controller.signal
+                                );
                               });
+                              if (controller.signal.aborted) return;
+                              lastFailedMediaFilesRef.current = null;
+                              setMediaCanRetry(false);
                               await loadMedia(mediaBucket);
                               showNotice(`Uploaded to "${mediaBucket}".`);
                             } catch (err: any) {
-                              showNotice(err?.message || 'Upload failed.');
+                              if (!isAbortError(err) && !controller.signal.aborted) {
+                                setMediaUploadError(err?.message || 'Upload failed.');
+                                setMediaCanRetry(true);
+                              }
                             } finally {
-                              setMediaUploading(false);
-                              e.currentTarget.value = '';
+                              if (mediaUploadAbortRef.current === controller) {
+                                mediaUploadAbortRef.current = null;
+                                setMediaUploading(false);
+                                setMediaUploadProgress(0);
+                                setMediaUploadStage('');
+                              }
                             }
                           }}
                           className="hidden"
@@ -2129,6 +2160,109 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       </label>
                     </div>
                   </div>
+
+                  {mediaUploading && (
+                    <div className="p-2.5 rounded-lg bg-cyan-50 border border-cyan-200 space-y-1.5 text-xs text-cyan-950 font-semibold">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                          <span className="truncate">
+                            {mediaUploadStage
+                              ? `${mediaUploadStage} (${mediaUploadProgress}%)`
+                              : `Uploading (${mediaUploadProgress}%)...`}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            mediaUploadAbortRef.current?.abort();
+                            mediaUploadAbortRef.current = null;
+                            setMediaUploading(false);
+                            setMediaUploadProgress(0);
+                            setMediaUploadStage('');
+                          }}
+                          className="inline-flex items-center justify-center w-5 h-5 rounded hover:bg-cyan-200/70 text-cyan-900 font-bold cursor-pointer shrink-0 leading-none"
+                          title="Cancel upload"
+                          aria-label="Cancel upload"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="w-full h-1.5 rounded-full bg-cyan-200/70 overflow-hidden">
+                        <div
+                          className="h-full bg-cyan-700 transition-all duration-300"
+                          style={{ width: `${Math.max(4, Math.min(100, mediaUploadProgress))}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {mediaUploadError && (
+                    <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between gap-2">
+                      <span className="flex-1 min-w-0 break-words">{mediaUploadError}</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {mediaCanRetry && lastFailedMediaFilesRef.current && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const retryFiles = lastFailedMediaFilesRef.current;
+                              if (!retryFiles || retryFiles.length === 0) return;
+                              mediaUploadAbortRef.current?.abort();
+                              const controller = new AbortController();
+                              mediaUploadAbortRef.current = controller;
+                              setMediaCanRetry(false);
+                              setMediaUploadError(null);
+                              setMediaUploading(true);
+                              setMediaUploadProgress(5);
+                              setMediaUploadStage('Retrying browser media pipeline...');
+                              try {
+                                await runWithConcurrency(retryFiles, 1, async (f) => {
+                                  await uploadFileToBucket(
+                                    mediaBucket,
+                                    f,
+                                    '',
+                                    (pct, stage) => {
+                                      setMediaUploadProgress(pct);
+                                      setMediaUploadStage(stage);
+                                    },
+                                    controller.signal
+                                  );
+                                });
+                                if (controller.signal.aborted) return;
+                                lastFailedMediaFilesRef.current = null;
+                                await loadMedia(mediaBucket);
+                                showNotice(`Uploaded to "${mediaBucket}".`);
+                              } catch (err: any) {
+                                if (!isAbortError(err) && !controller.signal.aborted) {
+                                  setMediaUploadError(err?.message || 'Retry upload failed.');
+                                  setMediaCanRetry(true);
+                                }
+                              } finally {
+                                if (mediaUploadAbortRef.current === controller) {
+                                  mediaUploadAbortRef.current = null;
+                                  setMediaUploading(false);
+                                  setMediaUploadProgress(0);
+                                  setMediaUploadStage('');
+                                }
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-semibold cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Retry</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setMediaUploadError(null)}
+                          className="px-1.5 py-0.5 rounded hover:bg-rose-200/70 text-rose-900 font-bold cursor-pointer"
+                          aria-label="Dismiss error"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Filter & Search Toolbar */}
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -2168,72 +2302,39 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     </div>
                   </div>
 
-                  {/* Active / Failed Video Optimization Jobs & Failed Assets */}
-                  {(serverMediaJobs.length > 0 || mediaAssets.some((a) => a.status === 'failed')) && (
-                    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+                  {/* Failed Optimization Records (Dismissible) */}
+                  {mediaAssets.some((a) => a.status === 'failed') && (
+                    <div className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200 space-y-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-900">Optimization Pipeline Activity</span>
-                        <span className="text-[10.5px] text-slate-500 font-mono">
-                          {serverMediaJobs.filter((j) => j.status === 'processing' || j.status === 'queued').length} active
-                        </span>
+                        <span className="font-bold text-rose-950">Failed Media Uploads</span>
                       </div>
                       <div className="space-y-1.5">
-                        {serverMediaJobs.slice(0, 5).map((job) => (
-                          <div
-                            key={job.jobId}
-                            className="p-2 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-2"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="font-semibold text-slate-900 truncate">
-                                {job.fileName || job.originalName}
-                              </div>
-                              <div className="text-[10.5px] text-slate-600 flex flex-wrap items-center gap-1.5 mt-0.5">
-                                <span
-                                  className={`px-1.5 py-0.5 rounded font-bold uppercase text-[9.5px] ${
-                                    job.status === 'completed'
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : job.status === 'failed'
-                                      ? 'bg-rose-100 text-rose-800'
-                                      : 'bg-cyan-100 text-cyan-900'
-                                  }`}
-                                >
-                                  {job.status}
-                                </span>
-                                <span>{job.stage}</span>
-                                {job.resolution && <span className="font-mono">{job.resolution}</span>}
-                                {typeof job.compressionPct === 'number' && job.compressionPct > 0 && (
-                                  <span className="text-emerald-700 font-semibold">
-                                    {job.compressionPct}% saved
-                                  </span>
+                        {mediaAssets
+                          .filter((a) => a.status === 'failed')
+                          .slice(0, 5)
+                          .map((asset) => (
+                            <div
+                              key={asset.id}
+                              className="p-2 rounded-lg bg-white border border-rose-200 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="font-semibold text-slate-900 truncate">{asset.fileName}</div>
+                                {asset.errorMessage && (
+                                  <p className="text-[10.5px] text-rose-700 mt-0.5 break-words">{asset.errorMessage}</p>
                                 )}
                               </div>
-                              {job.error && (
-                                <p className="text-[10.5px] text-rose-700 mt-0.5 break-words">{job.error}</p>
-                              )}
-                            </div>
-                            {job.status === 'failed' && (
                               <button
                                 type="button"
-                                disabled={retryingJobId === job.jobId}
                                 onClick={async () => {
-                                  setRetryingJobId(job.jobId);
-                                  const res = await retryServerVideoJob(job.jobId);
-                                  setRetryingJobId(null);
-                                  if (res.success) {
-                                    showNotice('Retry started.');
-                                    await loadMedia(mediaBucket);
-                                  } else {
-                                    showNotice(res.message || 'Retry failed.');
-                                  }
+                                  await deleteMediaAssetRecord(asset.id);
+                                  setMediaAssets((prev) => prev.filter((item) => item.id !== asset.id));
                                 }}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold cursor-pointer shrink-0"
                               >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>Retry</span>
+                                Dismiss
                               </button>
-                            )}
-                          </div>
-                        ))}
+                            </div>
+                          ))}
                       </div>
                     </div>
                   )}

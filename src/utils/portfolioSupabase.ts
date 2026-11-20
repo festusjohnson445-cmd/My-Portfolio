@@ -612,8 +612,28 @@ function isOptimizableVideo(file: File): boolean {
   const ext = file.name.split('.').pop()?.toLowerCase() || '';
   return (
     file.type.startsWith('video/') ||
-    ['mp4', 'mov', 'webm', 'm4v', 'mkv'].includes(ext)
+    ['mp4', 'mov', 'webm', 'm4v', 'mkv', '3gp', 'avi', 'mpeg', 'mpg', 'mts', 'm2ts', 'ts', 'wmv', 'flv', 'ogv'].includes(ext)
   );
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...sub);
+  }
+  return btoa(binary);
+}
+
+function encodeTusMetadata(fields: Record<string, string>): string {
+  return Object.entries(fields)
+    .map(([k, v]) => {
+      const encoded = btoa(unescape(encodeURIComponent(v)));
+      return `${k} ${encoded}`;
+    })
+    .join(',');
 }
 
 async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
@@ -822,15 +842,19 @@ async function uploadBlobDirectToBucket(params: {
   // 1. Direct binary POST with automatic retries + JWT->anon recovery on 'articles'
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      let authToken = bearerToken || cfg.anonKey;
+      const authToken = bearerToken || cfg.anonKey;
+      const baseHeaders: Record<string, string> = {
+        apikey: cfg.anonKey,
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': contentType,
+      };
+      if (params.explicitStoragePath) {
+        baseHeaders['x-upsert'] = 'true';
+      }
+
       let resp = await fetchWithTimeout(uploadUrl, {
         method: 'POST',
-        headers: {
-          apikey: cfg.anonKey,
-          Authorization: `Bearer ${authToken}`,
-          'Content-Type': contentType,
-          'x-upsert': 'true',
-        },
+        headers: baseHeaders,
         body: params.blob,
         timeoutMs: 90_000,
       });
@@ -841,14 +865,17 @@ async function uploadBlobDirectToBucket(params: {
         authToken !== cfg.anonKey &&
         (resp.status === 400 || resp.status === 401 || resp.status === 403)
       ) {
+        const anonHeaders: Record<string, string> = {
+          apikey: cfg.anonKey,
+          Authorization: `Bearer ${cfg.anonKey}`,
+          'Content-Type': contentType,
+        };
+        if (params.explicitStoragePath) {
+          anonHeaders['x-upsert'] = 'true';
+        }
         resp = await fetchWithTimeout(uploadUrl, {
           method: 'POST',
-          headers: {
-            apikey: cfg.anonKey,
-            Authorization: `Bearer ${cfg.anonKey}`,
-            'Content-Type': contentType,
-            'x-upsert': 'true',
-          },
+          headers: anonHeaders,
           body: params.blob,
           timeoutMs: 90_000,
         });
@@ -875,7 +902,7 @@ async function uploadBlobDirectToBucket(params: {
       }
     } catch (netErr: any) {
       hadNetworkFailure = true;
-      lastErrMsg = netErr?.message || 'Failed to fetch';
+      lastErrMsg = netErr?.message || 'Network connection failed';
     }
 
     if (attempt === 0) {
@@ -889,7 +916,9 @@ async function uploadBlobDirectToBucket(params: {
       const relayHeaders = await getPipelineAuthHeaders();
       const formData = new FormData();
       formData.append('bucket', params.bucket);
-      formData.append('storagePath', storagePath);
+      if (params.explicitStoragePath) {
+        formData.append('storagePath', params.explicitStoragePath);
+      }
       formData.append('folderPrefix', ownerPrefix || 'uploads');
       formData.append('contentType', contentType);
       formData.append('file', params.blob, cleanName);
@@ -920,7 +949,7 @@ async function uploadBlobDirectToBucket(params: {
     }
   }
 
-  throw new Error(`Storage upload to "${params.bucket}" failed: ${lastErrMsg || 'Failed to fetch'}`);
+  throw new Error(`Storage upload to "${params.bucket}" failed: ${lastErrMsg || 'Connection interrupted'}`);
 }
 
 export function isAbortError(err: unknown): boolean {
@@ -975,39 +1004,46 @@ export async function saveMediaAssetRecord(record: MediaAssetRecord): Promise<vo
   const next = [record, ...existing.filter((r) => r.id !== record.id)];
   persistLocalMediaAssets(next);
 
+  const payload = {
+    id: record.id,
+    bucket: record.bucket,
+    storage_path: record.storagePath,
+    media_type: record.mediaType,
+    file_name: record.fileName,
+    format: record.format,
+    resolution: record.resolution || '',
+    width: record.width || null,
+    height: record.height || null,
+    duration_sec: record.durationSec || null,
+    original_bytes: record.originalBytes || 0,
+    optimized_bytes: record.optimizedBytes || 0,
+    compression_pct: record.compressionPct || 0,
+    status: record.status,
+    primary_url: record.primaryUrl,
+    fallback_urls: {
+      avifUrl: record.avifUrl,
+      webpUrl: record.webpUrl,
+      jpegUrl: record.jpegUrl,
+      mobileUrl: record.mobileUrl,
+      av1Urls: record.av1Urls,
+      h264Urls: record.h264Urls,
+    },
+    poster_url: record.posterUrl || null,
+    vtt_thumbnails_url: record.vttThumbnailsUrl || null,
+    error_message: record.errorMessage || null,
+    updated_at: new Date().toISOString(),
+  };
+
   try {
-    await supabase.from('media_assets').upsert(
-      {
-        id: record.id,
-        bucket: record.bucket,
-        storage_path: record.storagePath,
-        media_type: record.mediaType,
-        file_name: record.fileName,
-        format: record.format,
-        resolution: record.resolution || '',
-        width: record.width || null,
-        height: record.height || null,
-        duration_sec: record.durationSec || null,
-        original_bytes: record.originalBytes || 0,
-        optimized_bytes: record.optimizedBytes || 0,
-        compression_pct: record.compressionPct || 0,
-        status: record.status,
-        primary_url: record.primaryUrl,
-        fallback_urls: {
-          avifUrl: record.avifUrl,
-          webpUrl: record.webpUrl,
-          jpegUrl: record.jpegUrl,
-          mobileUrl: record.mobileUrl,
-          av1Urls: record.av1Urls,
-          h264Urls: record.h264Urls,
-        },
-        poster_url: record.posterUrl || null,
-        vtt_thumbnails_url: record.vttThumbnailsUrl || null,
-        error_message: record.errorMessage || null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
-    );
+    const { data } = await supabase.auth.getSession();
+    const isOwner = Boolean(data?.session?.user && isRealOwnerUser(data.session.user));
+    if (isOwner) {
+      await supabase.from('media_assets').upsert(payload, { onConflict: 'id' });
+    } else {
+      // Guest / anonymous visitors only have INSERT permission on media_assets (never UPDATE),
+      // so calling .upsert(..., { onConflict: 'id' }) causes HTTP 401 RLS errors.
+      await supabase.from('media_assets').insert(payload);
+    }
   } catch {}
 }
 
@@ -1312,9 +1348,20 @@ export async function uploadFileToBucket(
     };
   }
 
-  // Route Projects & Articles videos through idempotent 1.5MB chunked upload + fast background FFmpeg pipeline
+  // Route Projects & Articles videos through unified 700KB chunked upload + fast background FFmpeg -> direct Supabase Storage pipeline
   if ((bucket === 'projects' || bucket === 'articles') && isOptimizableVideo(file)) {
-    onProgress?.(5, 'Preparing video upload...');
+    onProgress?.(4, 'Preparing video upload...');
+
+    // Verify owner session upfront for protected "projects" bucket before uploading any video chunks
+    if (bucket === 'projects') {
+      const { session } = await getValidatedSession();
+      if (!session?.user || !isRealOwnerUser(session.user)) {
+        throw new Error(
+          'Admin sign-in is required to upload videos to the "projects" bucket. Please sign in and retry.'
+        );
+      }
+    }
+
     const localDurationPromise = probeLocalFileDuration(file);
     const authHeaders = await getPipelineAuthHeaders();
     throwIfAborted(signal);
@@ -1349,7 +1396,7 @@ export async function uploadFileToBucket(
 
       while (Date.now() - startedAt < maxWaitMs) {
         throwIfAborted(signal);
-        await new Promise((r) => setTimeout(r, 900));
+        await new Promise((r) => setTimeout(r, 850));
         throwIfAborted(signal);
 
         let statusResp: Response;
@@ -1373,7 +1420,7 @@ export async function uploadFileToBucket(
         if (!statusResp.ok || !statusJson?.job) {
           consecutivePollErrors++;
           if (statusResp.status === 404 || consecutivePollErrors >= 8) {
-            const err: any = new Error(statusJson?.message || 'Lost connection to video optimization job.');
+            const err: any = new Error(statusJson?.message || 'Video processing job not found on server.');
             if (statusResp.status !== 404) err.jobId = activeJobId;
             throw err;
           }
@@ -1401,7 +1448,8 @@ export async function uploadFileToBucket(
         if (job.status === 'completed' && job.publicUrl) {
           invalidateBucketMediaCache(bucket);
           const localDur = await localDurationPromise;
-          const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
+          const resolvedDuration =
+            typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
           if (resolvedDuration) setCachedMediaDuration(job.publicUrl, resolvedDuration);
           await saveMediaAssetRecord({
             id: job.jobId,
@@ -1423,6 +1471,7 @@ export async function uploadFileToBucket(
             h264Urls: job.h264Urls,
             createdAt: new Date().toISOString(),
           }).catch(() => {});
+          onProgress?.(100, `Saved optimized video (${job.fileSize || ''})`);
           return {
             publicUrl: job.publicUrl,
             storagePath: job.storagePath,
@@ -1442,109 +1491,6 @@ export async function uploadFileToBucket(
           };
         }
 
-        if (job.status === 'ready_for_client_upload') {
-          onProgress?.(94, `Saving optimized video (${job.fileSize || ''})...`);
-          const artifactsList: Array<{
-            key: string;
-            downloadUrl: string;
-            storagePath: string;
-            fileName: string;
-            contentType: string;
-            bytes: number;
-          }> = Array.isArray(job.handoffArtifacts) && job.handoffArtifacts.length > 0
-            ? job.handoffArtifacts
-            : [
-                {
-                  key: 'video',
-                  downloadUrl: job.directUploadUrl,
-                  storagePath: job.storagePath,
-                  fileName: job.fileName || `${file.name.replace(/\.[^/.]+$/, '')}.mp4`,
-                  contentType: 'video/mp4',
-                  bytes: job.bytes || 0,
-                },
-              ];
-
-          const uploadedByKey: Record<string, { publicUrl: string; storagePath: string; fileName: string; fileSize: string }> = {};
-          for (const art of artifactsList) {
-            throwIfAborted(signal);
-            const blobResp = await fetchWithTimeout(art.downloadUrl, { signal, timeoutMs: 90_000 });
-            if (!blobResp.ok) {
-              const err: any = new Error(`Failed to retrieve optimized video (${art.key}) from server.`);
-              err.jobId = activeJobId;
-              throw err;
-            }
-            const artBlob = await blobResp.blob();
-            throwIfAborted(signal);
-            uploadedByKey[art.key] = await uploadBlobDirectToBucket({
-              bucket,
-              blob: artBlob,
-              fileName: art.fileName,
-              contentType: art.contentType,
-              folderPrefix: folderPrefix || 'videos',
-              explicitStoragePath: art.storagePath,
-            });
-          }
-
-          const primary =
-            uploadedByKey.video ||
-            uploadedByKey.h264_720p ||
-            uploadedByKey.h264_1080p ||
-            uploadedByKey.av1_720p ||
-            uploadedByKey.av1_1080p ||
-            Object.values(uploadedByKey)[0];
-
-          const h264Urls = { '720p': primary.publicUrl };
-
-          await fetchWithTimeout(`/api/media/jobs/${encodeURIComponent(activeJobId)}/complete-handoff`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              publicUrl: primary.publicUrl,
-              h264Urls,
-            }),
-            timeoutMs: 15_000,
-          }).catch(() => {});
-
-          const localDur = await localDurationPromise;
-          const resolvedDuration = typeof job.durationSec === 'number' && job.durationSec > 0 ? job.durationSec : localDur;
-          if (resolvedDuration) setCachedMediaDuration(primary.publicUrl, resolvedDuration);
-
-          await saveMediaAssetRecord({
-            id: activeJobId,
-            bucket,
-            storagePath: primary.storagePath,
-            mediaType: 'video',
-            fileName: primary.fileName,
-            format: job.format || 'h264',
-            resolution: job.resolution,
-            width: job.width,
-            height: job.height,
-            durationSec: resolvedDuration,
-            originalBytes: job.originalBytes || file.size,
-            optimizedBytes: job.bytes || 0,
-            compressionPct: job.compressionPct || 0,
-            status: 'completed',
-            primaryUrl: primary.publicUrl,
-            h264Urls,
-            createdAt: new Date().toISOString(),
-          });
-
-          onProgress?.(100, `Saved optimized video (${primary.fileSize})`);
-          return {
-            ...primary,
-            durationSec: resolvedDuration,
-            h264Urls,
-            width: job.width,
-            height: job.height,
-            resolution: job.resolution,
-            originalBytes: job.originalBytes || file.size,
-            optimizedBytes: job.bytes,
-            compressionPct: job.compressionPct,
-            format: job.format,
-            mediaAssetId: activeJobId,
-          };
-        }
-
         if (job.status === 'failed') {
           await saveMediaAssetRecord({
             id: activeJobId,
@@ -1558,10 +1504,10 @@ export async function uploadFileToBucket(
             compressionPct: 0,
             status: 'failed',
             primaryUrl: '',
-            errorMessage: job.error || 'Background video optimization failed.',
+            errorMessage: job.error || 'Video optimization or storage upload failed.',
             createdAt: new Date().toISOString(),
-          });
-          const err: any = new Error(job.error || 'Background video optimization failed.');
+          }).catch(() => {});
+          const err: any = new Error(job.error || 'Video optimization or storage upload failed.');
           err.jobId = activeJobId;
           throw err;
         }
@@ -1571,8 +1517,130 @@ export async function uploadFileToBucket(
       throw timeoutErr;
     };
 
+    const runServerlessTusUploadFallback = async (): Promise<UploadBucketResult> => {
+      throwIfAborted(signal);
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      const playableExts = ['mp4', 'webm', 'm4v'];
+      if (file.size > 30 * 1024 * 1024 || !playableExts.includes(ext)) {
+        throw new Error(
+          'Video transcoding requires the Node media backend. Please upload a compact MP4/WebM (<= 30 MB) or use the preview server.'
+        );
+      }
+
+      const cfg = getResolvedSupabaseConfig();
+      const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const prefix = folderPrefix || 'videos';
+      const storagePath = `${prefix}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${cleanName}`;
+      const contentType = file.type || (ext === 'webm' ? 'video/webm' : 'video/mp4');
+      const tokenHeader = authHeaders['Authorization'] || `Bearer ${cfg.anonKey}`;
+
+      const createTus = async (authVal: string) =>
+        fetchWithTimeout(`${cfg.url}/storage/v1/upload/resumable`, {
+          method: 'POST',
+          headers: {
+            apikey: cfg.anonKey,
+            Authorization: authVal,
+            'Tus-Resumable': '1.0.0',
+            'Upload-Length': String(file.size),
+            'Upload-Metadata': encodeTusMetadata({
+              bucketName: bucket,
+              objectName: storagePath,
+              contentType,
+              cacheControl: '3600',
+            }),
+          },
+          signal,
+          timeoutMs: 30_000,
+        });
+
+      let activeAuth = tokenHeader;
+      let createResp = await createTus(activeAuth);
+      if (!createResp.ok && bucket === 'articles' && activeAuth !== `Bearer ${cfg.anonKey}` && (createResp.status === 400 || createResp.status === 401 || createResp.status === 403)) {
+        activeAuth = `Bearer ${cfg.anonKey}`;
+        createResp = await createTus(activeAuth);
+      }
+      if (!createResp.ok) {
+        const msg = await createResp.text().catch(() => createResp.statusText);
+        throw new Error(`Storage resumable upload to "${bucket}" failed (${createResp.status}): ${msg}`);
+      }
+
+      const loc = createResp.headers.get('location') || '';
+      if (!loc) throw new Error('Supabase resumable upload did not return an upload Location.');
+      const tusUploadUrl = loc.startsWith('http') ? loc : `${cfg.url}${loc.startsWith('/') ? '' : '/'}${loc}`;
+
+      const TUS_CHUNK = 3 * 1024 * 1024;
+      let offset = 0;
+      while (offset < file.size) {
+        throwIfAborted(signal);
+        const end = Math.min(file.size, offset + TUS_CHUNK);
+        const pct = 15 + Math.round((end / Math.max(1, file.size)) * 80);
+        onProgress?.(pct, `Uploading video (${Math.round((end / Math.max(1, file.size)) * 100)}%)...`);
+
+        const patchResp = await fetchWithTimeout(tusUploadUrl, {
+          method: 'PATCH',
+          headers: {
+            apikey: cfg.anonKey,
+            Authorization: activeAuth,
+            'Tus-Resumable': '1.0.0',
+            'Upload-Offset': String(offset),
+            'Content-Type': 'application/offset+octet-stream',
+          },
+          body: file.slice(offset, end),
+          signal,
+          timeoutMs: 90_000,
+        });
+        if (!patchResp.ok) {
+          const msg = await patchResp.text().catch(() => patchResp.statusText);
+          throw new Error(`Storage resumable chunk failed (${patchResp.status}): ${msg}`);
+        }
+        const nextOff = Number(patchResp.headers.get('upload-offset'));
+        offset = Number.isFinite(nextOff) && nextOff > offset ? nextOff : end;
+      }
+
+      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+      const encodedPath = storagePath.split('/').map((s) => encodeURIComponent(s)).join('/');
+      const publicUrl =
+        pub?.publicUrl || `${cfg.url}/storage/v1/object/public/${encodeURIComponent(bucket)}/${encodedPath}`;
+      invalidateBucketMediaCache(bucket);
+
+      const localDur = await localDurationPromise;
+      if (localDur) setCachedMediaDuration(publicUrl, localDur);
+      const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      await saveMediaAssetRecord({
+        id: assetId,
+        bucket,
+        storagePath,
+        mediaType: 'video',
+        fileName: cleanName,
+        format: 'h264',
+        durationSec: localDur,
+        originalBytes: file.size,
+        optimizedBytes: file.size,
+        compressionPct: 0,
+        status: 'completed',
+        primaryUrl: publicUrl,
+        h264Urls: { '720p': publicUrl },
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+
+      onProgress?.(100, `Uploaded video (${formatBytes(file.size)})`);
+      return {
+        publicUrl,
+        storagePath,
+        fileName: cleanName,
+        fileSize: formatBytes(file.size),
+        durationSec: localDur,
+        originalBytes: file.size,
+        optimizedBytes: file.size,
+        compressionPct: 0,
+        format: 'h264',
+        h264Urls: { '720p': publicUrl },
+        mediaAssetId: assetId,
+      };
+    };
+
     try {
-      // If a previous server jobId exists, try resuming/retrying it first without re-uploading raw video bytes
+      // If retrying an existing server jobId, resume polling or trigger server retry without re-uploading chunks
       if (retryJobId) {
         onProgress?.(42, 'Resuming optimization on server...');
         try {
@@ -1587,7 +1655,6 @@ export async function uploadFileToBucket(
               existingJob.status === 'queued' ||
               existingJob.status === 'processing' ||
               existingJob.status === 'uploading' ||
-              existingJob.status === 'ready_for_client_upload' ||
               existingJob.status === 'completed'
             ) {
               return await pollVideoJobUntilDone(
@@ -1608,7 +1675,11 @@ export async function uploadFileToBucket(
               );
               const retryJson = await retryResp.json().catch(() => null);
               if (retryResp.ok && retryJson?.success) {
-                return await pollVideoJobUntilDone(retryJobId, 42, 'Retrying video optimization...');
+                return await pollVideoJobUntilDone(
+                  retryJobId,
+                  retryJson.job?.progress || 42,
+                  retryJson.job?.stage || 'Retrying video optimization...'
+                );
               }
             }
           }
@@ -1617,62 +1688,14 @@ export async function uploadFileToBucket(
         }
       }
 
-      // Only fall back to direct upload on static serverless deploys without FFmpeg pipeline (HTTP 404) for compact MP4/WebM
-      const runDirectVideoUploadFallback = async (reasonMsg: string, isStaticDeployWithoutServer = false) => {
-        throwIfAborted(signal);
-        const ext = (file.name.split('.').pop() || '').toLowerCase();
-        const playableExts = ['mp4', 'webm', 'm4v'];
-        if (!isStaticDeployWithoutServer || file.size > 12 * 1024 * 1024 || !playableExts.includes(ext)) {
-          throw new Error(reasonMsg || 'Video optimization failed. Please retry.');
-        }
-        onProgress?.(55, `Uploading compact video to "${bucket}"...`);
-        const directRes = await uploadBlobDirectToBucket({
-          bucket,
-          blob: file,
-          fileName: file.name,
-          contentType: file.type || 'video/mp4',
-          folderPrefix: folderPrefix || 'videos',
-        });
-        const localDur = await probeLocalFileDuration(file);
-        if (localDur) setCachedMediaDuration(directRes.publicUrl, localDur);
-        const assetId = `ma_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        await saveMediaAssetRecord({
-          id: assetId,
-          bucket,
-          storagePath: directRes.storagePath,
-          mediaType: 'video',
-          fileName: directRes.fileName,
-          format: 'h264',
-          durationSec: localDur,
-          originalBytes: file.size,
-          optimizedBytes: file.size,
-          compressionPct: 0,
-          status: 'completed',
-          primaryUrl: directRes.publicUrl,
-          h264Urls: { '720p': directRes.publicUrl },
-          createdAt: new Date().toISOString(),
-        }).catch(() => {});
-        onProgress?.(100, `Uploaded video (${directRes.fileSize})`);
-        return {
-          ...directRes,
-          durationSec: localDur,
-          originalBytes: file.size,
-          optimizedBytes: file.size,
-          compressionPct: 0,
-          format: 'h264',
-          h264Urls: { '720p': directRes.publicUrl },
-          mediaAssetId: assetId,
-        };
-      };
-
-      // Retry /init up to 3 times; use 3MB chunks for fast round-trips safely below server/proxy limits
-      const CHUNK_SIZE = 3 * 1024 * 1024;
+      // 1. Initialize unified server video session
       let initResp: Response | null = null;
+      let initJson: any = null;
       let initErrMsg = '';
       for (let initAttempt = 0; initAttempt < 3; initAttempt++) {
         throwIfAborted(signal);
         try {
-          initResp = await fetchWithTimeout('/api/media/optimize-video/init', {
+          initResp = await fetchWithTimeout('/api/media/video/init', {
             method: 'POST',
             headers: {
               ...authHeaders,
@@ -1688,9 +1711,10 @@ export async function uploadFileToBucket(
             signal,
             timeoutMs: 15_000,
           });
-          if (initResp.ok) break;
-          const errJson = await initResp.json().catch(() => null);
-          initErrMsg = errJson?.message || `HTTP ${initResp.status}`;
+          initJson = await initResp.json().catch(() => null);
+          if (initResp.ok && initJson?.success) break;
+          initErrMsg = initJson?.message || `HTTP ${initResp.status}`;
+          if (initResp.status === 404) break;
         } catch (err: any) {
           if (isAbortError(err) || signal?.aborted) throw err;
           initErrMsg = err?.message || 'Connection error';
@@ -1702,30 +1726,39 @@ export async function uploadFileToBucket(
 
       throwIfAborted(signal);
 
-      if (initResp && initResp.ok) {
-        const initJson = await initResp.json().catch(() => null);
-        if (!initJson?.success || !initJson?.jobId) {
-          throw new Error(initJson?.message || 'Unable to initialize video optimization session.');
-        }
-        jobId = initJson.jobId;
-        attachAbortListener(jobId);
+      if (initResp?.status === 404 || initJson?.serverlessDirectOnly) {
+        return await runServerlessTusUploadFallback();
+      }
 
-        const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-        for (let i = 0; i < totalChunks; i++) {
+      if (!initResp || !initResp.ok || !initJson?.success || !initJson?.jobId) {
+        throw new Error(initErrMsg || 'Unable to start video upload session.');
+      }
+
+      jobId = initJson.jobId;
+      attachAbortListener(jobId);
+
+      // 2. Upload 700 KB chunks (keeps bandwidth & proxy buffers lightweight, with base64 JSON fallback for strict proxies)
+      const CHUNK_SIZE = typeof initJson.chunkSize === 'number' && initJson.chunkSize > 0 ? initJson.chunkSize : 700 * 1024;
+      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+      for (let i = 0; i < totalChunks; i++) {
+        throwIfAborted(signal);
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(file.size, start + CHUNK_SIZE);
+        const slice = file.slice(start, end);
+        const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
+        onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
+
+        let chunkOk = false;
+        let lastChunkErr = '';
+        let forceBase64Json = false;
+
+        for (let attempt = 0; attempt < 4 && !chunkOk; attempt++) {
           throwIfAborted(signal);
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(file.size, start + CHUNK_SIZE);
-          const slice = file.slice(start, end);
-          const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
-          onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
-
-          let chunkOk = false;
-          let lastChunkErr = '';
-          for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
-            throwIfAborted(signal);
-            try {
-              const chunkResp = await fetchWithTimeout(
-                `/api/media/optimize-video/chunk/${encodeURIComponent(jobId)}?offset=${start}&index=${i}`,
+          try {
+            let chunkResp: Response;
+            if (!forceBase64Json) {
+              chunkResp = await fetchWithTimeout(
+                `/api/media/video/chunk/${encodeURIComponent(jobId)}?offset=${start}&index=${i}`,
                 {
                   method: 'POST',
                   headers: {
@@ -1736,77 +1769,67 @@ export async function uploadFileToBucket(
                   timeoutMs: 45_000,
                 }
               );
-              const cJson = await chunkResp.json().catch(() => null);
-              if (chunkResp.ok && cJson?.success) {
-                chunkOk = true;
-              } else {
-                lastChunkErr = cJson?.message || `Chunk upload failed (HTTP ${chunkResp.status}).`;
-                if (chunkResp.status === 404) break;
-              }
-            } catch (e: any) {
-              if (isAbortError(e) || signal?.aborted) throw e;
-              lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
+            } else {
+              const buf = await slice.arrayBuffer();
+              chunkResp = await fetchWithTimeout(
+                `/api/media/video/chunk/${encodeURIComponent(jobId)}?offset=${start}&index=${i}`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    base64: arrayBufferToBase64(buf),
+                    offset: start,
+                    index: i,
+                  }),
+                  signal,
+                  timeoutMs: 45_000,
+                }
+              );
             }
-            if (!chunkOk && attempt < 2) {
-              await new Promise((r) => setTimeout(r, 450 * (attempt + 1)));
+
+            const cJson = await chunkResp.json().catch(() => null);
+            if (chunkResp.ok && cJson?.success) {
+              chunkOk = true;
+            } else {
+              lastChunkErr = cJson?.message || `Chunk upload failed (HTTP ${chunkResp.status}).`;
+              if (chunkResp.status === 404) break;
+              forceBase64Json = true;
             }
+          } catch (e: any) {
+            if (isAbortError(e) || signal?.aborted) throw e;
+            lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
+            forceBase64Json = true;
           }
-          if (!chunkOk) {
-            void cancelServerVideoJob(jobId);
-            throw new Error(lastChunkErr || 'Video chunk upload interrupted. Please retry.');
+          if (!chunkOk && attempt < 3) {
+            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
           }
         }
 
-        throwIfAborted(signal);
-        onProgress?.(41, 'Starting optimization...');
-        const refreshedAuthHeaders = await getPipelineAuthHeaders();
-        const finishResp = await fetchWithTimeout(
-          `/api/media/optimize-video/finish/${encodeURIComponent(jobId)}`,
-          {
-            method: 'POST',
-            headers: refreshedAuthHeaders,
-            signal,
-            timeoutMs: 25_000,
-          }
-        );
-        const finishJson = await finishResp.json().catch(() => null);
-        if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
+        if (!chunkOk) {
           void cancelServerVideoJob(jobId);
-          throw new Error(finishJson?.message || `Unable to start optimization (HTTP ${finishResp.status}).`);
+          throw new Error(lastChunkErr || 'Video chunk upload interrupted. Please retry.');
         }
-        initialProgress = finishJson.progress || 42;
-        initialStage = finishJson.stage || 'Optimizing video...';
-      } else if (initResp?.status === 404) {
-        return await runDirectVideoUploadFallback('Server media pipeline unavailable on static host.', true);
-      } else if (file.size <= 12 * 1024 * 1024) {
-        onProgress?.(15, 'Uploading video for fast optimization...');
-        const formData = new FormData();
-        formData.append('bucket', bucket);
-        formData.append('folderPrefix', folderPrefix || 'videos');
-        formData.append('file', file);
-
-        const startResp = await fetchWithTimeout('/api/media/optimize-video', {
-          method: 'POST',
-          headers: authHeaders,
-          body: formData,
-          signal,
-          timeoutMs: 45_000,
-        });
-        throwIfAborted(signal);
-        if (startResp.status === 404) {
-          return await runDirectVideoUploadFallback('Server media pipeline unavailable on static host.', true);
-        }
-        const startJson = await startResp.json().catch(() => null);
-        if (!startResp.ok || !startJson?.success || !startJson?.jobId) {
-          const statusHint = startResp.status ? ` (HTTP ${startResp.status})` : '';
-          throw new Error(startJson?.message || `Unable to start video optimization${statusHint}.`);
-        }
-        jobId = startJson.jobId;
-        initialProgress = startJson.progress || 42;
-        initialStage = startJson.stage || 'Optimizing video...';
-      } else {
-        throw new Error(initErrMsg || 'Unable to initialize video optimization upload.');
       }
+
+      // 3. Finalize upload & kick off background FFmpeg -> Supabase Storage pipeline
+      throwIfAborted(signal);
+      onProgress?.(41, 'Starting video optimization...');
+      const refreshedAuthHeaders = await getPipelineAuthHeaders();
+      const finishResp = await fetchWithTimeout(`/api/media/video/finish/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        headers: refreshedAuthHeaders,
+        signal,
+        timeoutMs: 25_000,
+      });
+      const finishJson = await finishResp.json().catch(() => null);
+      if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
+        void cancelServerVideoJob(jobId);
+        throw new Error(finishJson?.message || `Unable to start video optimization (HTTP ${finishResp.status}).`);
+      }
+      initialProgress = finishJson.progress || 42;
+      initialStage = finishJson.stage || 'Optimizing video...';
 
       return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
     } finally {

@@ -178,7 +178,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             format: res.format,
             mediaAssetId: res.mediaAssetId,
           } as MediaAssetItem,
-          isVideo: file.type.startsWith('video/'),
+          isVideo:
+            file.type.startsWith('video/') ||
+            /\.(mp4|mov|webm|m4v|mkv|3gp|avi|mpeg|mpg|mts|m2ts|ts|wmv|flv|ogv)$/i.test(file.name),
         };
       });
 

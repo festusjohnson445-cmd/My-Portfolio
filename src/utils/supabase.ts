@@ -14,12 +14,12 @@ export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isR
     const customUrl = localStorage.getItem('fesline_custom_supabase_url');
     const customKey = localStorage.getItem('fesline_custom_supabase_anon_key');
     if (customUrl && customKey && customUrl.startsWith('http')) {
-      return { url: customUrl.trim(), anonKey: customKey.trim(), isRealConfig: true };
+      return { url: customUrl.trim().replace(/\/+$/, ''), anonKey: customKey.trim(), isRealConfig: true };
     }
   } catch {}
 
   if (ENV_SUPABASE_URL && ENV_SUPABASE_KEY && ENV_SUPABASE_URL.startsWith('http')) {
-    return { url: ENV_SUPABASE_URL, anonKey: ENV_SUPABASE_KEY, isRealConfig: true };
+    return { url: ENV_SUPABASE_URL.replace(/\/+$/, ''), anonKey: ENV_SUPABASE_KEY, isRealConfig: true };
   }
 
   // Default live project URL & publishable key for seamless Vercel and local operation
@@ -28,6 +28,27 @@ export function getResolvedSupabaseConfig(): { url: string; anonKey: string; isR
     anonKey: 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex',
     isRealConfig: true,
   };
+}
+
+export function isSupabasePublishableKey(key?: string): boolean {
+  const k = (key || '').trim();
+  return k.startsWith('sb_publishable_') || k.startsWith('sb_secret_');
+}
+
+export function buildSupabaseStorageAuthHeaders(
+  cfg: { anonKey: string },
+  bearerJwt?: string | null
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    apikey: cfg.anonKey,
+  };
+  const token = (bearerJwt || '').trim();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  } else if (!isSupabasePublishableKey(cfg.anonKey)) {
+    headers['Authorization'] = `Bearer ${cfg.anonKey}`;
+  }
+  return headers;
 }
 
 const initialConfig = getResolvedSupabaseConfig();

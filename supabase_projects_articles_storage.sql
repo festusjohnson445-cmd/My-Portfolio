@@ -22,14 +22,14 @@ AS $$
   );
 $$;
 
--- 2. STORAGE BUCKETS: 'projects' AND 'articles'
+-- 2. STORAGE BUCKETS: 'projects' AND 'articles' (200 MB file limit, unrestricted MIME types)
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('projects', 'projects', true, 104857600, NULL)
-ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 104857600;
+VALUES ('projects', 'projects', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
 
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('articles', 'articles', true, 104857600, NULL)
-ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 104857600;
+VALUES ('articles', 'articles', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
 
 -- Storage Policies for 'projects' bucket (Public Read, Owner-Only Write/Update/Delete)
 DROP POLICY IF EXISTS "Public Read Projects Bucket" ON storage.objects;
@@ -100,9 +100,14 @@ CREATE TABLE IF NOT EXISTS public.projects (
   is_featured BOOLEAN DEFAULT false,
   status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published', 'archived')),
   sort_order INTEGER DEFAULT 0,
+  hero_inscription TEXT DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Non-destructive upgrade if projects table already exists without hero_inscription
+ALTER TABLE public.projects
+  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '';
 
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 
@@ -145,6 +150,7 @@ CREATE TABLE IF NOT EXISTS public.articles (
   is_admin_author BOOLEAN DEFAULT false,
   thumbnail_url TEXT DEFAULT '',
   hero_media JSONB DEFAULT '{}'::jsonb,
+  hero_inscription TEXT DEFAULT '',
   tldr TEXT DEFAULT '',
   toc JSONB DEFAULT '[]'::jsonb,
   images JSONB DEFAULT '[]'::jsonb,
@@ -161,6 +167,10 @@ CREATE TABLE IF NOT EXISTS public.articles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Non-destructive upgrade if articles table already exists without hero_inscription
+ALTER TABLE public.articles
+  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '';
 
 ALTER TABLE public.articles ENABLE ROW LEVEL SECURITY;
 
@@ -386,7 +396,7 @@ CREATE TABLE IF NOT EXISTS public.media_assets (
   id TEXT PRIMARY KEY,
   bucket TEXT NOT NULL CHECK (bucket IN ('projects', 'articles', 'materials', 'avatars')),
   storage_path TEXT NOT NULL DEFAULT '',
-  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'document')),
   file_name TEXT NOT NULL DEFAULT '',
   format TEXT NOT NULL DEFAULT '',
   resolution TEXT DEFAULT '',
@@ -406,9 +416,30 @@ CREATE TABLE IF NOT EXISTS public.media_assets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Non-destructive upgrade if media_assets already existed before fallback_urls column
+-- Non-destructive upgrade if media_assets already existed before fallback_urls or 'document' media_type
 ALTER TABLE public.media_assets
   ADD COLUMN IF NOT EXISTS fallback_urls JSONB DEFAULT '{}'::jsonb;
+
+DO $$
+DECLARE
+  chk_name TEXT;
+BEGIN
+  SELECT conname INTO chk_name
+  FROM pg_constraint
+  WHERE conrelid = 'public.media_assets'::regclass
+    AND contype = 'c'
+    AND pg_get_constraintdef(oid) ILIKE '%media_type%';
+
+  IF chk_name IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE public.media_assets DROP CONSTRAINT %I', chk_name);
+  END IF;
+
+  ALTER TABLE public.media_assets
+    ADD CONSTRAINT media_assets_media_type_check
+    CHECK (media_type IN ('image', 'video', 'document'));
+EXCEPTION WHEN duplicate_object THEN
+  NULL;
+END $$;
 
 ALTER TABLE public.media_assets ENABLE ROW LEVEL SECURITY;
 

@@ -5,6 +5,9 @@ import {
   upsertProjectToSupabase,
   formatBytes,
   isAbortError,
+  validateVideoSizeLimit,
+  MAX_VIDEO_MB,
+  isOptimizableVideo,
   type PortfolioProject,
   type ProjectSpecification,
   type MediaAssetItem,
@@ -79,7 +82,6 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const lastFailedUploadRef = useRef<{
     files: File[];
     target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document';
-    jobId?: string;
   } | null>(null);
   const [canRetryUpload, setCanRetryUpload] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<
@@ -113,23 +115,37 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
 
   const runUploadFiles = async (
     fileArr: File[],
-    target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document',
-    retryJobId?: string
+    target: 'thumbnail' | 'image' | 'video' | 'cad' | 'document'
   ) => {
     if (!fileArr || fileArr.length === 0) return;
+
+    // Immediate strict 60 MB ceiling enforcement before loading FFmpeg or uploading
+    for (const file of fileArr) {
+      if (target === 'video' || isOptimizableVideo(file)) {
+        try {
+          validateVideoSizeLimit(file);
+        } catch (sizeErr: any) {
+          lastFailedUploadRef.current = null;
+          setCanRetryUpload(false);
+          setErrorMsg(sizeErr?.message || `Video exceeds the ${MAX_VIDEO_MB} MB maximum file size limit.`);
+          return;
+        }
+      }
+    }
+
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
-    lastFailedUploadRef.current = { files: fileArr, target, jobId: retryJobId };
+    lastFailedUploadRef.current = { files: fileArr, target };
     setCanRetryUpload(false);
 
     setUploadingField(target);
     setUploadProgress(5);
-    setUploadStage('Preparing media pipeline...');
+    setUploadStage('Preparing browser media pipeline...');
     setErrorMsg(null);
     try {
       const concurrency = target === 'video' ? 1 : 3;
-      const uploadedAssets = await runWithConcurrency(fileArr, concurrency, async (file, idx) => {
+      const uploadedAssets = await runWithConcurrency(fileArr, concurrency, async (file) => {
         const res = await uploadFileToBucket(
           'projects',
           file,
@@ -138,8 +154,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             setUploadProgress(pct);
             setUploadStage(stage);
           },
-          controller.signal,
-          idx === 0 ? retryJobId : undefined
+          controller.signal
         );
         return {
           title: '',
@@ -187,9 +202,6 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
       }
     } catch (err: any) {
       if (!isAbortError(err) && !controller.signal.aborted) {
-        if (err?.jobId && lastFailedUploadRef.current) {
-          lastFailedUploadRef.current.jobId = err.jobId;
-        }
         setErrorMsg(err?.message || 'File upload to projects bucket failed.');
         setCanRetryUpload(true);
       }
@@ -214,7 +226,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const handleRetryFailedUpload = async () => {
     const failed = lastFailedUploadRef.current;
     if (!failed) return;
-    await runUploadFiles(failed.files, failed.target, failed.jobId);
+    await runUploadFiles(failed.files, failed.target);
   };
 
   const handleMediaLibrarySelect = (
@@ -844,6 +856,20 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
                     vttThumbnailsUrl={v.vttThumbnailsUrl}
                     title={v.title || 'Project Video Preview'}
                   />
+                </div>
+              )}
+              {(v.format || v.resolution || (v.originalBytes && v.optimizedBytes)) && (
+                <div className="text-[10px] font-mono text-slate-500 flex flex-wrap items-center gap-x-2">
+                  {v.format && <span className="uppercase text-cyan-800 font-semibold">{v.format}</span>}
+                  {v.resolution && <span>{v.resolution}</span>}
+                  {v.originalBytes && v.optimizedBytes ? (
+                    <span>
+                      {formatBytes(v.originalBytes)} → {formatBytes(v.optimizedBytes)}
+                      {typeof v.compressionPct === 'number' && v.compressionPct > 0
+                        ? ` (-${v.compressionPct}%)`
+                        : ''}
+                    </span>
+                  ) : null}
                 </div>
               )}
               <input

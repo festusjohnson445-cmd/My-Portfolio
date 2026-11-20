@@ -221,23 +221,13 @@ export const ProjectsView: React.FC = () => {
 
           {selectedProject.thumbnailUrl && (
             <figure className="w-full space-y-2">
-              <div
-                role="img"
-                aria-label={selectedProject.title}
-                className="w-full aspect-[16/9] min-h-[220px] sm:min-h-[320px] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100"
-                style={{
-                  backgroundImage: `url("${selectedProject.thumbnailUrl}")`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
-                  backgroundRepeat: 'no-repeat',
-                }}
-              >
+              <div className="w-full aspect-[16/9] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100">
                 <img
                   src={selectedProject.thumbnailUrl}
                   alt={selectedProject.title}
                   loading="lazy"
                   decoding="async"
-                  className="sr-only"
+                  className="w-full h-full object-cover block"
                 />
               </div>
               {(selectedProject.heroInscription || isOwner) && (
@@ -248,7 +238,7 @@ export const ProjectsView: React.FC = () => {
                         type="text"
                         value={inscriptionDraft}
                         onChange={(e) => setInscriptionDraft(e.target.value)}
-                        placeholder="Enter hero inscription text shown outside the background image container..."
+                        placeholder="Enter hero inscription text shown outside the hero image container..."
                         className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-700"
                       />
                       <div className="flex items-center justify-end gap-1.5 shrink-0">
@@ -276,7 +266,7 @@ export const ProjectsView: React.FC = () => {
                     </div>
                   ) : (
                     <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#edf2f8]/70 border border-[#cbd5e1]/80">
-                      <p className="text-xs text-slate-700 italic leading-relaxed flex-1 min-w-0 break-words">
+                      <p className="text-xs text-slate-700 italic leading-relaxed text-justify flex-1 min-w-0 break-words">
                         {selectedProject.heroInscription || 'No hero inscription added yet.'}
                       </p>
                       {isOwner && (
@@ -442,14 +432,14 @@ export const ProjectsView: React.FC = () => {
                 <ImageIcon className="w-3.5 h-3.5 text-cyan-800" />
                 <span>Media Gallery</span>
               </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {selectedProject.images.map((img, i) => {
                   const avifSrcSet = img.mobileUrl && img.avifUrl && img.mobileUrl !== img.avifUrl
                     ? `${img.mobileUrl} 768w, ${img.avifUrl} 1600w`
                     : img.avifUrl;
                   return (
                     <div key={i} className="w-full rounded-lg border border-slate-200 bg-white overflow-hidden flex flex-col">
-                      <picture className="w-full block bg-slate-50">
+                      <picture className="w-full aspect-[16/10] bg-slate-50 flex items-center justify-center overflow-hidden">
                         {avifSrcSet && (
                           <source
                             srcSet={avifSrcSet}
@@ -463,7 +453,7 @@ export const ProjectsView: React.FC = () => {
                           alt={img.note || img.title || `Project Image ${i + 1}`}
                           loading="lazy"
                           decoding="async"
-                          className="w-full max-h-[210px] sm:max-h-96 object-contain block"
+                          className="w-full h-full object-contain block"
                         />
                       </picture>
                       {img.note && img.note.trim() && (
@@ -675,35 +665,34 @@ export const ProjectsView: React.FC = () => {
                 className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
               >
                 {featImg ? (
-                  <div
-                    role="img"
-                    aria-label={proj.title}
-                    className="w-full sm:w-52 min-h-[176px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden"
-                    style={{
-                      backgroundImage: `url("${featImg}")`,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                      backgroundRepeat: 'no-repeat',
-                    }}
-                  >
+                  <div className="w-full sm:w-52 aspect-[16/10] sm:aspect-auto sm:min-h-[168px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden">
                     <img
                       src={featImg}
                       alt={proj.title}
                       loading="lazy"
                       decoding="async"
-                      className="sr-only"
+                      className="w-full h-full object-cover block"
                     />
                   </div>
                 ) : featVid ? (
-                  <div className="relative w-full sm:w-52 h-40 sm:h-auto bg-slate-950 shrink-0 overflow-hidden">
-                    <video
-                      src={featVid}
-                      poster={proj.videos?.[0]?.posterUrl}
-                      preload="none"
-                      muted
-                      playsInline
-                      className="w-full h-full object-contain pointer-events-none"
-                    />
+                  <div className="relative w-full sm:w-52 aspect-video sm:aspect-auto sm:min-h-[168px] bg-slate-950 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden">
+                    {proj.videos?.[0]?.posterUrl ? (
+                      <img
+                        src={proj.videos[0].posterUrl}
+                        alt={proj.title}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover block"
+                      />
+                    ) : (
+                      <video
+                        src={featVid}
+                        preload="none"
+                        muted
+                        playsInline
+                        className="w-full h-full object-contain pointer-events-none"
+                      />
+                    )}
                     <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
                       <span className="w-8 h-8 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
                         <Play className="w-3.5 h-3.5 fill-white ml-0.5" />
@@ -723,7 +712,7 @@ export const ProjectsView: React.FC = () => {
                       </span>
                     </div>
                     <h3 className="text-sm font-bold text-slate-950 text-center">{proj.title}</h3>
-                    <p className="text-[11px] text-slate-600 line-clamp-2 text-center">
+                    <p className="text-[11px] text-slate-600 line-clamp-2 text-justify leading-relaxed">
                       {proj.description}
                     </p>
                   </div>
@@ -816,35 +805,34 @@ export const ProjectsView: React.FC = () => {
               >
                 <div>
                   {cardImg ? (
-                    <div
-                      role="img"
-                      aria-label={proj.title}
-                      className="w-full h-48 bg-slate-100 border-b border-slate-200 overflow-hidden"
-                      style={{
-                        backgroundImage: `url("${cardImg}")`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                        backgroundRepeat: 'no-repeat',
-                      }}
-                    >
+                    <div className="w-full aspect-[16/10] bg-slate-100 border-b border-slate-200 overflow-hidden">
                       <img
                         src={cardImg}
                         alt={proj.title}
                         loading="lazy"
                         decoding="async"
-                        className="sr-only"
+                        className="w-full h-full object-cover block"
                       />
                     </div>
                   ) : cardVid ? (
                     <div className="relative w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-200">
-                      <video
-                        src={cardVid}
-                        poster={proj.videos?.[0]?.posterUrl}
-                        preload="none"
-                        muted
-                        playsInline
-                        className="w-full h-full object-contain pointer-events-none"
-                      />
+                      {proj.videos?.[0]?.posterUrl ? (
+                        <img
+                          src={proj.videos[0].posterUrl}
+                          alt={proj.title}
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-full object-cover block"
+                        />
+                      ) : (
+                        <video
+                          src={cardVid}
+                          preload="none"
+                          muted
+                          playsInline
+                          className="w-full h-full object-contain pointer-events-none"
+                        />
+                      )}
                       <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
                         <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
                           <Play className="w-4 h-4 fill-white ml-0.5" />

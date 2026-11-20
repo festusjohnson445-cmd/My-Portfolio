@@ -3,11 +3,13 @@ import React, { useEffect, useState } from 'react';
 interface OptimizedImageProps {
   src: string;
   alt: string;
+  avifUrl?: string;
   webpUrl?: string;
   jpegUrl?: string;
   responsiveUrl?: string;
   originalUrl?: string;
   className?: string;
+  pictureClassName?: string;
   sizes?: string;
   loading?: 'lazy' | 'eager';
 }
@@ -15,33 +17,37 @@ interface OptimizedImageProps {
 export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   src,
   alt,
+  avifUrl,
   webpUrl,
   jpegUrl,
   responsiveUrl,
   originalUrl,
   className = 'w-full h-full object-cover block',
+  pictureClassName = 'w-full h-full block',
   sizes = '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw',
   loading = 'lazy',
 }) => {
-  const [fallbackSrc, setFallbackSrc] = useState<string>(src);
+  const effectiveAvif = avifUrl || (/\.avif($|\?)/i.test(src) ? src : undefined);
+  const initialImgSrc = jpegUrl || webpUrl || originalUrl || src || effectiveAvif || '';
+  const [fallbackSrc, setFallbackSrc] = useState<string>(initialImgSrc);
 
   useEffect(() => {
-    setFallbackSrc(src);
-  }, [src]);
-
-  const isPrimaryAvif = /\.avif($|\?)/i.test(src);
+    setFallbackSrc(jpegUrl || webpUrl || originalUrl || src || effectiveAvif || '');
+  }, [src, avifUrl, webpUrl, jpegUrl, originalUrl, effectiveAvif]);
 
   const handleImgError = () => {
-    if (fallbackSrc === src && webpUrl && webpUrl !== fallbackSrc) {
+    if (webpUrl && fallbackSrc !== webpUrl) {
       setFallbackSrc(webpUrl);
-    } else if (fallbackSrc !== jpegUrl && jpegUrl) {
+    } else if (jpegUrl && fallbackSrc !== jpegUrl) {
       setFallbackSrc(jpegUrl);
-    } else if (fallbackSrc !== originalUrl && originalUrl) {
+    } else if (originalUrl && fallbackSrc !== originalUrl) {
       setFallbackSrc(originalUrl);
+    } else if (src && fallbackSrc !== src) {
+      setFallbackSrc(src);
     }
   };
 
-  if (!webpUrl && !jpegUrl && !responsiveUrl) {
+  if (!effectiveAvif && !webpUrl && !jpegUrl && !responsiveUrl) {
     return (
       <img
         src={fallbackSrc}
@@ -55,18 +61,18 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   }
 
   return (
-    <picture className="w-full h-full block">
-      {isPrimaryAvif && (
+    <picture className={pictureClassName}>
+      {effectiveAvif && (
         <source
           type="image/avif"
-          srcSet={responsiveUrl ? `${responsiveUrl} 800w, ${src} 1600w` : src}
+          srcSet={responsiveUrl && responsiveUrl !== effectiveAvif ? `${responsiveUrl} 800w, ${effectiveAvif} 1600w` : effectiveAvif}
           sizes={responsiveUrl ? sizes : undefined}
         />
       )}
       {webpUrl && <source type="image/webp" srcSet={webpUrl} />}
       {jpegUrl && <source type="image/jpeg" srcSet={jpegUrl} />}
       <img
-        src={fallbackSrc || jpegUrl || webpUrl || originalUrl || src}
+        src={fallbackSrc || src}
         alt={alt}
         loading={loading}
         decoding="async"

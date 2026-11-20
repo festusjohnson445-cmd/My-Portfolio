@@ -12,7 +12,7 @@ import {
   DefaultVideoLayout,
   defaultLayoutIcons,
 } from '@vidstack/react/player/layouts/default';
-import { RotateCcw, Repeat } from 'lucide-react';
+import { RotateCcw, Repeat, Play } from 'lucide-react';
 
 export interface VideoSubtitleTrack {
   src: string;
@@ -88,6 +88,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   onDurationResolved,
   className = '',
 }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<MediaPlayerInstance | null>(null);
   const lastSavedSecRef = useRef<number>(0);
   const resumedOnceRef = useRef<boolean>(false);
@@ -97,6 +98,8 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   const hasH264Variants = Boolean(h264Urls?.['1080p'] || h264Urls?.['720p'] || h264Src);
   const isAdaptiveManifest = /\.(m3u8|mpd)(\?|$)/i.test(src || '');
 
+  const [isVisible, setIsVisible] = useState<boolean>(() => Boolean(autoPlay));
+  const [userInitiatedPlay, setUserInitiatedPlay] = useState<boolean>(false);
   const [codecMode, setCodecMode] = useState<'av1' | 'h264'>(() =>
     hasAv1Variants && supportsAv1Playback() ? 'av1' : 'h264'
   );
@@ -104,6 +107,27 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   const [isLooping, setIsLooping] = useState(defaultLoop);
   const [hasError, setHasError] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+
+  useEffect(() => {
+    if (isVisible) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsVisible(true);
+      return;
+    }
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '240px 0px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isVisible]);
 
   const resumeKey = useMemo(
     () => hashStorageKey(mediaId || h264Urls?.['720p'] || av1Urls?.['720p'] || src || 'vid'),
@@ -219,7 +243,8 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
 
   return (
     <div
-      className={`fesline-vidstack-wrap group relative w-full overflow-hidden bg-slate-950 min-h-[200px] max-h-[245px] sm:max-h-[420px] flex items-center justify-center ${className}`}
+      ref={containerRef}
+      className={`fesline-vidstack-wrap group relative w-full overflow-hidden bg-slate-950 max-h-[65vh] sm:max-h-[440px] flex items-center justify-center ${className}`}
       style={{
         aspectRatio: normalizedAspect,
         ['--media-brand' as string]: 'var(--primary-color, #164e63)',
@@ -228,6 +253,30 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
       }}
       onClick={(e) => e.stopPropagation()}
     >
+      {!isVisible ? (
+        <button
+          type="button"
+          onClick={() => {
+            setUserInitiatedPlay(true);
+            setIsVisible(true);
+          }}
+          className="relative w-full h-full flex items-center justify-center bg-slate-950 cursor-pointer"
+          aria-label={`Load video: ${title || 'Engineering Video'}`}
+        >
+          {poster && (
+            <img
+              src={poster}
+              alt={title || 'Video poster'}
+              loading="lazy"
+              decoding="async"
+              className={`w-full h-full ${objectFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+            />
+          )}
+          <span className="absolute w-12 h-12 rounded-full bg-slate-950/80 border border-white/30 flex items-center justify-center text-white shadow-md">
+            <Play className="w-5 h-5 fill-white ml-0.5" />
+          </span>
+        </button>
+      ) : (
       <MediaPlayer
         key={`${resumeKey}_${retryNonce}`}
         ref={playerRef}
@@ -238,7 +287,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
         crossOrigin={needsCors ? 'anonymous' : undefined}
         load="visible"
         posterLoad="visible"
-        autoPlay={autoPlay}
+        autoPlay={autoPlay || userInitiatedPlay}
         streamType="on-demand"
         keyTarget="player"
         className="w-full h-full fesline-vidstack-player"
@@ -294,7 +343,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
             <Poster
               src={poster}
               alt={title || 'Video poster'}
-              className="vds-poster object-cover w-full h-full"
+              className={`vds-poster w-full h-full ${objectFit === 'cover' ? 'object-cover' : 'object-contain'}`}
             />
           )}
           {effectiveSubtitles.map((track, idx) => (
@@ -318,9 +367,10 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
           smallLayoutWhen={({ width, height }) => width < 440 || height < 240}
         />
       </MediaPlayer>
+      )}
 
       {/* Top-right compact Loop toggle + optional Resolution Selector */}
-      {!hasError && (
+      {isVisible && !hasError && (
         <div
           className="absolute top-2 right-2 z-20 flex items-center gap-1 opacity-85 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
           onClick={(e) => e.stopPropagation()}

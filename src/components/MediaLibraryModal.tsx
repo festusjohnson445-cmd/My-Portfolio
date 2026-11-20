@@ -405,11 +405,12 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
     if (item.mediaKind === 'image') {
       return (
         <div className="relative w-16 h-12 sm:w-20 sm:h-14 rounded-lg overflow-hidden bg-slate-200 border border-slate-200 shrink-0">
-          <img
+          <OptimizedImage
             src={item.publicUrl}
+            avifUrl={item.avifUrl}
+            webpUrl={item.webpUrl}
+            jpegUrl={item.jpegUrl}
             alt={cleanDisplayFileName(item.name)}
-            loading="lazy"
-            referrerPolicy="no-referrer"
             className="w-full h-full object-cover"
           />
         </div>
