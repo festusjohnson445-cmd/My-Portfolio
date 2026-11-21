@@ -608,7 +608,23 @@ function isOptimizableRasterImage(file: File): boolean {
   );
 }
 
-function isOptimizableVideo(file: File): boolean {
+function resolveMaxVideoMb(): number {
+  const raw = Number((import.meta as any).env?.VITE_MAX_UPLOAD_MB);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+}
+
+export const MAX_VIDEO_MB = resolveMaxVideoMb();
+export const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
+
+export function validateVideoSizeLimit(file: File): void {
+  if (file.size > MAX_VIDEO_BYTES) {
+    throw new Error(
+      `Video "${file.name}" (${formatBytes(file.size)}) exceeds the ${MAX_VIDEO_MB} MB maximum file size limit. Please trim or export at a lower bitrate (≤ ${MAX_VIDEO_MB} MB) before uploading.`
+    );
+  }
+}
+
+export function isOptimizableVideo(file: File): boolean {
   const ext = file.name.split('.').pop()?.toLowerCase() || '';
   return (
     file.type.startsWith('video/') ||
