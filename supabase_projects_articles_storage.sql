@@ -105,9 +105,10 @@ CREATE TABLE IF NOT EXISTS public.projects (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Non-destructive upgrade if projects table already exists without hero_inscription
+-- Non-destructive upgrade if projects table already exists without hero_inscription or views_count
 ALTER TABLE public.projects
-  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '';
+  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0;
 
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 
@@ -168,9 +169,10 @@ CREATE TABLE IF NOT EXISTS public.articles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Non-destructive upgrade if articles table already exists without hero_inscription
+-- Non-destructive upgrade if articles table already exists without hero_inscription or views_count
 ALTER TABLE public.articles
-  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '';
+  ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0;
 
 ALTER TABLE public.articles ENABLE ROW LEVEL SECURITY;
 
@@ -221,6 +223,64 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.increment_article_likes(TEXT) TO anon, authenticated;
+
+-- Real-time project views, article views, and article unlike RPCs
+CREATE OR REPLACE FUNCTION public.increment_project_views(target_project_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.projects
+  SET views_count = COALESCE(views_count, 0) + 1
+  WHERE id = target_project_id AND status = 'published'
+  RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_project_views(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.increment_article_views(target_article_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.articles
+  SET views_count = COALESCE(views_count, 0) + 1
+  WHERE id = target_article_id AND status = 'published'
+  RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_article_views(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.decrement_article_likes(target_article_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.articles
+  SET likes_count = GREATEST(0, COALESCE(likes_count, 0) - 1)
+  WHERE id = target_article_id AND status = 'published'
+  RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.decrement_article_likes(TEXT) TO anon, authenticated;
 
 -- 5. ARTICLE COMMENTS TABLE & RLS
 CREATE TABLE IF NOT EXISTS public.article_comments (
@@ -502,4 +562,96 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.media_assets;
   EXCEPTION WHEN duplicate_object THEN NULL;
   END;
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
 END $$;
+
+-- 9. ENGINEERING HUB: STUDENT MATERIALS FIELDS, REAL-TIME VIEWS & LIKES, VISITOR UPLOAD POLICIES
+ALTER TABLE public.materials
+  ADD COLUMN IF NOT EXISTS level TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS department TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS institution TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0;
+
+CREATE OR REPLACE FUNCTION public.increment_material_views(target_material_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.materials
+  SET views_count = COALESCE(views_count, 0) + 1
+  WHERE id = target_material_id
+  RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_material_views(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.increment_material_likes(target_material_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.materials
+  SET likes_count = COALESCE(likes_count, 0) + 1
+  WHERE id = target_material_id
+  RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_material_likes(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.decrement_material_likes(target_material_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  new_count INTEGER;
+BEGIN
+  UPDATE public.materials
+  SET likes_count = GREATEST(0, COALESCE(likes_count, 0) - 1)
+  WHERE id = target_material_id
+  RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.decrement_material_likes(TEXT) TO anon, authenticated;
+
+DROP POLICY IF EXISTS "Public Insert Student Materials" ON public.materials;
+CREATE POLICY "Public Insert Student Materials"
+ON public.materials FOR INSERT TO public
+WITH CHECK (category = 'Students Materials');
+
+DROP POLICY IF EXISTS "Owner Manage All Materials Delete" ON public.materials;
+CREATE POLICY "Owner Manage All Materials Delete"
+ON public.materials FOR DELETE TO authenticated
+USING (public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Public Upload Student Materials to materials" ON storage.objects;
+CREATE POLICY "Public Upload Student Materials to materials"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'student-submissions'
+);
+
+DROP POLICY IF EXISTS "Owner Delete Student Materials Objects" ON storage.objects;
+CREATE POLICY "Owner Delete Student Materials Objects"
+ON storage.objects FOR DELETE TO authenticated
+USING (bucket_id = 'materials' AND public.is_portfolio_owner());

@@ -125,6 +125,7 @@ export interface PortfolioProject {
   status: 'draft' | 'published' | 'archived';
   sortOrder?: number;
   heroInscription?: string;
+  viewsCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -194,6 +195,7 @@ export interface PortfolioArticle {
   attachments: MediaAssetItem[];
   tags: string[];
   likesCount: number;
+  viewsCount?: number;
   status: 'draft' | 'pending' | 'published' | 'archived';
   publishedAt?: string;
   createdAt: string;
@@ -282,6 +284,14 @@ export interface CustomPageContentSection {
   visible: boolean;
 }
 
+export type MediaAspectRatio = '16/9' | '9/16' | '4/5' | '3/4' | '4/3' | '1/1' | '21/9';
+
+export interface MediaCardControlsConfig {
+  aspectRatio: MediaAspectRatio;
+  objectFit: 'cover' | 'contain' | 'fill';
+  zoomLevel: number; // 1.0 to 1.5
+}
+
 export interface ProjectsArticlesManagerConfig {
   customSections: CustomPageContentSection[];
   innerLayout: {
@@ -289,10 +299,34 @@ export interface ProjectsArticlesManagerConfig {
     cardSpacing: 'compact' | 'normal' | 'relaxed';
     cardTextAlign: 'left' | 'center' | 'justify';
   };
-  videoCardControls: {
-    aspectRatio: '16/9' | '4/3' | '1/1' | '21/9';
-    objectFit: 'cover' | 'contain' | 'fill';
-    zoomLevel: number; // 1.0 to 1.5
+  videoCardControls: MediaCardControlsConfig;
+  imageCardControls: MediaCardControlsConfig;
+}
+
+export interface HomepageCardItemConfig {
+  badge?: string;
+  title: string;
+  description: string;
+  ctaLabel: string;
+}
+
+export interface HomepageConfig {
+  heroBadgeRole: string;
+  heroBadgeCertifications: string;
+  heroWelcomePrefix: string;
+  heroTitle: string;
+  heroDescription: string;
+  heroPrimaryCtaLabel: string;
+  heroSecondaryCtaLabel: string;
+  exploreBadge: string;
+  exploreTitle: string;
+  exploreSubtitle: string;
+  cards: {
+    profile: HomepageCardItemConfig;
+    overview: HomepageCardItemConfig;
+    messaging: HomepageCardItemConfig;
+    projects: HomepageCardItemConfig;
+    articles: HomepageCardItemConfig;
   };
 }
 
@@ -374,6 +408,7 @@ export interface WebsiteAppearanceConfig {
   heroAnimationEnabled: boolean;
   cardAnimationEnabled: boolean;
   heroBackgroundImageUrl: string;
+  homepageConfig: HomepageConfig;
   projectsArticlesConfig: ProjectsArticlesManagerConfig;
   profileSectionManager: ProfileSectionManagerConfig;
   footerConfig: FooterConfig;
@@ -479,6 +514,57 @@ export const DEFAULT_BUILT_IN_PROFILE_SECTIONS: BuiltInProfileSectionConfig[] = 
   { id: 'followMe', label: 'Follow Me', visible: true },
 ];
 
+export const DEFAULT_HOMEPAGE_CONFIG: HomepageConfig = {
+  heroBadgeRole: 'Lead Mechanical Engineer • CAD drafting',
+  heroBadgeCertifications: '',
+  heroWelcomePrefix: 'Welcome to',
+  heroTitle: '',
+  heroDescription: '',
+  heroPrimaryCtaLabel: 'My Profile',
+  heroSecondaryCtaLabel: 'Engineering Hub',
+  exploreBadge: 'Navigation & Portals',
+  exploreTitle: 'Explore More',
+  exploreSubtitle:
+    'Explore 3D CAD mechanisms, empirical metrology verification, FEA boundary post-mortems, and direct communication.',
+  cards: {
+    profile: {
+      badge: 'Verified',
+      title: 'My Profile & Credentials',
+      description:
+        'Portrait profile, comprehensive biography, direct ATS resume generator, verified engineering certifications, and contact channels.',
+      ctaLabel: 'View Full Profile',
+    },
+    overview: {
+      badge: '',
+      title: 'Engineering Hub',
+      description:
+        'Access different categories of Engineering Documents and Technical Archive, Inspirational Books, Christian literature and more. Direct 1-click device uploads.',
+      ctaLabel: 'Explore Engineering Hub',
+    },
+    messaging: {
+      badge: 'LIVE',
+      title: 'Direct Messaging Channel',
+      description:
+        'Direct inquiry workspace to discuss job roles, design consulting, tolerance reviews, or technical proposals.',
+      ctaLabel: 'Open Direct Chat',
+    },
+    projects: {
+      badge: '',
+      title: 'Engineering Portfolio',
+      description:
+        'Published mechanical systems, CAD assemblies, engineering specifications, media galleries, and downloadable project PDF reports.',
+      ctaLabel: 'Explore Projects',
+    },
+    articles: {
+      badge: '',
+      title: 'Engineering Articles',
+      description:
+        'Technical articles, analytical notes, BOM breakdowns, schematics, and community contributions across engineering disciplines.',
+      ctaLabel: 'Read & Post Articles',
+    },
+  },
+};
+
 export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
   activeThemeId: 'classic-slate',
   storedThemes: BUILT_IN_THEMES,
@@ -486,6 +572,7 @@ export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
   heroAnimationEnabled: true,
   cardAnimationEnabled: true,
   heroBackgroundImageUrl: '',
+  homepageConfig: DEFAULT_HOMEPAGE_CONFIG,
   projectsArticlesConfig: {
     customSections: [],
     innerLayout: {
@@ -495,7 +582,12 @@ export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
     },
     videoCardControls: {
       aspectRatio: '16/9',
-      objectFit: 'cover',
+      objectFit: 'contain',
+      zoomLevel: 1,
+    },
+    imageCardControls: {
+      aspectRatio: '4/3',
+      objectFit: 'contain',
       zoomLevel: 1,
     },
   },
@@ -674,6 +766,23 @@ async function getPipelineAuthHeaders(): Promise<Record<string, string>> {
     }
   } catch {}
   return headers;
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  if (!items.length) return;
+  const maxWorkers = Math.max(1, Math.min(limit, items.length));
+  let cursor = 0;
+  const workers = Array.from({ length: maxWorkers }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
 }
 
 function fetchWithTimeout(
@@ -1590,7 +1699,7 @@ export async function uploadFileToBucket(
         throwIfAborted(signal);
         const end = Math.min(file.size, offset + TUS_CHUNK);
         const pct = 15 + Math.round((end / Math.max(1, file.size)) * 80);
-        onProgress?.(pct, `Uploading video (${Math.round((end / Math.max(1, file.size)) * 100)}%)...`);
+        onProgress?.(pct, 'Uploading.....');
 
         const patchResp = await fetchWithTimeout(tusUploadUrl, {
           method: 'PATCH',
@@ -1753,22 +1862,26 @@ export async function uploadFileToBucket(
       jobId = initJson.jobId;
       attachAbortListener(jobId);
 
-      // 2. Upload 700 KB chunks (keeps bandwidth & proxy buffers lightweight, with base64 JSON fallback for strict proxies)
-      const CHUNK_SIZE = typeof initJson.chunkSize === 'number' && initJson.chunkSize > 0 ? initJson.chunkSize : 700 * 1024;
+      // 2. Upload 1 MB chunks concurrently (3 workers keeps high speed without consuming extra bandwidth)
+      const CHUNK_SIZE =
+        typeof initJson.chunkSize === 'number' && initJson.chunkSize > 0
+          ? initJson.chunkSize
+          : 1024 * 1024;
       const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-      for (let i = 0; i < totalChunks; i++) {
+      const chunkIndices = Array.from({ length: totalChunks }, (_, idx) => idx);
+      let completedChunks = 0;
+
+      const uploadSingleChunk = async (i: number) => {
         throwIfAborted(signal);
         const start = i * CHUNK_SIZE;
         const end = Math.min(file.size, start + CHUNK_SIZE);
         const slice = file.slice(start, end);
-        const chunkPct = 8 + Math.round(((i + 1) / totalChunks) * 32);
-        onProgress?.(chunkPct, `Uploading video (${Math.round(((i + 1) / totalChunks) * 100)}%)...`);
 
         let chunkOk = false;
         let lastChunkErr = '';
         let forceBase64Json = false;
 
-        for (let attempt = 0; attempt < 4 && !chunkOk; attempt++) {
+        for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
           throwIfAborted(signal);
           try {
             let chunkResp: Response;
@@ -1818,15 +1931,24 @@ export async function uploadFileToBucket(
             lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
             forceBase64Json = true;
           }
-          if (!chunkOk && attempt < 3) {
-            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          if (!chunkOk && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
           }
         }
 
         if (!chunkOk) {
-          void cancelServerVideoJob(jobId);
           throw new Error(lastChunkErr || 'Video chunk upload interrupted. Please retry.');
         }
+        completedChunks += 1;
+        const chunkPct = 8 + Math.round((completedChunks / totalChunks) * 32);
+        onProgress?.(chunkPct, 'Uploading.....');
+      };
+
+      try {
+        await runWithConcurrency(chunkIndices, Math.min(3, totalChunks), uploadSingleChunk);
+      } catch (chunkErr) {
+        void cancelServerVideoJob(jobId);
+        throw chunkErr;
       }
 
       // 3. Finalize upload & kick off background FFmpeg -> Supabase Storage pipeline
@@ -1908,6 +2030,7 @@ function mapDbRowToProject(row: any): PortfolioProject {
       typeof row.hero_inscription === 'string' && row.hero_inscription
         ? row.hero_inscription
         : hiddenInscr?.value || '',
+    viewsCount: typeof row.views_count === 'number' ? row.views_count : 0,
     createdAt: row.created_at || new Date().toISOString(),
     updatedAt: row.updated_at || new Date().toISOString(),
   };
@@ -2073,6 +2196,54 @@ export async function deleteProjectFromSupabase(projectId: string): Promise<void
   setCachedProjects(current.filter((p) => p.id !== projectId));
 }
 
+export async function incrementProjectViewsInSupabase(projectId: string): Promise<number | null> {
+  // Optimistic local update for immediate card feedback
+  const current = getCachedProjects(true);
+  const target = current.find((p) => p.id === projectId);
+  const optimisticNext = (target?.viewsCount || 0) + 1;
+  setCachedProjects(
+    current.map((p) => (p.id === projectId ? { ...p, viewsCount: optimisticNext } : p))
+  );
+
+  try {
+    const { data, error } = await supabase.rpc('increment_project_views', {
+      target_project_id: projectId,
+    });
+    if (!error && typeof data === 'number') {
+      const latest = getCachedProjects(true);
+      setCachedProjects(
+        latest.map((p) => (p.id === projectId ? { ...p, viewsCount: data } : p))
+      );
+      return data;
+    }
+  } catch {}
+  return optimisticNext;
+}
+
+export function subscribeToProjectsRealtime(
+  includeAllForOwner: boolean,
+  onProjectsUpdated: (list: PortfolioProject[]) => void
+): () => void {
+  try {
+    const channel = supabase
+      .channel('public:projects_realtime_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'projects' },
+        async () => {
+          const fresh = await fetchProjectsFromSupabase(includeAllForOwner);
+          onProjectsUpdated(fresh);
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
+  }
+}
+
 // ============================================================================
 // ARTICLES & COMMENTS CRUD (SUPABASE "articles" & "article_comments")
 // ============================================================================
@@ -2112,6 +2283,7 @@ function mapDbRowToArticle(row: any): PortfolioArticle {
     attachments: Array.isArray(row.attachments) ? row.attachments : [],
     tags: Array.isArray(row.tags) ? row.tags : [],
     likesCount: typeof row.likes_count === 'number' ? row.likes_count : 0,
+    viewsCount: typeof row.views_count === 'number' ? row.views_count : 0,
     status: (row.status as PortfolioArticle['status']) || 'pending',
     publishedAt: row.published_at || row.created_at,
     createdAt: row.created_at || new Date().toISOString(),
@@ -2389,6 +2561,53 @@ export async function toggleArticleLikeInSupabase(
     }
   } catch {}
   return null;
+}
+
+export async function incrementArticleViewsInSupabase(articleId: string): Promise<number | null> {
+  const current = getCachedArticles(true);
+  const target = current.find((a) => a.id === articleId);
+  const optimisticNext = (target?.viewsCount || 0) + 1;
+  setCachedArticles(
+    current.map((a) => (a.id === articleId ? { ...a, viewsCount: optimisticNext } : a))
+  );
+
+  try {
+    const { data, error } = await supabase.rpc('increment_article_views', {
+      target_article_id: articleId,
+    });
+    if (!error && typeof data === 'number') {
+      const latest = getCachedArticles(true);
+      setCachedArticles(
+        latest.map((a) => (a.id === articleId ? { ...a, viewsCount: data } : a))
+      );
+      return data;
+    }
+  } catch {}
+  return optimisticNext;
+}
+
+export function subscribeToArticlesRealtime(
+  includeAllForOwner: boolean,
+  onArticlesUpdated: (list: PortfolioArticle[]) => void
+): () => void {
+  try {
+    const channel = supabase
+      .channel('public:articles_realtime_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'articles' },
+        async () => {
+          const fresh = await fetchArticlesFromSupabase(includeAllForOwner);
+          onArticlesUpdated(fresh);
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch {
+    return () => {};
+  }
 }
 
 // ============================================================================
@@ -2886,6 +3105,9 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
     ...rawStored.filter((t) => t && t.id && !BUILT_IN_THEMES.some((bt) => bt.id === t.id)),
   ];
 
+  const rawHome = src.homepageConfig && typeof src.homepageConfig === 'object' ? src.homepageConfig : ({} as Partial<HomepageConfig>);
+  const rawHomeCards = rawHome.cards && typeof rawHome.cards === 'object' ? rawHome.cards : ({} as Partial<HomepageConfig['cards']>);
+
   return {
     activeThemeId: src.activeThemeId || DEFAULT_APPEARANCE_CONFIG.activeThemeId,
     storedThemes: mergedThemes,
@@ -2893,6 +3115,17 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
     heroAnimationEnabled: src.heroAnimationEnabled ?? DEFAULT_APPEARANCE_CONFIG.heroAnimationEnabled,
     cardAnimationEnabled: src.cardAnimationEnabled ?? DEFAULT_APPEARANCE_CONFIG.cardAnimationEnabled,
     heroBackgroundImageUrl: src.heroBackgroundImageUrl || '',
+    homepageConfig: {
+      ...DEFAULT_HOMEPAGE_CONFIG,
+      ...rawHome,
+      cards: {
+        profile: { ...DEFAULT_HOMEPAGE_CONFIG.cards.profile, ...(rawHomeCards.profile || {}) },
+        overview: { ...DEFAULT_HOMEPAGE_CONFIG.cards.overview, ...(rawHomeCards.overview || {}) },
+        messaging: { ...DEFAULT_HOMEPAGE_CONFIG.cards.messaging, ...(rawHomeCards.messaging || {}) },
+        projects: { ...DEFAULT_HOMEPAGE_CONFIG.cards.projects, ...(rawHomeCards.projects || {}) },
+        articles: { ...DEFAULT_HOMEPAGE_CONFIG.cards.articles, ...(rawHomeCards.articles || {}) },
+      },
+    },
     projectsArticlesConfig: {
       customSections: Array.isArray(src.projectsArticlesConfig?.customSections)
         ? src.projectsArticlesConfig.customSections
@@ -2904,6 +3137,10 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
       videoCardControls: {
         ...DEFAULT_APPEARANCE_CONFIG.projectsArticlesConfig.videoCardControls,
         ...(src.projectsArticlesConfig?.videoCardControls || {}),
+      },
+      imageCardControls: {
+        ...DEFAULT_APPEARANCE_CONFIG.projectsArticlesConfig.imageCardControls,
+        ...(src.projectsArticlesConfig?.imageCardControls || {}),
       },
     },
     profileSectionManager: {

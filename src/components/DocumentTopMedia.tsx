@@ -301,7 +301,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       </div>
 
       <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono pt-3 border-t border-slate-200">
-        <span className="truncate">{doc.issuer}</span>
+        <span className="truncate">{doc.issuer ? `From: ${doc.issuer}` : ''}</span>
         <span className="shrink-0">{doc.date}</span>
       </div>
     </div>

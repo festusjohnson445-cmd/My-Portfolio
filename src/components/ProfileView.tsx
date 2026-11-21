@@ -1988,7 +1988,15 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             {experiences.length === 0 ? (
               <div className="p-4 rounded-xl bg-white border border-slate-200 text-center text-xs text-slate-600 space-y-1">
                 {bioData.leadership && (
-                  <p className="font-semibold text-slate-800">{bioData.leadership}</p>
+                  <ul className="list-disc list-inside space-y-0.5 text-left font-semibold text-slate-800 max-w-xl mx-auto">
+                    {bioData.leadership
+                      .split(/\r?\n|[;|•]+/)
+                      .map((item) => item.replace(/^[-*\s]+/, '').trim())
+                      .filter(Boolean)
+                      .map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                  </ul>
                 )}
                 <p className="text-[11px] text-slate-500">
                   Career history entries added from the Admin Dashboard appear here and in the Resume PDF.
@@ -2110,9 +2118,21 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 <div className="font-bold text-slate-950">{bioData.degree}</div>
                 {bioData.academicHonors && <div className="text-[11px] text-cyan-900">{bioData.academicHonors}</div>}
               </div>
-              <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1 text-center">
-                <span className="text-[10px] font-bold text-slate-500 uppercase">Leadership &amp; Appointments</span>
-                <div className="text-[11px] text-slate-800">{bioData.leadership}</div>
+              <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5">
+                <span className="text-[10px] font-bold text-slate-500 uppercase block text-center">Leadership &amp; Appointments</span>
+                {bioData.leadership ? (
+                  <ul className="list-disc list-inside space-y-1 text-left text-[11px] text-slate-800">
+                    {bioData.leadership
+                      .split(/\r?\n|[;|•]+/)
+                      .map((item) => item.replace(/^[-*\s]+/, '').trim())
+                      .filter(Boolean)
+                      .map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                  </ul>
+                ) : (
+                  <div className="text-[11px] text-slate-500 text-center">No appointments listed.</div>
+                )}
               </div>
             </div>
 
@@ -2129,7 +2149,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     </div>
                     <h3 className="font-bold text-slate-950 text-center">{ach.title}</h3>
                     <div className="text-[10px] text-slate-500 text-center">
-                      {ach.issuer} {ach.dateStr ? `· ${ach.dateStr}` : ''}
+                      {ach.issuer ? `From: ${ach.issuer}` : ''} {ach.dateStr ? `· ${ach.dateStr}` : ''}
                     </div>
                     {ach.description && <p className="text-[11px] text-slate-700 text-justify">{ach.description}</p>}
                     {ach.certificateUrl && (
@@ -2371,7 +2391,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       {doc.date && <span className="shrink-0 tabular-nums">{doc.date}</span>}
                     </div>
                     <h3 className="text-xs font-bold text-slate-950 text-left leading-snug">{doc.title}</h3>
-                    <div className="text-[10.5px] font-medium text-slate-600 text-left">{doc.issuer}</div>
+                    {doc.issuer && (
+                      <div className="text-[10.5px] font-medium text-slate-600 text-left">
+                        From: {doc.issuer}
+                      </div>
+                    )}
                     {doc.description && (
                       <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
                         {doc.description}

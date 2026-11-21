@@ -16,11 +16,14 @@ import {
   Play,
   Check,
   X,
+  Eye,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
   deleteProjectFromSupabase,
   updateProjectHeroInscription,
+  incrementProjectViewsInSupabase,
+  subscribeToProjectsRealtime,
   useWebsiteSettingsSync,
   getCachedProjects,
   hasProjectsCacheHydrated,
@@ -32,12 +35,22 @@ import { Interactive3DViewer } from './Interactive3DViewer';
 import { ProjectFormPanel } from './ProjectFormPanel';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
 import { LiveRelativeTime } from './LiveRelativeTime';
+import {
+  getContainerWidthClassForAspect,
+  getImageFitClass,
+  getMediaImgStyle,
+} from '../utils/mediaCardStyle';
 
 export const ProjectsView: React.FC = () => {
   const { isOwner } = useProfileSync();
   const websiteSettings = useWebsiteSettingsSync();
   const { projectsArticlesConfig, cardAnimationEnabled } = websiteSettings.appearanceConfig;
   const { customSections, innerLayout, videoCardControls } = projectsArticlesConfig;
+  const imageCardControls = projectsArticlesConfig.imageCardControls || {
+    aspectRatio: '4/3' as const,
+    objectFit: 'contain' as const,
+    zoomLevel: 1,
+  };
   const cardAnimClass = cardAnimationEnabled ? 'card-anim-enabled' : '';
   const visibleCustomSections = useMemo(
     () =>
@@ -76,19 +89,42 @@ export const ProjectsView: React.FC = () => {
   useEffect(() => {
     loadProjects();
     const onUpdated = () => {
-      setProjects(getCachedProjects(isOwner));
+      const updatedList = getCachedProjects(isOwner);
+      setProjects(updatedList);
+      setSelectedProject((prev) =>
+        prev ? updatedList.find((p) => p.id === prev.id) || prev : null
+      );
       setLoading(false);
     };
     window.addEventListener(EVENT_PROJECTS_UPDATED, onUpdated);
-    return () => window.removeEventListener(EVENT_PROJECTS_UPDATED, onUpdated);
+    const unsubRealtime = subscribeToProjectsRealtime(isOwner, (fresh) => {
+      setProjects(fresh);
+      setSelectedProject((prev) =>
+        prev ? fresh.find((p) => p.id === prev.id) || prev : null
+      );
+    });
+    return () => {
+      window.removeEventListener(EVENT_PROJECTS_UPDATED, onUpdated);
+      unsubRealtime();
+    };
   }, [isOwner]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
     projects.forEach((p) => {
-      if (p.category) set.add(p.category);
+      if ((isOwner || p.status === 'published') && p.category) set.add(p.category);
     });
     return ['All', ...Array.from(set)];
+  }, [projects, isOwner]);
+
+  const activeUploadCategories = useMemo(() => {
+    const set = new Set<string>();
+    projects.forEach((p) => {
+      if (p.status === 'published' && p.category?.trim()) {
+        set.add(p.category.trim());
+      }
+    });
+    return Array.from(set);
   }, [projects]);
 
   const filteredProjects = useMemo(() => {
@@ -136,7 +172,16 @@ export const ProjectsView: React.FC = () => {
     setEditingProject(null);
     setEditingInscription(false);
     setInscriptionDraft(proj.heroInscription || '');
-    setSelectedProject(proj);
+    const optimisticViews = (proj.viewsCount || 0) + 1;
+    setSelectedProject({ ...proj, viewsCount: optimisticViews });
+    setProjects((prev) =>
+      prev.map((p) => (p.id === proj.id ? { ...p, viewsCount: optimisticViews } : p))
+    );
+    void incrementProjectViewsInSupabase(proj.id).then((serverViews) => {
+      if (typeof serverViews === 'number') {
+        setSelectedProject((cur) => (cur?.id === proj.id ? { ...cur, viewsCount: serverViews } : cur));
+      }
+    });
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
     }
@@ -217,75 +262,97 @@ export const ProjectsView: React.FC = () => {
             <p className="text-xs sm:text-sm text-slate-600 max-w-4xl mx-auto leading-relaxed">
               {selectedProject.description}
             </p>
+            <div className="flex items-center justify-center gap-3 text-[11px] text-slate-500 pt-0.5">
+              <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-semibold">
+                {selectedProject.category}
+              </span>
+              <span className="inline-flex items-center gap-1 text-slate-600 font-semibold">
+                <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                <span className="tabular-nums">{selectedProject.viewsCount || 0}</span>
+                <span>views</span>
+              </span>
+            </div>
           </div>
 
           {selectedProject.thumbnailUrl && (
-            <figure className="w-full space-y-2">
-              <div className="w-full aspect-[16/9] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100">
+            <figure className="w-full">
+              <div
+                className={`relative ${getContainerWidthClassForAspect(imageCardControls.aspectRatio, 'hero')} max-h-[420px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100 flex items-center justify-center`}
+                style={{
+                  aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                }}
+              >
                 <img
                   src={selectedProject.thumbnailUrl}
                   alt={selectedProject.title}
                   loading="lazy"
                   decoding="async"
-                  className="w-full h-full object-cover block"
+                  style={getMediaImgStyle(imageCardControls)}
+                  className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                 />
-              </div>
-              {(selectedProject.heroInscription || isOwner) && (
-                <figcaption className="px-1 pt-0.5">
-                  {editingInscription && isOwner ? (
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-50 border border-[#b8c6d4] rounded-lg p-2">
-                      <input
-                        type="text"
-                        value={inscriptionDraft}
-                        onChange={(e) => setInscriptionDraft(e.target.value)}
-                        placeholder="Enter hero inscription text shown outside the hero image container..."
-                        className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-700"
-                      />
-                      <div className="flex items-center justify-end gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          disabled={savingInscription}
-                          onClick={handleSaveHeroInscription}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
-                        >
-                          <Check className="w-3 h-3" />
-                          <span>{savingInscription ? 'Saving...' : 'Save'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingInscription(false);
-                            setInscriptionDraft(selectedProject.heroInscription || '');
-                          }}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
-                          <span>Cancel</span>
-                        </button>
+
+                {(selectedProject.heroInscription || isOwner) && (
+                  <div
+                    className="absolute top-2.5 right-2.5 z-20 max-w-[85%] sm:max-w-[58%]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {editingInscription && isOwner ? (
+                      <div className="flex flex-col gap-1.5 bg-slate-950/90 backdrop-blur-xs border border-white/25 rounded-lg p-2 shadow-lg">
+                        <input
+                          type="text"
+                          value={inscriptionDraft}
+                          onChange={(e) => setInscriptionDraft(e.target.value)}
+                          placeholder="Top-right hero inscription..."
+                          className="w-full min-w-[180px] sm:min-w-[230px] px-2 py-1 rounded border border-slate-500 bg-slate-900 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                        />
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            disabled={savingInscription}
+                            onClick={handleSaveHeroInscription}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-700 hover:bg-cyan-600 text-white text-[10.5px] font-semibold cursor-pointer disabled:opacity-60"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>{savingInscription ? 'Saving...' : 'Save'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingInscription(false);
+                              setInscriptionDraft(selectedProject.heroInscription || '');
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-[10.5px] font-semibold cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Cancel</span>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#edf2f8]/70 border border-[#cbd5e1]/80">
-                      <p className="text-xs text-slate-700 italic leading-relaxed text-justify flex-1 min-w-0 break-words">
-                        {selectedProject.heroInscription || 'No hero inscription added yet.'}
-                      </p>
-                      {isOwner && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setInscriptionDraft(selectedProject.heroInscription || '');
-                            setEditingInscription(true);
-                          }}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-cyan-900 text-[11px] font-semibold cursor-pointer shrink-0"
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          <span>{selectedProject.heroInscription ? 'Edit Inscription' : 'Add Inscription'}</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </figcaption>
-              )}
+                    ) : (
+                      <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-950/75 backdrop-blur-xs border border-white/25 text-white shadow-md">
+                        {selectedProject.heroInscription && (
+                          <p className="text-[11px] sm:text-xs font-medium italic leading-snug text-right break-words">
+                            {selectedProject.heroInscription}
+                          </p>
+                        )}
+                        {isOwner && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInscriptionDraft(selectedProject.heroInscription || '');
+                              setEditingInscription(true);
+                            }}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/15 hover:bg-white/25 border border-white/25 text-white text-[10px] font-semibold cursor-pointer shrink-0"
+                          >
+                            <Edit3 className="w-2.5 h-2.5" />
+                            <span>{selectedProject.heroInscription ? 'Edit' : 'Add Inscription'}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </figure>
           )}
 
@@ -425,41 +492,49 @@ export const ProjectsView: React.FC = () => {
             </div>
           )}
 
-          {/* Images Media Gallery (Full uploaded image + optional note if entered) */}
+          {/* Images Media Gallery (Full uploaded image + separate note div below each image) */}
           {selectedProject.images.length > 0 && (
             <div className="space-y-2">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                 <ImageIcon className="w-3.5 h-3.5 text-cyan-800" />
                 <span>Media Gallery</span>
               </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
                 {selectedProject.images.map((img, i) => {
                   const avifSrcSet = img.mobileUrl && img.avifUrl && img.mobileUrl !== img.avifUrl
                     ? `${img.mobileUrl} 768w, ${img.avifUrl} 1600w`
                     : img.avifUrl;
                   return (
-                    <div key={i} className="w-full rounded-lg border border-slate-200 bg-white overflow-hidden flex flex-col">
-                      <picture className="w-full aspect-[16/10] bg-slate-50 flex items-center justify-center overflow-hidden">
-                        {avifSrcSet && (
-                          <source
-                            srcSet={avifSrcSet}
-                            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-                            type="image/avif"
+                    <div key={i} className="w-full flex flex-col gap-2">
+                      <div
+                        className={`${getContainerWidthClassForAspect(imageCardControls.aspectRatio, 'gallery')} max-h-[280px] rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center`}
+                        style={{
+                          aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                        }}
+                      >
+                        <picture className="w-full h-full flex items-center justify-center overflow-hidden">
+                          {avifSrcSet && (
+                            <source
+                              srcSet={avifSrcSet}
+                              sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                              type="image/avif"
+                            />
+                          )}
+                          {img.webpUrl && <source srcSet={img.webpUrl} type="image/webp" />}
+                          <img
+                            src={img.jpegUrl || img.url}
+                            alt={img.note || img.title || `Project Image ${i + 1}`}
+                            loading="lazy"
+                            decoding="async"
+                            style={getMediaImgStyle(imageCardControls)}
+                            className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                           />
-                        )}
-                        {img.webpUrl && <source srcSet={img.webpUrl} type="image/webp" />}
-                        <img
-                          src={img.jpegUrl || img.url}
-                          alt={img.note || img.title || `Project Image ${i + 1}`}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-full h-full object-contain block"
-                        />
-                      </picture>
+                        </picture>
+                      </div>
                       {img.note && img.note.trim() && (
-                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                        <div className="w-full rounded-lg border border-[#cbd5e1] bg-[#edf2f8]/75 px-3 py-2 text-[11px] text-slate-700 text-justify leading-relaxed shadow-2xs">
                           {img.note.trim()}
-                        </p>
+                        </div>
                       )}
                     </div>
                   );
@@ -468,33 +543,35 @@ export const ProjectsView: React.FC = () => {
             </div>
           )}
 
-          {/* Videos Gallery (Vidstack video player + optional note if entered) */}
+          {/* Videos Gallery (Vidstack video player + separate note div below each video) */}
           {selectedProject.videos.length > 0 && (
             <div className="space-y-2">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                 <Video className="w-3.5 h-3.5 text-cyan-800" />
                 <span>Project Videos</span>
               </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
                 {selectedProject.videos.map((vid, i) => (
-                  <div key={i} className="w-full rounded-lg border border-slate-200 bg-slate-950 overflow-hidden flex flex-col">
-                    <CleanVideoPlayer
-                      src={vid.url}
-                      poster={vid.posterUrl}
-                      av1Urls={vid.av1Urls}
-                      h264Urls={vid.h264Urls}
-                      vttThumbnailsUrl={vid.vttThumbnailsUrl}
-                      subtitleUrl={vid.subtitleUrl}
-                      mediaId={vid.mediaAssetId || vid.url}
-                      title={vid.title || selectedProject.title}
-                      aspectRatio={videoCardControls.aspectRatio || '16/9'}
-                      objectFit={videoCardControls.objectFit || 'contain'}
-                      zoomLevel={videoCardControls.zoomLevel || 1}
-                    />
+                  <div key={i} className="w-full flex flex-col gap-2">
+                    <div className="w-full rounded-lg border border-slate-200 bg-slate-950 overflow-hidden">
+                      <CleanVideoPlayer
+                        src={vid.url}
+                        poster={vid.posterUrl}
+                        av1Urls={vid.av1Urls}
+                        h264Urls={vid.h264Urls}
+                        vttThumbnailsUrl={vid.vttThumbnailsUrl}
+                        subtitleUrl={vid.subtitleUrl}
+                        mediaId={vid.mediaAssetId || vid.url}
+                        title={vid.title || selectedProject.title}
+                        aspectRatio={videoCardControls.aspectRatio || '16/9'}
+                        objectFit={videoCardControls.objectFit || 'contain'}
+                        zoomLevel={videoCardControls.zoomLevel || 1}
+                      />
+                    </div>
                     {vid.note && vid.note.trim() && (
-                      <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-justify leading-relaxed">
+                      <div className="w-full rounded-lg border border-[#cbd5e1] bg-[#edf2f8]/75 px-3 py-2 text-[11px] text-slate-700 text-justify leading-relaxed shadow-2xs">
                         {vid.note.trim()}
-                      </p>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -631,6 +708,7 @@ export const ProjectsView: React.FC = () => {
         <ProjectFormPanel
           initialProject={editingProject}
           isOwner={isOwner}
+          activeCategories={activeUploadCategories}
           onSaved={(saved) => {
             setProjects((prev) => {
               const exists = prev.some((p) => p.id === saved.id);
@@ -665,13 +743,14 @@ export const ProjectsView: React.FC = () => {
                 className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
               >
                 {featImg ? (
-                  <div className="w-full sm:w-52 aspect-[16/10] sm:aspect-auto sm:min-h-[168px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden">
+                  <div className="w-full sm:w-52 h-40 sm:h-auto sm:min-h-[168px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden flex items-center justify-center">
                     <img
                       src={featImg}
                       alt={proj.title}
                       loading="lazy"
                       decoding="async"
-                      className="w-full h-full object-cover block"
+                      style={getMediaImgStyle(imageCardControls)}
+                      className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                     />
                   </div>
                 ) : featVid ? (
@@ -717,7 +796,13 @@ export const ProjectsView: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex items-center justify-between pt-1 text-[10px]">
-                    <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
+                    <div className="flex items-center gap-2.5 text-slate-500">
+                      <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
+                      <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Views">
+                        <Eye className="w-3 h-3 text-cyan-800" />
+                        <span className="tabular-nums">{proj.viewsCount || 0}</span>
+                      </span>
+                    </div>
                     <span className="text-cyan-800 font-semibold">View →</span>
                   </div>
                 </div>
@@ -805,13 +890,19 @@ export const ProjectsView: React.FC = () => {
               >
                 <div>
                   {cardImg ? (
-                    <div className="w-full aspect-[16/10] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                    <div
+                      className="w-full max-h-[240px] bg-slate-100 border-b border-slate-200 overflow-hidden flex items-center justify-center"
+                      style={{
+                        aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                      }}
+                    >
                       <img
                         src={cardImg}
                         alt={proj.title}
                         loading="lazy"
                         decoding="async"
-                        className="w-full h-full object-cover block"
+                        style={getMediaImgStyle(imageCardControls)}
+                        className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                       />
                     </div>
                   ) : cardVid ? (
@@ -861,7 +952,13 @@ export const ProjectsView: React.FC = () => {
                 </div>
 
                 <div className="px-3.5 pb-2.5 pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
+                  <div className="flex items-center gap-2.5">
+                    <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
+                    <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Views">
+                      <Eye className="w-3 h-3 text-cyan-800" />
+                      <span className="tabular-nums">{proj.viewsCount || 0}</span>
+                    </span>
+                  </div>
                   <span className="text-cyan-900 font-bold shrink-0">View →</span>
                 </div>
               </article>

@@ -38,7 +38,9 @@ import {
   ChevronDown,
   ChevronUp,
   ListPlus,
-  ArrowUpDown
+  ArrowUpDown,
+  Heart,
+  GraduationCap,
 } from 'lucide-react';
 import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 import {
@@ -72,6 +74,8 @@ import {
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
   subscribeToSupabaseMaterialsChanges,
+  incrementMaterialViewsInSupabase,
+  toggleMaterialLikeInSupabase,
   getAuthenticatedOwnerUid,
   ensureValidUuid,
 } from '../utils/supabase';
@@ -90,16 +94,9 @@ function sanitizeDocumentDescription(desc?: string): string {
   return trimmed;
 }
 
-export type DocumentCategory =
-  | 'Students Materials'
-  | 'Christians Book'
-  | 'Inspirational Book'
-  | 'Technical Drawing'
-  | '3D CAD Model'
-  | 'Production Blueprint'
-  | 'Whitepaper & Report'
-  | 'BOM & Specification'
-  | 'Calculation & Dataset';
+export type DocumentCategory = string;
+
+export const STUDENT_LEVELS = ['100L', '200L', '300L', '400L', '500L', '600L'] as const;
 
 export interface PublicEngineeringDocument {
   id: string;
@@ -116,6 +113,11 @@ export interface PublicEngineeringDocument {
   uploadDate: string;
   uploadTimestamp?: number;
   downloadCount: number;
+  viewsCount?: number;
+  likesCount?: number;
+  level?: string;
+  department?: string;
+  institution?: string;
   tags: string[];
   previewUrl?: string;
   dataUrl?: string; // Stored file content / base64
@@ -129,8 +131,12 @@ export interface QueuedUploadItem {
   file: File;
   title: string;
   category: DocumentCategory;
+  customCategoryMode?: boolean;
   description: string;
   tags: string;
+  level: string;
+  department: string;
+  institution: string;
   previewUrl: string | null;
   fileSize: string;
   fileType: string;
@@ -359,112 +365,7 @@ export interface EngineeringDocumentHubProps {
   onNavigatePart?: (part: PortfolioPart) => void;
 }
 
-export const CATEGORIES_LIST: DocumentCategory[] = [
-  'Students Materials',
-  'Christians Book',
-  'Inspirational Book',
-  'Technical Drawing',
-  '3D CAD Model',
-  'Production Blueprint',
-  'Whitepaper & Report',
-  'BOM & Specification',
-  'Calculation & Dataset'
-];
-
-/**
- * Smart Category Auto-Detection based on filename and extension
- */
-export function autoDetectCategory(fileName: string): DocumentCategory {
-  const lowerName = fileName.toLowerCase();
-  const ext = lowerName.split('.').pop() || '';
-
-  if (
-    lowerName.includes('student') ||
-    lowerName.includes('lecture') ||
-    lowerName.includes('syllabus') ||
-    lowerName.includes('assignment') ||
-    lowerName.includes('homework') ||
-    lowerName.includes('exam') ||
-    lowerName.includes('past question') ||
-    lowerName.includes('handout') ||
-    lowerName.includes('course') ||
-    lowerName.includes('tutorial') ||
-    lowerName.includes('worksheet') ||
-    lowerName.includes('study') ||
-    lowerName.includes('semester') ||
-    lowerName.includes('notes')
-  ) {
-    return 'Students Materials';
-  }
-
-  if (
-    lowerName.includes('christian') ||
-    lowerName.includes('bible') ||
-    lowerName.includes('gospel') ||
-    lowerName.includes('devotion') ||
-    lowerName.includes('prayer') ||
-    lowerName.includes('faith') ||
-    lowerName.includes('jesus') ||
-    lowerName.includes('christ') ||
-    lowerName.includes('pastor') ||
-    lowerName.includes('sermon') ||
-    lowerName.includes('grace') ||
-    lowerName.includes('church')
-  ) {
-    return 'Christians Book';
-  }
-
-  if (
-    lowerName.includes('carnegie') ||
-    lowerName.includes('influence') ||
-    lowerName.includes('inspirational') ||
-    lowerName.includes('inspire') ||
-    lowerName.includes('motivation') ||
-    lowerName.includes('habit') ||
-    lowerName.includes('mindset') ||
-    lowerName.includes('success') ||
-    lowerName.includes('leadership') ||
-    lowerName.includes('growth') ||
-    lowerName.includes('psychology') ||
-    lowerName.includes('atomic') ||
-    lowerName.includes('think and grow') ||
-    lowerName.includes('ife')
-  ) {
-    return 'Inspirational Book';
-  }
-
-  if (['step', 'stp', 'iges', 'igs', 'sldprt', 'sldasm', 'stl', 'obj', 'fbx', 'ipt', 'iam', 'x_t', 'sat', '3dm'].includes(ext)) {
-    return '3D CAD Model';
-  }
-
-  if (['dwg', 'dxf'].includes(ext)) {
-    return 'Production Blueprint';
-  }
-
-  if (['xlsx', 'xls', 'csv', 'tsv', 'mat', 'h5', 'dat'].includes(ext) || lowerName.includes('calc') || lowerName.includes('dataset') || lowerName.includes('fea')) {
-    return 'Calculation & Dataset';
-  }
-
-  if (lowerName.includes('bom') || lowerName.includes('bill of materials') || lowerName.includes('spec') || lowerName.includes('partlist')) {
-    return 'BOM & Specification';
-  }
-
-  if (['docx', 'doc', 'pptx', 'ppt', 'txt', 'md'].includes(ext) || lowerName.includes('paper') || lowerName.includes('report') || lowerName.includes('whitepaper') || lowerName.includes('thesis')) {
-    return 'Whitepaper & Report';
-  }
-
-  if (ext === 'pdf') {
-    if (lowerName.includes('drawing') || lowerName.includes('cad') || lowerName.includes('gdt') || lowerName.includes('tolerance') || lowerName.includes('blueprint') || lowerName.includes('schematic') || lowerName.includes('laser') || lowerName.includes('cnc')) {
-      return 'Technical Drawing';
-    }
-    if (lowerName.includes('book') || lowerName.includes('guide') || lowerName.includes('story')) {
-      return 'Inspirational Book';
-    }
-    return 'Technical Drawing';
-  }
-
-  return 'Technical Drawing';
-}
+export const CATEGORIES_LIST: DocumentCategory[] = [];
 
 /**
  * Format file size nicely
@@ -517,7 +418,19 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
 
-  // Upload Queue State (Supports single or multi-file uploads seamlessly)
+  const [uploadFormMode, setUploadFormMode] = useState<'general' | 'student'>('general');
+  const [likedMaterialIds, setLikedMaterialIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('fesline_liked_materials_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return new Set(parsed);
+      }
+    } catch {}
+    return new Set();
+  });
+
+  // Upload Queue State (Supports single or multi-file uploads seamlessly without auto-fill)
   const [queuedFiles, setQueuedFiles] = useState<QueuedUploadItem[]>([]);
   const [uploaderName, setUploaderName] = useState('');
   const [isPublishing, setIsPublishing] = useState(false);
@@ -597,19 +510,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
             supaDocsMap.set(m.id, {
               id: m.id,
-              title: m.title || existing?.title || 'Engineering Document',
+              title: m.title || existing?.title || 'Untitled Document',
               fileName: m.file_name || existing?.fileName || 'document.pdf',
               fileSize: m.file_size || existing?.fileSize || 'Standard',
               fileType: m.file_type || existing?.fileType || 'PDF',
-              category: m.category || existing?.category || 'Technical Drawing',
+              category: m.category || existing?.category || '',
               description: sanitizeDocumentDescription(m.description || existing?.description || ''),
-              author: m.author || existing?.author || 'Festus, Olorunsogo Johnson (Owner)',
-              uploaderName: m.author || existing?.uploaderName || 'Festus, Olorunsogo Johnson (Owner)',
-              uploaderType: 'owner',
+              author: m.author || existing?.author || '',
+              uploaderName: m.author || existing?.uploaderName || '',
+              uploaderType: m.category === 'Students Materials' && !m.owner_id ? 'visitor' : 'owner',
               status: 'approved',
               uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
-              downloadCount: m.download_count || existing?.downloadCount || 0,
-              tags: Array.isArray(m.tags) && m.tags.length > 0 ? m.tags : ['Engineering'],
+              downloadCount: m.download_count ?? existing?.downloadCount ?? 0,
+              viewsCount: m.views_count ?? existing?.viewsCount ?? 0,
+              likesCount: m.likes_count ?? existing?.likesCount ?? 0,
+              level: m.level || existing?.level || '',
+              department: m.department || existing?.department || '',
+              institution: m.institution || existing?.institution || '',
+              tags: Array.isArray(m.tags) ? m.tags : [],
               previewUrl: validPreview,
               downloadUrl: resolvedDownloadUrl,
               dataUrl: existing?.dataUrl,
@@ -827,7 +745,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   };
 
   /**
-   * Process picked files (supports single or multi-file uploads of any type)
+   * Process picked files WITHOUT auto-filling title, category, tags, description, level, department, or institution
    */
   const handleFilesPicked = async (fileList: FileList | File[]) => {
     setUploadError(null);
@@ -839,17 +757,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
     for (let i = 0; i < filesArray.length; i++) {
       const file = filesArray[i];
-      const cleanTitle = file.name
-        .replace(/\.[^/.]+$/, '')
-        .replace(/[-_]/g, ' ')
-        .trim();
-      const capitalizedTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
-      const detectedCat = autoDetectCategory(file.name);
       const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
 
       let preview: string | null = null;
 
-      // Generate lightweight preview thumbnail safely for real images and PDFs only
       if (file.type.startsWith('image/')) {
         preview = await new Promise<string | null>((resolve) => {
           const reader = new FileReader();
@@ -871,29 +782,45 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       newQueueItems.push({
         id: `queue-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 5)}`,
         file,
-        title: capitalizedTitle,
-        category: detectedCat,
+        title: '',
+        category: uploadFormMode === 'student' ? 'Students Materials' : '',
+        customCategoryMode: false,
         description: '',
-        tags: `${ext}, Engineering, ${detectedCat}`,
+        tags: '',
+        level: '',
+        department: '',
+        institution: '',
         previewUrl: preview,
         fileSize: formatBytes(file.size),
-        fileType: ext
+        fileType: ext,
       });
     }
 
     setQueuedFiles((prev) => [...prev, ...newQueueItems]);
   };
 
-  const handleOpenUploadModal = () => {
-    if (!isOwner) {
-      showToast('Owner authorization required to upload engineering documents to public archive.', 'error');
-      return;
-    }
+  const handleOpenUploadModal = (preferredMode?: 'general' | 'student') => {
+    const mode: 'general' | 'student' = isOwner
+      ? preferredMode || 'general'
+      : 'student';
+    setUploadFormMode(mode);
     setUploadError(null);
     setUploadSuccessMsg(null);
     setQueuedFiles([]);
-    setUploaderName('Festus, Olorunsogo Johnson (Owner)');
+    setUploaderName('');
     setIsUploadModalOpen(true);
+  };
+
+  const handleSwitchUploadFormMode = (nextMode: 'general' | 'student') => {
+    if (!isOwner && nextMode === 'general') return;
+    setUploadFormMode(nextMode);
+    setUploadError(null);
+    setQueuedFiles((prev) =>
+      prev.map((item) => ({
+        ...item,
+        category: nextMode === 'student' ? 'Students Materials' : item.category === 'Students Materials' ? '' : item.category,
+      }))
+    );
   };
 
   const handleRemoveQueueItem = (id: string) => {
@@ -906,49 +833,132 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     );
   };
 
+  const openPreviewModal = (doc: PublicEngineeringDocument) => {
+    const optimisticViews = (doc.viewsCount || 0) + 1;
+    const updatedDoc = { ...doc, viewsCount: optimisticViews };
+    setPreviewModalDoc(updatedDoc);
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === doc.id ? { ...d, viewsCount: optimisticViews } : d))
+    );
+    void incrementMaterialViewsInSupabase(doc.id).then((serverViews) => {
+      if (typeof serverViews === 'number') {
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === doc.id ? { ...d, viewsCount: serverViews } : d))
+        );
+        setPreviewModalDoc((cur) => (cur?.id === doc.id ? { ...cur, viewsCount: serverViews } : cur));
+      }
+    });
+  };
+
+  const handleLikeDocument = async (doc: PublicEngineeringDocument, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const currentlyLiked = likedMaterialIds.has(doc.id);
+    const delta: 1 | -1 = currentlyLiked ? -1 : 1;
+    const optimistic = Math.max(0, (doc.likesCount || 0) + delta);
+
+    setLikedMaterialIds((prev) => {
+      const next = new Set(prev);
+      if (currentlyLiked) next.delete(doc.id);
+      else next.add(doc.id);
+      try {
+        localStorage.setItem('fesline_liked_materials_v1', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === doc.id ? { ...d, likesCount: optimistic } : d))
+    );
+    if (previewModalDoc?.id === doc.id) {
+      setPreviewModalDoc((cur) => (cur ? { ...cur, likesCount: optimistic } : cur));
+    }
+
+    const serverLikes = await toggleMaterialLikeInSupabase(doc.id, delta, optimistic);
+    if (typeof serverLikes === 'number') {
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === doc.id ? { ...d, likesCount: serverLikes } : d))
+      );
+      if (previewModalDoc?.id === doc.id) {
+        setPreviewModalDoc((cur) => (cur ? { ...cur, likesCount: serverLikes } : cur));
+      }
+    }
+  };
+
   /**
-   * Publish all queued documents (strictly interfaces with Supabase Storage bucket 'materials' and database table 'materials')
+   * Publish all queued documents (General Form: Admin only; Student Materials Form: Admin & Visitors)
    */
   const handlePublishAllQueued = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (queuedFiles.length === 0) {
-      setUploadError('Please select at least one document or CAD file to upload.');
+      setUploadError('Please select at least one document file to upload.');
       return;
+    }
+
+    if (!uploaderName.trim()) {
+      setUploadError('Please enter your name in the "From" field.');
+      return;
+    }
+
+    const effectiveMode: 'general' | 'student' = isOwner ? uploadFormMode : 'student';
+
+    for (let idx = 0; idx < queuedFiles.length; idx++) {
+      const item = queuedFiles[idx];
+      if (!item.title.trim()) {
+        setUploadError(`Please enter a Title for document #${idx + 1}.`);
+        return;
+      }
+      if (effectiveMode === 'general') {
+        if (!item.category.trim()) {
+          setUploadError(`Please select or type a Category for document #${idx + 1}.`);
+          return;
+        }
+      } else {
+        if (!item.level.trim() || !item.department.trim() || !item.institution.trim()) {
+          setUploadError(
+            `Please complete Level, Department, and Institution (Abbreviation) for Student Material #${idx + 1}.`
+          );
+          return;
+        }
+      }
     }
 
     setIsPublishing(true);
     setUploadError(null);
     setUploadSuccessMsg(null);
 
-    // 1. Session verification: write operations execute only with validated active Supabase session
-    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+    const { data: sessionData } = await supabase.auth.getSession();
     const activeSession = sessionData?.session;
-    if (sessionErr || !activeSession?.user) {
+
+    if (effectiveMode === 'general' && (!isOwner || !activeSession?.user)) {
       setIsPublishing(false);
-      setUploadError('Active Supabase owner session required to upload documents. Please authenticate via the owner lock icon on your Profile.');
-      showToast('Authentication required: Log in as owner to upload files.', 'error');
+      setUploadError('Active owner session is required for the General Upload Form.');
+      showToast('Owner authentication required for General Upload Form.', 'error');
       return;
     }
-    const ownerUid = activeSession.user.id;
-    const effectiveUploader = uploaderName.trim() || 'Festus, Olorunsogo Johnson (Owner)';
+
+    const allowPublicStudentUpload = effectiveMode === 'student' && !activeSession?.user;
+    const ownerUid = activeSession?.user?.id;
+    const effectiveUploader = uploaderName.trim();
 
     const total = queuedFiles.length;
-    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'uploading...' });
+    setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Uploading...' });
 
     try {
-      // 2. Upload strictly to Supabase Storage bucket "materials" with { contentType, upsert: true }
-      // Await completion and fetch absolute public URL before updating database table rows
       const newDocs: PublicEngineeringDocument[] = await Promise.all(
         queuedFiles.map(async (item, i) => {
           setUploadProgress({
             current: i + 1,
             total,
             percent: Math.round(((i + 1) / (total * 2)) * 100),
-            currentFileName: 'uploading...',
+            currentFileName: 'Uploading...',
           });
 
-          // Direct upload strictly to Supabase Storage bucket "materials"
-          const supaRes = await uploadMaterialToSupabaseBucket(item.file, item.file.name, ownerUid);
+          const supaRes = await uploadMaterialToSupabaseBucket(
+            item.file,
+            item.file.name,
+            ownerUid,
+            allowPublicStudentUpload
+          );
           if (!supaRes || !supaRes.publicUrl) {
             throw new Error(`Supabase Storage: Failed to generate public URL for "${item.file.name}"`);
           }
@@ -967,33 +977,47 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               : ensureValidUuid(`doc-${Date.now()}-${i}-${item.file.name}`);
           const timestamp = Date.now() + i;
 
-          // Upload lightweight PDF Page-1 thumbnail (~25KB) to bucket so visitors avoid downloading full PDFs just to view cards
           let finalPreviewUrl: string | undefined = undefined;
           if (item.file.type.startsWith('image/')) {
             finalPreviewUrl = publicUrl;
           } else if (item.previewUrl && item.previewUrl.startsWith('data:image/')) {
-            const uploadedThumbUrl = await uploadMaterialThumbnailToBucket(item.previewUrl, docId, ownerUid);
+            const uploadedThumbUrl = await uploadMaterialThumbnailToBucket(
+              item.previewUrl,
+              docId,
+              ownerUid,
+              allowPublicStudentUpload
+            );
             finalPreviewUrl = uploadedThumbUrl || item.previewUrl;
           } else if (item.previewUrl && !isMockDrawingPreview(item.previewUrl)) {
             finalPreviewUrl = item.previewUrl;
           }
 
+          const finalCategory =
+            effectiveMode === 'student' ? 'Students Materials' : item.category.trim();
+          const normalizedInstitution =
+            effectiveMode === 'student' ? item.institution.trim().toUpperCase() : '';
+
           const docObj: PublicEngineeringDocument = {
             id: docId,
-            title: item.title.trim() || item.file.name,
+            title: item.title.trim(),
             fileName: item.file.name,
             fileSize: item.fileSize,
             fileType: item.fileType,
-            category: item.category,
+            category: finalCategory,
             description: sanitizeDocumentDescription(item.description),
             author: effectiveUploader,
             uploaderName: effectiveUploader,
-            uploaderType: 'owner',
+            uploaderType: isOwner ? 'owner' : 'visitor',
             status: 'approved',
             uploadDate: new Date().toISOString().split('T')[0],
             uploadTimestamp: timestamp,
             downloadCount: 0,
-            tags: tagList.length > 0 ? tagList : ['Engineering', item.category],
+            viewsCount: 0,
+            likesCount: 0,
+            level: effectiveMode === 'student' ? item.level.trim() : '',
+            department: effectiveMode === 'student' ? item.department.trim() : '',
+            institution: normalizedInstitution,
+            tags: tagList,
             previewUrl: finalPreviewUrl,
             downloadUrl: publicUrl,
             hasServerFile: true,
@@ -1006,16 +1030,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         })
       );
 
-      // 3. Save official materials to Supabase "materials" table row (file_url, download_url)
-      // Awaits completion and throws on error so database failures never fail silently
-      setUploadProgress({ current: 1, total, percent: 60, currentFileName: 'Saving to Supabase "materials" table...' });
+      setUploadProgress({ current: 1, total, percent: 65, currentFileName: 'Saving to Supabase...' });
       await Promise.all(
-        newDocs.map((docItem) => saveMaterialToSupabaseTable(docItem, ownerUid))
+        newDocs.map((docItem) =>
+          saveMaterialToSupabaseTable(docItem, ownerUid, allowPublicStudentUpload)
+        )
       );
 
-      setUploadProgress({ current: 1, total, percent: 75, currentFileName: 'Broadcasting metadata...' });
+      setUploadProgress({ current: 1, total, percent: 85, currentFileName: 'Publishing...' });
 
-      // 4. Update component state and local storage once Supabase operations succeed
       const updatedAll = sortDocumentsDescending([
         ...newDocs,
         ...documents.filter((d) => !newDocs.some((p) => p.id === d.id)),
@@ -1024,7 +1047,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setDocuments(updatedAll);
       saveDocumentsToStorage(updatedAll);
 
-      // 5. Sync metadata with local backup server (when running locally) & Firestore without sending base64 binary bloat
       const isLocalHost =
         typeof window !== 'undefined' &&
         (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -1035,29 +1057,26 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ documents: newDocs }),
           });
-        } catch (backendErr) {
-          console.warn('Backend batch sync note:', backendErr);
-        }
+        } catch {}
       }
 
-      await Promise.allSettled(
-        newDocs.map(async (doc) => {
-          try {
-            await saveHubDocumentToFirestore(doc);
-          } catch (fErr) {
-            console.warn('Firestore doc sync note:', fErr);
-          }
-        })
-      );
+      if (activeSession?.user) {
+        await Promise.allSettled(
+          newDocs.map(async (doc) => {
+            try {
+              await saveHubDocumentToFirestore(doc);
+            } catch {}
+          })
+        );
+      }
 
-      // 6. Complete and close modal
       setUploadProgress({ current: total, total, percent: 100, currentFileName: 'Upload complete!' });
       setIsPublishing(false);
       const count = newDocs.length;
       const msg =
         count === 1
-          ? `"${newDocs[0]?.title}" uploaded to Supabase materials bucket and published!`
-          : `All ${count} documents uploaded to Supabase materials bucket and published!`;
+          ? `"${newDocs[0]?.title}" uploaded and published!`
+          : `All ${count} documents uploaded and published!`;
 
       showToast(msg, 'success');
       setQueuedFiles([]);
@@ -1068,10 +1087,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     } catch (err: any) {
       console.error('[Supabase Hub Upload/Database Error]:', err);
       setIsPublishing(false);
-      // Explicit UI error logging - halt state updates!
-      setUploadError(`Supabase upload or database operation failed: ${err?.message || 'Storage error'}`);
+      setUploadError(`Upload failed: ${err?.message || 'Storage error'}`);
       showToast(`Upload failed: ${err?.message || 'Storage error'}`, 'error');
-      return;
     }
   };
 
@@ -1187,7 +1204,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
   const approvedDocs = useMemo(() => documents, [documents]);
 
-  const categories = ['All', ...CATEGORIES_LIST];
+  // Active categories only (derived strictly from live uploaded documents)
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    approvedDocs.forEach((d) => {
+      if (d.category?.trim()) set.add(d.category.trim());
+    });
+    return ['All', ...Array.from(set)];
+  }, [approvedDocs]);
+
+  // Active categories for General Form 1 (excludes Students Materials since Form 2 handles that)
+  const activeGeneralCategories = useMemo(() => {
+    const set = new Set<string>();
+    approvedDocs.forEach((d) => {
+      const cat = d.category?.trim();
+      if (cat && cat !== 'Students Materials') set.add(cat);
+    });
+    return Array.from(set);
+  }, [approvedDocs]);
 
   const filteredDocs = useMemo(() => {
     let result = approvedDocs.filter((doc) => {
@@ -1198,6 +1232,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         doc.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         doc.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
         doc.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (doc.institution && doc.institution.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        (doc.department && doc.department.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (doc.uploaderName && doc.uploaderName.toLowerCase().includes(searchQuery.toLowerCase())) ||
         doc.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
       return matchesCategory && matchesSearch;
@@ -1276,11 +1312,18 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={handleOpenUploadModal}
+                    onClick={() => handleOpenUploadModal('general')}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
                   >
                     <Plus className="w-3 h-3" />
                     <span>Upload Documents</span>
+                  </button>
+                  <button
+                    onClick={() => handleOpenUploadModal('student')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
+                  >
+                    <GraduationCap className="w-3 h-3" />
+                    <span>Student Material Form</span>
                   </button>
                   <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
                     <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
@@ -1293,7 +1336,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 Engineering Document Hub &amp; Technical Archive
               </h1>
               <p className="text-[9px] sm:text-[10.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
-                Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), inspirational literature, and calculation datasets. Upload new documents or download existing archives with 1-click.
+                Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), student study materials, and calculation datasets. Upload new documents or download existing archives with 1-click.
               </p>
 
               {/* Quick Metrics Bar */}
@@ -1334,7 +1377,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by title, filename, CAD keyword, book author, or GD&T tag..."
+            placeholder="Search by title, filename, institution, department, uploader, or tag..."
             className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
           />
           {searchQuery && (
@@ -1348,8 +1391,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           )}
         </div>
 
-        {/* Row 2: Compact Filter & Categories Dropdowns Side-by-Side */}
-        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 min-w-0">
+        {/* Row 2: Compact Filter, Categories & Upload Post Action */}
+        <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-1.5 min-w-0 shrink-0">
             <label htmlFor="hub-sort-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap">
               Filter:
@@ -1358,7 +1401,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               id="hub-sort-filter"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="w-[105px] sm:w-auto px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer"
+              className="w-[100px] sm:w-auto px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer"
             >
               <option value="newest">Newest</option>
               <option value="downloads">Most Downloaded</option>
@@ -1367,7 +1410,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end flex-wrap">
             <label htmlFor="hub-category-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden xs:inline sm:inline">
               Category:
             </label>
@@ -1386,6 +1429,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             <span className="text-[9.5px] text-cyan-800 font-sans font-medium whitespace-nowrap shrink-0">
               ({filteredDocs.length})
             </span>
+
+            <button
+              type="button"
+              onClick={() => handleOpenUploadModal(isOwner ? 'general' : 'student')}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
+            >
+              <Plus className="w-3 h-3" />
+              <span>{isOwner ? 'Upload' : 'Post Student Material'}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1418,13 +1470,21 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   : 'Upload technical drawings, Christian & inspirational books, 3D CAD models, or engineering blueprints.'}
               </p>
             </div>
-            {isOwner && (
+            {isOwner ? (
               <button
-                onClick={handleOpenUploadModal}
+                onClick={() => handleOpenUploadModal('general')}
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
                 <span>Upload Document Now</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => handleOpenUploadModal('student')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
+              >
+                <GraduationCap className="w-3.5 h-3.5" />
+                <span>Post Student Material</span>
               </button>
             )}
           </div>
@@ -1432,10 +1492,13 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
             {filteredDocs.map((doc) => {
               const cleanDesc = sanitizeDocumentDescription(doc.description);
+              const isLiked = likedMaterialIds.has(doc.id);
+              const fromLabel = (doc.uploaderName || doc.author || '').trim();
               return (
                 <div
                   key={doc.id}
-                  className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative"
+                  onClick={() => openPreviewModal(doc)}
+                  className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative cursor-pointer"
                 >
                   {/* Card Top: Full-Fit First Page Preview Thumbnail & Format Badge */}
                   {(() => {
@@ -1446,14 +1509,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       Boolean(doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) || isPdfFile;
                     return (
                       <div
-                        onClick={() => {
-                          if (canPreview) {
-                            setPreviewModalDoc(doc);
-                          }
-                        }}
-                        className={`relative w-full h-52 sm:h-64 bg-slate-50/60 overflow-hidden border-b border-slate-200 flex items-center justify-center ${
-                          canPreview ? 'cursor-pointer' : ''
-                        }`}
+                        className="relative w-full h-52 sm:h-64 bg-slate-50/60 overflow-hidden border-b border-slate-200 flex items-center justify-center"
                       >
                         <EngineeringHubPdfCardThumbnail doc={doc} />
 
@@ -1474,7 +1530,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setPreviewModalDoc(doc);
+                                openPreviewModal(doc);
                               }}
                               className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
                               title="View Full Resolution Preview"
@@ -1488,14 +1544,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   })()}
 
                   {/* Card Middle: Content & Metadata */}
-                  <div className="p-3.5 sm:p-4 flex-1 flex flex-col justify-between gap-3">
+                  <div className="p-3.5 sm:p-4 flex-1 flex flex-col justify-between gap-2.5">
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[11px] font-mono text-slate-500">
-                        <span className="text-cyan-700 font-semibold flex items-center gap-1.5 min-w-0">
+                      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[10px] font-mono text-slate-500">
+                        <span className="text-cyan-700 font-semibold flex items-center gap-1 min-w-0 text-[10px]">
                           {getCategoryIcon(doc.category)}
-                          <span className="truncate">{doc.category}</span>
+                          <span className="truncate">{doc.category || 'Document'}</span>
                         </span>
-                        <span className="flex items-center gap-1 shrink-0">
+                        <span className="flex items-center gap-1 shrink-0 text-[10px]">
                           <Clock className="w-3 h-3 text-slate-400" />
                           <span>{doc.uploadDate}</span>
                         </span>
@@ -1505,6 +1561,26 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                         {doc.title}
                       </h3>
 
+                      {(doc.level || doc.department || doc.institution) && (
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                          {doc.level && (
+                            <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                              {doc.level}
+                            </span>
+                          )}
+                          {doc.institution && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white font-bold uppercase">
+                              {doc.institution}
+                            </span>
+                          )}
+                          {doc.department && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 truncate max-w-full">
+                              {doc.department}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       {cleanDesc && (
                         <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed text-justify">
                           {cleanDesc}
@@ -1512,7 +1588,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       )}
                     </div>
 
-                    {/* Tags & Author */}
+                    {/* Tags, From: <Name>, Views, Likes & Downloads */}
                     <div className="space-y-2 pt-2 border-t border-slate-100">
                       {doc.tags.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1">
@@ -1527,11 +1603,36 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                         </div>
                       )}
 
-                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 font-mono">
-                        <span className="truncate" title={doc.uploaderName || doc.author}>
-                          By: <span className="text-slate-800 font-semibold">{doc.uploaderName || doc.author}</span>
-                        </span>
-                        <span className="text-cyan-700 font-bold flex items-center gap-1 shrink-0">
+                      {fromLabel && (
+                        <div className="text-[11px] text-slate-600 font-mono truncate" title={fromLabel}>
+                          From: <span className="text-slate-900 font-semibold">{fromLabel}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between gap-2 text-[10.5px] text-slate-500 font-mono">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-slate-700 font-semibold tabular-nums"
+                            title="Real-time views"
+                          >
+                            <Eye className="w-3 h-3 text-cyan-800" />
+                            <span>{doc.viewsCount || 0}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => void handleLikeDocument(doc, e)}
+                            aria-label={isLiked ? 'Unlike document' : 'Like document'}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-semibold transition-colors cursor-pointer tabular-nums ${
+                              isLiked
+                                ? 'bg-rose-50 border-rose-300 text-rose-700'
+                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
+                            }`}
+                          >
+                            <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                            <span>{doc.likesCount || 0}</span>
+                          </button>
+                        </div>
+                        <span className="text-cyan-700 font-bold flex items-center gap-1 shrink-0 tabular-nums">
                           <FolderDown className="w-3 h-3 text-cyan-600" />
                           <span>{doc.downloadCount} downloads</span>
                         </span>
@@ -1540,7 +1641,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   </div>
 
                   {/* Card Bottom: Direct HTML Download Link & Compact Delete */}
-                  <div className="px-3.5 py-2.5 bg-slate-50/90 border-t border-slate-200 flex items-center gap-2">
+                  <div
+                    className="px-3.5 py-2.5 bg-slate-50/90 border-t border-slate-200 flex items-center gap-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <a
                       href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
                       download={doc.fileName}
@@ -1581,22 +1685,30 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         )}
       </div>
 
-      {/* 5. MODAL: DEDICATED UPLOAD MODAL (Owner Only) */}
-      {isOwner && isUploadModalOpen && (
+      {/* 5. MODAL: DUAL UPLOAD FORMS (Admin: General + Student Materials; Visitors: Student Materials Only) */}
+      {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto overflow-x-hidden">
           <div className="relative w-full max-w-2xl bg-white border border-slate-300 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-2xl text-slate-800 space-y-4 animate-fadeIn my-auto max-h-[92vh] flex flex-col overflow-hidden box-border">
             {/* Modal Header */}
             <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-3 min-w-0 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 shrink-0">
-                  <Upload className="w-4 h-4 sm:w-5 sm:h-5" />
+                  {(!isOwner || uploadFormMode === 'student') ? (
+                    <GraduationCap className="w-4 h-4 sm:w-5 sm:h-5" />
+                  ) : (
+                    <Upload className="w-4 h-4 sm:w-5 sm:h-5" />
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
-                    Upload Documents &amp; Files
+                    {(!isOwner || uploadFormMode === 'student')
+                      ? 'Post Student Material'
+                      : 'Upload Documents & Files'}
                   </h3>
                   <p className="text-[11px] text-slate-500 truncate">
-                    Upload single or multiple files directly to Engineering Hub
+                    {(!isOwner || uploadFormMode === 'student')
+                      ? 'Student Materials Form — Category: Students Materials'
+                      : 'General Repository Form (Admin Only)'}
                   </p>
                 </div>
               </div>
@@ -1615,6 +1727,34 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               </button>
             </div>
 
+            {/* Admin-only switcher between Form 1 (General) and Form 2 (Student Materials) */}
+            {isOwner && (
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-100 border border-slate-200 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchUploadFormMode('general')}
+                  className={`py-1.5 px-2.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer truncate ${
+                    uploadFormMode === 'general'
+                      ? 'bg-cyan-800 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Form 1: General Upload
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchUploadFormMode('student')}
+                  className={`py-1.5 px-2.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer truncate ${
+                    uploadFormMode === 'student'
+                      ? 'bg-cyan-800 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Form 2: Student Materials
+                </button>
+              </div>
+            )}
+
             {uploadSuccessMsg ? (
               <div className="p-6 rounded-2xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-center space-y-3">
                 <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto animate-bounce" />
@@ -1625,17 +1765,17 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               </div>
             ) : (
               <form onSubmit={handlePublishAllQueued} className="space-y-3.5 flex-1 min-h-0 min-w-0 w-full overflow-y-auto overflow-x-hidden box-border">
-                {/* Uploader Name Bar */}
+                {/* From (Uploader's Name) Bar — never auto-filled */}
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 w-full min-w-0 box-border">
                   <label className="block text-[10.5px] font-bold text-slate-700 uppercase tracking-wider">
-                    Uploader / Author Name *
+                    From (Uploader Name) *
                   </label>
                   <input
                     type="text"
                     required
                     value={uploaderName}
                     onChange={(e) => setUploaderName(e.target.value)}
-                    placeholder={isOwner ? 'Festus, Olorunsogo Johnson (Owner)' : 'Enter your name or organization'}
+                    placeholder="Enter your name"
                     className="w-full min-w-0 box-border p-2 rounded-lg bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans"
                   />
                 </div>
@@ -1686,7 +1826,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                         Click to browse or drag &amp; drop files here
                       </span>
                       <span className="text-[11px] text-slate-500 block max-w-full break-words">
-                        PDF Books, Student Materials, STEP CAD, Drawings, Word, Excel, ZIP
+                        {(!isOwner || uploadFormMode === 'student')
+                          ? 'Upload Student Material PDFs, Lecture Notes, Past Questions, or Guides'
+                          : 'PDF Books, Technical Drawings, STEP CAD, Word, Excel, ZIP'}
                       </span>
                     </div>
                   ) : (
@@ -1707,93 +1849,208 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       </div>
 
                       {/* Itemized File Cards */}
-                      <div className="space-y-2.5 max-h-64 overflow-y-auto overflow-x-hidden w-full min-w-0">
-                        {queuedFiles.map((item, idx) => (
-                          <div
-                            key={item.id}
-                            className="p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs space-y-2 w-full min-w-0 box-border overflow-hidden"
-                          >
-                            <div className="flex items-start justify-between gap-2 min-w-0">
-                              <div className="flex items-center gap-2 flex-1 min-w-0">
-                                <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
-                                  {item.previewUrl ? (
-                                    <img src={item.previewUrl} alt="Preview" loading="lazy" decoding="async" className="w-full h-full object-contain" />
-                                  ) : (
-                                    getCategoryIcon(item.category)
-                                  )}
+                      <div className="space-y-2.5 max-h-72 overflow-y-auto overflow-x-hidden w-full min-w-0">
+                        {queuedFiles.map((item, idx) => {
+                          const isStudentForm = !isOwner || uploadFormMode === 'student';
+                          return (
+                            <div
+                              key={item.id}
+                              className="p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs space-y-2 w-full min-w-0 box-border overflow-hidden"
+                            >
+                              <div className="flex items-start justify-between gap-2 min-w-0">
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
+                                    {item.previewUrl ? (
+                                      <img src={item.previewUrl} alt="Preview" loading="lazy" decoding="async" className="w-full h-full object-contain" />
+                                    ) : (
+                                      getCategoryIcon(item.category)
+                                    )}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-900 shrink-0">
+                                        #{idx + 1}
+                                      </span>
+                                      <input
+                                        type="text"
+                                        required
+                                        value={item.title}
+                                        onChange={(e) => handleUpdateQueueItem(item.id, { title: e.target.value })}
+                                        className="font-bold text-xs text-slate-900 bg-white px-2 py-1 rounded border border-slate-300 focus:border-cyan-600 focus:outline-none w-full min-w-0"
+                                        placeholder="Enter document title *"
+                                      />
+                                    </div>
+                                    <div className="text-[10.5px] text-slate-500 font-mono flex flex-wrap items-center gap-1.5 mt-1 min-w-0">
+                                      <span className="truncate max-w-[180px] sm:max-w-[260px]" title={item.file.name}>{item.file.name}</span>
+                                      <span>·</span>
+                                      <span className="shrink-0">{item.fileSize}</span>
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-1.5 min-w-0">
-                                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-900 shrink-0">
-                                      #{idx + 1}
-                                    </span>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveQueueItem(item.id)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0 cursor-pointer"
+                                  title="Remove file"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+
+                              {isStudentForm ? (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-slate-200/60 w-full min-w-0">
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Category</label>
+                                    <div className="w-full px-2 py-1.5 rounded-lg bg-cyan-50 border border-cyan-200 text-cyan-900 text-[10px] font-semibold">
+                                      Students Materials
+                                    </div>
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Level *</label>
+                                    <select
+                                      required
+                                      value={item.level}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { level: e.target.value })}
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                    >
+                                      <option value="">Select Level</option>
+                                      {STUDENT_LEVELS.map((lvl) => (
+                                        <option key={lvl} value={lvl}>
+                                          {lvl}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Department *</label>
                                     <input
                                       type="text"
-                                      value={item.title}
-                                      onChange={(e) => handleUpdateQueueItem(item.id, { title: e.target.value })}
-                                      className="font-bold text-xs text-slate-900 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-cyan-600 focus:outline-none w-full min-w-0"
-                                      placeholder="Document title"
+                                      required
+                                      value={item.department}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { department: e.target.value })}
+                                      placeholder="e.g. Mechanical Engineering"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
                                     />
                                   </div>
-                                  <div className="text-[10.5px] text-slate-500 font-mono flex flex-wrap items-center gap-1.5 mt-0.5 min-w-0">
-                                    <span className="truncate max-w-[180px] sm:max-w-[260px]" title={item.file.name}>{item.file.name}</span>
-                                    <span>·</span>
-                                    <span className="shrink-0">{item.fileSize}</span>
+
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Institution (Abbreviation) *</label>
+                                    <input
+                                      type="text"
+                                      required
+                                      value={item.institution}
+                                      onChange={(e) =>
+                                        handleUpdateQueueItem(item.id, {
+                                          institution: e.target.value.toUpperCase().replace(/[^A-Z0-9.\-/ ]/g, ''),
+                                        })
+                                      }
+                                      placeholder="e.g. FUTA / UNILAG"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-900 font-mono uppercase focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-2 min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Tags</label>
+                                    <input
+                                      type="text"
+                                      value={item.tags}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
+                                      placeholder="Type comma-separated tags (optional)"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-2 min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Description</label>
+                                    <textarea
+                                      rows={2}
+                                      value={item.description}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { description: e.target.value })}
+                                      placeholder="Enter student material description"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
+                                    />
                                   </div>
                                 </div>
-                              </div>
-
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveQueueItem(item.id)}
-                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0 cursor-pointer"
-                                title="Remove file"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
+                              ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-slate-200/60 w-full min-w-0">
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Category *</label>
+                                    {!item.customCategoryMode && activeGeneralCategories.length > 0 ? (
+                                      <select
+                                        required
+                                        value={activeGeneralCategories.includes(item.category) ? item.category : ''}
+                                        onChange={(e) => {
+                                          if (e.target.value === '__custom__') {
+                                            handleUpdateQueueItem(item.id, { customCategoryMode: true, category: '' });
+                                          } else {
+                                            handleUpdateQueueItem(item.id, { category: e.target.value });
+                                          }
+                                        }}
+                                        className="w-full min-w-0 box-border text-[10px] p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                      >
+                                        <option value="">Select active category</option>
+                                        {activeGeneralCategories.map((cat) => (
+                                          <option key={cat} value={cat}>
+                                            {cat}
+                                          </option>
+                                        ))}
+                                        <option value="__custom__">+ Type a category</option>
+                                      </select>
+                                    ) : (
+                                      <div className="flex items-center gap-1 min-w-0">
+                                        <input
+                                          type="text"
+                                          required
+                                          value={item.category}
+                                          onChange={(e) => handleUpdateQueueItem(item.id, { category: e.target.value })}
+                                          placeholder="Type category"
+                                          className="flex-1 min-w-0 box-border text-[10px] p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                        />
+                                        {activeGeneralCategories.length > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleUpdateQueueItem(item.id, {
+                                                customCategoryMode: false,
+                                                category: activeGeneralCategories.includes(item.category) ? item.category : '',
+                                              })
+                                            }
+                                            className="px-1.5 py-1 rounded border border-slate-300 bg-white text-[9.5px] font-semibold cursor-pointer shrink-0"
+                                          >
+                                            Active
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Tags</label>
+                                    <input
+                                      type="text"
+                                      value={item.tags}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
+                                      placeholder="Type comma-separated tags"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
+                                    />
+                                  </div>
+                                  <div className="sm:col-span-2 min-w-0">
+                                    <label className="block text-[9.5px] font-mono text-slate-500 uppercase mb-0.5">Description</label>
+                                    <textarea
+                                      rows={2}
+                                      value={item.description}
+                                      onChange={(e) => handleUpdateQueueItem(item.id, { description: e.target.value })}
+                                      placeholder="Enter document description (optional)"
+                                      className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </div>
-
-                            {/* Category Selector, Tags & Description */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-slate-200/60 w-full min-w-0">
-                              <div className="min-w-0">
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Category</label>
-                                <select
-                                  value={item.category}
-                                  onChange={(e) =>
-                                    handleUpdateQueueItem(item.id, { category: e.target.value as DocumentCategory })
-                                  }
-                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-600"
-                                >
-                                  {CATEGORIES_LIST.map((cat) => (
-                                    <option key={cat} value={cat}>
-                                      {cat}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div className="min-w-0">
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Tags</label>
-                                <input
-                                  type="text"
-                                  value={item.tags}
-                                  onChange={(e) => handleUpdateQueueItem(item.id, { tags: e.target.value })}
-                                  placeholder="Comma separated tags"
-                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600"
-                                />
-                              </div>
-                              <div className="sm:col-span-2 min-w-0">
-                                <label className="block text-[10px] font-mono text-slate-500 uppercase mb-0.5">Description</label>
-                                <textarea
-                                  rows={2}
-                                  value={item.description}
-                                  onChange={(e) => handleUpdateQueueItem(item.id, { description: e.target.value })}
-                                  placeholder="Enter document description (optional)"
-                                  className="w-full min-w-0 box-border text-xs p-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 font-sans focus:outline-none focus:ring-1 focus:ring-cyan-600 resize-y"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1810,7 +2067,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 {isPublishing && (
                   <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center gap-2 text-xs text-cyan-950 font-semibold w-full min-w-0 box-border">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-800 shrink-0" />
-                    <span>uploading...</span>
+                    <span>Uploading..... {Math.round(uploadProgress.percent)}%</span>
                   </div>
                 )}
 
@@ -1835,7 +2092,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     {isPublishing ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
-                        <span>uploading...</span>
+                        <span>Uploading.....</span>
                       </>
                     ) : (
                       <>
@@ -1870,6 +2127,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 <h3 className="text-base sm:text-lg font-bold text-slate-900 truncate max-w-[600px]">
                   {previewModalDoc.title}
                 </h3>
+                {(previewModalDoc.uploaderName || previewModalDoc.author || previewModalDoc.level || previewModalDoc.institution) && (
+                  <p className="text-[11px] font-mono text-slate-500 mt-0.5 truncate">
+                    {(previewModalDoc.uploaderName || previewModalDoc.author) && (
+                      <span>From: <strong className="text-slate-800">{previewModalDoc.uploaderName || previewModalDoc.author}</strong></span>
+                    )}
+                    {previewModalDoc.level && <span> · {previewModalDoc.level}</span>}
+                    {previewModalDoc.department && <span> · {previewModalDoc.department}</span>}
+                    {previewModalDoc.institution && <span> · {previewModalDoc.institution}</span>}
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -1887,9 +2154,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             </div>
 
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-              <div className="text-xs text-slate-600 font-mono">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 font-mono">
                 <span>File Size: <strong className="text-slate-900">{previewModalDoc.fileSize}</strong></span>
-                <span className="mx-2">·</span>
+                <span>·</span>
+                <span>Views: <strong className="text-slate-900">{previewModalDoc.viewsCount || 0}</strong></span>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={(e) => void handleLikeDocument(previewModalDoc, e)}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-semibold cursor-pointer ${
+                    likedMaterialIds.has(previewModalDoc.id)
+                      ? 'bg-rose-50 border-rose-300 text-rose-700'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <Heart className={`w-3 h-3 ${likedMaterialIds.has(previewModalDoc.id) ? 'fill-rose-600 text-rose-600' : ''}`} />
+                  <span>{previewModalDoc.likesCount || 0}</span>
+                </button>
+                <span>·</span>
                 <span>Downloads: <strong className="text-cyan-700">{previewModalDoc.downloadCount}</strong></span>
               </div>
               <div className="flex items-center gap-2">

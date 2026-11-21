@@ -21,6 +21,7 @@ import { CleanVideoPlayer } from './CleanVideoPlayer';
 interface ProjectFormPanelProps {
   initialProject?: PortfolioProject | null;
   isOwner?: boolean;
+  activeCategories?: string[];
   onSaved: (saved: PortfolioProject) => void;
   onCancel: () => void;
 }
@@ -31,6 +32,7 @@ const isSupabaseStorageUrl = (url?: string): boolean =>
 export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   initialProject,
   isOwner = true,
+  activeCategories = [],
   onSaved,
   onCancel,
 }) => {
@@ -77,7 +79,14 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadStage, setUploadStage] = useState<string>('');
-  const [customCategoryMode, setCustomCategoryMode] = useState(false);
+  const projectCategories = Array.from(
+    new Set(activeCategories.map((c) => c.trim()).filter(Boolean))
+  );
+  const [customCategoryMode, setCustomCategoryMode] = useState(
+    () =>
+      projectCategories.length === 0 ||
+      Boolean(initialProject?.category && !projectCategories.includes(initialProject.category))
+  );
   const uploadAbortRef = useRef<AbortController | null>(null);
   const lastFailedUploadRef = useRef<{
     files: File[];
@@ -90,20 +99,6 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [previewVideoIdx, setPreviewVideoIdx] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const projectCategories = Array.from(
-    new Set([
-      ...(initialProject?.category ? [initialProject.category] : []),
-      'CAD Design',
-      'Mechanical Design',
-      'Mechanical Systems',
-      'FEA & Simulation',
-      'Robotics & Mechatronics',
-      'Thermal Systems',
-      'Manufacturing & CNC',
-      'Web & Software',
-    ])
-  ).filter(Boolean);
 
   const handleCancelUpload = () => {
     uploadAbortRef.current?.abort();
@@ -270,8 +265,8 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !description.trim()) {
-      setErrorMsg('Project title and short description are required.');
+    if (!title.trim() || !category.trim() || !description.trim()) {
+      setErrorMsg('Project title, category, and short description are required.');
       return;
     }
     setSaving(true);
@@ -281,7 +276,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         id: initialProject?.id,
         slug: initialProject?.slug,
         title: title.trim(),
-        category: category.trim() || 'Mechanical Design',
+        category: category.trim(),
         description: description.trim(),
         overview: overview.trim(),
         objectives: objectives.trim(),
@@ -336,7 +331,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               <span className="truncate">
-                {uploadStage ? `${uploadStage} (${uploadProgress}%)` : `Uploading (${uploadProgress}%)...`}
+                {`Uploading..... ${Math.round(uploadProgress)}%`}
               </span>
             </div>
             <button
@@ -388,8 +383,9 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         </div>
         <div className="min-w-0">
           <label className="block font-bold text-slate-700 mb-1">Category *</label>
-          {!customCategoryMode ? (
+          {!customCategoryMode && projectCategories.length > 0 ? (
             <select
+              required
               value={projectCategories.includes(category) ? category : ''}
               onChange={(e) => {
                 if (e.target.value === '__custom__') {
@@ -401,30 +397,38 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
               }}
               className="w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-700"
             >
-              <option value="">Select category</option>
+              <option value="">Select active category</option>
               {projectCategories.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
                 </option>
               ))}
-              <option value="__custom__">Other category...</option>
+              <option value="__custom__">+ Type a category</option>
             </select>
           ) : (
             <div className="flex items-center gap-1.5 min-w-0">
               <input
                 type="text"
+                required
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                placeholder="Enter category"
+                placeholder="Type category"
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
               />
-              <button
-                type="button"
-                onClick={() => setCustomCategoryMode(false)}
-                className="px-2 py-1 rounded border border-slate-300 bg-white text-[10.5px] font-semibold cursor-pointer shrink-0"
-              >
-                List
-              </button>
+              {projectCategories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomCategoryMode(false);
+                    if (!projectCategories.includes(category)) {
+                      setCategory('');
+                    }
+                  }}
+                  className="px-2 py-1 rounded border border-slate-300 bg-white text-[10.5px] font-semibold cursor-pointer shrink-0"
+                >
+                  Active
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -495,13 +499,13 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
         )}
         <div className="space-y-1 pt-1">
           <label className="block font-bold text-slate-700">
-            Hero Inscription (Rendered outside hero background container)
+            Hero Inscription (Displayed top-right on hero image card)
           </label>
           <input
             type="text"
             value={heroInscription}
             onChange={(e) => setHeroInscription(e.target.value)}
-            placeholder="Write an editable inscription / caption shown outside the full-bleed hero card background..."
+            placeholder="Write an editable inscription shown at top-right of the hero image..."
             className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
           />
         </div>

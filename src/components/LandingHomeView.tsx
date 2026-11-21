@@ -12,7 +12,11 @@ import {
 import { PortfolioPart } from './Navbar';
 import { useProfileSync, getRightBadgeCertifications } from '../utils/profileState';
 import { withRecordVersion } from '../utils/supabase';
-import { useWebsiteSettingsSync, BUILT_IN_THEMES } from '../utils/portfolioSupabase';
+import {
+  useWebsiteSettingsSync,
+  BUILT_IN_THEMES,
+  DEFAULT_HOMEPAGE_CONFIG,
+} from '../utils/portfolioSupabase';
 import { useUserColorMode, resolveEffectiveTheme } from '../utils/userThemeMode';
 
 interface LandingHomeViewProps {
@@ -22,7 +26,6 @@ interface LandingHomeViewProps {
 
 export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   onNavigatePart,
-  onResumeClick,
 }) => {
   const { bio, documents, avatar, updatedAt } = useProfileSync();
   const [userColorMode, toggleUserColorMode] = useUserColorMode();
@@ -33,8 +36,17 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const cardAnimClass = appearance.cardAnimationEnabled ? 'card-anim-enabled' : '';
 
-  const heroMessage = bio.header || "Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.";
-  const dynamicCertifications = getRightBadgeCertifications(bio, documents);
+  const activeConfig = appearance.homepageConfig || DEFAULT_HOMEPAGE_CONFIG;
+
+  const defaultHeroMessage =
+    bio.header ||
+    'Mechanical Design Engineer specializing in precision mechanism design, non-linear structural & thermal FEA, CNC multi-axis machining, and mission-critical hardware for flight-ready aerospace, quantum systems, and robotics.';
+  const heroMessage = activeConfig.heroDescription?.trim() || defaultHeroMessage;
+  const dynamicCertifications =
+    activeConfig.heroBadgeCertifications?.trim() || getRightBadgeCertifications(bio, documents);
+  const portfolioTitleText =
+    activeConfig.heroTitle?.trim() ||
+    (bio.fullName ? `${bio.fullName.split(',')[0]}'s Portfolio` : "Festus, Olorunsogo's Portfolio");
 
   return (
     <div className="flex-1 w-full flex flex-col font-serif text-[0.95em]" style={{ color: activeTheme.textColor }}>
@@ -109,16 +121,16 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
           <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent pointer-events-none hero-anim-blueprint-scan" />
         )}
 
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-0">
           <div className="flex flex-col items-center text-center max-w-4xl mx-auto">
-            
+
             {/* Live Availability & Verified Credential Badge */}
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 backdrop-blur-xs border border-slate-300 text-xs font-sans text-cyan-950 shadow-xs mb-5 max-w-full">
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="font-bold shrink-0">Lead Mechanical Engineer • CAD drafting</span>
+              <span className="font-bold shrink-0">{activeConfig.heroBadgeRole}</span>
               <span className="text-slate-300 shrink-0">|</span>
               <span className="font-mono text-slate-600 truncate text-[11px]" title={dynamicCertifications}>
                 {dynamicCertifications}
@@ -127,10 +139,8 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
 
             {/* Main Welcome Heading */}
             <h1 className="text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight text-slate-950 leading-tight">
-              Welcome to{' '}
-              <span className="text-cyan-900 block mt-1 sm:mt-2">
-                {bio.fullName ? `${bio.fullName.split(',')[0]}'s Portfolio` : "Festus, Olorunsogo's Portfolio"}
-              </span>
+              {activeConfig.heroWelcomePrefix}{' '}
+              <span className="text-cyan-900 block mt-1 sm:mt-2">{portfolioTitleText}</span>
             </h1>
 
             {/* Subtitle & Engineering Statement */}
@@ -146,7 +156,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-sans font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
               >
                 <User className="w-4 h-4 text-cyan-200 group-hover:scale-110 transition-transform shrink-0" />
-                <span className="truncate">My Profile</span>
+                <span className="truncate">{activeConfig.heroPrimaryCtaLabel}</span>
               </button>
 
               {/* Secondary CTA: Explore Engineering Hub */}
@@ -155,7 +165,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-sans font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
               >
                 <Layers className="w-4 h-4 text-cyan-800 shrink-0" />
-                <span className="truncate">Engineering Hub</span>
+                <span className="truncate">{activeConfig.heroSecondaryCtaLabel}</span>
               </button>
             </div>
           </div>
@@ -167,22 +177,21 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
       {/* ======================================================== */}
       <section className="py-12 sm:py-16" style={{ backgroundColor: activeTheme.pageBg }}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          
           <div className="text-center max-w-2xl mx-auto mb-10">
             <span className="inline-block px-3.5 py-1 rounded-full bg-cyan-900/10 border border-cyan-800/25 text-cyan-900 text-[11px] font-sans font-extrabold uppercase tracking-widest mb-2 shadow-2xs">
-              Navigation &amp; Portals
+              {activeConfig.exploreBadge}
             </span>
             <h2 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-cyan-950 mt-1 font-serif tracking-tight drop-shadow-2xs">
-              Explore More
+              {activeConfig.exploreTitle}
             </h2>
             <p className="text-xs sm:text-sm font-sans text-slate-700 mt-2 max-w-lg mx-auto font-medium leading-relaxed">
-              Explore 3D CAD mechanisms, empirical metrology verification, FEA boundary post-mortems, and direct communication.
+              {activeConfig.exploreSubtitle}
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 max-w-6xl mx-auto">
             {/* Card 1: My Profile */}
-            <div 
+            <div
               onClick={() => onNavigatePart('profile')}
               className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
@@ -203,9 +212,11 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                       )}
                     </div>
                     <div>
-                      <span className="text-[10px] font-sans font-bold text-cyan-900 uppercase tracking-wider block">
-                        Verified
-                      </span>
+                      {activeConfig.cards.profile.badge && (
+                        <span className="text-[10px] font-sans font-bold text-cyan-900 uppercase tracking-wider block">
+                          {activeConfig.cards.profile.badge}
+                        </span>
+                      )}
                       <span className="text-xs font-serif font-bold text-slate-900 truncate">
                         {bio.fullName || 'Festus, Olorunsogo Johnson'}
                       </span>
@@ -214,21 +225,21 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  My Profile &amp; Credentials
+                  {activeConfig.cards.profile.title}
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Portrait profile, comprehensive biography, direct ATS resume generator, verified engineering certifications, and contact channels.
+                  {activeConfig.cards.profile.description}
                 </p>
               </div>
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>View Full Profile</span>
+                <span>{activeConfig.cards.profile.ctaLabel}</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
 
             {/* Card 2: Engineering Hub */}
-            <div 
+            <div
               onClick={() => onNavigatePart('overview')}
               className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
@@ -240,21 +251,21 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  Engineering Hub
+                  {activeConfig.cards.overview.title}
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Access different categories of Engineering Documents and Technical Archive, Inspirational Books, Christian literature and more. Direct 1-click device uploads.
+                  {activeConfig.cards.overview.description}
                 </p>
               </div>
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Explore Engineering Hub</span>
+                <span>{activeConfig.cards.overview.ctaLabel}</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
 
             {/* Card 3: Direct Messaging & Inquiry Channel */}
-            <div 
+            <div
               onClick={() => onNavigatePart('messaging')}
               className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
             >
@@ -263,21 +274,23 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                   <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
                     <MessageSquare className="w-5 h-5 text-cyan-800" />
                   </div>
-                  <span className="text-[10px] font-sans font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
-                    LIVE
-                  </span>
+                  {activeConfig.cards.messaging.badge && (
+                    <span className="text-[10px] font-sans font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                      {activeConfig.cards.messaging.badge}
+                    </span>
+                  )}
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  Direct Messaging Channel
+                  {activeConfig.cards.messaging.title}
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Direct inquiry workspace to discuss job roles, design consulting, tolerance reviews, or technical proposals.
+                  {activeConfig.cards.messaging.description}
                 </p>
               </div>
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Open Direct Chat</span>
+                <span>{activeConfig.cards.messaging.ctaLabel}</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
@@ -295,15 +308,15 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  Engineering Portfolio
+                  {activeConfig.cards.projects.title}
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Published mechanical systems, CAD assemblies, engineering specifications, media galleries, and downloadable project PDF reports.
+                  {activeConfig.cards.projects.description}
                 </p>
               </div>
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Explore Projects</span>
+                <span>{activeConfig.cards.projects.ctaLabel}</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
@@ -321,20 +334,19 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 </div>
 
                 <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
-                  Engineering Articles
+                  {activeConfig.cards.articles.title}
                 </h3>
                 <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
-                  Technical articles, analytical notes, BOM breakdowns, schematics, and community contributions across engineering disciplines.
+                  {activeConfig.cards.articles.description}
                 </p>
               </div>
 
               <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
-                <span>Read &amp; Post Articles</span>
+                <span>{activeConfig.cards.articles.ctaLabel}</span>
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
           </div>
-
         </div>
       </section>
     </div>

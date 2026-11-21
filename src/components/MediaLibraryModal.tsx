@@ -177,7 +177,7 @@ export const MediaPreviewDialog: React.FC<MediaPreviewDialogProps> = ({
                 }
                 vttThumbnailsUrl={item.vttThumbnailsUrl}
                 autoPlay
-                aspectRatio="16/9"
+                aspectRatio="auto"
                 objectFit="contain"
                 onDurationResolved={(dur) => {
                   setCachedMediaDuration(item.publicUrl, dur);
@@ -404,14 +404,14 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
 
     if (item.mediaKind === 'image') {
       return (
-        <div className="relative w-16 h-12 sm:w-20 sm:h-14 rounded-lg overflow-hidden bg-slate-200 border border-slate-200 shrink-0">
+        <div className="relative w-16 h-12 sm:w-20 sm:h-14 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
           <OptimizedImage
             src={item.publicUrl}
             avifUrl={item.avifUrl}
             webpUrl={item.webpUrl}
             jpegUrl={item.jpegUrl}
             alt={cleanDisplayFileName(item.name)}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
           />
         </div>
       );
@@ -425,7 +425,7 @@ export const MediaLibraryModal: React.FC<MediaLibraryModalProps> = ({
               alt={cleanDisplayFileName(item.name)}
               loading="lazy"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover opacity-85"
+              className="w-full h-full object-contain opacity-85"
             />
           ) : null}
           <Play className="w-4 h-4 text-white fill-white/80 absolute" />

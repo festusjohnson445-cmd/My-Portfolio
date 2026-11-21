@@ -31,13 +31,20 @@ import {
   type BucketFileItem,
 } from '../utils/portfolioSupabase';
 import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
+import {
+  extractHtmlHeadings,
+  isRichHtmlContent,
+  sanitizeArticleHtml,
+  stripHtmlToPlainText,
+} from '../utils/htmlSanitizer';
 import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
+import { RichTextEditor } from './RichTextEditor';
 
 interface ArticleFormPanelProps {
   initialArticle?: PortfolioArticle | null;
   isOwner: boolean;
-  existingCategories?: string[];
+  activeCategories?: string[];
   onSaved: (saved: PortfolioArticle, wasPendingVisitor: boolean) => void;
   onCancel: () => void;
 }
@@ -48,7 +55,7 @@ const isSupabaseStorageUrl = (url?: string): boolean =>
 export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   initialArticle,
   isOwner,
-  existingCategories = [],
+  activeCategories = [],
   onSaved,
   onCancel,
 }) => {
@@ -309,8 +316,11 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     }
   };
 
-  const extractHeadingsForToc = (markdown: string): string[] => {
-    return markdown
+  const extractHeadingsForToc = (rawContent: string): string[] => {
+    if (isRichHtmlContent(rawContent)) {
+      return extractHtmlHeadings(rawContent).map((h) => h.label);
+    }
+    return rawContent
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => /^#{1,3}\s+/.test(line))
@@ -319,7 +329,8 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !summary.trim() || !content.trim() || !category.trim() || !authorName.trim()) {
+    const plainContent = stripHtmlToPlainText(content);
+    if (!title.trim() || !summary.trim() || !plainContent || !category.trim() || !authorName.trim()) {
       setErrorMsg('Title, Author, Category, Summary, and Article Contents are required.');
       return;
     }
@@ -327,7 +338,10 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     setSaving(true);
     setErrorMsg(null);
     try {
-      const toc = extractHeadingsForToc(content);
+      const cleanedContent = isRichHtmlContent(content)
+        ? sanitizeArticleHtml(content.trim())
+        : content.trim();
+      const toc = extractHeadingsForToc(cleanedContent);
       const effectiveThumbnail =
         thumbnailUrl.trim() ||
         images[0]?.url ||
@@ -340,10 +354,10 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           slug: initialArticle?.slug,
           title: title.trim(),
           summary: summary.trim(),
-          content: content.trim(),
+          content: cleanedContent,
           category: category.trim(),
           difficultyLevel: difficultyLevel.trim() || 'Intermediate',
-          readingTime: readingTime.trim() || estimateReadingTime(content),
+          readingTime: readingTime.trim() || estimateReadingTime(plainContent),
           authorName: authorName.trim(),
           isAdminAuthor: isOwner,
           thumbnailUrl: effectiveThumbnail,
@@ -380,17 +394,10 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     }
   };
 
-  const categorySuggestions = Array.from(
+  const articleCategories = Array.from(
     new Set([
-      ...(initialArticle?.category ? [initialArticle.category] : []),
-      ...existingCategories,
-      'Mechanical Design',
-      'Finite Element Analysis',
-      'CAD & GD&T',
-      'Robotics & Actuators',
-      'Thermal Systems',
-      'Manufacturing & CNC',
-      'Full-Stack Engineering',
+      ...activeCategories.map((c) => c.trim()).filter(Boolean),
+      ...(initialArticle?.category?.trim() ? [initialArticle.category.trim()] : []),
     ])
   ).filter(Boolean);
 
@@ -423,7 +430,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               <span className="truncate">
-                {uploadStage ? `${uploadStage} (${uploadProgress}%)` : `Uploading (${uploadProgress}%)...`}
+                {`Uploading..... ${Math.round(uploadProgress)}%`}
               </span>
             </div>
             <button
@@ -491,10 +498,10 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs min-w-0">
         <div className="min-w-0">
           <label className="block font-bold text-slate-700 mb-1">Category / Discipline *</label>
-          {!customCategoryMode ? (
+          {!customCategoryMode && articleCategories.length > 0 ? (
             <select
               required
-              value={categorySuggestions.includes(category) ? category : ''}
+              value={articleCategories.includes(category) ? category : ''}
               onChange={(e) => {
                 if (e.target.value === '__custom__') {
                   setCustomCategoryMode(true);
@@ -505,13 +512,13 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               }}
               className="w-full min-w-0 px-2 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-medium cursor-pointer focus:outline-none focus:ring-1 focus:ring-cyan-700"
             >
-              <option value="">Select category</option>
-              {categorySuggestions.map((cat) => (
+              <option value="">Select active category</option>
+              {articleCategories.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
                 </option>
               ))}
-              <option value="__custom__">Other category...</option>
+              <option value="__custom__">+ Type a category</option>
             </select>
           ) : (
             <div className="flex items-center gap-1.5 min-w-0">
@@ -520,16 +527,23 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
                 required
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                placeholder="Enter category"
+                placeholder="Type category"
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700"
               />
-              <button
-                type="button"
-                onClick={() => setCustomCategoryMode(false)}
-                className="px-2 py-1 rounded border border-slate-300 bg-white text-[10.5px] font-semibold cursor-pointer shrink-0"
-              >
-                List
-              </button>
+              {articleCategories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomCategoryMode(false);
+                    if (!articleCategories.includes(category)) {
+                      setCategory('');
+                    }
+                  }}
+                  className="px-2 py-1 rounded border border-slate-300 bg-white text-[10.5px] font-semibold cursor-pointer shrink-0"
+                >
+                  Active
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -756,7 +770,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
         )}
         <div className="space-y-1 pt-1">
           <label className="block font-bold text-slate-700">
-            Hero Inscription (Rendered outside hero background container)
+            Hero Inscription (Displayed top-right on hero image card)
           </label>
           <input
             type="text"
@@ -766,7 +780,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
               setHeroInscription(val);
               setHeroMedia((prev) => ({ ...prev, caption: val, inscription: val }));
             }}
-            placeholder="Write an editable inscription / caption shown outside the full-bleed hero card background..."
+            placeholder="Write an editable inscription shown at top-right of the hero image..."
             className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white"
           />
         </div>
@@ -797,16 +811,15 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
         </div>
       </div>
 
-      {/* Article Contents */}
-      <div className="text-xs min-w-0">
-        <label className="block font-bold text-slate-700 mb-1">Article Contents</label>
-        <textarea
-          rows={8}
-          required
+      {/* Article Contents (Rich Formatting Editor) */}
+      <div className="text-xs min-w-0 space-y-1">
+        <label className="block font-bold text-slate-700">
+          Article Contents * <span className="font-normal text-slate-500">(Bold, Italic, Color, Alignment, Justify, Spacing &amp; Margins)</span>
+        </label>
+        <RichTextEditor
           value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="Add your Article here... Ensure it is well written and formatted"
-          className="w-full min-w-0 px-2.5 py-2 rounded-lg border border-slate-300 bg-slate-50 leading-relaxed"
+          onChange={setContent}
+          placeholder="Add your Article here... Use the toolbar for bold, italic, text color, alignment, justification, spacing, and margins"
         />
       </div>
 

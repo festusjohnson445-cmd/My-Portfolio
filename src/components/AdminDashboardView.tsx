@@ -41,6 +41,7 @@ import {
   RefreshCw,
   RotateCcw,
   Database,
+  Home,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -86,6 +87,7 @@ import {
   EVENT_ARTICLES_UPDATED,
   BUILT_IN_THEMES,
   DEFAULT_WEBSITE_SETTINGS,
+  DEFAULT_HOMEPAGE_CONFIG,
   type PortfolioProject,
   type PortfolioArticle,
   type ArticleComment,
@@ -104,6 +106,8 @@ import {
   type CustomFooterSection,
   type BucketFileItem,
   type MediaAssetRecord,
+  type MediaAspectRatio,
+  type HomepageConfig,
 } from '../utils/portfolioSupabase';
 import {
   useProfileSync,
@@ -250,7 +254,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   // Website Settings Sub-Tabs & Builders
   const [settingsSubTab, setSettingsSubTab] = useState<
-    'appearance' | 'projects_articles' | 'profile_sections' | 'footer' | 'moderation' | 'supabase_tables'
+    'appearance' | 'homepage' | 'projects_articles' | 'profile_sections' | 'footer' | 'moderation' | 'supabase_tables'
   >('appearance');
   const [heroBgUploading, setHeroBgUploading] = useState(false);
   const [themeImportOpen, setThemeImportOpen] = useState(false);
@@ -891,6 +895,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     <ProjectFormPanel
                       initialProject={editingProject}
                       isOwner={true}
+                      activeCategories={Array.from(
+                        new Set(
+                          projects
+                            .filter((p) => p.status === 'published' && p.category?.trim())
+                            .map((p) => p.category.trim())
+                        )
+                      )}
                       onSaved={(saved) => {
                         setProjects((prev) =>
                           prev.some((p) => p.id === saved.id)
@@ -974,6 +985,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     <ArticleFormPanel
                       initialArticle={editingArticle}
                       isOwner={true}
+                      activeCategories={Array.from(
+                        new Set(
+                          articles
+                            .filter((a) => a.status === 'published' && a.category?.trim())
+                            .map((a) => a.category.trim())
+                        )
+                      )}
                       onSaved={(saved) => {
                         setArticles((prev) =>
                           prev.some((a) => a.id === saved.id)
@@ -2167,9 +2185,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <div className="flex items-center gap-2 min-w-0">
                           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
                           <span className="truncate">
-                            {mediaUploadStage
-                              ? `${mediaUploadStage} (${mediaUploadProgress}%)`
-                              : `Uploading (${mediaUploadProgress}%)...`}
+                            {`Uploading..... ${Math.round(mediaUploadProgress)}%`}
                           </span>
                         </div>
                         <button
@@ -2578,6 +2594,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                   <div className="flex flex-wrap items-center justify-start gap-1.5 text-[11px]">
                     {[
                       { id: 'appearance', label: 'Theme & Global Appearance', icon: <Palette className="w-3 h-3" /> },
+                      { id: 'homepage', label: 'Homepage Editor', icon: <Home className="w-3 h-3" /> },
                       { id: 'projects_articles', label: 'Projects & Articles Manager', icon: <Sliders className="w-3 h-3" /> },
                       { id: 'profile_sections', label: 'Profile Section Manager', icon: <LayoutTemplate className="w-3 h-3" /> },
                       { id: 'footer', label: 'Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
@@ -2954,6 +2971,295 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     </div>
                   )}
 
+                  {/* (a2) HOMEPAGE HERO & CARDS EDITOR */}
+                  {settingsSubTab === 'homepage' && (() => {
+                    const hc = siteSettings.appearanceConfig.homepageConfig || DEFAULT_HOMEPAGE_CONFIG;
+                    const patchHomepage = (updater: (cur: HomepageConfig) => HomepageConfig) =>
+                      updateAppearance((prev) => ({
+                        ...prev,
+                        homepageConfig: updater(prev.homepageConfig || DEFAULT_HOMEPAGE_CONFIG),
+                      }));
+
+                    const cardEntries: Array<{
+                      key: keyof HomepageConfig['cards'];
+                      label: string;
+                      hasBadge?: boolean;
+                    }> = [
+                      { key: 'profile', label: 'Card 1: Profile & Credentials', hasBadge: true },
+                      { key: 'overview', label: 'Card 2: Engineering Hub' },
+                      { key: 'messaging', label: 'Card 3: Direct Messaging Channel', hasBadge: true },
+                      { key: 'projects', label: 'Card 4: Engineering Portfolio (Projects)' },
+                      { key: 'articles', label: 'Card 5: Engineering Articles' },
+                    ];
+
+                    return (
+                      <div className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-4 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                          <div>
+                            <h4 className="font-bold text-slate-950">Homepage Hero &amp; Cards Editor</h4>
+                            <p className="text-[10.5px] text-slate-600">
+                              Edit all homepage hero texts, CTA buttons, section headers, and card contents. Click Save All Settings to persist to Supabase.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              patchHomepage(() => DEFAULT_HOMEPAGE_CONFIG);
+                              showNotice('Homepage texts reset to defaults (click Save All Settings to persist).');
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-[11px] font-semibold cursor-pointer shrink-0"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Reset Defaults</span>
+                          </button>
+                        </div>
+
+                        {/* Hero Section Fields */}
+                        <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2.5">
+                          <h5 className="font-bold text-slate-900">1. Hero Section Contents</h5>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Role Badge Title
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroBadgeRole}
+                                onChange={(e) => patchHomepage((c) => ({ ...c, heroBadgeRole: e.target.value }))}
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Certifications Text Override (blank = auto from Credentials)
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroBadgeCertifications}
+                                placeholder="Auto-synced from verified documents if blank"
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, heroBadgeCertifications: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Welcome Prefix
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroWelcomePrefix}
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, heroWelcomePrefix: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Portfolio Heading Override (blank = auto from Profile Name)
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroTitle}
+                                placeholder="e.g. Festus, Olorunsogo's Portfolio"
+                                onChange={(e) => patchHomepage((c) => ({ ...c, heroTitle: e.target.value }))}
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                              Hero Description Override (blank = uses Profile Bio Summary)
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={hc.heroDescription}
+                              placeholder="Leave blank to use Profile Bio headline, or enter custom hero statement..."
+                              onChange={(e) =>
+                                patchHomepage((c) => ({ ...c, heroDescription: e.target.value }))
+                              }
+                              className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                            />
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Primary CTA Button Label
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroPrimaryCtaLabel}
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, heroPrimaryCtaLabel: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Secondary CTA Button Label
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.heroSecondaryCtaLabel}
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, heroSecondaryCtaLabel: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Explore More Header */}
+                        <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2">
+                          <h5 className="font-bold text-slate-900">2. Explore Section Header</h5>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Section Badge
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.exploreBadge}
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, exploreBadge: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                Section Title
+                              </label>
+                              <input
+                                type="text"
+                                value={hc.exploreTitle}
+                                onChange={(e) =>
+                                  patchHomepage((c) => ({ ...c, exploreTitle: e.target.value }))
+                                }
+                                className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                              Section Subtitle
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={hc.exploreSubtitle}
+                              onChange={(e) =>
+                                patchHomepage((c) => ({ ...c, exploreSubtitle: e.target.value }))
+                              }
+                              className="w-full min-w-0 px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50"
+                            />
+                          </div>
+                        </div>
+
+                        {/* 5 Portal Cards */}
+                        <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3">
+                          <h5 className="font-bold text-slate-900">3. Homepage Portal Cards</h5>
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                            {cardEntries.map(({ key, label, hasBadge }) => {
+                              const cardVal = hc.cards[key];
+                              return (
+                                <div
+                                  key={key}
+                                  className="p-2.5 rounded-lg border border-slate-200 bg-slate-50 space-y-2"
+                                >
+                                  <div className="font-bold text-cyan-950 text-[11px]">{label}</div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                        Card Title
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={cardVal.title}
+                                        onChange={(e) =>
+                                          patchHomepage((c) => ({
+                                            ...c,
+                                            cards: {
+                                              ...c.cards,
+                                              [key]: { ...c.cards[key], title: e.target.value },
+                                            },
+                                          }))
+                                        }
+                                        className="w-full min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                        Action Link Label
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={cardVal.ctaLabel}
+                                        onChange={(e) =>
+                                          patchHomepage((c) => ({
+                                            ...c,
+                                            cards: {
+                                              ...c.cards,
+                                              [key]: { ...c.cards[key], ctaLabel: e.target.value },
+                                            },
+                                          }))
+                                        }
+                                        className="w-full min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+                                      />
+                                    </div>
+                                  </div>
+                                  {hasBadge && (
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                        Badge Label
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={cardVal.badge || ''}
+                                        onChange={(e) =>
+                                          patchHomepage((c) => ({
+                                            ...c,
+                                            cards: {
+                                              ...c.cards,
+                                              [key]: { ...c.cards[key], badge: e.target.value },
+                                            },
+                                          }))
+                                        }
+                                        className="w-full min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+                                      />
+                                    </div>
+                                  )}
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                      Card Description
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={cardVal.description}
+                                      onChange={(e) =>
+                                        patchHomepage((c) => ({
+                                          ...c,
+                                          cards: {
+                                            ...c.cards,
+                                            [key]: { ...c.cards[key], description: e.target.value },
+                                          },
+                                        }))
+                                      }
+                                      className="w-full min-w-0 px-2 py-1 rounded border border-slate-300 bg-white"
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* (b) PROJECTS & ARTICLES MANAGER */}
                   {settingsSubTab === 'projects_articles' && (
                     <div className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-4 text-xs">
@@ -3056,7 +3362,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                     ...prev.projectsArticlesConfig,
                                     videoCardControls: {
                                       ...prev.projectsArticlesConfig.videoCardControls,
-                                      aspectRatio: e.target.value as '16/9' | '4/3' | '1/1' | '21/9',
+                                      aspectRatio: e.target.value as MediaAspectRatio,
                                     },
                                   },
                                 }))
@@ -3064,7 +3370,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                               className="w-full min-w-0 px-2 py-1.5 rounded border border-slate-300 bg-white"
                             >
                               <option value="16/9">16:9 Widescreen</option>
-                              <option value="4/3">4:3 Standard</option>
+                              <option value="9/16">9:16 (Vertical / Portrait)</option>
+                              <option value="4/5">4:5 (Portrait Feed)</option>
+                              <option value="3/4">3:4 (Portrait Feed)</option>
+                              <option value="4/3">4:3 (Classic TV)</option>
                               <option value="1/1">1:1 Square</option>
                               <option value="21/9">21:9 Cinema</option>
                             </select>
@@ -3121,6 +3430,101 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           </div>
                         </div>
                       </div>
+
+                      {/* Image & Card Media Controls */}
+                      {(() => {
+                        const imgCtrl = siteSettings.appearanceConfig.projectsArticlesConfig.imageCardControls || {
+                          aspectRatio: '4/3' as MediaAspectRatio,
+                          objectFit: 'contain' as const,
+                          zoomLevel: 1,
+                        };
+                        return (
+                          <div className="border-t border-slate-200 pt-3 space-y-2">
+                            <h4 className="font-bold text-slate-950">Image &amp; Card Media Controls</h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
+                              <div className="min-w-0">
+                                <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                  Container Aspect Ratio
+                                </label>
+                                <select
+                                  value={imgCtrl.aspectRatio}
+                                  onChange={(e) =>
+                                    updateAppearance((prev) => ({
+                                      ...prev,
+                                      projectsArticlesConfig: {
+                                        ...prev.projectsArticlesConfig,
+                                        imageCardControls: {
+                                          ...imgCtrl,
+                                          aspectRatio: e.target.value as MediaAspectRatio,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-full min-w-0 px-2 py-1.5 rounded border border-slate-300 bg-white"
+                                >
+                                  <option value="16/9">16:9 Widescreen</option>
+                                  <option value="9/16">9:16 (Vertical / Portrait)</option>
+                                  <option value="4/5">4:5 (Portrait Feed)</option>
+                                  <option value="3/4">3:4 (Portrait Feed)</option>
+                                  <option value="4/3">4:3 (Classic TV)</option>
+                                  <option value="1/1">1:1 Square</option>
+                                  <option value="21/9">21:9 Cinema</option>
+                                </select>
+                              </div>
+                              <div className="min-w-0">
+                                <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                  Media Fit Mode
+                                </label>
+                                <select
+                                  value={imgCtrl.objectFit}
+                                  onChange={(e) =>
+                                    updateAppearance((prev) => ({
+                                      ...prev,
+                                      projectsArticlesConfig: {
+                                        ...prev.projectsArticlesConfig,
+                                        imageCardControls: {
+                                          ...imgCtrl,
+                                          objectFit: e.target.value as 'cover' | 'contain' | 'fill',
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-full min-w-0 px-2 py-1.5 rounded border border-slate-300 bg-white"
+                                >
+                                  <option value="cover">Cover (Crop to Fill)</option>
+                                  <option value="contain">Contain (No Crop)</option>
+                                  <option value="fill">Stretch to Fill</option>
+                                </select>
+                              </div>
+                              <div className="min-w-0">
+                                <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
+                                  Zoom Level ({imgCtrl.zoomLevel.toFixed(2)}x)
+                                </label>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={1.5}
+                                  step={0.05}
+                                  value={imgCtrl.zoomLevel}
+                                  onChange={(e) =>
+                                    updateAppearance((prev) => ({
+                                      ...prev,
+                                      projectsArticlesConfig: {
+                                        ...prev.projectsArticlesConfig,
+                                        imageCardControls: {
+                                          ...imgCtrl,
+                                          zoomLevel: Number(e.target.value),
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-full"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Custom Content Sections for Projects & Articles */}
                       <div className="border-t border-slate-200 pt-3 space-y-2.5">

@@ -20,12 +20,15 @@ import {
   Plus,
   Play,
   X,
+  Eye,
 } from 'lucide-react';
 import {
   fetchArticlesFromSupabase,
   deleteArticleFromSupabase,
   updateArticleHeroInscription,
   toggleArticleLikeInSupabase,
+  incrementArticleViewsInSupabase,
+  subscribeToArticlesRealtime,
   fetchCommentsForArticle,
   getCachedCommentsForArticle,
   submitArticleComment,
@@ -43,6 +46,16 @@ import { Interactive3DViewer } from './Interactive3DViewer';
 import { ArticleFormPanel } from './ArticleFormPanel';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
 import { LiveRelativeTime } from './LiveRelativeTime';
+import {
+  extractHtmlHeadings,
+  isRichHtmlContent,
+  sanitizeArticleHtml,
+} from '../utils/htmlSanitizer';
+import {
+  getContainerWidthClassForAspect,
+  getImageFitClass,
+  getMediaImgStyle,
+} from '../utils/mediaCardStyle';
 
 function slugHeadingId(heading: string, idx: number): string {
   const clean = heading
@@ -85,7 +98,13 @@ function renderInlineMarkdown(text: string): React.ReactNode {
 }
 
 const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
+  const richHtml = useMemo(() => {
+    if (!isRichHtmlContent(content)) return null;
+    return sanitizeArticleHtml(content);
+  }, [content]);
+
   const blocks = useMemo(() => {
+    if (richHtml !== null) return [];
     const lines = content.split('\n');
     const out: Array<
       | { type: 'heading'; level: number; text: string; id: string }
@@ -202,7 +221,16 @@ const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => 
       out.push({ type: 'paragraph', text: pLines.join(' ') });
     }
     return out;
-  }, [content]);
+  }, [content, richHtml]);
+
+  if (richHtml !== null) {
+    return (
+      <div
+        className="fesline-rich-article space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:list-inside [&_ul]:space-y-1 [&_ul]:pl-2 [&_ol]:list-decimal [&_ol]:list-inside [&_ol]:space-y-1 [&_ol]:pl-2 [&_blockquote]:border-l-4 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline"
+        dangerouslySetInnerHTML={{ __html: richHtml }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-3 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif">
@@ -301,6 +329,11 @@ export const ArticlesView: React.FC = () => {
   const { projectsArticlesConfig, cardAnimationEnabled, commentStyleConfig } =
     websiteSettings.appearanceConfig;
   const { customSections, innerLayout, videoCardControls } = projectsArticlesConfig;
+  const imageCardControls = projectsArticlesConfig.imageCardControls || {
+    aspectRatio: '4/3' as const,
+    objectFit: 'contain' as const,
+    zoomLevel: 1,
+  };
   const cardAnimClass = cardAnimationEnabled ? 'card-anim-enabled' : '';
   const visibleCustomSections = useMemo(
     () =>
@@ -359,11 +392,20 @@ export const ArticlesView: React.FC = () => {
   useEffect(() => {
     loadArticles();
     const onUpdated = () => {
-      setArticles(getCachedArticles(isOwner));
+      const updatedList = getCachedArticles(isOwner);
+      setArticles(updatedList);
+      setSelectedArticle((cur) => (cur ? updatedList.find((x) => x.id === cur.id) || cur : null));
       setLoading(false);
     };
     window.addEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
-    return () => window.removeEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
+    const unsubRealtime = subscribeToArticlesRealtime(isOwner, (updatedList) => {
+      setArticles(updatedList);
+      setSelectedArticle((cur) => (cur ? updatedList.find((x) => x.id === cur.id) || cur : null));
+    });
+    return () => {
+      window.removeEventListener(EVENT_ARTICLES_UPDATED, onUpdated);
+      unsubRealtime();
+    };
   }, [isOwner]);
 
   const openArticleDetail = (art: PortfolioArticle) => {
@@ -378,7 +420,16 @@ export const ArticlesView: React.FC = () => {
     );
     // Instantly hydrate cached comments synchronously for immediate display
     setComments(getCachedCommentsForArticle(art.id, isOwner));
-    setSelectedArticle(art);
+    const optimisticViews = (art.viewsCount || 0) + 1;
+    setSelectedArticle({ ...art, viewsCount: optimisticViews });
+    setArticles((prev) =>
+      prev.map((a) => (a.id === art.id ? { ...a, viewsCount: optimisticViews } : a))
+    );
+    void incrementArticleViewsInSupabase(art.id).then((serverViews) => {
+      if (typeof serverViews === 'number') {
+        setSelectedArticle((cur) => (cur?.id === art.id ? { ...cur, viewsCount: serverViews } : cur));
+      }
+    });
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
     }
@@ -418,12 +469,22 @@ export const ArticlesView: React.FC = () => {
   const categories = useMemo(() => {
     const set = new Set<string>();
     articles.forEach((a) => {
-      if ((isOwner || a.status === 'published') && a.category) {
-        set.add(a.category);
+      if ((isOwner || a.status === 'published') && a.category?.trim()) {
+        set.add(a.category.trim());
       }
     });
     return ['All', ...Array.from(set)];
   }, [articles, isOwner]);
+
+  const activeUploadCategories = useMemo(() => {
+    const set = new Set<string>();
+    articles.forEach((a) => {
+      if (a.status === 'published' && a.category?.trim()) {
+        set.add(a.category.trim());
+      }
+    });
+    return Array.from(set);
+  }, [articles]);
 
   const searchSuggestions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -472,6 +533,12 @@ export const ArticlesView: React.FC = () => {
 
   const tocHeadings = useMemo(() => {
     if (!selectedArticle) return [];
+    if (isRichHtmlContent(selectedArticle.content)) {
+      return extractHtmlHeadings(selectedArticle.content).map((h) => ({
+        label: h.label,
+        id: h.id,
+      }));
+    }
     let counter = 0;
     const headings = selectedArticle.content
       .split('\n')
@@ -581,6 +648,13 @@ export const ArticlesView: React.FC = () => {
           </button>
 
           <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-semibold tabular-nums"
+              title="Real-time views"
+            >
+              <Eye className="w-3.5 h-3.5 text-cyan-800" />
+              <span>{selectedArticle.viewsCount || 0}</span>
+            </span>
             <button
               type="button"
               onClick={() => handleLike(selectedArticle)}
@@ -658,7 +732,7 @@ export const ArticlesView: React.FC = () => {
             </h1>
           </header>
 
-          {/* Flexible Visual Hero: Full-Bleed Background Container + Editable Outer Inscription */}
+          {/* Flexible Visual Hero: Rectangular Full-Fit Media + Top-Right Inscription Overlay */}
           {(() => {
             const hero = selectedArticle.heroMedia;
             const hasSpecialHero = Boolean(hero && (hero.type === 'cad3d' || (hero.type === 'video' && hero.url)));
@@ -678,12 +752,77 @@ export const ArticlesView: React.FC = () => {
 
             if (!hasSpecialHero && !heroBgUrl) return null;
 
+            const topRightInscriptionOverlay = (currentInscription || isOwner) && (
+              <div
+                className="absolute top-2.5 right-2.5 z-20 max-w-[85%] sm:max-w-[58%]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {editingInscription && isOwner ? (
+                  <div className="flex flex-col gap-1.5 bg-slate-950/90 backdrop-blur-xs border border-white/25 rounded-lg p-2 shadow-lg">
+                    <input
+                      type="text"
+                      value={inscriptionDraft}
+                      onChange={(e) => setInscriptionDraft(e.target.value)}
+                      placeholder="Top-right hero inscription..."
+                      className="w-full min-w-[180px] sm:min-w-[230px] px-2 py-1 rounded border border-slate-500 bg-slate-900 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                    />
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        disabled={savingInscription}
+                        onClick={handleSaveHeroInscription}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-700 hover:bg-cyan-600 text-white text-[10.5px] font-semibold cursor-pointer disabled:opacity-60"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>{savingInscription ? 'Saving...' : 'Save'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingInscription(false);
+                          setInscriptionDraft(currentInscription);
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-[10.5px] font-semibold cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-950/75 backdrop-blur-xs border border-white/25 text-white shadow-md">
+                    {currentInscription && (
+                      <p className="text-[11px] sm:text-xs font-medium italic leading-snug text-right break-words">
+                        {currentInscription}
+                      </p>
+                    )}
+                    {isOwner && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInscriptionDraft(currentInscription);
+                          setEditingInscription(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/15 hover:bg-white/25 border border-white/25 text-white text-[10px] font-semibold cursor-pointer shrink-0"
+                      >
+                        <Edit3 className="w-2.5 h-2.5" />
+                        <span>{currentInscription ? 'Edit' : 'Add Inscription'}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+
             return (
-              <figure className="w-full space-y-2">
+              <figure className="w-full">
                 {hero?.type === 'cad3d' ? (
-                  <Interactive3DViewer modelType={hero.cadModelType || 'harmonic_actuator'} />
+                  <div className="relative w-full rounded-xl overflow-hidden">
+                    <Interactive3DViewer modelType={hero.cadModelType || 'harmonic_actuator'} />
+                    {topRightInscriptionOverlay}
+                  </div>
                 ) : hero?.type === 'video' && hero.url ? (
-                  <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
+                  <div className="relative w-full rounded-xl overflow-hidden border border-slate-200 bg-slate-950">
                     <CleanVideoPlayer
                       src={hero.url}
                       poster={hero.posterUrl}
@@ -697,10 +836,16 @@ export const ArticlesView: React.FC = () => {
                       objectFit={videoCardControls.objectFit || 'contain'}
                       zoomLevel={videoCardControls.zoomLevel || 1}
                     />
+                    {topRightInscriptionOverlay}
                   </div>
                 ) : (
-                  <div className="w-full aspect-[16/9] max-h-[460px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100">
-                    <picture className="w-full h-full block">
+                  <div
+                    className={`relative ${getContainerWidthClassForAspect(imageCardControls.aspectRatio, 'hero')} max-h-[420px] rounded-xl overflow-hidden border border-[#cbd5e1] shadow-xs bg-slate-100 flex items-center justify-center`}
+                    style={{
+                      aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                    }}
+                  >
+                    <picture className="w-full h-full flex items-center justify-center overflow-hidden">
                       {hero?.avifUrl && (
                         <source
                           srcSet={
@@ -718,67 +863,12 @@ export const ArticlesView: React.FC = () => {
                         alt={currentInscription || selectedArticle.title}
                         loading="lazy"
                         decoding="async"
-                        className="w-full h-full object-cover block"
+                        style={getMediaImgStyle(imageCardControls)}
+                        className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                       />
                     </picture>
+                    {topRightInscriptionOverlay}
                   </div>
-                )}
-
-                {(currentInscription || isOwner) && (
-                  <figcaption className="px-1 pt-0.5">
-                    {editingInscription && isOwner ? (
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-slate-50 border border-[#b8c6d4] rounded-lg p-2">
-                        <input
-                          type="text"
-                          value={inscriptionDraft}
-                          onChange={(e) => setInscriptionDraft(e.target.value)}
-                          placeholder="Enter hero inscription text shown outside the hero image container..."
-                          className="flex-1 min-w-0 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-700"
-                        />
-                        <div className="flex items-center justify-end gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            disabled={savingInscription}
-                            onClick={handleSaveHeroInscription}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-60"
-                          >
-                            <Check className="w-3 h-3" />
-                            <span>{savingInscription ? 'Saving...' : 'Save'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingInscription(false);
-                              setInscriptionDraft(currentInscription);
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer"
-                          >
-                            <X className="w-3 h-3" />
-                            <span>Cancel</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#edf2f8]/70 border border-[#cbd5e1]/80">
-                        <p className="text-xs text-slate-700 italic leading-relaxed text-justify flex-1 min-w-0 break-words">
-                          {currentInscription || 'No hero inscription added yet.'}
-                        </p>
-                        {isOwner && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setInscriptionDraft(currentInscription);
-                              setEditingInscription(true);
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-cyan-900 text-[11px] font-semibold cursor-pointer shrink-0"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>{currentInscription ? 'Edit Inscription' : 'Add Inscription'}</span>
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </figcaption>
                 )}
               </figure>
             );
@@ -890,35 +980,43 @@ export const ArticlesView: React.FC = () => {
                     <Compass className="w-3.5 h-3.5 text-cyan-800" />
                     <span>Illustrations</span>
                   </h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
                     {selectedArticle.diagrams.map((diag, idx) => {
                       const avifSrcSet =
                         diag.mobileUrl && diag.avifUrl && diag.mobileUrl !== diag.avifUrl
                           ? `${diag.mobileUrl} 768w, ${diag.avifUrl} 1600w`
                           : diag.avifUrl;
                       return (
-                        <div key={idx} className="w-full rounded-xl bg-white border border-slate-200 overflow-hidden flex flex-col">
-                          <picture className="w-full aspect-[16/10] bg-slate-50 flex items-center justify-center overflow-hidden">
-                            {avifSrcSet && (
-                              <source
-                                srcSet={avifSrcSet}
-                                sizes="(max-width: 640px) 100vw, 50vw"
-                                type="image/avif"
+                        <div key={idx} className="w-full flex flex-col gap-2">
+                          <div
+                            className={`${getContainerWidthClassForAspect(imageCardControls.aspectRatio, 'gallery')} max-h-[280px] rounded-xl bg-slate-50 border border-slate-200 overflow-hidden flex items-center justify-center`}
+                            style={{
+                              aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                            }}
+                          >
+                            <picture className="w-full h-full flex items-center justify-center overflow-hidden">
+                              {avifSrcSet && (
+                                <source
+                                  srcSet={avifSrcSet}
+                                  sizes="(max-width: 640px) 100vw, 50vw"
+                                  type="image/avif"
+                                />
+                              )}
+                              {diag.webpUrl && <source srcSet={diag.webpUrl} type="image/webp" />}
+                              <img
+                                src={diag.jpegUrl || diag.url}
+                                alt={diag.note || diag.title || `Diagram ${idx + 1}`}
+                                loading="lazy"
+                                decoding="async"
+                                style={getMediaImgStyle(imageCardControls)}
+                                className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                               />
-                            )}
-                            {diag.webpUrl && <source srcSet={diag.webpUrl} type="image/webp" />}
-                            <img
-                              src={diag.jpegUrl || diag.url}
-                              alt={diag.note || diag.title || `Diagram ${idx + 1}`}
-                              loading="lazy"
-                              decoding="async"
-                              className="w-full h-full object-contain block"
-                            />
-                          </picture>
+                            </picture>
+                          </div>
                           {diag.note && diag.note.trim() && (
-                            <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                            <div className="w-full rounded-xl border border-[#cbd5e1] bg-[#edf2f8]/75 px-3 py-2 text-[11px] text-slate-700 text-justify leading-relaxed shadow-2xs">
                               {diag.note.trim()}
-                            </p>
+                            </div>
                           )}
                         </div>
                       );
@@ -929,35 +1027,43 @@ export const ArticlesView: React.FC = () => {
 
               {/* Embedded Article Images & Videos */}
               {selectedArticle.images.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200 items-start">
                   {selectedArticle.images.map((im, idx) => {
                     const avifSrcSet =
                       im.mobileUrl && im.avifUrl && im.mobileUrl !== im.avifUrl
                         ? `${im.mobileUrl} 768w, ${im.avifUrl} 1600w`
                         : im.avifUrl;
                     return (
-                      <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-white flex flex-col">
-                        <picture className="w-full aspect-[16/10] bg-slate-50 flex items-center justify-center overflow-hidden">
-                          {avifSrcSet && (
-                            <source
-                              srcSet={avifSrcSet}
-                              sizes="(max-width: 640px) 100vw, 50vw"
-                              type="image/avif"
+                      <div key={idx} className="w-full flex flex-col gap-2">
+                        <div
+                          className={`${getContainerWidthClassForAspect(imageCardControls.aspectRatio, 'gallery')} max-h-[280px] rounded-xl border border-slate-200 overflow-hidden bg-slate-50 flex items-center justify-center`}
+                          style={{
+                            aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                          }}
+                        >
+                          <picture className="w-full h-full flex items-center justify-center overflow-hidden">
+                            {avifSrcSet && (
+                              <source
+                                srcSet={avifSrcSet}
+                                sizes="(max-width: 640px) 100vw, 50vw"
+                                type="image/avif"
+                              />
+                            )}
+                            {im.webpUrl && <source srcSet={im.webpUrl} type="image/webp" />}
+                            <img
+                              src={im.jpegUrl || im.url}
+                              alt={im.note || im.title || `Article Image ${idx + 1}`}
+                              loading="lazy"
+                              decoding="async"
+                              style={getMediaImgStyle(imageCardControls)}
+                              className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                             />
-                          )}
-                          {im.webpUrl && <source srcSet={im.webpUrl} type="image/webp" />}
-                          <img
-                            src={im.jpegUrl || im.url}
-                            alt={im.note || im.title || `Article Image ${idx + 1}`}
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-contain block"
-                          />
-                        </picture>
+                          </picture>
+                        </div>
                         {im.note && im.note.trim() && (
-                          <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-slate-50 border-t border-slate-200 text-justify leading-relaxed">
+                          <div className="w-full rounded-xl border border-[#cbd5e1] bg-[#edf2f8]/75 px-3 py-2 text-[11px] text-slate-700 text-justify leading-relaxed shadow-2xs">
                             {im.note.trim()}
-                          </p>
+                          </div>
                         )}
                       </div>
                     );
@@ -966,26 +1072,28 @@ export const ArticlesView: React.FC = () => {
               )}
 
               {selectedArticle.videos.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-200 items-start">
                   {selectedArticle.videos.map((v, idx) => (
-                    <div key={idx} className="w-full rounded-xl border border-slate-200 overflow-hidden bg-slate-950 flex flex-col">
-                      <CleanVideoPlayer
-                        src={v.url}
-                        poster={v.posterUrl}
-                        av1Urls={v.av1Urls}
-                        h264Urls={v.h264Urls}
-                        vttThumbnailsUrl={v.vttThumbnailsUrl}
-                        subtitleUrl={v.subtitleUrl}
-                        mediaId={v.mediaAssetId || v.url}
-                        title={v.title || selectedArticle.title}
-                        aspectRatio={videoCardControls.aspectRatio || '16/9'}
-                        objectFit={videoCardControls.objectFit || 'contain'}
-                        zoomLevel={videoCardControls.zoomLevel || 1}
-                      />
+                    <div key={idx} className="w-full flex flex-col gap-2">
+                      <div className="w-full rounded-xl border border-slate-200 overflow-hidden bg-slate-950">
+                        <CleanVideoPlayer
+                          src={v.url}
+                          poster={v.posterUrl}
+                          av1Urls={v.av1Urls}
+                          h264Urls={v.h264Urls}
+                          vttThumbnailsUrl={v.vttThumbnailsUrl}
+                          subtitleUrl={v.subtitleUrl}
+                          mediaId={v.mediaAssetId || v.url}
+                          title={v.title || selectedArticle.title}
+                          aspectRatio={videoCardControls.aspectRatio || '16/9'}
+                          objectFit={videoCardControls.objectFit || 'contain'}
+                          zoomLevel={videoCardControls.zoomLevel || 1}
+                        />
+                      </div>
                       {v.note && v.note.trim() && (
-                        <p className="px-2.5 py-1.5 text-[11px] text-slate-700 bg-white border-t border-slate-200 text-justify leading-relaxed">
+                        <div className="w-full rounded-xl border border-[#cbd5e1] bg-[#edf2f8]/75 px-3 py-2 text-[11px] text-slate-700 text-justify leading-relaxed shadow-2xs">
                           {v.note.trim()}
-                        </p>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -1349,7 +1457,7 @@ export const ArticlesView: React.FC = () => {
         <ArticleFormPanel
           initialArticle={editingArticle}
           isOwner={isOwner}
-          existingCategories={categories.filter((c) => c !== 'All')}
+          activeCategories={activeUploadCategories}
           onSaved={(saved, wasPendingVisitor) => {
             setIsPostOpen(false);
             setEditingArticle(null);
@@ -1463,13 +1571,19 @@ export const ArticlesView: React.FC = () => {
                 >
                   <div>
                     {cardImg ? (
-                      <div className="w-full aspect-[16/10] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                      <div
+                        className="w-full max-h-[240px] bg-slate-100 border-b border-slate-200 overflow-hidden flex items-center justify-center"
+                        style={{
+                          aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
+                        }}
+                      >
                         <img
                           src={cardImg}
                           alt={art.title}
                           loading="lazy"
                           decoding="async"
-                          className="w-full h-full object-cover block"
+                          style={getMediaImgStyle(imageCardControls)}
+                          className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
                         />
                       </div>
                     ) : cardVid ? (
@@ -1540,22 +1654,31 @@ export const ArticlesView: React.FC = () => {
                         <Clock className="w-3 h-3" />
                         <span>{art.readingTime}</span>
                       </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleLike(art);
-                        }}
-                        aria-label={isLiked ? 'Unlike article' : 'Like article'}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
-                          isLiked
-                            ? 'bg-rose-50 border-rose-300 text-rose-700'
-                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
-                        }`}
-                      >
-                        <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
-                        <span className="tabular-nums">{art.likesCount || 0}</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 text-[10px] font-semibold tabular-nums"
+                          title="Real-time views"
+                        >
+                          <Eye className="w-3 h-3 text-cyan-800" />
+                          <span>{art.viewsCount || 0}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleLike(art);
+                          }}
+                          aria-label={isLiked ? 'Unlike article' : 'Like article'}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                            isLiked
+                              ? 'bg-rose-50 border-rose-300 text-rose-700'
+                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
+                          }`}
+                        >
+                          <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                          <span className="tabular-nums">{art.likesCount || 0}</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </article>

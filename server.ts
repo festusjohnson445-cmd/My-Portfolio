@@ -1934,7 +1934,7 @@ async function runUnifiedVideoJobAsync(params: {
         meta.width <= targetMaxW &&
         meta.height > 0 &&
         meta.height <= targetMaxH &&
-        inputBytes <= 10 * 1024 * 1024;
+        inputBytes <= 14 * 1024 * 1024;
 
       if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
@@ -1971,9 +1971,9 @@ async function runUnifiedVideoJobAsync(params: {
             '-c:v', 'libx264',
             '-profile:v', 'high',
             '-level:v', '4.1',
-            '-crf', '24',
-            '-maxrate', '1200k',
-            '-bufsize', '2400k',
+            '-crf', '25',
+            '-maxrate', '1000k',
+            '-bufsize', '2000k',
             '-preset', 'superfast',
             '-g', '60',
             '-pix_fmt', 'yuv420p',
@@ -2308,7 +2308,7 @@ app.post('/api/media/video/init', async (req, res) => {
     return res.json({
       success: true,
       jobId,
-      chunkSize: 700 * 1024,
+      chunkSize: 1024 * 1024,
     });
   } catch (err: any) {
     console.error('[Video Pipeline Init Error]:', err);

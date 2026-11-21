@@ -240,11 +240,19 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   };
 
   const normalizedAspect = (aspectRatio || '16/9').replace(':', '/');
+  const aspectSizeClass =
+    normalizedAspect === '9/16'
+      ? 'max-w-[270px] sm:max-w-[310px] mx-auto'
+      : normalizedAspect === '4/5' || normalizedAspect === '3/4'
+      ? 'max-w-[340px] sm:max-w-[390px] mx-auto'
+      : normalizedAspect === '1/1'
+      ? 'max-w-[400px] sm:max-w-[440px] mx-auto'
+      : 'max-h-[65vh] sm:max-h-[440px]';
 
   return (
     <div
       ref={containerRef}
-      className={`fesline-vidstack-wrap group relative w-full overflow-hidden bg-slate-950 max-h-[65vh] sm:max-h-[440px] flex items-center justify-center ${className}`}
+      className={`fesline-vidstack-wrap group relative w-full overflow-hidden bg-slate-950 flex items-center justify-center ${aspectSizeClass} ${className}`}
       style={{
         aspectRatio: normalizedAspect,
         ['--media-brand' as string]: 'var(--primary-color, #164e63)',

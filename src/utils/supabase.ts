@@ -446,15 +446,20 @@ export async function deleteAvatarFromSupabaseBucket(storagePath: string): Promi
 export async function uploadMaterialToSupabaseBucket(
   fileOrBlob: File | Blob,
   fileName: string,
-  uid?: string
+  uid?: string,
+  allowPublicStudentUpload = false
 ): Promise<{ publicUrl: string; downloadUrl: string; storagePath: string }> {
-  // 1. Session verification: write operations execute only with active session
-  const { user } = await getValidatedSession();
-  const ownerUid = uid || user.id;
+  // 1. Session verification: owner uses auth.uid(); visitor Student Materials uploads use student-submissions/
+  const { data: sessionData } = await supabase.auth.getSession();
+  const activeUser = sessionData?.session?.user;
+  if (!activeUser && !allowPublicStudentUpload) {
+    throw new Error('Authentication required: Active Supabase session is required to perform this action.');
+  }
+  const folderPrefix = activeUser ? uid || activeUser.id : 'student-submissions';
 
   const cleanName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const timestamp = Date.now();
-  const storagePath = `${ownerUid}/${timestamp}_${cleanName}`;
+  const storagePath = `${folderPrefix}/${timestamp}_${cleanName}`;
 
   let contentType = fileOrBlob.type || 'application/octet-stream';
   if (!contentType || contentType === 'application/octet-stream') {
@@ -467,7 +472,7 @@ export async function uploadMaterialToSupabaseBucket(
   }
 
   // 2. Upload strictly with { contentType, upsert: true, cacheControl: '3600' } and await completion
-  // Preserves primary 'materials' bucket and falls back to 'Materials' only if bucket name differs
+  // Preserves primary 'materials' bucket and falls back to 'Materials' if needed (e.g. visitor RLS)
   let activeBucket: string = SUPABASE_BUCKETS.MATERIALS;
   let { error: uploadError } = await supabase.storage
     .from(activeBucket)
@@ -477,7 +482,11 @@ export async function uploadMaterialToSupabaseBucket(
       upsert: true,
     });
 
-  if (uploadError && /bucket.*not found/i.test(uploadError.message || '')) {
+  if (
+    uploadError &&
+    (allowPublicStudentUpload ||
+      /bucket.*not found|row-level security|permission|unauthorized/i.test(uploadError.message || ''))
+  ) {
     const fallbackRes = await supabase.storage
       .from('Materials')
       .upload(storagePath, fileOrBlob, {
@@ -522,12 +531,15 @@ export async function uploadMaterialToSupabaseBucket(
 export async function uploadMaterialThumbnailToBucket(
   dataUrl: string,
   materialId: string,
-  uid?: string
+  uid?: string,
+  allowPublicStudentUpload = false
 ): Promise<string | null> {
   try {
     if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
-    const { user } = await getValidatedSession();
-    const ownerUid = uid || user.id;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeUser = sessionData?.session?.user;
+    if (!activeUser && !allowPublicStudentUpload) return null;
+    const folderPrefix = activeUser ? uid || activeUser.id : 'student-submissions';
 
     const parts = dataUrl.split(',');
     const mimeMatch = parts[0].match(/:(.*?);/);
@@ -538,17 +550,32 @@ export async function uploadMaterialThumbnailToBucket(
     for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
     const blob = new Blob([bytes], { type: mimeType });
 
-    const thumbPath = `${ownerUid}/thumbs/${materialId}.${ext}`;
-    const { error } = await supabase.storage
-      .from(SUPABASE_BUCKETS.MATERIALS)
+    const thumbPath = `${folderPrefix}/thumbs/${materialId}.${ext}`;
+    let activeBucket: string = SUPABASE_BUCKETS.MATERIALS;
+    let { error } = await supabase.storage
+      .from(activeBucket)
       .upload(thumbPath, blob, {
         contentType: mimeType,
         cacheControl: '86400',
         upsert: true,
       });
 
+    if (error && allowPublicStudentUpload) {
+      const fb = await supabase.storage
+        .from('Materials')
+        .upload(thumbPath, blob, {
+          contentType: mimeType,
+          cacheControl: '86400',
+          upsert: true,
+        });
+      if (!fb.error) {
+        activeBucket = 'Materials';
+        error = null;
+      }
+    }
+
     if (error) return null;
-    const { data: pub } = supabase.storage.from(SUPABASE_BUCKETS.MATERIALS).getPublicUrl(thumbPath);
+    const { data: pub } = supabase.storage.from(activeBucket).getPublicUrl(thumbPath);
     return pub?.publicUrl || null;
   } catch {
     return null;
@@ -994,26 +1021,41 @@ export function subscribeToSupabaseMaterialsChanges(callback: () => void) {
 }
 
 /**
- * Save / publish official material in Supabase "materials" table with owner session
+ * Save / publish material in Supabase "materials" table
+ * Supports both owner uploads (any category) and public visitor Student Materials uploads.
  */
-export async function saveMaterialToSupabaseTable(material: {
-  id: string;
-  title: string;
-  fileName: string;
-  fileSize: string;
-  fileType: string;
-  category: string;
-  description: string;
-  author?: string;
-  previewUrl?: string;
-  downloadUrl?: string;
-  fileUrl?: string;
-  storagePath?: string;
-  tags?: string[];
-}, uid?: string): Promise<boolean> {
+export async function saveMaterialToSupabaseTable(
+  material: {
+    id: string;
+    title: string;
+    fileName: string;
+    fileSize: string;
+    fileType: string;
+    category: string;
+    description: string;
+    author?: string;
+    previewUrl?: string;
+    downloadUrl?: string;
+    fileUrl?: string;
+    storagePath?: string;
+    tags?: string[];
+    level?: string;
+    department?: string;
+    institution?: string;
+    viewsCount?: number;
+    likesCount?: number;
+  },
+  uid?: string,
+  allowPublicStudentUpload = false
+): Promise<boolean> {
   try {
-    const { user } = await getValidatedSession();
-    const ownerUid = uid || user.id;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeUser = sessionData?.session?.user;
+    const isStudentMat = material.category === 'Students Materials';
+    if (!activeUser && !(allowPublicStudentUpload && isStudentMat)) {
+      throw new Error('Authentication required: Active Supabase session is required to upload this material.');
+    }
+    const ownerUid = activeUser ? uid || activeUser.id : null;
 
     const publicUrl = material.downloadUrl || material.fileUrl || null;
     const safeMaterialUuid = ensureValidUuid(material.id);
@@ -1033,6 +1075,11 @@ export async function saveMaterialToSupabaseTable(material: {
       storage_path: material.storagePath || null,
       tags: material.tags || [],
       is_approved: true,
+      level: material.level || '',
+      department: material.department || '',
+      institution: material.institution || '',
+      views_count: material.viewsCount ?? 0,
+      likes_count: material.likesCount ?? 0,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -1131,6 +1178,73 @@ export async function deleteMaterialFromSupabaseTable(materialId: string): Promi
   } catch (err: any) {
     console.warn('[Supabase DB Materials Delete Caught]:', err?.message || err);
     return false;
+  }
+}
+
+/**
+ * Real-time view counter for Engineering Hub documents
+ */
+export async function incrementMaterialViewsInSupabase(materialId: string): Promise<number | null> {
+  try {
+    const safeUuid = ensureValidUuid(materialId);
+    const { data, error } = await supabase.rpc('increment_material_views', {
+      target_material_id: safeUuid,
+    });
+    if (!error && typeof data === 'number') {
+      cachedMaterialsData = null;
+      return data;
+    }
+    if (safeUuid !== materialId) {
+      const retry = await supabase.rpc('increment_material_views', {
+        target_material_id: materialId,
+      });
+      if (!retry.error && typeof retry.data === 'number') {
+        cachedMaterialsData = null;
+        return retry.data;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Real-time like / unlike counter for Engineering Hub documents
+ */
+export async function toggleMaterialLikeInSupabase(
+  materialId: string,
+  delta: 1 | -1,
+  fallbackNextCount?: number
+): Promise<number | null> {
+  try {
+    const safeUuid = ensureValidUuid(materialId);
+    const rpcName = delta >= 0 ? 'increment_material_likes' : 'decrement_material_likes';
+    const { data, error } = await supabase.rpc(rpcName, {
+      target_material_id: safeUuid,
+    });
+    if (!error && typeof data === 'number') {
+      cachedMaterialsData = null;
+      return data;
+    }
+    if (safeUuid !== materialId) {
+      const retry = await supabase.rpc(rpcName, {
+        target_material_id: materialId,
+      });
+      if (!retry.error && typeof retry.data === 'number') {
+        cachedMaterialsData = null;
+        return retry.data;
+      }
+    }
+    if (typeof fallbackNextCount === 'number') {
+      await supabase
+        .from('materials')
+        .update({ likes_count: Math.max(0, fallbackNextCount) })
+        .eq('id', safeUuid);
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 

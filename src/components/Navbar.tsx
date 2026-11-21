@@ -268,7 +268,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="px-3.5 py-3 border-b border-[#cbd5e1] flex items-center justify-between bg-[#dbe3ed]">
                 <div className="flex items-center gap-2">
                   <FeslineLogo className="h-5 w-auto" showSubtitle={false} />
-                  <h2 className="text-sm font-bold text-slate-900 leading-none">Navigation</h2>
+                  <h2 className="text-[9px] font-bold text-slate-900 leading-none">Navigation</h2>
                 </div>
 
                 <button
