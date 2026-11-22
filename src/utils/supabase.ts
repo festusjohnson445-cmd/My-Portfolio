@@ -2695,4 +2695,55 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('projects', 'projects', true), ('articles', 'articles', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- 6. Career Studio Documents Table & Materials Bucket Policy
+CREATE TABLE IF NOT EXISTS public.career_studio_documents (
+  id TEXT PRIMARY KEY,
+  owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  client_token TEXT DEFAULT '',
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  author_name TEXT NOT NULL DEFAULT '',
+  form_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  section_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  pdf_url TEXT DEFAULT '',
+  docx_url TEXT DEFAULT '',
+  preview_image_url TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published')),
+  views_count INTEGER DEFAULT 0,
+  downloads_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.career_studio_documents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Career Studio Documents" ON public.career_studio_documents;
+CREATE POLICY "Public Read Career Studio Documents"
+ON public.career_studio_documents FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Insert Career Studio Documents" ON public.career_studio_documents;
+CREATE POLICY "Public Insert Career Studio Documents"
+ON public.career_studio_documents FOR INSERT TO public
+WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Update Career Studio Documents" ON public.career_studio_documents;
+CREATE POLICY "Public Update Career Studio Documents"
+ON public.career_studio_documents FOR UPDATE TO public
+USING (true)
+WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Delete Career Studio Documents" ON public.career_studio_documents;
+CREATE POLICY "Public Delete Career Studio Documents"
+ON public.career_studio_documents FOR DELETE TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Upload Career Studio to materials" ON storage.objects;
+CREATE POLICY "Public Upload Career Studio to materials"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'career-studio'
+);
 `;

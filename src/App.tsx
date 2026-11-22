@@ -6,6 +6,7 @@ import { ProfileView } from './components/ProfileView';
 import { HomeView } from './components/HomeView';
 import { ProjectsView } from './components/ProjectsView';
 import { ArticlesView } from './components/ArticlesView';
+import { DocumentWorkspaceView } from './components/DocumentWorkspaceView';
 import { AdminDashboardView } from './components/AdminDashboardView';
 import { ResumeDownloadModal } from './components/ResumeDownloadModal';
 import { MessagingSection } from './components/MessagingSection';
@@ -24,12 +25,46 @@ import {
 import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
-  prewarmPortfolioCaches,
 } from './utils/portfolioSupabase';
 import { useUserColorMode, resolveEffectiveTheme } from './utils/userThemeMode';
 
+function resolveInitialPartFromHash(): PortfolioPart {
+  if (typeof window === 'undefined') return 'home';
+  const hash = window.location.hash.replace('#', '');
+  if (
+    hash === 'profile' ||
+    hash === 'profile-bio' ||
+    hash === 'profile-experience' ||
+    hash === 'profile-publications' ||
+    hash === 'profile-achievements'
+  ) {
+    return 'profile';
+  }
+  if (hash === 'overview' || hash === 'hub') return 'overview';
+  if (hash === 'projects') return 'projects';
+  if (hash === 'articles' || hash === 'blog') return 'articles';
+  if (hash === 'documents' || hash === 'doc-studio') return 'documents';
+  if (hash === 'admin') return 'admin';
+  if (
+    hash === 'metrology' ||
+    hash === 'cad-comparison' ||
+    hash === 'gdt-drawings' ||
+    hash === 'messaging' ||
+    hash === 'toolbox' ||
+    hash === 'chat' ||
+    hash === 'credentials' ||
+    hash === 'contact'
+  ) {
+    return 'messaging';
+  }
+  return 'home';
+}
+
 export default function App() {
-  const [activePart, setActivePart] = useState<PortfolioPart>('home');
+  const [activePart, setActivePart] = useState<PortfolioPart>(() => resolveInitialPartFromHash());
+  const [visitedParts, setVisitedParts] = useState<Set<PortfolioPart>>(
+    () => new Set([resolveInitialPartFromHash()])
+  );
   const [isResumeOpen, setIsResumeOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -44,9 +79,6 @@ export default function App() {
 
   // Top-level onAuthStateChange session listener — ignore anonymous / public visitor chat sessions
   useEffect(() => {
-    // Prewarm public portfolio & media caches immediately without blocking on auth network check
-    prewarmPortfolioCaches(false).catch(() => {});
-
     supabase.auth
       .getSession()
       .then(({ data: { session }, error }) => {
@@ -56,7 +88,6 @@ export default function App() {
         const ownerActive = isRealOwnerUser(session?.user);
         if (ownerActive) {
           setOwnerAuthenticated(true, session?.user?.id);
-          prewarmPortfolioCaches(true).catch(() => {});
         } else {
           setOwnerAuthenticated(false);
         }
@@ -74,7 +105,6 @@ export default function App() {
       } else {
         setOwnerAuthenticated(false);
       }
-      prewarmPortfolioCaches(ownerActive).catch(() => {});
     });
 
     return () => {
@@ -153,48 +183,37 @@ export default function App() {
     }
   };
 
-  // Synchronize initial URL hash and pull global profile from server for visitors
+  // Synchronize initial URL hash scroll target
   useEffect(() => {
     syncGlobalProfileWithServer().catch(() => {});
     const hash = window.location.hash.replace('#', '');
+    const initialPart = resolveInitialPartFromHash();
+    setActivePart(initialPart);
+    setVisitedParts((prev) => {
+      if (prev.has(initialPart)) return prev;
+      const next = new Set(prev);
+      next.add(initialPart);
+      return next;
+    });
     if (
-      hash === 'profile' ||
       hash === 'profile-bio' ||
       hash === 'profile-experience' ||
       hash === 'profile-publications' ||
       hash === 'profile-achievements'
     ) {
-      setActivePart('profile');
-      if (hash !== 'profile') {
-        setTimeout(() => {
-          document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 120);
-      }
-    } else if (hash === 'overview' || hash === 'hub') {
-      setActivePart('overview');
-    } else if (hash === 'projects') {
-      setActivePart('projects');
-    } else if (hash === 'articles' || hash === 'blog') {
-      setActivePart('articles');
-    } else if (hash === 'admin') {
-      setActivePart('admin');
-    } else if (
-      hash === 'metrology' ||
-      hash === 'cad-comparison' ||
-      hash === 'gdt-drawings' ||
-      hash === 'messaging' ||
-      hash === 'toolbox' ||
-      hash === 'chat' ||
-      hash === 'credentials' ||
-      hash === 'contact'
-    ) {
-      setActivePart('messaging');
-    } else {
-      setActivePart('home');
+      setTimeout(() => {
+        document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
     }
   }, []);
 
   const handleSelectPart = (part: PortfolioPart, sectionId?: string) => {
+    setVisitedParts((prev) => {
+      if (prev.has(part)) return prev;
+      const next = new Set(prev);
+      next.add(part);
+      return next;
+    });
     setActivePart(part);
     window.history.replaceState(null, '', `#${sectionId || part}`);
     if (sectionId) {
@@ -260,28 +279,32 @@ export default function App() {
             activePart === 'profile' ? 'flex' : 'hidden'
           }`}
         >
-          <ProfileView
-            onResumeClick={handleOneClickResumeDownload}
-            onNavigatePart={handleSelectPart}
-            resumeDownloadCount={resumeDownloadCount}
-          />
+          {visitedParts.has('profile') && (
+            <>
+              <ProfileView
+                onResumeClick={handleOneClickResumeDownload}
+                onNavigatePart={handleSelectPart}
+                resumeDownloadCount={resumeDownloadCount}
+              />
 
-          {/* Bottom Navigator */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14 mt-auto">
-            <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="text-[11px] sm:text-[13px] text-slate-700">
-                <span className="text-cyan-900 font-bold">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
+              {/* Bottom Navigator */}
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-14 mt-auto">
+                <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="text-[11px] sm:text-[13px] text-slate-700">
+                    <span className="text-cyan-900 font-bold">NEXT:</span> Access public engineering documents and technical blueprints in the Engineering Hub.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPart('overview')}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <span>Proceed to Engineering Hub</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => handleSelectPart('overview')}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-              >
-                <span>Proceed to Engineering Hub</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
+            </>
+          )}
         </section>
 
         {/* MESSAGING */}
@@ -291,10 +314,12 @@ export default function App() {
             activePart === 'messaging' ? 'flex' : 'hidden'
           }`}
         >
-          <MessagingSection
-            onBack={() => handleSelectPart('home')}
-            isActive={activePart === 'messaging'}
-          />
+          {visitedParts.has('messaging') && (
+            <MessagingSection
+              onBack={() => handleSelectPart('home')}
+              isActive={activePart === 'messaging'}
+            />
+          )}
         </section>
 
         {/* ENGINEERING HUB */}
@@ -304,24 +329,28 @@ export default function App() {
             activePart === 'overview' ? 'flex' : 'hidden'
           }`}
         >
-          <HomeView onNavigatePart={handleSelectPart} />
+          {visitedParts.has('overview') && (
+            <>
+              <HomeView onNavigatePart={handleSelectPart} />
 
-          {/* Bottom Sequential Navigator */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
-            <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="text-[11px] sm:text-[13px] text-slate-700">
-                <span className="text-cyan-900 font-bold">NEXT:</span> Explore published mechanical projects, CAD studies, and engineering reports.
+              {/* Bottom Sequential Navigator */}
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
+                <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="text-[11px] sm:text-[13px] text-slate-700">
+                    <span className="text-cyan-900 font-bold">NEXT:</span> Explore published mechanical projects, CAD studies, and engineering reports.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPart('projects')}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <span>Explore Projects</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => handleSelectPart('projects')}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-[11px] sm:text-[13px] font-semibold shadow-md transition-all cursor-pointer whitespace-nowrap"
-              >
-                <span>Explore Projects</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
+            </>
+          )}
         </section>
 
         {/* PROJECTS (ENGINEERING PORTFOLIO) */}
@@ -331,7 +360,7 @@ export default function App() {
             activePart === 'projects' ? 'flex' : 'hidden'
           }`}
         >
-          <ProjectsView />
+          {visitedParts.has('projects') && <ProjectsView />}
         </section>
 
         {/* BLOG / ARTICLES (ENGINEERING ARTICLES) */}
@@ -341,7 +370,17 @@ export default function App() {
             activePart === 'articles' ? 'flex' : 'hidden'
           }`}
         >
-          <ArticlesView />
+          {visitedParts.has('articles') && <ArticlesView />}
+        </section>
+
+        {/* DOCUMENT-GENERATION WORKSPACE */}
+        <section
+          id="documents"
+          className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
+            activePart === 'documents' ? 'flex' : 'hidden'
+          }`}
+        >
+          {visitedParts.has('documents') && <DocumentWorkspaceView />}
         </section>
 
         {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER) */}
@@ -351,7 +390,9 @@ export default function App() {
             activePart === 'admin' ? 'flex' : 'hidden'
           }`}
         >
-          <AdminDashboardView onNavigatePart={handleSelectPart} />
+          {visitedParts.has('admin') && (
+            <AdminDashboardView onNavigatePart={handleSelectPart} />
+          )}
         </section>
       </main>
 

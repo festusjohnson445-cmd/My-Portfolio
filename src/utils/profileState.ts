@@ -281,75 +281,90 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
   isSyncingWithServer = true;
   const runSync = async () => {
     try {
+      let gotSupabaseProfile = false;
       let firestoreHasData = false;
       let serverPayload: { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] } | null = null;
 
-      // Launch Supabase, Firestore, and server API fetches in parallel
-      const supaTask = fetchProfileFromSupabaseTable(force)
-        .then((supaProfile) => {
-          if (supaProfile) {
-            hasAuthoritativeSupabaseProfile = true;
-            applyPersistentProfile(
-              {
-                avatar: supaProfile.avatar_url !== undefined && supaProfile.avatar_url !== null ? supaProfile.avatar_url : dbProfileAvatar(),
-                bio: supaProfile.bio || dbProfileBio(),
-                documents: Array.isArray(supaProfile.documents) ? supaProfile.documents : [],
-                updatedAt: supaProfile.updated_at || new Date().toISOString(),
-              },
-              true,
-              true
-            );
-          }
-        })
-        .catch((supaFetchErr) => {
-          console.warn('Supabase profile fetch note:', supaFetchErr);
-        });
+      // Primary authoritative fetch from Supabase
+      try {
+        const supaProfile = await fetchProfileFromSupabaseTable(force);
+        if (supaProfile) {
+          gotSupabaseProfile = true;
+          hasAuthoritativeSupabaseProfile = true;
+          applyPersistentProfile(
+            {
+              avatar:
+                supaProfile.avatar_url !== undefined && supaProfile.avatar_url !== null
+                  ? supaProfile.avatar_url
+                  : dbProfileAvatar(),
+              bio: supaProfile.bio || dbProfileBio(),
+              documents: Array.isArray(supaProfile.documents) ? supaProfile.documents : [],
+              updatedAt: supaProfile.updated_at || new Date().toISOString(),
+            },
+            true,
+            true
+          );
+        }
+      } catch (supaFetchErr) {
+        console.warn('Supabase profile fetch note:', supaFetchErr);
+      }
 
-      const firestoreTask = fetchProfileFromFirestore()
-        .then((dbProfile) => {
-          if (dbProfile && (dbProfile.avatar || dbProfile.bio || (dbProfile.documents && dbProfile.documents.length > 0))) {
-            firestoreHasData = true;
-            applyPersistentProfile(dbProfile, true, false);
-          }
-        })
-        .catch((e) => {
-          console.warn('Firestore direct fetch attempt:', e);
-        });
-
-      const serverTask = fetch('/api/profile')
-        .then(async (res) => {
-          if (!res.ok) return;
-          const json = await res.json();
-          if (json && json.success && json.profile) {
-            const { avatar, bio, documents } = json.profile;
-            if (avatar || bio || (documents && documents.length > 0)) {
-              serverPayload = { avatar, bio, documents };
-              applyPersistentProfile(
-                {
-                  avatar: avatar || dbProfileAvatar(),
-                  bio: bio || dbProfileBio(),
-                  documents: documents || [],
-                  updatedAt: json.profile.updatedAt || new Date().toISOString(),
-                },
-                true,
-                false
-              );
+      // Only fall back to Firestore / backup server API if Supabase returned nothing
+      if (!gotSupabaseProfile) {
+        const firestoreTask = fetchProfileFromFirestore()
+          .then((dbProfile) => {
+            if (
+              dbProfile &&
+              (dbProfile.avatar ||
+                dbProfile.bio ||
+                (dbProfile.documents && dbProfile.documents.length > 0))
+            ) {
+              firestoreHasData = true;
+              applyPersistentProfile(dbProfile, true, false);
             }
-          }
-        })
-        .catch((serverErr) => {
-          console.warn('Server profile fetch note:', serverErr);
-        });
+          })
+          .catch((e) => {
+            console.warn('Firestore direct fetch attempt:', e);
+          });
 
-      await Promise.allSettled([supaTask, firestoreTask, serverTask]);
+        const serverTask = fetch('/api/profile')
+          .then(async (res) => {
+            if (!res.ok) return;
+            const json = await res.json();
+            if (json && json.success && json.profile) {
+              const { avatar, bio, documents } = json.profile;
+              if (avatar || bio || (documents && documents.length > 0)) {
+                serverPayload = { avatar, bio, documents };
+                applyPersistentProfile(
+                  {
+                    avatar: avatar || dbProfileAvatar(),
+                    bio: bio || dbProfileBio(),
+                    documents: documents || [],
+                    updatedAt: json.profile.updatedAt || new Date().toISOString(),
+                  },
+                  true,
+                  false
+                );
+              }
+            }
+          })
+          .catch((serverErr) => {
+            console.warn('Server profile fetch note:', serverErr);
+          });
 
-      // Seed Firestore in background if Firestore was empty and server returned data
-      if (!firestoreHasData && serverPayload && ((serverPayload as any).avatar || (serverPayload as any).bio)) {
-        saveProfileToFirestore({
-          avatar: (serverPayload as any).avatar || undefined,
-          bio: (serverPayload as any).bio || DEFAULT_BIO_DATA,
-          documents: (serverPayload as any).documents || [],
-        }).catch(() => {});
+        await Promise.allSettled([firestoreTask, serverTask]);
+
+        if (
+          !firestoreHasData &&
+          serverPayload &&
+          ((serverPayload as any).avatar || (serverPayload as any).bio)
+        ) {
+          saveProfileToFirestore({
+            avatar: (serverPayload as any).avatar || undefined,
+            bio: (serverPayload as any).bio || DEFAULT_BIO_DATA,
+            documents: (serverPayload as any).documents || [],
+          }).catch(() => {});
+        }
       }
 
       isProfileHydrated = true;

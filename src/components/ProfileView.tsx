@@ -36,6 +36,7 @@ import {
   Layers,
   FileCheck,
   Eye,
+  EyeOff,
   Paperclip,
   Image as ImageIcon,
   Loader2,
@@ -72,7 +73,6 @@ import {
   setOwnerAuthenticated,
   compressImage,
   notifyProfileUpdated,
-  OWNER_EMAIL,
   useProfileSync,
   DEFAULT_AVATAR,
   DEFAULT_BIO_DATA,
@@ -94,7 +94,6 @@ import {
   uploadAvatarToSupabaseBucket,
   uploadMaterialToSupabaseBucket,
   uploadMaterialThumbnailToBucket,
-  SUPABASE_RLS_SCHEMA_SQL,
   isSupabaseConfigured,
   getSupabaseProjectUrl,
   withRecordVersion,
@@ -481,7 +480,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [showRlsModal, setShowRlsModal] = useState(false);
   const [showSupabaseSettingsModal, setShowSupabaseSettingsModal] = useState(false);
   // Email starts empty so nothing is displayed until the user types or clicks autofill
   const [authEmail, setAuthEmail] = useState('');
@@ -3225,19 +3223,14 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
           <div className="bg-white rounded-2xl max-w-sm sm:max-w-md w-full border-2 border-cyan-800 shadow-2xl overflow-hidden my-6">
             {/* Header */}
-            <div className="px-5 py-4 bg-[#0f172a] text-white flex items-center justify-between border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
-                  <KeyRound className="w-5 h-5 text-cyan-300" />
+            <div className="px-5 py-3.5 bg-[#0f172a] text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
+                  <KeyRound className="w-3.5 h-3.5 text-cyan-300" />
                 </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
-                    Supabase Owner Authentication
-                  </h3>
-                  <p className="text-[11px] text-slate-400 font-sans">
-                    Sign in with your Supabase credentials (signInWithPassword)
-                  </p>
-                </div>
+                <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
+                  Sign in
+                </h3>
               </div>
               <button
                 type="button"
@@ -3262,27 +3255,18 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 </div>
               )}
 
-              {/* Email Address */}
+              {/* Email */}
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                    Owner Email Address
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setAuthEmail(OWNER_EMAIL)}
-                    className="text-[10px] text-cyan-800 hover:text-cyan-950 font-semibold underline cursor-pointer"
-                  >
-                    Use Owner Email
-                  </button>
-                </div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Email
+                </label>
                 <div className="relative">
                   <input
                     type="email"
                     required
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="e.g. festusjohnson028@gmail.com"
+                    placeholder="example@email.com"
                     className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                   />
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
@@ -3291,18 +3275,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
               {/* Password */}
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                    Password / Master Secret
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="text-[10px] text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
-                  >
-                    {showPassword ? 'Hide Password' : 'Show Password'}
-                  </button>
-                </div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Password
+                </label>
                 <div className="relative">
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -3310,118 +3285,55 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     autoFocus
                     value={authPin}
                     onChange={(e) => setAuthPin(e.target.value)}
-                    placeholder="Enter owner password"
+                    placeholder="Enter password"
                     className="w-full pl-9 pr-10 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-mono tracking-wider"
                   />
                   <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
                     title={showPassword ? 'Hide password' : 'Show password'}
                   >
-                    {showPassword ? <Eye className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
 
               {/* Buttons */}
-              <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowRlsModal(true)}
-                  className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-cyan-800 font-medium cursor-pointer"
+                  onClick={() => {
+                    setIsAuthModalOpen(false);
+                    setAuthError(null);
+                    setAuthPin('');
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
                 >
-                  <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-                  <span>View RLS Policy SQL</span>
+                  Cancel
                 </button>
 
-                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAuthModalOpen(false);
-                      setAuthError(null);
-                      setAuthPin('');
-                    }}
-                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    disabled={isAuthenticating}
-                    className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
-                  >
-                    {isAuthenticating ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Authenticating...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Sign in</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+                <button
+                  type="submit"
+                  disabled={isAuthenticating}
+                  className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+                >
+                  {isAuthenticating ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Authenticating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Unlock className="w-3.5 h-3.5 text-cyan-200" />
+                      <span>Sign in</span>
+                    </>
+                  )}
+                </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* ======================================================== */}
-      {/* 6. SUPABASE RLS & SCHEMA SQL POLICIES MODAL               */}
-      {/* ======================================================== */}
-      {showRlsModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
-          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full border border-slate-700 shadow-2xl overflow-hidden my-6 text-white flex flex-col max-h-[85vh]">
-            <div className="px-5 py-3.5 bg-slate-950 flex items-center justify-between border-b border-slate-800">
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold text-white font-serif">
-                    Supabase Row Level Security (RLS) &amp; Storage Policies
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Production SQL schema for avatars bucket, materials bucket, and owner profiles.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowRlsModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 overflow-y-auto flex-1 bg-slate-950/60 font-mono text-xs text-slate-300">
-              <pre className="whitespace-pre-wrap leading-relaxed select-all">
-                {SUPABASE_RLS_SCHEMA_SQL}
-              </pre>
-            </div>
-
-            <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                Execute in your Supabase SQL Editor if provisioning a fresh Supabase project.
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(SUPABASE_RLS_SCHEMA_SQL);
-                  showNotification('Supabase RLS Schema copied to clipboard!');
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer shadow-xs"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>Copy SQL</span>
-              </button>
-            </div>
           </div>
         </div>
       )}

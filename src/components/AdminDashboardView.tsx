@@ -128,7 +128,14 @@ import {
   SKILL_STATUS_OPTIONS,
   type SkillStatus,
 } from '../data/skillsData';
-import { supabaseSignOutOwner } from '../utils/supabase';
+import { supabaseSignOutOwner, SUPABASE_RLS_SCHEMA_SQL } from '../utils/supabase';
+import {
+  CAREER_STUDIO_CATEGORIES,
+  fetchCareerStudioDocuments,
+  deleteCareerStudioDocument,
+  type CareerStudioCategory,
+  type CareerStudioDocumentRecord,
+} from '../utils/careerStudio';
 import { formatBytes } from '../utils/portfolioSupabase';
 import {
   cleanDisplayFileName,
@@ -254,8 +261,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   // Website Settings Sub-Tabs & Builders
   const [settingsSubTab, setSettingsSubTab] = useState<
-    'appearance' | 'homepage' | 'projects_articles' | 'profile_sections' | 'footer' | 'moderation' | 'supabase_tables'
+    'appearance' | 'homepage' | 'projects_articles' | 'profile_sections' | 'career_studio' | 'footer' | 'moderation' | 'supabase_tables'
   >('appearance');
+  const [showRlsSqlModal, setShowRlsSqlModal] = useState(false);
+  const [copiedRlsSql, setCopiedRlsSql] = useState(false);
+  const [careerStudioDocs, setCareerStudioDocs] = useState<CareerStudioDocumentRecord[]>([]);
   const [heroBgUploading, setHeroBgUploading] = useState(false);
   const [themeImportOpen, setThemeImportOpen] = useState(false);
   const [themeJsonInput, setThemeJsonInput] = useState('');
@@ -377,7 +387,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     }
     void prewarmMediaLibraryCaches();
     try {
-      const [projs, arts, cmts, exps, pubs, achs, settings] = await Promise.all([
+      const [projs, arts, cmts, exps, pubs, achs, settings, csDocs] = await Promise.all([
         fetchProjectsFromSupabase(true),
         fetchArticlesFromSupabase(true),
         fetchAllCommentsForAdmin(),
@@ -385,6 +395,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
         fetchPublicationsFromSupabase(),
         fetchAchievementsFromSupabase(),
         fetchWebsiteSettingsFromSupabase(),
+        fetchCareerStudioDocuments(true),
       ]);
       setProjects(projs);
       setArticles(arts);
@@ -393,6 +404,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       setPublications(pubs.length > 0 ? pubs : (bio.publications as ProfilePublication[]) || []);
       setAchievements(achs.length > 0 ? achs : (bio.achievements as ProfileAchievement[]) || []);
       setSiteSettings(settings);
+      setCareerStudioDocs(csDocs);
     } finally {
       setLoading(false);
     }
@@ -2568,26 +2580,36 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     <h2 className="text-sm font-bold text-slate-950 text-center flex-1">
                       Website Settings
                     </h2>
-                    <button
-                      type="button"
-                      disabled={savingSettings}
-                      onClick={async () => {
-                        setSavingSettings(true);
-                        try {
-                          await saveWebsiteSettingsToSupabase(siteSettings);
-                          await saveBio(bioForm);
-                          showNotice('All website settings & appearance saved to Supabase.');
-                        } catch (err: any) {
-                          showNotice(err?.message || 'Error saving settings.');
-                        } finally {
-                          setSavingSettings(false);
-                        }
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0"
-                    >
-                      <Save className="w-3.5 h-3.5" />
-                      <span>{savingSettings ? 'Saving...' : 'Save All Settings'}</span>
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowRlsSqlModal(true)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#edf2f8] hover:bg-white text-slate-800 border border-[#b8c6d4] text-xs font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-cyan-800" />
+                        <span>View RLS Policy SQL</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingSettings}
+                        onClick={async () => {
+                          setSavingSettings(true);
+                          try {
+                            await saveWebsiteSettingsToSupabase(siteSettings);
+                            await saveBio(bioForm);
+                            showNotice('All website settings & appearance saved to Supabase.');
+                          } catch (err: any) {
+                            showNotice(err?.message || 'Error saving settings.');
+                          } finally {
+                            setSavingSettings(false);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-900 text-white text-xs font-semibold cursor-pointer shrink-0 whitespace-nowrap"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>{savingSettings ? 'Saving...' : 'Save All Settings'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Sub-tab Switcher */}
@@ -2597,6 +2619,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       { id: 'homepage', label: 'Homepage Editor', icon: <Home className="w-3 h-3" /> },
                       { id: 'projects_articles', label: 'Projects & Articles Manager', icon: <Sliders className="w-3 h-3" /> },
                       { id: 'profile_sections', label: 'Profile Section Manager', icon: <LayoutTemplate className="w-3 h-3" /> },
+                      { id: 'career_studio', label: 'Career Studio Forms', icon: <FileText className="w-3 h-3" /> },
                       { id: 'footer', label: 'Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
                       { id: 'moderation', label: 'Comment & General Rules', icon: <Type className="w-3 h-3" /> },
                       { id: 'supabase_tables', label: 'Supabase Database Tables', icon: <Database className="w-3 h-3" /> },
@@ -2605,7 +2628,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         key={st.id}
                         type="button"
                         onClick={() => setSettingsSubTab(st.id as any)}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border font-semibold cursor-pointer ${
+                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border font-semibold cursor-pointer whitespace-nowrap ${
                           settingsSubTab === st.id
                             ? 'bg-slate-900 text-white border-slate-900'
                             : 'bg-[#edf2f8] text-slate-800 border-[#b8c6d4] hover:bg-white'
@@ -2990,6 +3013,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       { key: 'messaging', label: 'Card 3: Direct Messaging Channel', hasBadge: true },
                       { key: 'projects', label: 'Card 4: Engineering Portfolio (Projects)' },
                       { key: 'articles', label: 'Card 5: Engineering Articles' },
+                      { key: 'documents', label: 'Card 6: Career Studio', hasBadge: true },
                     ];
 
                     return (
@@ -3164,7 +3188,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           <h5 className="font-bold text-slate-900">3. Homepage Portal Cards</h5>
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                             {cardEntries.map(({ key, label, hasBadge }) => {
-                              const cardVal = hc.cards[key];
+                              const fallbackCard =
+                                DEFAULT_HOMEPAGE_CONFIG.cards[key] || {
+                                  badge: '',
+                                  title: '',
+                                  description: '',
+                                  ctaLabel: '',
+                                };
+                              const cardVal = hc.cards[key] || fallbackCard;
                               return (
                                 <div
                                   key={key}
@@ -3184,7 +3215,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...c,
                                             cards: {
                                               ...c.cards,
-                                              [key]: { ...c.cards[key], title: e.target.value },
+                                              [key]: { ...(c.cards[key] || fallbackCard), title: e.target.value },
                                             },
                                           }))
                                         }
@@ -3203,7 +3234,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...c,
                                             cards: {
                                               ...c.cards,
-                                              [key]: { ...c.cards[key], ctaLabel: e.target.value },
+                                              [key]: { ...(c.cards[key] || fallbackCard), ctaLabel: e.target.value },
                                             },
                                           }))
                                         }
@@ -3224,7 +3255,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...c,
                                             cards: {
                                               ...c.cards,
-                                              [key]: { ...c.cards[key], badge: e.target.value },
+                                              [key]: { ...(c.cards[key] || fallbackCard), badge: e.target.value },
                                             },
                                           }))
                                         }
@@ -3244,7 +3275,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                           ...c,
                                           cards: {
                                             ...c.cards,
-                                            [key]: { ...c.cards[key], description: e.target.value },
+                                            [key]: { ...(c.cards[key] || fallbackCard), description: e.target.value },
                                           },
                                         }))
                                       }
@@ -4327,6 +4358,257 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                     </div>
                   )}
 
+                  {/* (e2) CAREER STUDIO FORMS CONTROL MANAGER & MODERATION */}
+                  {settingsSubTab === 'career_studio' && (
+                    <div className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-4 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                        <div>
+                          <h4 className="font-bold text-slate-950">Career Studio Forms Control Manager</h4>
+                          <p className="text-[11px] text-slate-600">
+                            Configure visitor permissions, category form availability, guidance hints, and published records.
+                          </p>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-cyan-900/10 text-cyan-900 text-[10px] font-bold">
+                          8 Independent Templates
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-lg bg-white border border-slate-200">
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={siteSettings.appearanceConfig.careerStudioConfig.enabled}
+                            onChange={(e) =>
+                              updateAppearance((prev) => ({
+                                ...prev,
+                                careerStudioConfig: {
+                                  ...prev.careerStudioConfig,
+                                  enabled: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          <span>Enable Career Studio Workspace</span>
+                        </label>
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={siteSettings.appearanceConfig.careerStudioConfig.allowVisitorAccess}
+                            onChange={(e) =>
+                              updateAppearance((prev) => ({
+                                ...prev,
+                                careerStudioConfig: {
+                                  ...prev.careerStudioConfig,
+                                  allowVisitorAccess: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          <span>Allow Public Visitor Document Creation</span>
+                        </label>
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={siteSettings.appearanceConfig.careerStudioConfig.allowVisitorPublish}
+                            onChange={(e) =>
+                              updateAppearance((prev) => ({
+                                ...prev,
+                                careerStudioConfig: {
+                                  ...prev.careerStudioConfig,
+                                  allowVisitorPublish: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          <span>Allow Visitors to Publish to Gallery</span>
+                        </label>
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={siteSettings.appearanceConfig.careerStudioConfig.showPublishedShowcase}
+                            onChange={(e) =>
+                              updateAppearance((prev) => ({
+                                ...prev,
+                                careerStudioConfig: {
+                                  ...prev.careerStudioConfig,
+                                  showPublishedShowcase: e.target.checked,
+                                },
+                              }))
+                            }
+                          />
+                          <span>Show Published Career Gallery Tab</span>
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <h5 className="font-bold text-slate-900">Per-Category Form Controls</h5>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                          {CAREER_STUDIO_CATEGORIES.map((category: CareerStudioCategory) => {
+                            const ctrl = siteSettings.appearanceConfig.careerStudioConfig.forms[category] || {
+                              enabled: true,
+                              showGuidance: true,
+                              allowPublish: true,
+                              customHint: '',
+                            };
+                            return (
+                              <div
+                                key={category}
+                                className="p-2.5 rounded-lg bg-white border border-slate-200 space-y-2"
+                              >
+                                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5">
+                                  <span className="font-bold text-slate-950 truncate">{category}</span>
+                                  <label className="inline-flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-cyan-900 shrink-0">
+                                    <input
+                                      type="checkbox"
+                                      checked={ctrl.enabled}
+                                      onChange={(e) =>
+                                        updateAppearance((prev) => ({
+                                          ...prev,
+                                          careerStudioConfig: {
+                                            ...prev.careerStudioConfig,
+                                            forms: {
+                                              ...prev.careerStudioConfig.forms,
+                                              [category]: { ...ctrl, enabled: e.target.checked },
+                                            },
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <span>Enabled</span>
+                                  </label>
+                                </div>
+                                <div className="flex flex-wrap gap-3 text-[11px]">
+                                  <label className="inline-flex items-center gap-1 cursor-pointer text-slate-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={ctrl.showGuidance}
+                                      onChange={(e) =>
+                                        updateAppearance((prev) => ({
+                                          ...prev,
+                                          careerStudioConfig: {
+                                            ...prev.careerStudioConfig,
+                                            forms: {
+                                              ...prev.careerStudioConfig.forms,
+                                              [category]: { ...ctrl, showGuidance: e.target.checked },
+                                            },
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <span>Show Writing Guide</span>
+                                  </label>
+                                  <label className="inline-flex items-center gap-1 cursor-pointer text-slate-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={ctrl.allowPublish}
+                                      onChange={(e) =>
+                                        updateAppearance((prev) => ({
+                                          ...prev,
+                                          careerStudioConfig: {
+                                            ...prev.careerStudioConfig,
+                                            forms: {
+                                              ...prev.careerStudioConfig.forms,
+                                              [category]: { ...ctrl, allowPublish: e.target.checked },
+                                            },
+                                          },
+                                        }))
+                                      }
+                                    />
+                                    <span>Allow Publish</span>
+                                  </label>
+                                </div>
+                                <input
+                                  type="text"
+                                  placeholder="Optional admin hint shown in form..."
+                                  value={ctrl.customHint || ''}
+                                  onChange={(e) =>
+                                    updateAppearance((prev) => ({
+                                      ...prev,
+                                      careerStudioConfig: {
+                                        ...prev.careerStudioConfig,
+                                        forms: {
+                                          ...prev.careerStudioConfig.forms,
+                                          [category]: { ...ctrl, customHint: e.target.value },
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-full min-w-0 px-2 py-1 rounded border border-slate-300 bg-slate-50 text-[11px]"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Career Studio Document Moderation */}
+                      <div className="border-t border-slate-200 pt-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <h5 className="font-bold text-slate-900">
+                            Stored & Published Career Documents ({careerStudioDocs.length})
+                          </h5>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const docs = await fetchCareerStudioDocuments(true);
+                              setCareerStudioDocs(docs);
+                              showNotice('Career Studio documents refreshed.');
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 text-[11px] font-semibold cursor-pointer"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Refresh</span>
+                          </button>
+                        </div>
+
+                        {careerStudioDocs.length === 0 ? (
+                          <p className="text-[11px] text-slate-500 italic py-2">
+                            No saved or published Career Studio documents found yet.
+                          </p>
+                        ) : (
+                          <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                            {careerStudioDocs.map((doc) => (
+                              <div
+                                key={doc.id}
+                                className="p-2 rounded-lg bg-white border border-slate-200 flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-slate-950 truncate">{doc.title}</span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                        doc.status === 'published'
+                                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                      }`}
+                                    >
+                                      {doc.status}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-600 truncate">
+                                    {doc.category} · By: {doc.authorName || 'Author'} · {doc.viewsCount} views · {doc.downloadsCount} downloads
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await deleteCareerStudioDocument(doc.id);
+                                    setCareerStudioDocs((prev) => prev.filter((x) => x.id !== doc.id));
+                                    showNotice('Career Studio document deleted.');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[11px] font-semibold cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Delete</span>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* (f) DIRECT SUPABASE DATABASE TABLES INSPECTOR & CRUD */}
                   {settingsSubTab === 'supabase_tables' && (
                     <SupabaseDatabaseManager
@@ -4341,6 +4623,53 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
           )}
         </div>
       </div>
+
+      {/* RLS POLICY SQL MODAL (Moved from Login Form to Admin Settings) */}
+      {showRlsSqlModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setShowRlsSqlModal(false)}
+        >
+          <div
+            className="w-full max-w-2xl bg-white border border-[#b8c6d4] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 bg-[#edf2f8] border-b border-[#b8c6d4] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-cyan-800" />
+                <h3 className="text-xs sm:text-sm font-bold text-slate-950">
+                  Supabase Database & Storage RLS Policy SQL
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(SUPABASE_RLS_SCHEMA_SQL.trim());
+                    setCopiedRlsSql(true);
+                    setTimeout(() => setCopiedRlsSql(false), 1800);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-cyan-900 text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  {copiedRlsSql ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedRlsSql ? 'Copied' : 'Copy SQL'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRlsSqlModal(false)}
+                  className="p-1 rounded-lg text-slate-600 hover:bg-slate-200 cursor-pointer"
+                  aria-label="Close SQL modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 overflow-y-auto bg-slate-950 text-emerald-300 font-mono text-[11px] leading-relaxed">
+              <pre className="whitespace-pre-wrap break-words">{SUPABASE_RLS_SCHEMA_SQL.trim()}</pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

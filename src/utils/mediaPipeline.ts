@@ -654,7 +654,7 @@ export function subscribeToMediaAssets(
 
   const interval = setInterval(() => {
     void refresh();
-  }, 8000);
+  }, 60000);
 
   return () => {
     cancelled = true;

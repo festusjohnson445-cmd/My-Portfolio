@@ -258,7 +258,7 @@ export const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
         ref={audioRef}
         src={blobUrl || voiceNote.url}
         playsInline
-        preload="auto"
+        preload="metadata"
         onTimeUpdate={onTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={onEnded}

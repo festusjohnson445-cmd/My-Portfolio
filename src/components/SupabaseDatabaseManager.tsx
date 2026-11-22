@@ -193,6 +193,22 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     }),
   },
   {
+    name: 'generated_documents',
+    label: 'generated_documents',
+    pk: 'id',
+    description: 'Document Studio generated CVs, resumes, SOPs, letters, proposals & study plans',
+    template: () => ({
+      id: `doc_${Date.now()}`,
+      category: 'international_cv',
+      title: '',
+      author_name: '',
+      summary: '',
+      form_data: {},
+      status: 'published',
+      created_at: new Date().toISOString(),
+    }),
+  },
+  {
     name: 'conversations',
     label: 'conversations',
     pk: 'id',

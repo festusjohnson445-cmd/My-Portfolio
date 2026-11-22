@@ -61,7 +61,9 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
 }) => {
   // Strictly empty defaults on create — never auto-populate text fields
   const [title, setTitle] = useState(initialArticle?.title || '');
-  const [authorName, setAuthorName] = useState(initialArticle?.authorName || '');
+  const [authorName, setAuthorName] = useState(
+    initialArticle?.authorName || (isOwner ? 'chief admin' : '')
+  );
   const [category, setCategory] = useState(initialArticle?.category || '');
   const [difficultyLevel, setDifficultyLevel] = useState(initialArticle?.difficultyLevel || '');
   const [readingTime, setReadingTime] = useState(initialArticle?.readingTime || '');

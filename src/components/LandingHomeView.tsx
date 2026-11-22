@@ -6,6 +6,7 @@ import {
   MessageSquare,
   FolderKanban,
   BookOpen,
+  FileText,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -54,7 +55,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
       {/* 1. HERO SECTION WITH MODERN ENGINEERING STYLING          */}
       {/* ======================================================== */}
       <section
-        className="relative overflow-hidden pt-8 pb-14 sm:pt-12 sm:pb-20 border-b"
+        className="relative overflow-hidden pt-5 pb-10 sm:pt-8 sm:pb-14 border-b"
         style={{
           borderColor: activeTheme.borderColor,
           backgroundColor: activeTheme.surfaceBg,
@@ -64,7 +65,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
         <button
           type="button"
           onClick={() => toggleUserColorMode()}
-          className="absolute top-3 right-3 sm:top-4 sm:right-5 z-20 p-2 rounded-full bg-white/90 hover:bg-white text-slate-800 border border-slate-300 shadow-xs transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
+          className="absolute top-2.5 right-3 sm:top-3.5 sm:right-5 z-20 p-2 rounded-full bg-white/90 hover:bg-white text-slate-800 border border-slate-300 shadow-xs transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
           aria-label={userColorMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           title={userColorMode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
@@ -121,16 +122,16 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
           <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent pointer-events-none hero-anim-blueprint-scan" />
         )}
 
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-0">
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-0">
           <div className="flex flex-col items-center text-center max-w-4xl mx-auto">
 
             {/* Live Availability & Verified Credential Badge */}
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 backdrop-blur-xs border border-slate-300 text-xs font-sans text-cyan-950 shadow-xs mb-5 max-w-full">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 backdrop-blur-xs border border-slate-300 text-xs font-serif text-cyan-950 shadow-xs mb-5 max-w-full">
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="font-bold shrink-0">{activeConfig.heroBadgeRole}</span>
+              <span className="font-serif font-bold shrink-0">{activeConfig.heroBadgeRole}</span>
               <span className="text-slate-300 shrink-0">|</span>
               <span className="font-mono text-slate-600 truncate text-[11px]" title={dynamicCertifications}>
                 {dynamicCertifications}
@@ -138,13 +139,13 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
             </div>
 
             {/* Main Welcome Heading */}
-            <h1 className="text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight text-slate-950 leading-tight">
+            <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight text-slate-950 leading-tight font-serif">
               {activeConfig.heroWelcomePrefix}{' '}
-              <span className="text-cyan-900 block mt-1 sm:mt-2">{portfolioTitleText}</span>
+              <span className="text-cyan-900 block mt-0.5 sm:mt-1">{portfolioTitleText}</span>
             </h1>
 
             {/* Subtitle & Engineering Statement */}
-            <p className="mt-4 text-sm sm:text-base md:text-lg text-slate-700 max-w-2xl leading-relaxed font-sans font-normal">
+            <p className="mt-3 text-sm sm:text-base md:text-lg text-slate-700 max-w-2xl leading-relaxed font-sans font-normal">
               {heroMessage}
             </p>
 
@@ -153,7 +154,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               {/* Primary User CTA: My Profile */}
               <button
                 onClick={() => onNavigatePart('profile')}
-                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-sans font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
+                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-serif font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
               >
                 <User className="w-4 h-4 text-cyan-200 group-hover:scale-110 transition-transform shrink-0" />
                 <span className="truncate">{activeConfig.heroPrimaryCtaLabel}</span>
@@ -162,7 +163,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
               {/* Secondary CTA: Explore Engineering Hub */}
               <button
                 onClick={() => onNavigatePart('overview')}
-                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-sans font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
+                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-serif font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
               >
                 <Layers className="w-4 h-4 text-cyan-800 shrink-0" />
                 <span className="truncate">{activeConfig.heroSecondaryCtaLabel}</span>
@@ -346,6 +347,43 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </div>
             </div>
+
+            {/* Card 6: Career & Academic Docs Studio */}
+            {(() => {
+              const docCard =
+                activeConfig.cards.documents || DEFAULT_HOMEPAGE_CONFIG.cards.documents!;
+              return (
+                <div
+                  onClick={() => onNavigatePart('documents')}
+                  className={`p-5 sm:p-6 rounded-2xl bg-white/90 border border-slate-300 hover:border-cyan-700 hover:shadow-lg transition-all cursor-pointer group flex flex-col justify-between ${cardAnimClass}`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="w-10 h-10 rounded-xl bg-cyan-100 border border-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform shadow-2xs">
+                        <FileText className="w-5 h-5 text-cyan-800" />
+                      </div>
+                      {docCard.badge && (
+                        <span className="text-[10px] font-sans font-bold text-cyan-900 bg-cyan-50 px-2 py-0.5 rounded-md border border-cyan-200">
+                          {docCard.badge}
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="text-base sm:text-lg font-bold text-slate-950 group-hover:text-cyan-950 transition-colors font-serif">
+                      {docCard.title}
+                    </h3>
+                    <p className="text-xs sm:text-sm font-sans text-slate-600 mt-1.5 leading-relaxed">
+                      {docCard.description}
+                    </p>
+                  </div>
+
+                  <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans font-bold text-cyan-900 group-hover:text-cyan-950">
+                    <span>{docCard.ctaLabel}</span>
+                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </section>

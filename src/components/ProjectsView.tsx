@@ -669,7 +669,7 @@ export const ProjectsView: React.FC = () => {
             >
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat === 'All' ? 'All Categories' : cat}
+                  {cat === 'All' ? 'All' : cat}
                 </option>
               ))}
             </select>

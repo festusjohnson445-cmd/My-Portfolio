@@ -63,7 +63,11 @@ export async function renderPdfFirstPageToImage(
         }
         loadingTask = pdfjsLib.getDocument({ data: bytes.buffer });
       } else {
-        loadingTask = pdfjsLib.getDocument({ url: pdfDataUrlOrBuffer });
+        loadingTask = pdfjsLib.getDocument({
+          url: pdfDataUrlOrBuffer,
+          disableAutoFetch: true,
+          rangeChunkSize: 65536,
+        });
       }
     } else {
       loadingTask = pdfjsLib.getDocument({ data: pdfDataUrlOrBuffer });

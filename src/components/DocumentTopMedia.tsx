@@ -53,6 +53,8 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     getProfileCachedThumb(doc.id);
   const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(initialPreview);
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
+  const [isNearViewport, setIsNearViewport] = useState(Boolean(initialPreview));
+  const pdfCardRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf =
@@ -66,7 +68,28 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     Boolean(doc.attachmentDataUrl?.startsWith('data:image/')) ||
     Boolean(doc.attachmentName && /\.(png|jpe?g|webp|svg|gif|bmp|heic|heif)$/i.test(doc.attachmentName));
 
-  // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 quickly and cache
+  useEffect(() => {
+    if (isNearViewport) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsNearViewport(true);
+      return;
+    }
+    const el = pdfCardRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '120px 0px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isNearViewport]);
+
+  // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 quickly when visible
   useEffect(() => {
     if (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl)) {
       setRenderedPdfImage(doc.previewImageDataUrl);
@@ -80,7 +103,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return;
     }
 
-    if (isPdf && doc.attachmentDataUrl) {
+    if (isPdf && doc.attachmentDataUrl && isNearViewport) {
       let isMounted = true;
       setIsRenderingPdf(true);
 
@@ -110,11 +133,11 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return () => {
         isMounted = false;
       };
-    } else {
+    } else if (!isPdf || !doc.attachmentDataUrl) {
       setRenderedPdfImage(null);
       setIsRenderingPdf(false);
     }
-  }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, onUpdatePreviewUrl]);
+  }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, isNearViewport, onUpdatePreviewUrl]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -137,6 +160,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
+        ref={pdfCardRef}
         onClick={() => onOpenPreview(doc)}
         className="w-full h-56 sm:h-60 bg-[#f8fafc] border-b border-slate-200 p-1 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Preview document"

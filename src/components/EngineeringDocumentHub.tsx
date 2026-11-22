@@ -159,6 +159,19 @@ function getCachedThumb(docId: string): string | null {
   return null;
 }
 
+function parseApproxFileSizeBytes(fileSize?: string): number {
+  if (!fileSize) return 0;
+  const m = String(fileSize).trim().match(/([\d.]+)\s*(kb|mb|gb|bytes?|b)/i);
+  if (!m) return 0;
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num)) return 0;
+  const unit = m[2].toLowerCase();
+  if (unit.startsWith('gb')) return num * 1024 * 1024 * 1024;
+  if (unit.startsWith('mb')) return num * 1024 * 1024;
+  if (unit.startsWith('kb')) return num * 1024;
+  return num;
+}
+
 export const EngineeringHubPdfCardThumbnail: React.FC<{
   doc: PublicEngineeringDocument;
 }> = ({ doc }) => {
@@ -169,6 +182,8 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
 
   const cachedThumb = getCachedThumb(doc.id) || initialImg;
   const [renderedImg, setRenderedImg] = useState<string | null>(cachedThumb);
+  const [isNearViewport, setIsNearViewport] = useState(Boolean(cachedThumb));
+  const thumbRef = useRef<HTMLDivElement | null>(null);
 
   const pdfSource =
     doc.dataUrl ||
@@ -176,7 +191,32 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     (doc as any).fileUrl ||
     (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
 
-  const [isRendering, setIsRendering] = useState(!cachedThumb && Boolean(pdfSource));
+  const isRemoteLargePdf =
+    Boolean(pdfSource && /^https?:\/\//i.test(String(pdfSource))) &&
+    parseApproxFileSizeBytes(doc.fileSize) > 2_500_000;
+
+  const [isRendering, setIsRendering] = useState(false);
+
+  useEffect(() => {
+    if (cachedThumb || isNearViewport) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsNearViewport(true);
+      return;
+    }
+    const el = thumbRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '120px 0px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [cachedThumb, isNearViewport]);
 
   useEffect(() => {
     let isMounted = true;
@@ -197,32 +237,33 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
       return;
     }
 
-    if (pdfSource) {
-      setIsRendering(true);
-      renderPdfFirstPageToImage(pdfSource, 600)
-        .then((img) => {
-          if (isMounted) {
-            if (img) {
-              setRenderedImg(img);
-              try {
-                localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, img);
-                inMemoryThumbCache.set(doc.id, img);
-              } catch {}
-            }
-            setIsRendering(false);
-          }
-        })
-        .catch(() => {
-          if (isMounted) setIsRendering(false);
-        });
-    } else {
+    if (!isNearViewport || !pdfSource || isRemoteLargePdf) {
       setIsRendering(false);
+      return;
     }
+
+    setIsRendering(true);
+    renderPdfFirstPageToImage(pdfSource, 600)
+      .then((img) => {
+        if (isMounted) {
+          if (img) {
+            setRenderedImg(img);
+            try {
+              localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, img);
+              inMemoryThumbCache.set(doc.id, img);
+            } catch {}
+          }
+          setIsRendering(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setIsRendering(false);
+      });
 
     return () => {
       isMounted = false;
     };
-  }, [doc.id, doc.previewUrl, pdfSource, cachedThumb]);
+  }, [doc.id, doc.previewUrl, pdfSource, cachedThumb, isNearViewport, isRemoteLargePdf]);
 
   if (renderedImg) {
     return (
@@ -238,6 +279,7 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
 
   return (
     <div
+      ref={thumbRef}
       className="w-full h-full flex flex-col items-center justify-center p-3 relative bg-[#f1f5f9] select-none overflow-hidden"
       style={{
         backgroundImage: `radial-gradient(#94a3b8 1px, transparent 1px)`,
@@ -1316,14 +1358,14 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
                   >
                     <Plus className="w-3 h-3" />
-                    <span>Upload Documents</span>
+                    <span>Upload</span>
                   </button>
                   <button
                     onClick={() => handleOpenUploadModal('student')}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
                   >
                     <GraduationCap className="w-3 h-3" />
-                    <span>Student Material Form</span>
+                    <span>Materials</span>
                   </button>
                   <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
                     <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
@@ -1391,17 +1433,18 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           )}
         </div>
 
-        {/* Row 2: Compact Filter, Categories & Upload Post Action */}
-        <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 min-w-0">
-          <div className="flex items-center gap-1.5 min-w-0 shrink-0">
-            <label htmlFor="hub-sort-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap">
+        {/* Row 2: Single-Row Flex Filter, Category & Post Action */}
+        <div className="pt-2 border-t border-slate-200 flex flex-nowrap items-center justify-between gap-1.5 sm:gap-2 min-w-0 w-full">
+          <div className="flex items-center gap-1 min-w-0 shrink-0">
+            <label htmlFor="hub-sort-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden sm:inline">
               Filter:
             </label>
             <select
               id="hub-sort-filter"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="w-[100px] sm:w-auto px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer"
+              aria-label="Filter documents"
+              className="w-[74px] sm:w-[118px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
             >
               <option value="newest">Newest</option>
               <option value="downloads">Most Downloaded</option>
@@ -1410,35 +1453,36 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end flex-wrap">
-            <label htmlFor="hub-category-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden xs:inline sm:inline">
+          <div className="flex items-center gap-1 min-w-0 flex-1 justify-center sm:justify-start">
+            <label htmlFor="hub-category-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden sm:inline shrink-0">
               Category:
             </label>
             <select
               id="hub-category-filter"
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="min-w-0 max-w-[140px] sm:max-w-[180px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
+              aria-label="Category filter"
+              className="w-full min-w-0 max-w-[155px] sm:max-w-[210px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
             >
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat === 'All' ? 'All Categories' : cat}
+                  {cat === 'All' ? 'All' : cat}
                 </option>
               ))}
             </select>
             <span className="text-[9.5px] text-cyan-800 font-sans font-medium whitespace-nowrap shrink-0">
               ({filteredDocs.length})
             </span>
-
-            <button
-              type="button"
-              onClick={() => handleOpenUploadModal(isOwner ? 'general' : 'student')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
-            >
-              <Plus className="w-3 h-3" />
-              <span>{isOwner ? 'Upload' : 'Post Student Material'}</span>
-            </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => handleOpenUploadModal(isOwner ? 'general' : 'student')}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap shadow-2xs"
+          >
+            <Plus className="w-3 h-3 shrink-0" />
+            <span>{isOwner ? 'Upload' : 'Post'}</span>
+          </button>
         </div>
       </div>
 
@@ -1484,7 +1528,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
               >
                 <GraduationCap className="w-3.5 h-3.5" />
-                <span>Post Student Material</span>
+                <span>Post</span>
               </button>
             )}
           </div>

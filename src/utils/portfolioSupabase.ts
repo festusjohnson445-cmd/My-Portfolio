@@ -327,6 +327,7 @@ export interface HomepageConfig {
     messaging: HomepageCardItemConfig;
     projects: HomepageCardItemConfig;
     articles: HomepageCardItemConfig;
+    documents?: HomepageCardItemConfig;
   };
 }
 
@@ -561,6 +562,13 @@ export const DEFAULT_HOMEPAGE_CONFIG: HomepageConfig = {
       description:
         'Technical articles, analytical notes, BOM breakdowns, schematics, and community contributions across engineering disciplines.',
       ctaLabel: 'Read & Post Articles',
+    },
+    documents: {
+      badge: 'STUDIO',
+      title: 'Career Studio',
+      description:
+        'Generate ATS-ready International CVs, Academic & Job Resumes, SOPs, Personal Statements, Motivation Letters, Research Proposals, and Study Plans in A4 PDF & DOCX.',
+      ctaLabel: 'Open Career Studio',
     },
   },
 };
@@ -1172,61 +1180,93 @@ export async function saveMediaAssetRecord(record: MediaAssetRecord): Promise<vo
   } catch {}
 }
 
-export async function fetchMediaAssetsFromSupabase(bucket?: string): Promise<MediaAssetRecord[]> {
+const MEDIA_ASSETS_TTL_MS = 2 * 60 * 1000;
+const mediaAssetsFetchedAt = new Map<string, number>();
+const inFlightMediaAssetsFetch = new Map<string, Promise<MediaAssetRecord[]>>();
+
+export async function fetchMediaAssetsFromSupabase(
+  bucket?: string,
+  forceRefresh = false
+): Promise<MediaAssetRecord[]> {
+  const cacheKey = bucket || '__all__';
   const local = hydrateLocalMediaAssets();
   const filteredLocal = bucket ? local.filter((r) => r.bucket === bucket) : local;
-  try {
-    let query = supabase
-      .from('media_assets')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(150);
-    if (bucket) {
-      query = query.eq('bucket', bucket);
-    }
-    const { data, error } = await query;
-    if (error || !Array.isArray(data)) return filteredLocal;
-    const mapped: MediaAssetRecord[] = data.map((row: any) => {
-      const fb = row.fallback_urls && typeof row.fallback_urls === 'object' ? row.fallback_urls : {};
-      return {
-        id: row.id,
-        bucket: row.bucket || 'projects',
-        storagePath: row.storage_path || '',
-        mediaType: (row.media_type as MediaAssetRecord['mediaType']) || 'image',
-        fileName: row.file_name || 'asset',
-        format: row.format || 'avif',
-        resolution: row.resolution || '',
-        width: typeof row.width === 'number' ? row.width : undefined,
-        height: typeof row.height === 'number' ? row.height : undefined,
-        durationSec: typeof row.duration_sec === 'number' ? row.duration_sec : undefined,
-        originalBytes: Number(row.original_bytes) || 0,
-        optimizedBytes: Number(row.optimized_bytes) || 0,
-        compressionPct: Number(row.compression_pct) || 0,
-        status: (row.status as MediaAssetRecord['status']) || 'completed',
-        primaryUrl: row.primary_url || '',
-        avifUrl: fb.avifUrl,
-        webpUrl: fb.webpUrl,
-        jpegUrl: fb.jpegUrl,
-        mobileUrl: fb.mobileUrl,
-        av1Urls: fb.av1Urls,
-        h264Urls: fb.h264Urls,
-        posterUrl: row.poster_url || undefined,
-        vttThumbnailsUrl: row.vtt_thumbnails_url || undefined,
-        errorMessage: row.error_message || undefined,
-        createdAt: row.created_at || new Date().toISOString(),
-        updatedAt: row.updated_at,
-      };
-    });
-    if (bucket) {
-      const otherBuckets = local.filter((r) => r.bucket !== bucket);
-      persistLocalMediaAssets([...mapped, ...otherBuckets]);
-    } else {
-      persistLocalMediaAssets(mapped);
-    }
-    return mapped;
-  } catch {
+
+  if (
+    !forceRefresh &&
+    mediaAssetsFetchedAt.has(cacheKey) &&
+    Date.now() - (mediaAssetsFetchedAt.get(cacheKey) || 0) < MEDIA_ASSETS_TTL_MS &&
+    filteredLocal.length > 0
+  ) {
     return filteredLocal;
   }
+
+  if (!forceRefresh && inFlightMediaAssetsFetch.has(cacheKey)) {
+    return inFlightMediaAssetsFetch.get(cacheKey)!;
+  }
+
+  const runFetch = (async () => {
+    try {
+      let query = supabase
+        .from('media_assets')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(150);
+      if (bucket) {
+        query = query.eq('bucket', bucket);
+      }
+      const { data, error } = await query;
+      if (error || !Array.isArray(data)) return filteredLocal;
+      const mapped: MediaAssetRecord[] = data.map((row: any) => {
+        const fb = row.fallback_urls && typeof row.fallback_urls === 'object' ? row.fallback_urls : {};
+        return {
+          id: row.id,
+          bucket: row.bucket || 'projects',
+          storagePath: row.storage_path || '',
+          mediaType: (row.media_type as MediaAssetRecord['mediaType']) || 'image',
+          fileName: row.file_name || 'asset',
+          format: row.format || 'avif',
+          resolution: row.resolution || '',
+          width: typeof row.width === 'number' ? row.width : undefined,
+          height: typeof row.height === 'number' ? row.height : undefined,
+          durationSec: typeof row.duration_sec === 'number' ? row.duration_sec : undefined,
+          originalBytes: Number(row.original_bytes) || 0,
+          optimizedBytes: Number(row.optimized_bytes) || 0,
+          compressionPct: Number(row.compression_pct) || 0,
+          status: (row.status as MediaAssetRecord['status']) || 'completed',
+          primaryUrl: row.primary_url || '',
+          avifUrl: fb.avifUrl,
+          webpUrl: fb.webpUrl,
+          jpegUrl: fb.jpegUrl,
+          mobileUrl: fb.mobileUrl,
+          av1Urls: fb.av1Urls,
+          h264Urls: fb.h264Urls,
+          posterUrl: row.poster_url || undefined,
+          vttThumbnailsUrl: row.vtt_thumbnails_url || undefined,
+          errorMessage: row.error_message || undefined,
+          createdAt: row.created_at || new Date().toISOString(),
+          updatedAt: row.updated_at,
+        };
+      });
+      if (bucket) {
+        const otherBuckets = local.filter((r) => r.bucket !== bucket);
+        persistLocalMediaAssets([...mapped, ...otherBuckets]);
+      } else {
+        persistLocalMediaAssets(mapped);
+      }
+      mediaAssetsFetchedAt.set(cacheKey, Date.now());
+      return mapped;
+    } catch {
+      return filteredLocal;
+    } finally {
+      inFlightMediaAssetsFetch.delete(cacheKey);
+    }
+  })();
+
+  if (!forceRefresh) {
+    inFlightMediaAssetsFetch.set(cacheKey, runFetch);
+  }
+  return runFetch;
 }
 
 export async function deleteMediaAssetRecord(id: string): Promise<void> {
@@ -2074,28 +2114,62 @@ function setCachedProjects(list: PortfolioProject[]) {
   }
 }
 
-export async function fetchProjectsFromSupabase(includeAllForOwner = false): Promise<PortfolioProject[]> {
-  try {
-    let query = supabase
-      .from('projects')
-      .select('*')
-      .order('is_featured', { ascending: false })
-      .order('created_at', { ascending: false });
+const PORTFOLIO_LIST_TTL_MS = 2 * 60 * 1000;
+let projectsFetchedAt = 0;
+let projectsFetchedAsOwner = false;
+const inFlightProjectsFetch = new Map<string, Promise<PortfolioProject[]>>();
 
-    if (!includeAllForOwner) {
-      query = query.eq('status', 'published');
-    }
+export async function fetchProjectsFromSupabase(
+  includeAllForOwner = false,
+  forceRefresh = false
+): Promise<PortfolioProject[]> {
+  const modeKey = includeAllForOwner ? 'owner' : 'public';
+  const ttlFresh =
+    !forceRefresh &&
+    hasFetchedProjectsOnce &&
+    Date.now() - projectsFetchedAt < PORTFOLIO_LIST_TTL_MS &&
+    (!includeAllForOwner || projectsFetchedAsOwner);
 
-    const { data, error } = await query;
-    if (error || !Array.isArray(data)) {
-      return getCachedProjects(includeAllForOwner);
-    }
-    const mapped = data.map(mapDbRowToProject);
-    setCachedProjects(mapped);
-    return mapped;
-  } catch {
+  if (ttlFresh) {
     return getCachedProjects(includeAllForOwner);
   }
+
+  if (!forceRefresh && inFlightProjectsFetch.has(modeKey)) {
+    return inFlightProjectsFetch.get(modeKey)!;
+  }
+
+  const runFetch = (async () => {
+    try {
+      let query = supabase
+        .from('projects')
+        .select('*')
+        .order('is_featured', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      if (!includeAllForOwner) {
+        query = query.eq('status', 'published');
+      }
+
+      const { data, error } = await query;
+      if (error || !Array.isArray(data)) {
+        return getCachedProjects(includeAllForOwner);
+      }
+      const mapped = data.map(mapDbRowToProject);
+      projectsFetchedAt = Date.now();
+      if (includeAllForOwner) projectsFetchedAsOwner = true;
+      setCachedProjects(mapped);
+      return mapped;
+    } catch {
+      return getCachedProjects(includeAllForOwner);
+    } finally {
+      inFlightProjectsFetch.delete(modeKey);
+    }
+  })();
+
+  if (!forceRefresh) {
+    inFlightProjectsFetch.set(modeKey, runFetch);
+  }
+  return runFetch;
 }
 
 export async function upsertProjectToSupabase(
@@ -2231,7 +2305,7 @@ export function subscribeToProjectsRealtime(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'projects' },
         async () => {
-          const fresh = await fetchProjectsFromSupabase(includeAllForOwner);
+          const fresh = await fetchProjectsFromSupabase(includeAllForOwner, true);
           onProjectsUpdated(fresh);
         }
       )
@@ -2329,27 +2403,60 @@ function setCachedArticles(list: PortfolioArticle[]) {
   }
 }
 
-export async function fetchArticlesFromSupabase(includeAllForOwner = false): Promise<PortfolioArticle[]> {
-  try {
-    let query = supabase
-      .from('articles')
-      .select('*')
-      .order('created_at', { ascending: false });
+let articlesFetchedAt = 0;
+let articlesFetchedAsOwner = false;
+const inFlightArticlesFetch = new Map<string, Promise<PortfolioArticle[]>>();
 
-    if (!includeAllForOwner) {
-      query = query.eq('status', 'published');
-    }
+export async function fetchArticlesFromSupabase(
+  includeAllForOwner = false,
+  forceRefresh = false
+): Promise<PortfolioArticle[]> {
+  const modeKey = includeAllForOwner ? 'owner' : 'public';
+  const ttlFresh =
+    !forceRefresh &&
+    hasFetchedArticlesOnce &&
+    Date.now() - articlesFetchedAt < PORTFOLIO_LIST_TTL_MS &&
+    (!includeAllForOwner || articlesFetchedAsOwner);
 
-    const { data, error } = await query;
-    if (error || !Array.isArray(data)) {
-      return getCachedArticles(includeAllForOwner);
-    }
-    const mapped = data.map(mapDbRowToArticle);
-    setCachedArticles(mapped);
-    return mapped;
-  } catch {
+  if (ttlFresh) {
     return getCachedArticles(includeAllForOwner);
   }
+
+  if (!forceRefresh && inFlightArticlesFetch.has(modeKey)) {
+    return inFlightArticlesFetch.get(modeKey)!;
+  }
+
+  const runFetch = (async () => {
+    try {
+      let query = supabase
+        .from('articles')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!includeAllForOwner) {
+        query = query.eq('status', 'published');
+      }
+
+      const { data, error } = await query;
+      if (error || !Array.isArray(data)) {
+        return getCachedArticles(includeAllForOwner);
+      }
+      const mapped = data.map(mapDbRowToArticle);
+      articlesFetchedAt = Date.now();
+      if (includeAllForOwner) articlesFetchedAsOwner = true;
+      setCachedArticles(mapped);
+      return mapped;
+    } catch {
+      return getCachedArticles(includeAllForOwner);
+    } finally {
+      inFlightArticlesFetch.delete(modeKey);
+    }
+  })();
+
+  if (!forceRefresh) {
+    inFlightArticlesFetch.set(modeKey, runFetch);
+  }
+  return runFetch;
 }
 
 export async function submitOrSaveArticleToSupabase(
@@ -2597,7 +2704,7 @@ export function subscribeToArticlesRealtime(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'articles' },
         async () => {
-          const fresh = await fetchArticlesFromSupabase(includeAllForOwner);
+          const fresh = await fetchArticlesFromSupabase(includeAllForOwner, true);
           onArticlesUpdated(fresh);
         }
       )
@@ -2859,32 +2966,50 @@ export function getCachedAchievements(): ProfileAchievement[] {
   return [];
 }
 
-export async function fetchExperiencesFromSupabase(): Promise<ProfileExperience[]> {
-  try {
-    const { data, error } = await supabase
-      .from('profile_experiences')
-      .select('*')
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return getCachedExperiences();
-    const mapped = data.map((r: any) => ({
-      id: r.id,
-      roleTitle: r.role_title || '',
-      organization: r.organization || '',
-      location: r.location || '',
-      startDate: r.start_date || '',
-      endDate: r.end_date || '',
-      isCurrent: Boolean(r.is_current),
-      summary: r.summary || '',
-      highlights: Array.isArray(r.highlights) ? r.highlights : [],
-      sortOrder: r.sort_order || 0,
-    }));
-    memoryExperiencesCache = mapped;
-    writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, mapped);
-    return mapped;
-  } catch {
-    return getCachedExperiences();
+let experiencesFetchedAt = 0;
+let inFlightExperiencesPromise: Promise<ProfileExperience[]> | null = null;
+
+export async function fetchExperiencesFromSupabase(forceRefresh = false): Promise<ProfileExperience[]> {
+  if (!forceRefresh && memoryExperiencesCache && Date.now() - experiencesFetchedAt < PORTFOLIO_LIST_TTL_MS) {
+    return memoryExperiencesCache;
   }
+  if (!forceRefresh && inFlightExperiencesPromise) {
+    return inFlightExperiencesPromise;
+  }
+
+  const runFetch = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profile_experiences')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false });
+      if (error || !Array.isArray(data)) return getCachedExperiences();
+      const mapped = data.map((r: any) => ({
+        id: r.id,
+        roleTitle: r.role_title || '',
+        organization: r.organization || '',
+        location: r.location || '',
+        startDate: r.start_date || '',
+        endDate: r.end_date || '',
+        isCurrent: Boolean(r.is_current),
+        summary: r.summary || '',
+        highlights: Array.isArray(r.highlights) ? r.highlights : [],
+        sortOrder: r.sort_order || 0,
+      }));
+      memoryExperiencesCache = mapped;
+      experiencesFetchedAt = Date.now();
+      writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, mapped);
+      return mapped;
+    } catch {
+      return getCachedExperiences();
+    } finally {
+      inFlightExperiencesPromise = null;
+    }
+  })();
+
+  if (!forceRefresh) inFlightExperiencesPromise = runFetch;
+  return runFetch;
 }
 
 export async function upsertExperienceToSupabase(item: ProfileExperience): Promise<ProfileExperience> {
@@ -2912,6 +3037,7 @@ export async function upsertExperienceToSupabase(item: ProfileExperience): Promi
   memoryExperiencesCache = base.some((x) => x.id === id)
     ? base.map((x) => (x.id === id ? saved : x))
     : [saved, ...base];
+  experiencesFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, memoryExperiencesCache);
   return saved;
 }
@@ -2922,35 +3048,54 @@ export async function deleteExperienceFromSupabase(id: string): Promise<void> {
   const { error } = await supabase.from('profile_experiences').delete().eq('id', id);
   if (error) throw new Error(error.message);
   memoryExperiencesCache = getCachedExperiences().filter((x) => x.id !== id);
+  experiencesFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_EXPERIENCES_CACHE, memoryExperiencesCache);
 }
 
-export async function fetchPublicationsFromSupabase(): Promise<ProfilePublication[]> {
-  try {
-    const { data, error } = await supabase
-      .from('profile_publications')
-      .select('*')
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return getCachedPublications();
-    const mapped = data.map((r: any) => ({
-      id: r.id,
-      title: r.title || '',
-      venueOrJournal: r.venue_or_journal || '',
-      year: r.year || '',
-      authors: r.authors || '',
-      doiOrUrl: r.doi_or_url || '',
-      abstract: r.abstract || '',
-      category: r.category || 'Journal Article',
-      attachmentUrl: r.attachment_url || '',
-      sortOrder: r.sort_order || 0,
-    }));
-    memoryPublicationsCache = mapped;
-    writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, mapped);
-    return mapped;
-  } catch {
-    return getCachedPublications();
+let publicationsFetchedAt = 0;
+let inFlightPublicationsPromise: Promise<ProfilePublication[]> | null = null;
+
+export async function fetchPublicationsFromSupabase(forceRefresh = false): Promise<ProfilePublication[]> {
+  if (!forceRefresh && memoryPublicationsCache && Date.now() - publicationsFetchedAt < PORTFOLIO_LIST_TTL_MS) {
+    return memoryPublicationsCache;
   }
+  if (!forceRefresh && inFlightPublicationsPromise) {
+    return inFlightPublicationsPromise;
+  }
+
+  const runFetch = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profile_publications')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false });
+      if (error || !Array.isArray(data)) return getCachedPublications();
+      const mapped = data.map((r: any) => ({
+        id: r.id,
+        title: r.title || '',
+        venueOrJournal: r.venue_or_journal || '',
+        year: r.year || '',
+        authors: r.authors || '',
+        doiOrUrl: r.doi_or_url || '',
+        abstract: r.abstract || '',
+        category: r.category || 'Journal Article',
+        attachmentUrl: r.attachment_url || '',
+        sortOrder: r.sort_order || 0,
+      }));
+      memoryPublicationsCache = mapped;
+      publicationsFetchedAt = Date.now();
+      writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, mapped);
+      return mapped;
+    } catch {
+      return getCachedPublications();
+    } finally {
+      inFlightPublicationsPromise = null;
+    }
+  })();
+
+  if (!forceRefresh) inFlightPublicationsPromise = runFetch;
+  return runFetch;
 }
 
 export async function upsertPublicationToSupabase(item: ProfilePublication): Promise<ProfilePublication> {
@@ -2978,6 +3123,7 @@ export async function upsertPublicationToSupabase(item: ProfilePublication): Pro
   memoryPublicationsCache = base.some((x) => x.id === id)
     ? base.map((x) => (x.id === id ? saved : x))
     : [saved, ...base];
+  publicationsFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, memoryPublicationsCache);
   return saved;
 }
@@ -2988,34 +3134,53 @@ export async function deletePublicationFromSupabase(id: string): Promise<void> {
   const { error } = await supabase.from('profile_publications').delete().eq('id', id);
   if (error) throw new Error(error.message);
   memoryPublicationsCache = getCachedPublications().filter((x) => x.id !== id);
+  publicationsFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_PUBLICATIONS_CACHE, memoryPublicationsCache);
 }
 
-export async function fetchAchievementsFromSupabase(): Promise<ProfileAchievement[]> {
-  try {
-    const { data, error } = await supabase
-      .from('profile_achievements')
-      .select('*')
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return getCachedAchievements();
-    const mapped = data.map((r: any) => ({
-      id: r.id,
-      title: r.title || '',
-      issuer: r.issuer || '',
-      dateStr: r.date_str || '',
-      category: r.category || 'Award',
-      description: r.description || '',
-      certificateUrl: r.certificate_url || '',
-      verified: Boolean(r.verified),
-      sortOrder: r.sort_order || 0,
-    }));
-    memoryAchievementsCache = mapped;
-    writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, mapped);
-    return mapped;
-  } catch {
-    return getCachedAchievements();
+let achievementsFetchedAt = 0;
+let inFlightAchievementsPromise: Promise<ProfileAchievement[]> | null = null;
+
+export async function fetchAchievementsFromSupabase(forceRefresh = false): Promise<ProfileAchievement[]> {
+  if (!forceRefresh && memoryAchievementsCache && Date.now() - achievementsFetchedAt < PORTFOLIO_LIST_TTL_MS) {
+    return memoryAchievementsCache;
   }
+  if (!forceRefresh && inFlightAchievementsPromise) {
+    return inFlightAchievementsPromise;
+  }
+
+  const runFetch = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profile_achievements')
+        .select('*')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false });
+      if (error || !Array.isArray(data)) return getCachedAchievements();
+      const mapped = data.map((r: any) => ({
+        id: r.id,
+        title: r.title || '',
+        issuer: r.issuer || '',
+        dateStr: r.date_str || '',
+        category: r.category || 'Award',
+        description: r.description || '',
+        certificateUrl: r.certificate_url || '',
+        verified: Boolean(r.verified),
+        sortOrder: r.sort_order || 0,
+      }));
+      memoryAchievementsCache = mapped;
+      achievementsFetchedAt = Date.now();
+      writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, mapped);
+      return mapped;
+    } catch {
+      return getCachedAchievements();
+    } finally {
+      inFlightAchievementsPromise = null;
+    }
+  })();
+
+  if (!forceRefresh) inFlightAchievementsPromise = runFetch;
+  return runFetch;
 }
 
 export async function upsertAchievementToSupabase(item: ProfileAchievement): Promise<ProfileAchievement> {
@@ -3124,6 +3289,10 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
         messaging: { ...DEFAULT_HOMEPAGE_CONFIG.cards.messaging, ...(rawHomeCards.messaging || {}) },
         projects: { ...DEFAULT_HOMEPAGE_CONFIG.cards.projects, ...(rawHomeCards.projects || {}) },
         articles: { ...DEFAULT_HOMEPAGE_CONFIG.cards.articles, ...(rawHomeCards.articles || {}) },
+        documents: {
+          ...DEFAULT_HOMEPAGE_CONFIG.cards.documents!,
+          ...(rawHomeCards.documents || {}),
+        },
       },
     },
     projectsArticlesConfig: {
@@ -3227,36 +3396,66 @@ export function applyWebsiteSettingsLocally(settings: WebsiteSettings): void {
   }
 }
 
-export async function fetchWebsiteSettingsFromSupabase(): Promise<WebsiteSettings> {
-  try {
-    const { data, error } = await supabase
-      .from('website_settings')
-      .select('*')
-      .eq('id', 'default')
-      .maybeSingle();
-    if (error || !data) return getCachedWebsiteSettings();
-    const resolved: WebsiteSettings = {
-      id: data.id || 'default',
-      siteTitle: data.site_title || DEFAULT_WEBSITE_SETTINGS.siteTitle,
-      siteTagline: data.site_tagline || DEFAULT_WEBSITE_SETTINGS.siteTagline,
-      allowVisitorArticles: data.allow_visitor_articles !== false,
-      requireArticleApproval: data.require_article_approval !== false,
-      requireCommentApproval: data.require_comment_approval !== false,
-      adminAuthorLabel: data.admin_author_label || 'Chief Admin',
-      appearanceConfig: mergeAppearanceConfig(data.appearance_config),
-      updatedAt: data.updated_at,
-    };
-    applyWebsiteSettingsLocally(resolved);
-    return resolved;
-  } catch {
-    return getCachedWebsiteSettings();
+const WEBSITE_SETTINGS_TTL_MS = 2 * 60 * 1000;
+let websiteSettingsFetchedAt = 0;
+let inFlightWebsiteSettingsPromise: Promise<WebsiteSettings> | null = null;
+let sharedWebsiteSettingsChannel: any = null;
+let websiteSettingsSubscribers = 0;
+
+export async function fetchWebsiteSettingsFromSupabase(forceRefresh = false): Promise<WebsiteSettings> {
+  if (
+    !forceRefresh &&
+    memoryWebsiteSettings &&
+    websiteSettingsFetchedAt > 0 &&
+    Date.now() - websiteSettingsFetchedAt < WEBSITE_SETTINGS_TTL_MS
+  ) {
+    return memoryWebsiteSettings;
   }
+
+  if (!forceRefresh && inFlightWebsiteSettingsPromise) {
+    return inFlightWebsiteSettingsPromise;
+  }
+
+  const runFetch = (async () => {
+    try {
+      const { data, error } = await supabase
+        .from('website_settings')
+        .select('*')
+        .eq('id', 'default')
+        .maybeSingle();
+      if (error || !data) return getCachedWebsiteSettings();
+      const resolved: WebsiteSettings = {
+        id: data.id || 'default',
+        siteTitle: data.site_title || DEFAULT_WEBSITE_SETTINGS.siteTitle,
+        siteTagline: data.site_tagline || DEFAULT_WEBSITE_SETTINGS.siteTagline,
+        allowVisitorArticles: data.allow_visitor_articles !== false,
+        requireArticleApproval: data.require_article_approval !== false,
+        requireCommentApproval: data.require_comment_approval !== false,
+        adminAuthorLabel: data.admin_author_label || 'Chief Admin',
+        appearanceConfig: mergeAppearanceConfig(data.appearance_config),
+        updatedAt: data.updated_at,
+      };
+      websiteSettingsFetchedAt = Date.now();
+      applyWebsiteSettingsLocally(resolved);
+      return resolved;
+    } catch {
+      return getCachedWebsiteSettings();
+    } finally {
+      inFlightWebsiteSettingsPromise = null;
+    }
+  })();
+
+  if (!forceRefresh) {
+    inFlightWebsiteSettingsPromise = runFetch;
+  }
+  return runFetch;
 }
 
 export async function saveWebsiteSettingsToSupabase(settings: WebsiteSettings): Promise<void> {
   const { user } = await getValidatedSession();
   if (!isRealOwnerUser(user)) throw new Error('Owner authentication required.');
 
+  websiteSettingsFetchedAt = Date.now();
   // Immediately broadcast locally for 0ms real-time UI feedback across open components
   applyWebsiteSettingsLocally(settings);
 
@@ -3296,39 +3495,44 @@ export function useWebsiteSettingsSync(): WebsiteSettings {
     };
     window.addEventListener(EVENT_WEBSITE_SETTINGS_UPDATED, onLocalUpdate);
 
-    let channel: any = null;
-    try {
-      channel = supabase
-        .channel('public:website_settings_realtime')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'website_settings' },
-          (payload) => {
-            const row = payload?.new as any;
-            if (row) {
-              const updated: WebsiteSettings = {
-                id: row.id || 'default',
-                siteTitle: row.site_title || DEFAULT_WEBSITE_SETTINGS.siteTitle,
-                siteTagline: row.site_tagline || DEFAULT_WEBSITE_SETTINGS.siteTagline,
-                allowVisitorArticles: row.allow_visitor_articles !== false,
-                requireArticleApproval: row.require_article_approval !== false,
-                requireCommentApproval: row.require_comment_approval !== false,
-                adminAuthorLabel: row.admin_author_label || 'Chief Admin',
-                appearanceConfig: mergeAppearanceConfig(row.appearance_config),
-                updatedAt: row.updated_at,
-              };
-              applyWebsiteSettingsLocally(updated);
-              setSettings(updated);
+    websiteSettingsSubscribers += 1;
+    if (!sharedWebsiteSettingsChannel) {
+      try {
+        sharedWebsiteSettingsChannel = supabase
+          .channel('public:website_settings_realtime')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'website_settings' },
+            (payload) => {
+              const row = payload?.new as any;
+              if (row) {
+                const updated: WebsiteSettings = {
+                  id: row.id || 'default',
+                  siteTitle: row.site_title || DEFAULT_WEBSITE_SETTINGS.siteTitle,
+                  siteTagline: row.site_tagline || DEFAULT_WEBSITE_SETTINGS.siteTagline,
+                  allowVisitorArticles: row.allow_visitor_articles !== false,
+                  requireArticleApproval: row.require_article_approval !== false,
+                  requireCommentApproval: row.require_comment_approval !== false,
+                  adminAuthorLabel: row.admin_author_label || 'Chief Admin',
+                  appearanceConfig: mergeAppearanceConfig(row.appearance_config),
+                  updatedAt: row.updated_at,
+                };
+                websiteSettingsFetchedAt = Date.now();
+                applyWebsiteSettingsLocally(updated);
+              }
             }
-          }
-        )
-        .subscribe();
-    } catch {}
+          )
+          .subscribe();
+      } catch {}
+    }
 
     return () => {
       window.removeEventListener(EVENT_WEBSITE_SETTINGS_UPDATED, onLocalUpdate);
-      if (channel) {
-        supabase.removeChannel(channel).catch(() => {});
+      websiteSettingsSubscribers = Math.max(0, websiteSettingsSubscribers - 1);
+      if (websiteSettingsSubscribers === 0 && sharedWebsiteSettingsChannel) {
+        const ch = sharedWebsiteSettingsChannel;
+        sharedWebsiteSettingsChannel = null;
+        supabase.removeChannel(ch).catch(() => {});
       }
     };
   }, []);
@@ -3371,31 +3575,53 @@ function setCachedBucketMediaFiles(
   } catch {}
 }
 
+const BUCKET_FILES_TTL_MS = 2 * 60 * 1000;
+const bucketFilesFetchedAt = new Map<string, number>();
+const inFlightBucketFilesFetch = new Map<string, Promise<BucketFileItem[]>>();
+
 export function invalidateBucketMediaCache(
   bucket?: 'projects' | 'articles' | 'materials' | 'avatars'
 ): void {
   if (bucket) {
     memoryBucketFilesCache.delete(bucket);
+    bucketFilesFetchedAt.delete(bucket);
     try {
       localStorage.removeItem(`${STORAGE_KEY_BUCKET_FILES_PREFIX}${bucket}`);
     } catch {}
   } else {
     memoryBucketFilesCache.clear();
+    bucketFilesFetchedAt.clear();
   }
 }
 
 export async function listBucketMediaFiles(
-  bucket: 'projects' | 'articles' | 'materials' | 'avatars'
+  bucket: 'projects' | 'articles' | 'materials' | 'avatars',
+  forceRefresh = false
 ): Promise<BucketFileItem[]> {
-  try {
-    const results: BucketFileItem[] = [];
-    const [{ data: rootItems, error }, assetRecords] = await Promise.all([
-      supabase.storage
-        .from(bucket)
-        .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } }),
-      fetchMediaAssetsFromSupabase(bucket).catch(() => []),
-    ]);
-    if (error || !Array.isArray(rootItems)) return getCachedBucketMediaFiles(bucket);
+  const cached = getCachedBucketMediaFiles(bucket);
+  if (
+    !forceRefresh &&
+    cached.length > 0 &&
+    bucketFilesFetchedAt.has(bucket) &&
+    Date.now() - (bucketFilesFetchedAt.get(bucket) || 0) < BUCKET_FILES_TTL_MS
+  ) {
+    return cached;
+  }
+
+  if (!forceRefresh && inFlightBucketFilesFetch.has(bucket)) {
+    return inFlightBucketFilesFetch.get(bucket)!;
+  }
+
+  const runFetch = (async () => {
+    try {
+      const results: BucketFileItem[] = [];
+      const [{ data: rootItems, error }, assetRecords] = await Promise.all([
+        supabase.storage
+          .from(bucket)
+          .list('', { limit: 200, sortBy: { column: 'created_at', order: 'desc' } }),
+        fetchMediaAssetsFromSupabase(bucket, forceRefresh).catch(() => []),
+      ]);
+      if (error || !Array.isArray(rootItems)) return getCachedBucketMediaFiles(bucket);
 
     const metaByKey = new Map<string, MediaAssetRecord>();
     for (const rec of assetRecords) {
@@ -3494,10 +3720,19 @@ export async function listBucketMediaFiles(
       return tb - ta;
     });
     setCachedBucketMediaFiles(bucket, results);
+    bucketFilesFetchedAt.set(bucket, Date.now());
     return results;
-  } catch {
-    return getCachedBucketMediaFiles(bucket);
+    } catch {
+      return getCachedBucketMediaFiles(bucket);
+    } finally {
+      inFlightBucketFilesFetch.delete(bucket);
+    }
+  })();
+
+  if (!forceRefresh) {
+    inFlightBucketFilesFetch.set(bucket, runFetch);
   }
+  return runFetch;
 }
 
 export async function deleteBucketMediaFile(

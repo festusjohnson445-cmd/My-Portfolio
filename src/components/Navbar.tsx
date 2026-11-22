@@ -19,6 +19,7 @@ export type PortfolioPart =
   | 'overview'
   | 'projects'
   | 'articles'
+  | 'documents'
   | 'admin';
 
 export const PROFILE_SUBSECTIONS: { id: string; label: string }[] = [
@@ -98,6 +99,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'overview', label: 'Engineering Hub', sub: 'Technical Documents & Device Uploads' },
     { id: 'projects', label: 'Projects', sub: 'Engineering Portfolio & Case Studies' },
     { id: 'articles', label: 'Blog / Articles', sub: 'Engineering Articles & Publications' },
+    { id: 'documents', label: 'Career Studio', sub: 'Career and Academic Documents Studio' },
   ];
 
   if (isOwner) {

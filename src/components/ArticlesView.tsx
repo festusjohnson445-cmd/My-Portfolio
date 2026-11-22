@@ -1419,7 +1419,7 @@ export const ArticlesView: React.FC = () => {
           >
             {categories.map((cat) => (
               <option key={cat} value={cat}>
-                {cat === 'All' ? 'All Categories' : cat}
+                {cat === 'All' ? 'All' : cat}
               </option>
             ))}
           </select>
@@ -1618,11 +1618,6 @@ export const ArticlesView: React.FC = () => {
                           {art.category}
                         </span>
                         <div className="flex items-center gap-1">
-                          {art.isAdminAuthor && (
-                            <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white text-[9px] font-bold">
-                              Chief Admin
-                            </span>
-                          )}
                           {art.status !== 'published' && (
                             <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
                               {art.status}
@@ -1642,7 +1637,7 @@ export const ArticlesView: React.FC = () => {
                   <div className="px-3.5 pb-2.5 pt-2 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate font-semibold text-slate-700">
-                        by: {art.authorName}
+                        By: {art.authorName}
                       </span>
                       <LiveRelativeTime
                         date={art.publishedAt || art.createdAt}

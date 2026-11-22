@@ -109,25 +109,10 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
   const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
-    if (isVisible) return;
-    if (typeof IntersectionObserver === 'undefined') {
+    if (autoPlay && !isVisible) {
       setIsVisible(true);
-      return;
     }
-    const el = containerRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setIsVisible(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: '240px 0px' }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [isVisible]);
+  }, [autoPlay, isVisible]);
 
   const resumeKey = useMemo(
     () => hashStorageKey(mediaId || h264Urls?.['720p'] || av1Urls?.['720p'] || src || 'vid'),
@@ -153,8 +138,12 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
 
   const resolvedSrc = useMemo(() => {
     if (isAdaptiveManifest) return src;
-    const preferMobile720 =
-      typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 640;
+    const saveDataEnabled =
+      typeof navigator !== 'undefined' &&
+      Boolean((navigator as any).connection?.saveData);
+    const preferDataSaver720 =
+      saveDataEnabled ||
+      (typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768);
 
     const pickFrom = (
       primaryMap?: { '720p'?: string; '1080p'?: string },
@@ -166,7 +155,7 @@ export const CleanVideoPlayer: React.FC<CleanVideoPlayerProps> = ({
       if (selectedQuality === '720p') {
         return primaryMap?.['720p'] || primaryMap?.['1080p'] || fallbackSingle;
       }
-      if (preferMobile720) {
+      if (preferDataSaver720) {
         return primaryMap?.['720p'] || primaryMap?.['1080p'] || fallbackSingle;
       }
       return primaryMap?.['1080p'] || primaryMap?.['720p'] || fallbackSingle;
