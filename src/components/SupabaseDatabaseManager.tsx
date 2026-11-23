@@ -154,7 +154,7 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     pk: 'id',
     description: 'Global theme, appearance, footer & moderation rules',
     template: () => ({
-      id: 'global',
+      id: 'default',
       allow_visitor_articles: true,
       require_article_approval: false,
       require_comment_approval: false,

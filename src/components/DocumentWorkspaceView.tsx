@@ -16,6 +16,7 @@ import {
   ZoomOut,
   RotateCcw,
   FolderOpen,
+  Lock,
 } from 'lucide-react';
 import {
   DOCUMENT_CATEGORY_META,
@@ -42,10 +43,27 @@ import {
   saveDraftLocally,
   subscribeToGeneratedDocumentsRealtime,
 } from '../utils/documentWorkspaceSupabase';
+import { useWebsiteSettingsSync } from '../utils/portfolioSupabase';
+import { useProfileSync } from '../utils/profileState';
 import { DocumentWorkspaceForm } from './DocumentWorkspaceForm';
 import { DocumentA4Preview } from './DocumentA4Preview';
 
 export const DocumentWorkspaceView: React.FC = () => {
+  const websiteSettings = useWebsiteSettingsSync();
+  const { isOwner } = useProfileSync();
+  const studioConfig = websiteSettings.appearanceConfig.careerStudioConfig;
+  const studioEnabled = isOwner || studioConfig.enabled;
+  const canAccessBuilder = isOwner || studioConfig.allowVisitorAccess;
+  const showPublishedTab = isOwner || studioConfig.showPublishedShowcase;
+
+  const availableCategories = useMemo(
+    () =>
+      DOCUMENT_CATEGORY_META.filter(
+        (c) => isOwner || (studioConfig.forms[c.id]?.enabled ?? true)
+      ),
+    [isOwner, studioConfig.forms]
+  );
+
   const [activeMode, setActiveMode] = useState<'builder' | 'published'>('builder');
   const [selectedCategory, setSelectedCategory] =
     useState<DocumentWorkspaceCategory>('international_cv');
@@ -112,6 +130,23 @@ export const DocumentWorkspaceView: React.FC = () => {
     });
     return () => unsub();
   }, []);
+
+  // Keep activeMode and selectedCategory aligned with Admin settings
+  useEffect(() => {
+    if (!canAccessBuilder && showPublishedTab && activeMode === 'builder') {
+      setActiveMode('published');
+    } else if (!showPublishedTab && canAccessBuilder && activeMode === 'published') {
+      setActiveMode('builder');
+    }
+  }, [canAccessBuilder, showPublishedTab, activeMode]);
+
+  useEffect(() => {
+    if (availableCategories.length > 0 && !availableCategories.some((c) => c.id === selectedCategory)) {
+      const nextCat = availableCategories[0].id;
+      setSelectedCategory(nextCat);
+      setCommittedPreviewPayload(draftsByCat[nextCat]);
+    }
+  }, [availableCategories, selectedCategory, draftsByCat]);
 
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setNotice({ text, type });
@@ -295,6 +330,34 @@ export const DocumentWorkspaceView: React.FC = () => {
   }, [publishedDocs, galleryCategoryFilter, gallerySearch]);
 
   const activeMeta = getCategoryMeta(selectedCategory);
+  const activeCatConfig = studioConfig.forms[selectedCategory];
+  const canPublishSelected =
+    isOwner || (studioConfig.allowVisitorPublish && (activeCatConfig?.allowPublish ?? true));
+  const adminCustomHint =
+    activeCatConfig?.showGuidance && activeCatConfig.customHint?.trim()
+      ? activeCatConfig.customHint.trim()
+      : '';
+
+  if (!studioEnabled) {
+    return (
+      <div
+        style={{ fontFamily: '"Times New Roman", Times, serif' }}
+        className="max-w-3xl mx-auto w-full px-4 py-12 text-center font-serif"
+      >
+        <div className="p-8 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-white border border-[#b8c6d4] flex items-center justify-center text-cyan-900 mx-auto">
+            <Lock className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-950 font-serif">
+            Career and Academic Studio Unavailable
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-600 font-serif">
+            This workspace is currently paused by the administrator.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -315,30 +378,34 @@ export const DocumentWorkspaceView: React.FC = () => {
 
           {/* Primary Mode Switcher */}
           <div className="flex items-center justify-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setActiveMode('builder')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer font-serif ${
-                activeMode === 'builder'
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                  : 'bg-white text-slate-800 border-[#b8c6d4] hover:border-slate-400'
-              }`}
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Workspace</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveMode('published')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer font-serif ${
-                activeMode === 'published'
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                  : 'bg-white text-slate-800 border-[#b8c6d4] hover:border-slate-400'
-              }`}
-            >
-              <FolderOpen className="w-3.5 h-3.5" />
-              <span>Published ({publishedDocs.length})</span>
-            </button>
+            {canAccessBuilder && (
+              <button
+                type="button"
+                onClick={() => setActiveMode('builder')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer font-serif ${
+                  activeMode === 'builder'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white text-slate-800 border-[#b8c6d4] hover:border-slate-400'
+                }`}
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>Workspace</span>
+              </button>
+            )}
+            {showPublishedTab && (
+              <button
+                type="button"
+                onClick={() => setActiveMode('published')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer font-serif ${
+                  activeMode === 'published'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white text-slate-800 border-[#b8c6d4] hover:border-slate-400'
+                }`}
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                <span>Published ({publishedDocs.length})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -371,9 +438,9 @@ export const DocumentWorkspaceView: React.FC = () => {
       {/* ======================================================== */}
       {/* MODE 1: WORKSPACE BUILDER (8 INDEPENDENT CATEGORIES)     */}
       {/* ======================================================== */}
-      {activeMode === 'builder' && (
+      {activeMode === 'builder' && canAccessBuilder && (
         <div className="space-y-4">
-          {/* 8 Category Selector Bar */}
+          {/* Category Selector Bar */}
           <div className="p-2.5 sm:p-3 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-2 font-serif">
             <div className="flex flex-col items-center justify-center gap-1.5 text-center">
               <span className="text-xs font-bold text-slate-800 uppercase tracking-wider font-serif text-center">
@@ -397,34 +464,46 @@ export const DocumentWorkspaceView: React.FC = () => {
               )}
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5">
-              {DOCUMENT_CATEGORY_META.map((cat) => {
-                const isSelected = selectedCategory === cat.id;
-                return (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => handleSelectCategory(cat.id)}
-                    className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between gap-1 font-serif ${
-                      isSelected
-                        ? 'bg-cyan-900 border-cyan-900 text-white shadow-xs'
-                        : 'bg-[#f8fafc] border-slate-300 text-slate-800 hover:bg-white hover:border-cyan-700'
-                    }`}
-                  >
-                    <span className="text-[11px] font-bold leading-tight font-serif">
-                      {cat.shortLabel}
-                    </span>
-                    <span
-                      className={`text-[9.5px] font-serif ${
-                        isSelected ? 'text-cyan-200' : 'text-slate-500'
+            {availableCategories.length === 0 ? (
+              <div className="p-3 text-center text-xs text-slate-500 font-serif">
+                No templates are currently enabled.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5">
+                {availableCategories.map((cat) => {
+                  const isSelected = selectedCategory === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => handleSelectCategory(cat.id)}
+                      className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between gap-1 font-serif ${
+                        isSelected
+                          ? 'bg-cyan-900 border-cyan-900 text-white shadow-xs'
+                          : 'bg-[#f8fafc] border-slate-300 text-slate-800 hover:bg-white hover:border-cyan-700'
                       }`}
                     >
-                      {cat.badgeText}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+                      <span className="text-[11px] font-bold leading-tight font-serif">
+                        {cat.shortLabel}
+                      </span>
+                      <span
+                        className={`text-[9.5px] font-serif ${
+                          isSelected ? 'text-cyan-200' : 'text-slate-500'
+                        }`}
+                      >
+                        {cat.badgeText}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {adminCustomHint && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-cyan-50/70 border border-cyan-200 text-[11px] text-cyan-950 font-serif">
+                {adminCustomHint}
+              </div>
+            )}
           </div>
 
           {/* Compact Two-Row Action Toolbar */}
@@ -496,14 +575,24 @@ export const DocumentWorkspaceView: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isPublishing}
+                disabled={isPublishing || !canPublishSelected}
                 onClick={handlePublish}
-                className="flex-1 min-w-0 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-[10px] sm:text-[11px] font-bold shadow-2xs transition-colors cursor-pointer font-serif whitespace-nowrap"
+                title={
+                  !canPublishSelected
+                    ? 'Publishing for this category is disabled by admin; export PDF/DOCX or save local drafts.'
+                    : 'Publish document to directory'
+                }
+                className="flex-1 min-w-0 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] sm:text-[11px] font-bold shadow-2xs transition-colors cursor-pointer font-serif whitespace-nowrap"
               >
                 {isPublishing ? (
                   <>
                     <Loader2 className="w-3 h-3 animate-spin shrink-0" />
                     <span className="truncate">Publishing...</span>
+                  </>
+                ) : !canPublishSelected ? (
+                  <>
+                    <Lock className="w-3 h-3 text-slate-300 shrink-0" />
+                    <span className="truncate">Locked</span>
                   </>
                 ) : (
                   <>
@@ -572,7 +661,7 @@ export const DocumentWorkspaceView: React.FC = () => {
       {/* ======================================================== */}
       {/* MODE 2: PUBLISHED DOCUMENTS DIRECTORY                    */}
       {/* ======================================================== */}
-      {activeMode === 'published' && (
+      {activeMode === 'published' && showPublishedTab && (
         <div className="space-y-4 font-serif">
           {/* Search & Category Filter */}
           <div className="p-2.5 sm:p-3 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 font-serif overflow-hidden">
@@ -599,13 +688,15 @@ export const DocumentWorkspaceView: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={() => setActiveMode('builder')}
-                className="px-2.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 font-serif"
-              >
-                + Create
-              </button>
+              {canAccessBuilder && (
+                <button
+                  type="button"
+                  onClick={() => setActiveMode('builder')}
+                  className="px-2.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 font-serif"
+                >
+                  + Create
+                </button>
+              )}
             </div>
           </div>
 
@@ -627,14 +718,16 @@ export const DocumentWorkspaceView: React.FC = () => {
                   Build a CV, Resume, SOP, Personal Statement, Motivation Letter, Research Proposal, or Study Plan and publish it here.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setActiveMode('builder')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-bold cursor-pointer font-serif"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span>Create</span>
-              </button>
+              {canAccessBuilder && (
+                <button
+                  type="button"
+                  onClick={() => setActiveMode('builder')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-bold cursor-pointer font-serif"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Create</span>
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -744,14 +837,16 @@ export const DocumentWorkspaceView: React.FC = () => {
                       </div>
 
                       <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleLoadIntoEditor(doc)}
-                          className="p-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 cursor-pointer"
-                          title="Edit in Builder"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
+                        {canAccessBuilder && (
+                          <button
+                            type="button"
+                            onClick={() => handleLoadIntoEditor(doc)}
+                            className="p-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 cursor-pointer"
+                            title="Edit in Builder"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {confirmDeleteId === doc.id ? (
                           <button
                             type="button"
@@ -778,6 +873,18 @@ export const DocumentWorkspaceView: React.FC = () => {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {!canAccessBuilder && !showPublishedTab && (
+        <div className="p-8 rounded-2xl bg-white border border-[#b8c6d4] text-center space-y-2 font-serif">
+          <Lock className="w-6 h-6 text-cyan-900 mx-auto" />
+          <p className="text-sm font-bold text-slate-900 font-serif">
+            Visitor Workspace &amp; Showcase Restricted
+          </p>
+          <p className="text-xs text-slate-600 font-serif">
+            The administrator has temporarily restricted public access to Career Studio tools.
+          </p>
         </div>
       )}
 
@@ -823,14 +930,16 @@ export const DocumentWorkspaceView: React.FC = () => {
                   <Download className="w-3.5 h-3.5" />
                   <span>DOCX</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleLoadIntoEditor(viewingDoc)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>Edit</span>
-                </button>
+                {canAccessBuilder && (
+                  <button
+                    type="button"
+                    onClick={() => handleLoadIntoEditor(viewingDoc)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleDeletePublished(viewingDoc)}

@@ -108,6 +108,7 @@ import {
   type MediaAssetRecord,
   type MediaAspectRatio,
   type HomepageConfig,
+  formatBytes,
 } from '../utils/portfolioSupabase';
 import {
   useProfileSync,
@@ -120,6 +121,8 @@ import {
   uploadMaterialToSupabaseBucket,
   uploadMaterialThumbnailToBucket,
   getAuthenticatedOwnerUid,
+  supabaseSignOutOwner,
+  SUPABASE_RLS_SCHEMA_SQL,
 } from '../utils/supabase';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import {
@@ -128,15 +131,15 @@ import {
   SKILL_STATUS_OPTIONS,
   type SkillStatus,
 } from '../data/skillsData';
-import { supabaseSignOutOwner, SUPABASE_RLS_SCHEMA_SQL } from '../utils/supabase';
 import {
-  CAREER_STUDIO_CATEGORIES,
-  fetchCareerStudioDocuments,
-  deleteCareerStudioDocument,
-  type CareerStudioCategory,
-  type CareerStudioDocumentRecord,
-} from '../utils/careerStudio';
-import { formatBytes } from '../utils/portfolioSupabase';
+  DOCUMENT_CATEGORY_META,
+  type DocumentWorkspaceCategory,
+  type GeneratedDocumentRecord,
+} from '../types/documentWorkspace';
+import {
+  fetchPublishedGeneratedDocuments,
+  deleteGeneratedDocumentRecord,
+} from '../utils/documentWorkspaceSupabase';
 import {
   cleanDisplayFileName,
   formatMediaDuration,
@@ -265,7 +268,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   >('appearance');
   const [showRlsSqlModal, setShowRlsSqlModal] = useState(false);
   const [copiedRlsSql, setCopiedRlsSql] = useState(false);
-  const [careerStudioDocs, setCareerStudioDocs] = useState<CareerStudioDocumentRecord[]>([]);
+  const [careerStudioDocs, setCareerStudioDocs] = useState<GeneratedDocumentRecord[]>([]);
   const [heroBgUploading, setHeroBgUploading] = useState(false);
   const [themeImportOpen, setThemeImportOpen] = useState(false);
   const [themeJsonInput, setThemeJsonInput] = useState('');
@@ -395,7 +398,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
         fetchPublicationsFromSupabase(),
         fetchAchievementsFromSupabase(),
         fetchWebsiteSettingsFromSupabase(),
-        fetchCareerStudioDocuments(true),
+        fetchPublishedGeneratedDocuments(true),
       ]);
       setProjects(projs);
       setArticles(arts);
@@ -4443,20 +4446,21 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       <div className="space-y-2">
                         <h5 className="font-bold text-slate-900">Per-Category Form Controls</h5>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                          {CAREER_STUDIO_CATEGORIES.map((category: CareerStudioCategory) => {
-                            const ctrl = siteSettings.appearanceConfig.careerStudioConfig.forms[category] || {
+                          {DOCUMENT_CATEGORY_META.map((cat) => {
+                            const categoryKey: DocumentWorkspaceCategory = cat.id;
+                            const ctrl = siteSettings.appearanceConfig.careerStudioConfig.forms[categoryKey] || {
                               enabled: true,
-                              showGuidance: true,
+                              showGuidance: false,
                               allowPublish: true,
                               customHint: '',
                             };
                             return (
                               <div
-                                key={category}
+                                key={cat.id}
                                 className="p-2.5 rounded-lg bg-white border border-slate-200 space-y-2"
                               >
                                 <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5">
-                                  <span className="font-bold text-slate-950 truncate">{category}</span>
+                                  <span className="font-bold text-slate-950 truncate">{cat.label}</span>
                                   <label className="inline-flex items-center gap-1 cursor-pointer text-[11px] font-semibold text-cyan-900 shrink-0">
                                     <input
                                       type="checkbox"
@@ -4468,7 +4472,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...prev.careerStudioConfig,
                                             forms: {
                                               ...prev.careerStudioConfig.forms,
-                                              [category]: { ...ctrl, enabled: e.target.checked },
+                                              [categoryKey]: { ...ctrl, enabled: e.target.checked },
                                             },
                                           },
                                         }))
@@ -4489,13 +4493,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...prev.careerStudioConfig,
                                             forms: {
                                               ...prev.careerStudioConfig.forms,
-                                              [category]: { ...ctrl, showGuidance: e.target.checked },
+                                              [categoryKey]: { ...ctrl, showGuidance: e.target.checked },
                                             },
                                           },
                                         }))
                                       }
                                     />
-                                    <span>Show Writing Guide</span>
+                                    <span>Show Admin Note</span>
                                   </label>
                                   <label className="inline-flex items-center gap-1 cursor-pointer text-slate-700">
                                     <input
@@ -4508,7 +4512,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                             ...prev.careerStudioConfig,
                                             forms: {
                                               ...prev.careerStudioConfig.forms,
-                                              [category]: { ...ctrl, allowPublish: e.target.checked },
+                                              [categoryKey]: { ...ctrl, allowPublish: e.target.checked },
                                             },
                                           },
                                         }))
@@ -4519,7 +4523,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                 </div>
                                 <input
                                   type="text"
-                                  placeholder="Optional admin hint shown in form..."
+                                  placeholder="Optional admin note for this template..."
                                   value={ctrl.customHint || ''}
                                   onChange={(e) =>
                                     updateAppearance((prev) => ({
@@ -4528,7 +4532,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                                         ...prev.careerStudioConfig,
                                         forms: {
                                           ...prev.careerStudioConfig.forms,
-                                          [category]: { ...ctrl, customHint: e.target.value },
+                                          [categoryKey]: { ...ctrl, customHint: e.target.value },
                                         },
                                       },
                                     }))
@@ -4545,12 +4549,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       <div className="border-t border-slate-200 pt-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <h5 className="font-bold text-slate-900">
-                            Stored & Published Career Documents ({careerStudioDocs.length})
+                            Published Career Studio Documents ({careerStudioDocs.length})
                           </h5>
                           <button
                             type="button"
                             onClick={async () => {
-                              const docs = await fetchCareerStudioDocuments(true);
+                              const docs = await fetchPublishedGeneratedDocuments(true);
                               setCareerStudioDocs(docs);
                               showNotice('Career Studio documents refreshed.');
                             }}
@@ -4563,46 +4567,56 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
                         {careerStudioDocs.length === 0 ? (
                           <p className="text-[11px] text-slate-500 italic py-2">
-                            No saved or published Career Studio documents found yet.
+                            No published Career Studio documents found yet.
                           </p>
                         ) : (
                           <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
-                            {careerStudioDocs.map((doc) => (
-                              <div
-                                key={doc.id}
-                                className="p-2 rounded-lg bg-white border border-slate-200 flex items-center justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="font-bold text-slate-950 truncate">{doc.title}</span>
-                                    <span
-                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                        doc.status === 'published'
-                                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                          : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                      }`}
-                                    >
-                                      {doc.status}
-                                    </span>
-                                  </div>
-                                  <p className="text-[10px] text-slate-600 truncate">
-                                    {doc.category} · By: {doc.authorName || 'Author'} · {doc.viewsCount} views · {doc.downloadsCount} downloads
-                                  </p>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await deleteCareerStudioDocument(doc.id);
-                                    setCareerStudioDocs((prev) => prev.filter((x) => x.id !== doc.id));
-                                    showNotice('Career Studio document deleted.');
-                                  }}
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[11px] font-semibold cursor-pointer shrink-0"
+                            {careerStudioDocs.map((doc) => {
+                              const catMeta = DOCUMENT_CATEGORY_META.find((m) => m.id === doc.category);
+                              return (
+                                <div
+                                  key={doc.id}
+                                  className="p-2 rounded-lg bg-white border border-slate-200 flex items-center justify-between gap-2"
                                 >
-                                  <Trash2 className="w-3 h-3" />
-                                  <span>Delete</span>
-                                </button>
-                              </div>
-                            ))}
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-bold text-slate-950 truncate">{doc.title}</span>
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                          doc.status === 'published'
+                                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                            : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                        }`}
+                                      >
+                                        {doc.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-[10px] text-slate-600 truncate">
+                                      {catMeta?.label || doc.category} · By: {doc.authorName || 'Author'} · {doc.viewsCount} views · {doc.downloadsCount} downloads
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const res = await deleteGeneratedDocumentRecord({
+                                        id: doc.id,
+                                        storagePaths: doc.storagePaths,
+                                      });
+                                      if (!res.ok) {
+                                        showNotice(res.error || 'Failed to delete document.');
+                                        return;
+                                      }
+                                      setCareerStudioDocs((prev) => prev.filter((x) => x.id !== doc.id));
+                                      showNotice('Career Studio document deleted.');
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[11px] font-semibold cursor-pointer shrink-0"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                    <span>Delete</span>
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>

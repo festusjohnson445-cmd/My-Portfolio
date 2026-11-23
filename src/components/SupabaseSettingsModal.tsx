@@ -182,15 +182,14 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
                 <span>Assigned Database Tables</span>
               </div>
               <div className="flex flex-wrap gap-1.5 pt-0.5">
-                <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px]">
-                  profiles
-                </span>
-                <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px]">
-                  materials
-                </span>
+                {['profiles', 'projects', 'articles', 'materials', 'generated_documents', 'website_settings'].map((tbl) => (
+                  <span key={tbl} className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-slate-200 font-mono text-[11px]">
+                    {tbl}
+                  </span>
+                ))}
               </div>
               <p className="text-[11px] text-slate-400 pt-1">
-                Synced with Cloud SQL &amp; Firestore for zero-loss profile redundancy.
+                Real-time PostgreSQL tables with row-level security and public storage buckets.
               </p>
             </div>
           </div>

@@ -27,6 +27,7 @@ export type BlueprintBlock =
       align?: BlueprintAlign;
       bold?: boolean;
       italic?: boolean;
+      underlineRule?: boolean;
       spacingAfter?: number;
     }
   | {
@@ -41,6 +42,12 @@ export type BlueprintBlock =
   | {
       kind: 'entries';
       items: BlueprintEntryItem[];
+    }
+  | {
+      kind: 'table';
+      columns: string[];
+      colWidthsPct?: number[];
+      rows: string[][];
     }
   | {
       kind: 'address-block';
@@ -60,8 +67,14 @@ export type BlueprintBlock =
 
 export interface DocumentBlueprint {
   category: DocumentFormPayload['category'];
-  fontMode: 'sans' | 'serif';
-  headerStyle: 'ats-centered' | 'ats-left' | 'academic-essay' | 'formal-letter' | 'research-title' | 'study-plan';
+  fontMode: 'serif';
+  headerStyle:
+    | 'ats-centered'
+    | 'ats-left'
+    | 'academic-essay'
+    | 'formal-letter'
+    | 'research-title'
+    | 'study-plan';
   title: string;
   subtitle?: string;
   contactLine?: string;
@@ -81,6 +94,13 @@ const joinNonEmpty = (parts: Array<string | undefined | null>, sep = '  |  '): s
     .filter(Boolean)
     .join(sep);
 
+const splitEssayParagraphs = (raw: string): string[] =>
+  raw
+    .trim()
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
 export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBlueprint => {
   switch (payload.category) {
     case 'international_cv': {
@@ -88,11 +108,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const blocks: BlueprintBlock[] = [];
 
       if (d.professionalSummary.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL SUMMARY' });
+        blocks.push({ kind: 'section-heading', title: 'EXECUTIVE SUMMARY' });
         blocks.push({
           kind: 'paragraph',
           text: d.professionalSummary.trim(),
-          align: 'left',
+          align: 'justify',
         });
       }
 
@@ -113,7 +133,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validExps.map((e) => ({
-            primaryLeft: e.roleTitle.trim() || 'Role',
+            primaryLeft: e.roleTitle.trim() || 'Role Title',
             primaryRight: joinNonEmpty([e.startDate, e.endDate], ' – '),
             secondaryLeft: joinNonEmpty([e.organization, e.location], ', '),
             bullets: cleanLines(e.highlights),
@@ -127,11 +147,13 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim() || 'Degree',
+            primaryLeft: e.degree.trim() || 'Academic Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
             secondaryRight: e.gpaOrHonors?.trim() || undefined,
-            bodyText: e.thesisOrCoursework?.trim() || undefined,
+            bodyText: e.thesisOrCoursework?.trim()
+              ? `Thesis / Key Coursework: ${e.thesisOrCoursework.trim()}`
+              : undefined,
           })),
         });
       }
@@ -147,7 +169,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
                 c.name,
                 c.issuer,
                 c.year,
-                c.credentialId ? `ID: ${c.credentialId}` : '',
+                c.credentialId ? `Credential ID: ${c.credentialId}` : '',
               ],
               ' — '
             )
@@ -157,7 +179,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       const validLangs = d.languages.filter((l) => l.language.trim());
       if (validLangs.length > 0 || d.nationalityOrWorkAuth.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'LANGUAGES & ELIGIBILITY' });
+        blocks.push({ kind: 'section-heading', title: 'LANGUAGES & MOBILITY' });
         if (validLangs.length > 0) {
           blocks.push({
             kind: 'labeled-line',
@@ -172,7 +194,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         if (d.nationalityOrWorkAuth.trim()) {
           blocks.push({
             kind: 'labeled-line',
-            label: 'Work Authorization / Mobility',
+            label: 'Work Authorization / Eligibility',
             value: d.nationalityOrWorkAuth.trim(),
           });
         }
@@ -180,9 +202,9 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       return {
         category: 'international_cv',
-        fontMode: 'sans',
+        fontMode: 'serif',
         headerStyle: 'ats-centered',
-        title: d.header.fullName.trim() || 'APPLICANT NAME',
+        title: d.header.fullName.trim() || 'APPLICANT FULL NAME',
         subtitle: d.header.headlineOrTargetRole.trim() || undefined,
         contactLine: joinNonEmpty([
           d.header.location,
@@ -221,7 +243,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim(),
+            primaryLeft: e.degree.trim() || 'Academic Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
             secondaryRight: e.gpaOrHonors?.trim() || undefined,
@@ -240,7 +262,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validRes.map((r) => ({
-            primaryLeft: r.roleTitle.trim(),
+            primaryLeft: r.roleTitle.trim() || 'Research Role',
             primaryRight: joinNonEmpty([r.startDate, r.endDate], ' – '),
             secondaryLeft: joinNonEmpty([r.organization, r.location], ', '),
             bullets: cleanLines(r.highlights),
@@ -256,7 +278,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validTeach.map((t) => ({
-            primaryLeft: t.roleTitle.trim(),
+            primaryLeft: t.roleTitle.trim() || 'Teaching Appointment',
             primaryRight: joinNonEmpty([t.startDate, t.endDate], ' – '),
             secondaryLeft: joinNonEmpty([t.organization, t.location], ', '),
             bullets: cleanLines(t.highlights),
@@ -284,7 +306,10 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       }
 
       if (d.technicalMethods.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'LABORATORY, COMPUTATIONAL & ANALYTICAL METHODS' });
+        blocks.push({
+          kind: 'section-heading',
+          title: 'LABORATORY, COMPUTATIONAL & ANALYTICAL METHODS',
+        });
         blocks.push({ kind: 'paragraph', text: d.technicalMethods.trim(), align: 'left' });
       }
 
@@ -317,23 +342,23 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const blocks: BlueprintBlock[] = [];
 
       if (d.professionalSummary.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'EXECUTIVE SUMMARY' });
-        blocks.push({ kind: 'paragraph', text: d.professionalSummary.trim(), align: 'left' });
+        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL SUMMARY' });
+        blocks.push({ kind: 'paragraph', text: d.professionalSummary.trim(), align: 'justify' });
       }
 
       if (d.technicalSkills.trim() || d.softAndLeadershipSkills.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'CORE SKILLS & COMPETENCIES' });
+        blocks.push({ kind: 'section-heading', title: 'SKILLS & CORE COMPETENCIES' });
         if (d.technicalSkills.trim()) {
           blocks.push({
             kind: 'labeled-line',
-            label: 'Technical Stack',
+            label: 'Technical & Domain Skills',
             value: d.technicalSkills.trim(),
           });
         }
         if (d.softAndLeadershipSkills.trim()) {
           blocks.push({
             kind: 'labeled-line',
-            label: 'Leadership & Operations',
+            label: 'Leadership & Execution',
             value: d.softAndLeadershipSkills.trim(),
           });
         }
@@ -347,7 +372,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validWork.map((w) => ({
-            primaryLeft: w.roleTitle.trim(),
+            primaryLeft: w.roleTitle.trim() || 'Position Title',
             primaryRight: joinNonEmpty([w.startDate, w.endDate], ' – '),
             secondaryLeft: joinNonEmpty([w.organization, w.location], ', '),
             bullets: cleanLines(w.highlights),
@@ -361,7 +386,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validProjects.map((p) => ({
-            primaryLeft: p.name.trim(),
+            primaryLeft: p.name.trim() || 'Project',
             primaryRight: p.period.trim() || undefined,
             secondaryLeft: p.roleOrContext.trim() || undefined,
             bullets: cleanLines(p.impactBullets),
@@ -375,7 +400,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim(),
+            primaryLeft: e.degree.trim() || 'Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
             secondaryRight: e.gpaOrHonors?.trim() || undefined,
@@ -389,14 +414,17 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({
           kind: 'bullet-list',
           items: validCerts.map((c) =>
-            joinNonEmpty([c.name, c.issuer, c.year], ' — ')
+            joinNonEmpty(
+              [c.name, c.issuer, c.year, c.credentialId ? `ID: ${c.credentialId}` : ''],
+              ' — '
+            )
           ),
         });
       }
 
       return {
         category: 'job_resume',
-        fontMode: 'sans',
+        fontMode: 'serif',
         headerStyle: 'ats-left',
         title: d.header.fullName.trim() || 'CANDIDATE NAME',
         subtitle: d.targetJobTitle.trim() || d.header.headlineOrTargetRole.trim() || undefined,
@@ -412,7 +440,10 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const metaRows = [
         { label: 'Applicant', value: d.applicantName.trim() },
         { label: 'Target Program', value: d.targetDegreeAndProgram.trim() },
-        { label: 'Institution', value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ' — ') },
+        {
+          label: 'Host Institution',
+          value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ' — '),
+        },
         { label: 'Intended Term', value: d.intendedTerm.trim() },
         { label: 'Faculty / Lab Focus', value: d.targetFacultyOrLab.trim() },
       ].filter((r) => r.value);
@@ -432,15 +463,13 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         .filter(Boolean);
 
       essayParts.forEach((p) => {
-        p.split(/\n{2,}/).forEach((para) => {
-          if (para.trim()) {
-            blocks.push({
-              kind: 'paragraph',
-              text: para.trim(),
-              align: 'justify',
-              spacingAfter: 3.5,
-            });
-          }
+        splitEssayParagraphs(p).forEach((para) => {
+          blocks.push({
+            kind: 'paragraph',
+            text: para,
+            align: 'justify',
+            spacingAfter: 3.5,
+          });
         });
       });
 
@@ -458,8 +487,14 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         fontMode: 'serif',
         headerStyle: 'academic-essay',
         title: d.documentTitle.trim() || 'Statement of Purpose',
-        subtitle: joinNonEmpty([d.targetDegreeAndProgram, d.targetInstitution], ' — ') || undefined,
-        contactLine: joinNonEmpty([d.applicantName, d.applicantEmail, d.applicantPhone, d.applicantLocation]),
+        subtitle:
+          joinNonEmpty([d.targetDegreeAndProgram, d.targetInstitution], ' — ') || undefined,
+        contactLine: joinNonEmpty([
+          d.applicantName,
+          d.applicantEmail,
+          d.applicantPhone,
+          d.applicantLocation,
+        ]),
         blocks,
       };
     }
@@ -470,36 +505,31 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       const metaRows = [
         { label: 'Applicant', value: d.applicantName.trim() },
-        { label: 'Opportunity', value: d.targetProgramOrOpportunity.trim() },
-        { label: 'Organization', value: d.targetOrganization.trim() },
+        { label: 'Target Opportunity', value: d.targetProgramOrOpportunity.trim() },
+        { label: 'Host Organization', value: d.targetOrganization.trim() },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
       }
 
       const sections = [
-        { heading: 'Personal Origin & Motivation', text: d.definingStoryAndOrigin },
-        { heading: 'Resilience & Growth', text: d.challengesAndResilience },
-        { heading: 'Leadership & Character', text: d.leadershipAndCharacter },
-        { heading: 'Values Alignment & Future Impact', text: d.valuesAndFutureContribution },
+        { heading: 'PERSONAL ORIGIN & MOTIVATION', text: d.definingStoryAndOrigin },
+        { heading: 'RESILIENCE & GROWTH', text: d.challengesAndResilience },
+        { heading: 'LEADERSHIP & CHARACTER', text: d.leadershipAndCharacter },
+        { heading: 'VALUES ALIGNMENT & FUTURE IMPACT', text: d.valuesAndFutureContribution },
       ];
 
       sections.forEach((sec) => {
         if (sec.text.trim()) {
           blocks.push({ kind: 'section-heading', title: sec.heading });
-          sec.text
-            .trim()
-            .split(/\n{2,}/)
-            .forEach((para) => {
-              if (para.trim()) {
-                blocks.push({
-                  kind: 'paragraph',
-                  text: para.trim(),
-                  align: 'justify',
-                  spacingAfter: 3,
-                });
-              }
+          splitEssayParagraphs(sec.text).forEach((para) => {
+            blocks.push({
+              kind: 'paragraph',
+              text: para,
+              align: 'justify',
+              spacingAfter: 3.2,
             });
+          });
         }
       });
 
@@ -517,8 +547,14 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         fontMode: 'serif',
         headerStyle: 'academic-essay',
         title: d.documentTitle.trim() || 'Personal Statement',
-        subtitle: joinNonEmpty([d.targetProgramOrOpportunity, d.targetOrganization], ' — ') || undefined,
-        contactLine: joinNonEmpty([d.applicantName, d.applicantEmail, d.applicantPhone, d.applicantLocation]),
+        subtitle:
+          joinNonEmpty([d.targetProgramOrOpportunity, d.targetOrganization], ' — ') || undefined,
+        contactLine: joinNonEmpty([
+          d.applicantName,
+          d.applicantEmail,
+          d.applicantPhone,
+          d.applicantLocation,
+        ]),
         blocks,
       };
     }
@@ -545,12 +581,12 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
           text: d.letterDate.trim(),
           align: 'left',
           bold: false,
-          spacingAfter: 2.5,
+          spacingAfter: 3,
         });
       }
 
       const recipientLines = [
-        d.recipientTitle || 'Scholarship Selection Committee',
+        d.recipientTitle.trim() || 'Scholarship Selection Committee',
         d.scholarshipName,
         d.sponsoringOrganization,
         d.hostCountryOrUniversity,
@@ -569,8 +605,9 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
           kind: 'paragraph',
           text: subject,
           bold: true,
+          underlineRule: true,
           align: 'left',
-          spacingAfter: 3,
+          spacingAfter: 3.5,
         });
       }
 
@@ -586,15 +623,13 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         .map((p) => p.trim())
         .filter(Boolean)
         .forEach((sec) => {
-          sec.split(/\n{2,}/).forEach((para) => {
-            if (para.trim()) {
-              blocks.push({
-                kind: 'paragraph',
-                text: para.trim(),
-                align: 'justify',
-                spacingAfter: 3,
-              });
-            }
+          splitEssayParagraphs(sec).forEach((para) => {
+            blocks.push({
+              kind: 'paragraph',
+              text: para,
+              align: 'justify',
+              spacingAfter: 3.2,
+            });
           });
         });
 
@@ -602,6 +637,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         kind: 'signature',
         signOff: d.signOff.trim() || 'Yours faithfully,',
         name: d.applicantName.trim() || 'Applicant',
+        subline: joinNonEmpty([d.applicantEmail, d.applicantPhone], ' · ') || undefined,
       });
 
       return {
@@ -622,10 +658,13 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       const metaRows = [
         { label: 'Principal Investigator', value: d.applicantName.trim() },
-        { label: 'Email', value: d.applicantEmail.trim() },
-        { label: 'Host Institution', value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ', ') },
+        { label: 'Contact Email', value: d.applicantEmail.trim() },
+        {
+          label: 'Host Institution',
+          value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ', '),
+        },
         { label: 'Proposed Supervisor', value: d.proposedSupervisor.trim() },
-        { label: 'Keywords', value: d.keywords.trim() },
+        { label: 'Research Keywords', value: d.keywords.trim() },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
@@ -633,12 +672,16 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       if (d.abstractSummary.trim()) {
         blocks.push({ kind: 'section-heading', title: '1. ABSTRACT / EXECUTIVE SUMMARY' });
-        blocks.push({ kind: 'paragraph', text: d.abstractSummary.trim(), align: 'justify' });
+        splitEssayParagraphs(d.abstractSummary).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.problemStatement.trim()) {
         blocks.push({ kind: 'section-heading', title: '2. BACKGROUND & PROBLEM STATEMENT' });
-        blocks.push({ kind: 'paragraph', text: d.problemStatement.trim(), align: 'justify' });
+        splitEssayParagraphs(d.problemStatement).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       const rqs = cleanLines(d.researchQuestions);
@@ -648,18 +691,30 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       }
 
       if (d.literatureGap.trim()) {
-        blocks.push({ kind: 'section-heading', title: '4. LITERATURE CONTEXT & RESEARCH GAP' });
-        blocks.push({ kind: 'paragraph', text: d.literatureGap.trim(), align: 'justify' });
+        blocks.push({ kind: 'section-heading', title: '4. LITERATURE CONTEXT & KNOWLEDGE GAP' });
+        splitEssayParagraphs(d.literatureGap).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.methodologyDesign.trim()) {
-        blocks.push({ kind: 'section-heading', title: '5. METHODOLOGY & EXPERIMENTAL DESIGN' });
-        blocks.push({ kind: 'paragraph', text: d.methodologyDesign.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '5. METHODOLOGY & ANALYTICAL DESIGN',
+        });
+        splitEssayParagraphs(d.methodologyDesign).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.expectedContributions.trim()) {
-        blocks.push({ kind: 'section-heading', title: '6. EXPECTED OUTCOMES & SIGNIFICANCE' });
-        blocks.push({ kind: 'paragraph', text: d.expectedContributions.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '6. EXPECTED OUTCOMES & SIGNIFICANCE',
+        });
+        splitEssayParagraphs(d.expectedContributions).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       const milestones = d.timelineMilestones.filter(
@@ -668,18 +723,25 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       if (milestones.length > 0) {
         blocks.push({ kind: 'section-heading', title: '7. RESEARCH TIMELINE & MILESTONES' });
         blocks.push({
-          kind: 'entries',
-          items: milestones.map((m) => ({
-            primaryLeft: m.phase.trim() || 'Phase',
-            primaryRight: m.timeframe.trim() || undefined,
-            bodyText: m.deliverable.trim() || undefined,
-          })),
+          kind: 'table',
+          columns: ['Research Phase', 'Timeframe', 'Key Deliverable'],
+          colWidthsPct: [26, 20, 54],
+          rows: milestones.map((m) => [
+            m.phase.trim() || 'Phase',
+            m.timeframe.trim() || '—',
+            m.deliverable.trim() || '—',
+          ]),
         });
       }
 
       if (d.budgetOrResourceNeeds.trim()) {
-        blocks.push({ kind: 'section-heading', title: '8. RESOURCES & EQUIPMENT REQUIREMENTS' });
-        blocks.push({ kind: 'paragraph', text: d.budgetOrResourceNeeds.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '8. RESOURCES & EQUIPMENT REQUIREMENTS',
+        });
+        splitEssayParagraphs(d.budgetOrResourceNeeds).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       const refs = cleanLines(d.keyReferences);
@@ -709,8 +771,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const metaRows = [
         { label: 'Applicant', value: d.applicantName.trim() },
         { label: 'Target Degree', value: d.targetDegree.trim() },
-        { label: 'Host Institution', value: joinNonEmpty([d.hostInstitution, d.hostCountry], ', ') },
-        { label: 'Duration', value: d.programDuration.trim() },
+        {
+          label: 'Host Institution',
+          value: joinNonEmpty([d.hostInstitution, d.hostCountry], ', '),
+        },
+        { label: 'Program Duration', value: d.programDuration.trim() },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
@@ -718,37 +783,59 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       if (d.academicBackground.trim()) {
         blocks.push({ kind: 'section-heading', title: '1. ACADEMIC BACKGROUND & READINESS' });
-        blocks.push({ kind: 'paragraph', text: d.academicBackground.trim(), align: 'justify' });
+        splitEssayParagraphs(d.academicBackground).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.purposeAndSpecialization.trim()) {
-        blocks.push({ kind: 'section-heading', title: '2. PURPOSE OF STUDY & SPECIALIZATION FOCUS' });
-        blocks.push({ kind: 'paragraph', text: d.purposeAndSpecialization.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '2. PURPOSE OF STUDY & SPECIALIZATION FOCUS',
+        });
+        splitEssayParagraphs(d.purposeAndSpecialization).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       const terms = d.studyTerms.filter(
         (t) => t.termLabel.trim() || t.courses.trim() || t.academicGoal.trim()
       );
       if (terms.length > 0) {
-        blocks.push({ kind: 'section-heading', title: '3. TERM-BY-TERM COURSEWORK & RESEARCH SCHEDULE' });
         blocks.push({
-          kind: 'entries',
-          items: terms.map((t) => ({
-            primaryLeft: t.termLabel.trim() || 'Academic Term',
-            secondaryLeft: t.courses.trim() ? `Courses / Modules: ${t.courses.trim()}` : undefined,
-            bodyText: t.academicGoal.trim() ? `Target Milestones: ${t.academicGoal.trim()}` : undefined,
-          })),
+          kind: 'section-heading',
+          title: '3. TERM-BY-TERM COURSEWORK & RESEARCH SCHEDULE',
+        });
+        blocks.push({
+          kind: 'table',
+          columns: ['Academic Term', 'Courses & Modules', 'Academic Milestones'],
+          colWidthsPct: [22, 39, 39],
+          rows: terms.map((t) => [
+            t.termLabel.trim() || 'Academic Term',
+            t.courses.trim() || '—',
+            t.academicGoal.trim() || '—',
+          ]),
         });
       }
 
       if (d.languageAndTechnicalPrep.trim()) {
-        blocks.push({ kind: 'section-heading', title: '4. LANGUAGE & TECHNICAL PREPARATION' });
-        blocks.push({ kind: 'paragraph', text: d.languageAndTechnicalPrep.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '4. LANGUAGE & TECHNICAL PREPARATION',
+        });
+        splitEssayParagraphs(d.languageAndTechnicalPrep).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.postStudyCareerImpact.trim()) {
-        blocks.push({ kind: 'section-heading', title: '5. POST-STUDY CAREER & IMPACT PLAN' });
-        blocks.push({ kind: 'paragraph', text: d.postStudyCareerImpact.trim(), align: 'justify' });
+        blocks.push({
+          kind: 'section-heading',
+          title: '5. POST-STUDY CAREER & IMPACT PLAN',
+        });
+        splitEssayParagraphs(d.postStudyCareerImpact).forEach((para) => {
+          blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
+        });
       }
 
       if (d.applicantName.trim()) {
@@ -765,7 +852,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         fontMode: 'serif',
         headerStyle: 'study-plan',
         title: d.documentTitle.trim() || 'Academic Study Plan',
-        subtitle: joinNonEmpty([d.targetDegree, d.hostInstitution, d.hostCountry], ' · ') || undefined,
+        subtitle:
+          joinNonEmpty([d.targetDegree, d.hostInstitution, d.hostCountry], ' · ') || undefined,
         contactLine: joinNonEmpty([d.applicantName, d.applicantEmail, d.applicantLocation]),
         blocks,
       };
@@ -792,7 +880,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
   const marginTop = 18;
   const marginBottom = 18;
   const contentW = pageW - marginX * 2;
-  const fontFamily = bp.fontMode === 'sans' ? 'helvetica' : 'times';
+  const fontFamily = 'times';
 
   let y = marginTop;
 
@@ -800,7 +888,9 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
     if (y + neededMm > pageH - marginBottom) {
       doc.addPage();
       y = marginTop;
+      return true;
     }
+    return false;
   };
 
   const drawWrappedText = (
@@ -814,31 +904,16 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
     if (!clean) return;
     if (align === 'justify') {
       const lines = doc.splitTextToSize(clean, maxW) as string[];
-      const needed = lines.length * lineHeightMm;
-      if (needed > pageH - marginBottom - marginTop) {
-        // Long essay paragraph: paginate line by line cleanly
-        lines.forEach((ln, idx) => {
-          ensureSpace(lineHeightMm + 1);
-          const isLast = idx === lines.length - 1;
-          if (!isLast && ln.trim().includes(' ')) {
-            doc.text(ln, x, y, { align: 'justify', maxWidth: maxW });
-          } else {
-            doc.text(ln, x, y);
-          }
-          y += lineHeightMm;
-        });
-      } else {
-        ensureSpace(needed);
-        lines.forEach((ln, idx) => {
-          const isLast = idx === lines.length - 1;
-          if (!isLast && ln.trim().includes(' ')) {
-            doc.text(ln, x, y, { align: 'justify', maxWidth: maxW });
-          } else {
-            doc.text(ln, x, y);
-          }
-          y += lineHeightMm;
-        });
-      }
+      lines.forEach((ln, idx) => {
+        ensureSpace(lineHeightMm + 1);
+        const isLast = idx === lines.length - 1;
+        if (!isLast && ln.trim().includes(' ')) {
+          doc.text(ln, x, y, { align: 'justify', maxWidth: maxW });
+        } else {
+          doc.text(ln, x, y);
+        }
+        y += lineHeightMm;
+      });
       return;
     }
 
@@ -856,27 +931,14 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
     });
   };
 
-  // Document Header
-  if (bp.headerStyle === 'formal-letter') {
-    // Letter title suppressed cleanly on page top; formal correspondence header handled by address blocks
-    doc.setFont(fontFamily, 'bold');
-    doc.setFontSize(13);
-    doc.setTextColor(15, 23, 42);
-    doc.text(bp.title, marginX, y);
-    y += 5.5;
-    if (bp.subtitle) {
-      doc.setFont(fontFamily, 'italic');
-      doc.setFontSize(10);
-      doc.setTextColor(71, 85, 105);
-      doc.text(bp.subtitle, marginX, y);
-      y += 4.5;
-    }
-    doc.setDrawColor(148, 163, 184);
-    doc.setLineWidth(0.35);
-    doc.line(marginX, y, pageW - marginX, y);
-    y += 6;
-  } else {
-    const isCentered = bp.headerStyle === 'ats-centered' || bp.headerStyle === 'academic-essay' || bp.headerStyle === 'research-title' || bp.headerStyle === 'study-plan';
+  // Document Header (suppressed on formal-letter so it opens with authentic sender/date correspondence)
+  if (bp.headerStyle !== 'formal-letter') {
+    const isCentered =
+      bp.headerStyle === 'ats-centered' ||
+      bp.headerStyle === 'academic-essay' ||
+      bp.headerStyle === 'research-title' ||
+      bp.headerStyle === 'study-plan';
+
     doc.setFont(fontFamily, 'bold');
     doc.setFontSize(bp.headerStyle === 'research-title' ? 15 : 16.5);
     doc.setTextColor(15, 23, 42);
@@ -892,7 +954,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
     });
 
     if (bp.subtitle) {
-      doc.setFont(fontFamily, bp.fontMode === 'sans' ? 'bold' : 'italic');
+      doc.setFont(fontFamily, 'italic');
       doc.setFontSize(10.5);
       doc.setTextColor(22, 78, 99);
       const subLines = doc.splitTextToSize(bp.subtitle, contentW) as string[];
@@ -909,7 +971,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
 
     if (bp.contactLine) {
       doc.setFont(fontFamily, 'normal');
-      doc.setFontSize(9.2);
+      doc.setFontSize(9.5);
       doc.setTextColor(51, 65, 85);
       const cLines = doc.splitTextToSize(bp.contactLine, contentW) as string[];
       cLines.forEach((ln) => {
@@ -925,7 +987,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
 
     if (bp.secondaryContactLine) {
       doc.setFont(fontFamily, 'normal');
-      doc.setFontSize(9);
+      doc.setFontSize(9.2);
       doc.setTextColor(71, 85, 105);
       const c2Lines = doc.splitTextToSize(bp.secondaryContactLine, contentW) as string[];
       c2Lines.forEach((ln) => {
@@ -950,7 +1012,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
   for (const block of bp.blocks) {
     switch (block.kind) {
       case 'section-heading': {
-        ensureSpace(11);
+        ensureSpace(12);
         y += 2;
         doc.setFont(fontFamily, 'bold');
         doc.setFontSize(10.5);
@@ -960,7 +1022,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
         doc.setDrawColor(180, 194, 210);
         doc.setLineWidth(0.35);
         doc.line(marginX, y, pageW - marginX, y);
-        y += 4.4;
+        y += 4.5;
         break;
       }
 
@@ -969,9 +1031,15 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
           fontFamily,
           block.bold ? 'bold' : block.italic ? 'italic' : 'normal'
         );
-        doc.setFontSize(10);
+        doc.setFontSize(10.2);
         doc.setTextColor(30, 41, 59);
-        drawWrappedText(block.text, marginX, contentW, 4.7, block.align || 'left');
+        drawWrappedText(block.text, marginX, contentW, 4.8, block.align || 'left');
+        if (block.underlineRule) {
+          doc.setDrawColor(148, 163, 184);
+          doc.setLineWidth(0.35);
+          doc.line(marginX, y - 1, pageW - marginX, y - 1);
+          y += 1.5;
+        }
         y += block.spacingAfter ?? 2.4;
         break;
       }
@@ -979,7 +1047,7 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
       case 'labeled-line': {
         ensureSpace(6);
         doc.setFont(fontFamily, 'bold');
-        doc.setFontSize(9.8);
+        doc.setFontSize(10);
         doc.setTextColor(15, 23, 42);
         const prefix = `${block.label}: `;
         const prefixW = doc.getTextWidth(prefix);
@@ -989,14 +1057,14 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
         const restLines = doc.splitTextToSize(block.value, Math.max(40, contentW - prefixW)) as string[];
         if (restLines.length > 0) {
           doc.text(restLines[0], marginX + prefixW, y);
-          y += 4.5;
+          y += 4.6;
           for (let i = 1; i < restLines.length; i++) {
-            ensureSpace(4.5);
+            ensureSpace(4.6);
             doc.text(restLines[i], marginX, y);
-            y += 4.5;
+            y += 4.6;
           }
         } else {
-          y += 4.5;
+          y += 4.6;
         }
         y += 1;
         break;
@@ -1004,19 +1072,22 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
 
       case 'bullet-list': {
         doc.setFont(fontFamily, 'normal');
-        doc.setFontSize(9.8);
+        doc.setFontSize(10);
         doc.setTextColor(30, 41, 59);
         for (const item of block.items) {
-          const lines = doc.splitTextToSize(item, contentW - 5) as string[];
-          ensureSpace(lines.length * 4.4 + 1);
+          const isNumberedCitation = /^\[\d+\]\s/.test(item);
+          const indentX = isNumberedCitation ? marginX + 2 : marginX + 5;
+          const wrapW = isNumberedCitation ? contentW - 2 : contentW - 5;
+          const lines = doc.splitTextToSize(item, wrapW) as string[];
+          ensureSpace(lines.length * 4.5 + 1);
           lines.forEach((ln, idx) => {
-            if (idx === 0) {
+            if (!isNumberedCitation && idx === 0) {
               doc.text('•', marginX + 1, y);
             }
-            doc.text(ln, marginX + 5, y);
-            y += 4.4;
+            doc.text(ln, isNumberedCitation && idx > 0 ? indentX + 5 : indentX, y);
+            y += 4.5;
           });
-          y += 0.6;
+          y += 0.7;
         }
         y += 1.5;
         break;
@@ -1026,21 +1097,28 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
         for (const entry of block.items) {
           ensureSpace(12);
           doc.setFont(fontFamily, 'bold');
-          doc.setFontSize(10.2);
+          doc.setFontSize(10.3);
           doc.setTextColor(15, 23, 42);
-          doc.text(entry.primaryLeft, marginX, y);
-          if (entry.primaryRight) {
-            doc.setFont(fontFamily, 'normal');
-            doc.setFontSize(9.4);
-            doc.setTextColor(71, 85, 105);
-            doc.text(entry.primaryRight, pageW - marginX, y, { align: 'right' });
-          }
-          y += 4.4;
+          const rightReserve = entry.primaryRight ? 44 : 0;
+          const leftLines = doc.splitTextToSize(entry.primaryLeft, contentW - rightReserve) as string[];
+          leftLines.forEach((ln, idx) => {
+            doc.text(ln, marginX, y);
+            if (idx === 0 && entry.primaryRight) {
+              doc.setFont(fontFamily, 'normal');
+              doc.setFontSize(9.5);
+              doc.setTextColor(71, 85, 105);
+              doc.text(entry.primaryRight, pageW - marginX, y, { align: 'right' });
+              doc.setFont(fontFamily, 'bold');
+              doc.setFontSize(10.3);
+              doc.setTextColor(15, 23, 42);
+            }
+            y += 4.5;
+          });
 
           if (entry.secondaryLeft || entry.secondaryRight) {
             ensureSpace(5);
             doc.setFont(fontFamily, 'italic');
-            doc.setFontSize(9.6);
+            doc.setFontSize(9.7);
             doc.setTextColor(51, 65, 85);
             if (entry.secondaryLeft) {
               doc.text(entry.secondaryLeft, marginX, y);
@@ -1048,27 +1126,27 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
             if (entry.secondaryRight) {
               doc.text(entry.secondaryRight, pageW - marginX, y, { align: 'right' });
             }
-            y += 4.4;
+            y += 4.5;
           }
 
           if (entry.bodyText) {
             doc.setFont(fontFamily, 'normal');
-            doc.setFontSize(9.6);
+            doc.setFontSize(9.8);
             doc.setTextColor(30, 41, 59);
-            drawWrappedText(entry.bodyText, marginX, contentW, 4.4, 'left');
+            drawWrappedText(entry.bodyText, marginX, contentW, 4.5, 'left');
           }
 
           if (entry.bullets && entry.bullets.length > 0) {
             doc.setFont(fontFamily, 'normal');
-            doc.setFontSize(9.6);
+            doc.setFontSize(9.8);
             doc.setTextColor(30, 41, 59);
             for (const b of entry.bullets) {
               const bLines = doc.splitTextToSize(b, contentW - 5) as string[];
-              ensureSpace(bLines.length * 4.3 + 0.8);
+              ensureSpace(bLines.length * 4.4 + 0.8);
               bLines.forEach((ln, idx) => {
                 if (idx === 0) doc.text('•', marginX + 1, y);
                 doc.text(ln, marginX + 5, y);
-                y += 4.3;
+                y += 4.4;
               });
               y += 0.4;
             }
@@ -1078,10 +1156,76 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
         break;
       }
 
+      case 'table': {
+        const pcts =
+          block.colWidthsPct && block.colWidthsPct.length === block.columns.length
+            ? block.colWidthsPct
+            : block.columns.map(() => 100 / block.columns.length);
+        const colWidths = pcts.map((p) => (contentW * p) / 100);
+        const padX = 2.5;
+        const padY = 2.4;
+        const rowLineH = 4.2;
+
+        const drawTableHeader = () => {
+          doc.setFont(fontFamily, 'bold');
+          doc.setFontSize(9.2);
+          const headerCellLines = block.columns.map(
+            (col, idx) => doc.splitTextToSize(col, Math.max(12, colWidths[idx] - padX * 2)) as string[]
+          );
+          const maxLines = Math.max(1, ...headerCellLines.map((l) => l.length));
+          const headerH = maxLines * rowLineH + padY * 2;
+          ensureSpace(headerH + 8);
+
+          let cx = marginX;
+          block.columns.forEach((_, idx) => {
+            doc.setFillColor(241, 245, 249);
+            doc.setDrawColor(203, 213, 225);
+            doc.rect(cx, y, colWidths[idx], headerH, 'FD');
+            doc.setTextColor(15, 23, 42);
+            headerCellLines[idx].forEach((ln, lIdx) => {
+              doc.text(ln, cx + padX, y + padY + 3 + lIdx * rowLineH);
+            });
+            cx += colWidths[idx];
+          });
+          y += headerH;
+        };
+
+        drawTableHeader();
+
+        for (const row of block.rows) {
+          doc.setFont(fontFamily, 'normal');
+          doc.setFontSize(9.2);
+          const cellLines = block.columns.map((_, idx) => {
+            const val = (row[idx] ?? '—').trim() || '—';
+            return doc.splitTextToSize(val, Math.max(12, colWidths[idx] - padX * 2)) as string[];
+          });
+          const maxLines = Math.max(1, ...cellLines.map((l) => l.length));
+          const rowH = maxLines * rowLineH + padY * 2;
+
+          if (ensureSpace(rowH)) {
+            drawTableHeader();
+          }
+
+          let cx = marginX;
+          block.columns.forEach((_, idx) => {
+            doc.setDrawColor(203, 213, 225);
+            doc.rect(cx, y, colWidths[idx], rowH, 'S');
+            doc.setFont(fontFamily, idx === 0 ? 'bold' : 'normal');
+            doc.setTextColor(idx === 0 ? 15 : 30, idx === 0 ? 23 : 41, idx === 0 ? 42 : 59);
+            cellLines[idx].forEach((ln, lIdx) => {
+              doc.text(ln, cx + padX, y + padY + 3 + lIdx * rowLineH);
+            });
+            cx += colWidths[idx];
+          });
+          y += rowH;
+        }
+        y += 4;
+        break;
+      }
+
       case 'address-block': {
-        ensureSpace(block.lines.length * 4.6 + 4);
-        doc.setFont(fontFamily, 'normal');
-        doc.setFontSize(10);
+        ensureSpace(block.lines.length * 4.7 + 4);
+        doc.setFontSize(10.2);
         doc.setTextColor(30, 41, 59);
         block.lines.forEach((ln, idx) => {
           doc.setFont(fontFamily, idx === 0 ? 'bold' : 'normal');
@@ -1090,49 +1234,65 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
           } else {
             doc.text(ln, marginX, y);
           }
-          y += 4.6;
+          y += 4.7;
         });
-        y += 3;
+        y += 3.2;
         break;
       }
 
       case 'meta-grid': {
-        ensureSpace(block.rows.length * 5 + 5);
+        doc.setFontSize(9.4);
+        const labelColW = 42;
+        const valMaxW = contentW - labelColW - 5;
+        const preparedRows = block.rows.map((r) => {
+          doc.setFont(fontFamily, 'normal');
+          const wrapped = doc.splitTextToSize(r.value, valMaxW) as string[];
+          return {
+            label: r.label,
+            lines: wrapped.length > 0 ? wrapped : [r.value],
+          };
+        });
+        const totalLines = preparedRows.reduce((sum, r) => sum + r.lines.length, 0);
+        const lineH = 4.6;
+        const boxHeight = totalLines * lineH + preparedRows.length * 1.2 + 5;
+        ensureSpace(boxHeight + 4);
+
         doc.setFillColor(248, 250, 252);
         doc.setDrawColor(203, 213, 225);
-        const boxHeight = block.rows.length * 5.2 + 4;
         doc.roundedRect(marginX, y - 1, contentW, boxHeight, 1.5, 1.5, 'FD');
-        let ry = y + 3.5;
-        for (const r of block.rows) {
+
+        let ry = y + 3.6;
+        for (const row of preparedRows) {
           doc.setFont(fontFamily, 'bold');
-          doc.setFontSize(9);
           doc.setTextColor(22, 78, 99);
-          doc.text(`${r.label}:`, marginX + 3, ry);
+          doc.text(`${row.label}:`, marginX + 3.5, ry);
           doc.setFont(fontFamily, 'normal');
           doc.setTextColor(15, 23, 42);
-          const valTrunc = (doc.splitTextToSize(r.value, contentW - 48) as string[])[0] || r.value;
-          doc.text(valTrunc, marginX + 42, ry);
-          ry += 5.2;
+          row.lines.forEach((ln) => {
+            doc.text(ln, marginX + 3.5 + labelColW, ry);
+            ry += lineH;
+          });
+          ry += 1.2;
         }
         y += boxHeight + 4.5;
         break;
       }
 
       case 'signature': {
-        ensureSpace(18);
-        y += 3;
+        ensureSpace(20);
+        y += 3.5;
         doc.setFont(fontFamily, 'normal');
-        doc.setFontSize(10);
+        doc.setFontSize(10.2);
         doc.setTextColor(30, 41, 59);
         doc.text(block.signOff, marginX, y);
-        y += 7;
+        y += 7.5;
         doc.setFont(fontFamily, 'bold');
         doc.setTextColor(15, 23, 42);
         doc.text(block.name, marginX, y);
         if (block.subline) {
-          y += 4.4;
+          y += 4.5;
           doc.setFont(fontFamily, 'normal');
-          doc.setFontSize(9);
+          doc.setFontSize(9.2);
           doc.setTextColor(71, 85, 105);
           doc.text(block.subline, marginX, y);
         }
@@ -1159,11 +1319,12 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
 
 export const downloadDocumentPdf = (payload: DocumentFormPayload, customFileName?: string) => {
   const blob = exportDocumentToPdfBlob(payload);
-  const safeBase = (customFileName || extractDocumentTitle(payload))
-    .replace(/[^a-z0-9_\- ]/gi, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .slice(0, 80) || 'Document';
+  const safeBase =
+    (customFileName || extractDocumentTitle(payload))
+      .replace(/[^a-z0-9_\- ]/gi, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .slice(0, 80) || 'Document';
   triggerBlobDownload(blob, `${safeBase}.pdf`);
 };
 
@@ -1179,6 +1340,8 @@ const escapeXml = (str: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 
+const A4_USABLE_TWIPS = 9746; // 11906 page width - (1080 * 2) margins
+
 const xmlParagraph = (
   runsXml: string,
   opts?: {
@@ -1187,15 +1350,24 @@ const xmlParagraph = (
     spaceAfter?: number;
     bottomBorder?: boolean;
     leftIndent?: number;
+    hanging?: number;
+    rightTabStop?: boolean;
   }
 ) => {
   const jc = opts?.align ? `<w:jc w:val="${opts.align}"/>` : '';
-  const spacing = `<w:spacing w:before="${opts?.spaceBefore ?? 0}" w:after="${opts?.spaceAfter ?? 100}" w:line="264" w:lineRule="auto"/>`;
+  const tabs = opts?.rightTabStop
+    ? `<w:tabs><w:tab w:val="right" w:pos="${A4_USABLE_TWIPS}"/></w:tabs>`
+    : '';
+  const spacing = `<w:spacing w:before="${opts?.spaceBefore ?? 0}" w:after="${
+    opts?.spaceAfter ?? 100
+  }" w:line="264" w:lineRule="auto"/>`;
   const border = opts?.bottomBorder
     ? `<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="3" w:color="94A3B8"/></w:pBdr>`
     : '';
-  const ind = opts?.leftIndent ? `<w:ind w:left="${opts.leftIndent}" w:hanging="240"/>` : '';
-  return `<w:p><w:pPr>${border}${spacing}${ind}${jc}</w:pPr>${runsXml}</w:p>`;
+  const ind = opts?.leftIndent
+    ? `<w:ind w:left="${opts.leftIndent}" w:hanging="${opts.hanging ?? 240}"/>`
+    : '';
+  return `<w:p><w:pPr>${border}${tabs}${spacing}${ind}${jc}</w:pPr>${runsXml}</w:p>`;
 };
 
 const xmlRun = (
@@ -1214,9 +1386,72 @@ const xmlRun = (
   return `<w:r><w:rPr>${rPr}</w:rPr><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`;
 };
 
+const xmlTabRun = (font = 'Times New Roman') =>
+  `<w:r><w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:cs="${font}"/></w:rPr><w:tab/></w:r>`;
+
+const xmlTable = (
+  columns: string[],
+  colWidthsPct: number[] | undefined,
+  rows: string[][],
+  docFont: string
+): string => {
+  const pcts =
+    colWidthsPct && colWidthsPct.length === columns.length
+      ? colWidthsPct
+      : columns.map(() => 100 / columns.length);
+  const colTwips = pcts.map((p) => Math.round((A4_USABLE_TWIPS * p) / 100));
+
+  const gridCols = colTwips.map((w) => `<w:gridCol w:w="${w}"/>`).join('');
+
+  const buildCell = (text: string, widthTwips: number, isHeader: boolean, isFirstCol: boolean) => {
+    const shd = isHeader ? '<w:shd w:val="clear" w:color="auto" w:fill="F1F5F9"/>' : '';
+    const tcPr = `<w:tcPr><w:tcW w:w="${widthTwips}" w:type="dxa"/>${shd}<w:tcMar><w:top w:w="90" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="90" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar></w:tcPr>`;
+    const pXml = xmlParagraph(
+      xmlRun(text.trim() || '—', {
+        bold: isHeader || isFirstCol,
+        sizeHalfPt: 19,
+        colorHex: isHeader ? '164E63' : '1E293B',
+        font: docFont,
+      }),
+      { spaceAfter: 40 }
+    );
+    return `<w:tc>${tcPr}${pXml}</w:tc>`;
+  };
+
+  const headerRowXml = `<w:tr><w:trPr><w:tblHeader/></w:trPr>${columns
+    .map((c, idx) => buildCell(c, colTwips[idx], true, false))
+    .join('')}</w:tr>`;
+
+  const dataRowsXml = rows
+    .map(
+      (r) =>
+        `<w:tr>${columns
+          .map((_, idx) => buildCell(r[idx] ?? '—', colTwips[idx], false, idx === 0))
+          .join('')}</w:tr>`
+    )
+    .join('');
+
+  return `<w:tbl>
+    <w:tblPr>
+      <w:tblW w:w="${A4_USABLE_TWIPS}" w:type="dxa"/>
+      <w:tblBorders>
+        <w:top w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        <w:left w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        <w:bottom w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        <w:right w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        <w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        <w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+      </w:tblBorders>
+    </w:tblPr>
+    <w:tblGrid>${gridCols}</w:tblGrid>
+    ${headerRowXml}
+    ${dataRowsXml}
+  </w:tbl>`;
+};
+
 export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Promise<Blob> => {
   const bp = buildDocumentBlueprint(payload);
-  const docFont = bp.fontMode === 'sans' ? 'Calibri' : 'Times New Roman';
+  const docFont = 'Times New Roman';
   const isCentered =
     bp.headerStyle === 'ats-centered' ||
     bp.headerStyle === 'academic-essay' ||
@@ -1226,57 +1461,62 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
 
   const bodyParts: string[] = [];
 
-  // Title block
-  bodyParts.push(
-    xmlParagraph(
-      xmlRun(bp.title, {
-        bold: true,
-        sizeHalfPt: bp.headerStyle === 'formal-letter' ? 26 : 32,
-        colorHex: '0F172A',
-        font: docFont,
-      }),
-      { align: headerAlign, spaceAfter: 60 }
-    )
-  );
-
-  if (bp.subtitle) {
+  // Title block (omitted on formal-letter for authentic executive correspondence opening)
+  if (bp.headerStyle !== 'formal-letter') {
     bodyParts.push(
       xmlParagraph(
-        xmlRun(bp.subtitle, {
-          italic: bp.fontMode === 'serif',
-          bold: bp.fontMode === 'sans',
-          sizeHalfPt: 21,
-          colorHex: '164E63',
+        xmlRun(bp.title, {
+          bold: true,
+          sizeHalfPt: 32,
+          colorHex: '0F172A',
           font: docFont,
         }),
         { align: headerAlign, spaceAfter: 60 }
       )
     );
-  }
 
-  if (bp.contactLine) {
-    bodyParts.push(
-      xmlParagraph(
-        xmlRun(bp.contactLine, { sizeHalfPt: 19, colorHex: '334155', font: docFont }),
-        { align: headerAlign, spaceAfter: bp.secondaryContactLine ? 40 : 120, bottomBorder: !bp.secondaryContactLine }
-      )
-    );
-  } else {
-    bodyParts.push(
-      xmlParagraph(xmlRun('', { sizeHalfPt: 8, font: docFont }), {
-        spaceAfter: 120,
-        bottomBorder: true,
-      })
-    );
-  }
+    if (bp.subtitle) {
+      bodyParts.push(
+        xmlParagraph(
+          xmlRun(bp.subtitle, {
+            italic: true,
+            sizeHalfPt: 21,
+            colorHex: '164E63',
+            font: docFont,
+          }),
+          { align: headerAlign, spaceAfter: 60 }
+        )
+      );
+    }
 
-  if (bp.secondaryContactLine) {
-    bodyParts.push(
-      xmlParagraph(
-        xmlRun(bp.secondaryContactLine, { sizeHalfPt: 18, colorHex: '475569', font: docFont }),
-        { align: headerAlign, spaceAfter: 140, bottomBorder: true }
-      )
-    );
+    if (bp.contactLine) {
+      bodyParts.push(
+        xmlParagraph(
+          xmlRun(bp.contactLine, { sizeHalfPt: 19, colorHex: '334155', font: docFont }),
+          {
+            align: headerAlign,
+            spaceAfter: bp.secondaryContactLine ? 40 : 120,
+            bottomBorder: !bp.secondaryContactLine,
+          }
+        )
+      );
+    } else {
+      bodyParts.push(
+        xmlParagraph(xmlRun('', { sizeHalfPt: 8, font: docFont }), {
+          spaceAfter: 120,
+          bottomBorder: true,
+        })
+      );
+    }
+
+    if (bp.secondaryContactLine) {
+      bodyParts.push(
+        xmlParagraph(
+          xmlRun(bp.secondaryContactLine, { sizeHalfPt: 18, colorHex: '475569', font: docFont }),
+          { align: headerAlign, spaceAfter: 140, bottomBorder: true }
+        )
+      );
+    }
   }
 
   // Body blocks
@@ -1298,12 +1538,13 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
               bold: block.bold,
               italic: block.italic,
               sizeHalfPt: 21,
-              colorHex: '1E293B',
+              colorHex: block.bold ? '0F172A' : '1E293B',
               font: docFont,
             }),
             {
               align: block.align === 'justify' ? 'both' : block.align || 'left',
-              spaceAfter: 110,
+              spaceAfter: block.underlineRule ? 140 : 110,
+              bottomBorder: Boolean(block.underlineRule),
             }
           )
         );
@@ -1321,10 +1562,19 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
 
       case 'bullet-list':
         for (const item of block.items) {
+          const isNumberedCitation = /^\[\d+\]\s/.test(item);
           bodyParts.push(
             xmlParagraph(
-              xmlRun(`•  ${item}`, { sizeHalfPt: 20, colorHex: '1E293B', font: docFont }),
-              { spaceAfter: 60, leftIndent: 360 }
+              xmlRun(isNumberedCitation ? item : `•  ${item}`, {
+                sizeHalfPt: 20,
+                colorHex: '1E293B',
+                font: docFont,
+              }),
+              {
+                spaceAfter: 60,
+                leftIndent: 360,
+                hanging: isNumberedCitation ? 360 : 240,
+              }
             )
           );
         }
@@ -1332,22 +1582,35 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
 
       case 'entries':
         for (const entry of block.items) {
-          const rightPart = entry.primaryRight ? `   (${entry.primaryRight})` : '';
           bodyParts.push(
             xmlParagraph(
               xmlRun(entry.primaryLeft, { bold: true, sizeHalfPt: 21, colorHex: '0F172A', font: docFont }) +
-                (rightPart
-                  ? xmlRun(rightPart, { sizeHalfPt: 19, colorHex: '475569', font: docFont })
+                (entry.primaryRight
+                  ? xmlTabRun(docFont) +
+                    xmlRun(entry.primaryRight, { sizeHalfPt: 19, colorHex: '475569', font: docFont })
                   : ''),
-              { spaceBefore: 80, spaceAfter: 30 }
+              { spaceBefore: 80, spaceAfter: 30, rightTabStop: Boolean(entry.primaryRight) }
             )
           );
           if (entry.secondaryLeft || entry.secondaryRight) {
-            const subLine = [entry.secondaryLeft, entry.secondaryRight].filter(Boolean).join('  —  ');
             bodyParts.push(
               xmlParagraph(
-                xmlRun(subLine, { italic: true, sizeHalfPt: 19, colorHex: '334155', font: docFont }),
-                { spaceAfter: 50 }
+                xmlRun(entry.secondaryLeft || '', {
+                  italic: true,
+                  sizeHalfPt: 19,
+                  colorHex: '334155',
+                  font: docFont,
+                }) +
+                  (entry.secondaryRight
+                    ? xmlTabRun(docFont) +
+                      xmlRun(entry.secondaryRight, {
+                        italic: true,
+                        sizeHalfPt: 19,
+                        colorHex: '334155',
+                        font: docFont,
+                      })
+                    : ''),
+                { spaceAfter: 50, rightTabStop: Boolean(entry.secondaryRight) }
               )
             );
           }
@@ -1370,6 +1633,11 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
             }
           }
         }
+        break;
+
+      case 'table':
+        bodyParts.push(xmlTable(block.columns, block.colWidthsPct, block.rows, docFont));
+        bodyParts.push(xmlParagraph(xmlRun('', { sizeHalfPt: 8, font: docFont }), { spaceAfter: 80 }));
         break;
 
       case 'address-block':
@@ -1482,11 +1750,12 @@ export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Pr
 
 export const downloadDocumentDocx = async (payload: DocumentFormPayload, customFileName?: string) => {
   const blob = await exportDocumentToDocxBlob(payload);
-  const safeBase = (customFileName || extractDocumentTitle(payload))
-    .replace(/[^a-z0-9_\- ]/gi, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .slice(0, 80) || 'Document';
+  const safeBase =
+    (customFileName || extractDocumentTitle(payload))
+      .replace(/[^a-z0-9_\- ]/gi, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .slice(0, 80) || 'Document';
   triggerBlobDownload(blob, `${safeBase}.docx`);
 };
 
@@ -1511,7 +1780,7 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
   const marginX = 64;
   const maxW = W - marginX * 2;
   const bottomLimit = H - 64;
-  const fontStack = bp.fontMode === 'sans' ? 'Arial, Helvetica, sans-serif' : 'Georgia, "Times New Roman", serif';
+  const fontStack = '"Times New Roman", Georgia, serif';
   let y = 66;
 
   const wrapLines = (text: string, widthPx: number): string[] => {
@@ -1538,59 +1807,61 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
     bp.headerStyle === 'research-title' ||
     bp.headerStyle === 'study-plan';
 
-  // Header Title
-  ctx.fillStyle = '#0f172a';
-  ctx.font = `bold ${bp.headerStyle === 'formal-letter' ? 20 : 25}px ${fontStack}`;
-  ctx.textAlign = isCentered ? 'center' : 'left';
-  const titleLines = wrapLines(bp.title, maxW);
-  for (const ln of titleLines) {
-    if (y > bottomLimit) break;
-    ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
-    y += 30;
-  }
-
-  if (bp.subtitle && y < bottomLimit) {
-    ctx.fillStyle = '#164e63';
-    ctx.font = `${bp.fontMode === 'serif' ? 'italic ' : 'bold '}15px ${fontStack}`;
-    const subLines = wrapLines(bp.subtitle, maxW);
-    for (const ln of subLines) {
+  if (bp.headerStyle !== 'formal-letter') {
+    // Header Title
+    ctx.fillStyle = '#0f172a';
+    ctx.font = `bold 25px ${fontStack}`;
+    ctx.textAlign = isCentered ? 'center' : 'left';
+    const titleLines = wrapLines(bp.title, maxW);
+    for (const ln of titleLines) {
       if (y > bottomLimit) break;
       ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
-      y += 20;
+      y += 30;
     }
-  }
 
-  if (bp.contactLine && y < bottomLimit) {
-    ctx.fillStyle = '#334155';
-    ctx.font = `13px ${fontStack}`;
-    const cLines = wrapLines(bp.contactLine, maxW);
-    for (const ln of cLines) {
-      if (y > bottomLimit) break;
-      ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
-      y += 18;
+    if (bp.subtitle && y < bottomLimit) {
+      ctx.fillStyle = '#164e63';
+      ctx.font = `italic 15px ${fontStack}`;
+      const subLines = wrapLines(bp.subtitle, maxW);
+      for (const ln of subLines) {
+        if (y > bottomLimit) break;
+        ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
+        y += 20;
+      }
     }
-  }
 
-  if (bp.secondaryContactLine && y < bottomLimit) {
-    ctx.fillStyle = '#475569';
-    ctx.font = `12.5px ${fontStack}`;
-    const c2Lines = wrapLines(bp.secondaryContactLine, maxW);
-    for (const ln of c2Lines) {
-      if (y > bottomLimit) break;
-      ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
-      y += 17;
+    if (bp.contactLine && y < bottomLimit) {
+      ctx.fillStyle = '#334155';
+      ctx.font = `13px ${fontStack}`;
+      const cLines = wrapLines(bp.contactLine, maxW);
+      for (const ln of cLines) {
+        if (y > bottomLimit) break;
+        ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
+        y += 18;
+      }
     }
-  }
 
-  // Divider rule
-  y += 6;
-  ctx.strokeStyle = '#0f172a';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(marginX, y);
-  ctx.lineTo(W - marginX, y);
-  ctx.stroke();
-  y += 24;
+    if (bp.secondaryContactLine && y < bottomLimit) {
+      ctx.fillStyle = '#475569';
+      ctx.font = `12.5px ${fontStack}`;
+      const c2Lines = wrapLines(bp.secondaryContactLine, maxW);
+      for (const ln of c2Lines) {
+        if (y > bottomLimit) break;
+        ctx.fillText(ln, isCentered ? W / 2 : marginX, y);
+        y += 17;
+      }
+    }
+
+    // Divider rule
+    y += 6;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(marginX, y);
+    ctx.lineTo(W - marginX, y);
+    ctx.stroke();
+    y += 24;
+  }
 
   ctx.textAlign = 'left';
 
@@ -1611,13 +1882,21 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
       ctx.stroke();
       y += 18;
     } else if (block.kind === 'paragraph') {
-      ctx.fillStyle = '#1e293b';
+      ctx.fillStyle = block.bold ? '#0f172a' : '#1e293b';
       ctx.font = `${block.bold ? 'bold ' : block.italic ? 'italic ' : ''}13.5px ${fontStack}`;
       const lines = wrapLines(block.text, maxW);
       for (const ln of lines) {
         if (y >= bottomLimit) break;
         ctx.fillText(ln, marginX, y);
         y += 19;
+      }
+      if (block.underlineRule && y < bottomLimit) {
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(marginX, y - 10);
+        ctx.lineTo(W - marginX, y - 10);
+        ctx.stroke();
       }
       y += 8;
     } else if (block.kind === 'labeled-line') {
@@ -1646,11 +1925,12 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
       ctx.fillStyle = '#1e293b';
       for (const item of block.items) {
         if (y >= bottomLimit) break;
-        const lines = wrapLines(item, maxW - 18);
+        const isNum = /^\[\d+\]\s/.test(item);
+        const lines = wrapLines(item, isNum ? maxW - 8 : maxW - 18);
         lines.forEach((ln, idx) => {
           if (y >= bottomLimit) return;
-          if (idx === 0) ctx.fillText('•', marginX + 4, y);
-          ctx.fillText(ln, marginX + 18, y);
+          if (!isNum && idx === 0) ctx.fillText('•', marginX + 4, y);
+          ctx.fillText(ln, isNum ? marginX + 6 : marginX + 18, y);
           y += 18;
         });
         y += 3;
@@ -1708,6 +1988,51 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
         }
         y += 8;
       }
+    } else if (block.kind === 'table') {
+      const pcts =
+        block.colWidthsPct && block.colWidthsPct.length === block.columns.length
+          ? block.colWidthsPct
+          : block.columns.map(() => 100 / block.columns.length);
+      const colWidthsPx = pcts.map((p) => (maxW * p) / 100);
+      const padX = 8;
+      const rowHeaderH = 26;
+      if (y + rowHeaderH < bottomLimit) {
+        let cx = marginX;
+        block.columns.forEach((col, idx) => {
+          ctx.fillStyle = '#f1f5f9';
+          ctx.fillRect(cx, y - 14, colWidthsPx[idx], rowHeaderH);
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.strokeRect(cx, y - 14, colWidthsPx[idx], rowHeaderH);
+          ctx.font = `bold 12px ${fontStack}`;
+          ctx.fillStyle = '#164e63';
+          ctx.fillText(col, cx + padX, y + 3);
+          cx += colWidthsPx[idx];
+        });
+        y += rowHeaderH + 4;
+      }
+      for (const row of block.rows) {
+        if (y >= bottomLimit - 14) break;
+        ctx.font = `12px ${fontStack}`;
+        const cellLines = block.columns.map((_, idx) =>
+          wrapLines((row[idx] ?? '—').trim() || '—', Math.max(40, colWidthsPx[idx] - padX * 2))
+        );
+        const maxCellLines = Math.max(1, ...cellLines.map((l) => l.length));
+        const rH = maxCellLines * 17 + 10;
+        if (y + rH > bottomLimit) break;
+        let cx = marginX;
+        block.columns.forEach((_, idx) => {
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.strokeRect(cx, y - 14, colWidthsPx[idx], rH);
+          ctx.font = `${idx === 0 ? 'bold ' : ''}12px ${fontStack}`;
+          ctx.fillStyle = idx === 0 ? '#0f172a' : '#1e293b';
+          cellLines[idx].forEach((ln, lIdx) => {
+            ctx.fillText(ln, cx + padX, y + 3 + lIdx * 17);
+          });
+          cx += colWidthsPx[idx];
+        });
+        y += rH;
+      }
+      y += 10;
     } else if (block.kind === 'address-block') {
       block.lines.forEach((ln, idx) => {
         if (y >= bottomLimit) return;
@@ -1718,22 +2043,35 @@ export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): st
       });
       y += 10;
     } else if (block.kind === 'meta-grid') {
-      const boxH = block.rows.length * 20 + 16;
+      ctx.font = `12px ${fontStack}`;
+      const valOffset = 165;
+      const wrappedRows = block.rows.map((r) => ({
+        label: r.label,
+        lines: wrapLines(r.value, maxW - valOffset - 12),
+      }));
+      const totalLns = wrappedRows.reduce((acc, r) => acc + Math.max(1, r.lines.length), 0);
+      const boxH = totalLns * 18 + wrappedRows.length * 4 + 14;
       ctx.fillStyle = '#f8fafc';
       ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 1;
       ctx.fillRect(marginX, y - 8, maxW, boxH);
       ctx.strokeRect(marginX, y - 8, maxW, boxH);
       let ry = y + 10;
-      for (const r of block.rows) {
+      for (const r of wrappedRows) {
         if (ry >= bottomLimit) break;
         ctx.font = `bold 12px ${fontStack}`;
         ctx.fillStyle = '#164e63';
         ctx.fillText(`${r.label}:`, marginX + 12, ry);
         ctx.font = `12px ${fontStack}`;
         ctx.fillStyle = '#0f172a';
-        ctx.fillText(r.value.slice(0, 72), marginX + 160, ry);
-        ry += 20;
+        const lns = r.lines.length > 0 ? r.lines : ['—'];
+        lns.forEach((ln) => {
+          if (ry < bottomLimit) {
+            ctx.fillText(ln, marginX + valOffset, ry);
+          }
+          ry += 18;
+        });
+        ry += 4;
       }
       y += boxH + 12;
     } else if (block.kind === 'signature') {

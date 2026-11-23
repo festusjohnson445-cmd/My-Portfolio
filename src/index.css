@@ -56,13 +56,6 @@
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
-
-  /* Heading alignment requirement: Center justify all primary section and page headings */
-  .section-heading-primary,
-  .page-heading-primary {
-    text-align: center;
-    justify-content: center;
-  }
 }
 
 /* Dark mode styling overrides */
@@ -262,6 +255,47 @@ html.user-dark-mode .bg-slate-950,
 html.user-dark-mode .bg-cyan-900,
 html.user-dark-mode .bg-cyan-800 {
   color: #ffffff !important;
+}
+
+/* Preserve crisp printable white A4 sheet ink and paper background in dark mode */
+html.user-dark-mode .a4-paper-sheet,
+html.user-dark-mode .a4-paper-sheet.bg-white {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .text-slate-950,
+html.user-dark-mode .a4-paper-sheet .text-slate-900,
+html.user-dark-mode .a4-paper-sheet .text-slate-800 {
+  color: #0f172a !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .text-slate-700,
+html.user-dark-mode .a4-paper-sheet .text-slate-600 {
+  color: #334155 !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .text-slate-500,
+html.user-dark-mode .a4-paper-sheet .text-slate-400 {
+  color: #64748b !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .text-cyan-950,
+html.user-dark-mode .a4-paper-sheet .text-cyan-900,
+html.user-dark-mode .a4-paper-sheet .text-cyan-800 {
+  color: #0f4c5c !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .bg-slate-50,
+html.user-dark-mode .a4-paper-sheet .bg-slate-100 {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html.user-dark-mode .a4-paper-sheet .border-slate-200,
+html.user-dark-mode .a4-paper-sheet .border-slate-300 {
+  border-color: #cbd5e1 !important;
 }
 
 html.user-dark-mode .fesline-logo-svg,

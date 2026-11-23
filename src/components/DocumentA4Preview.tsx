@@ -90,13 +90,13 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
     blueprint.headerStyle === 'research-title' ||
     blueprint.headerStyle === 'study-plan';
 
-  const paperFontClass = blueprint.fontMode === 'sans' ? 'font-sans' : 'font-serif';
+  const isFormalLetter = blueprint.headerStyle === 'formal-letter';
 
   if (!hasContent) {
     return (
       <div
         style={{ fontFamily: '"Times New Roman", Times, serif' }}
-        className={`w-full bg-white rounded-xl border border-slate-300 shadow-sm min-h-[460px] sm:min-h-[620px] flex flex-col items-center justify-center p-6 sm:p-10 text-center font-serif ${className}`}
+        className={`a4-paper-sheet w-full bg-white rounded-xl border border-slate-300 shadow-sm min-h-[460px] sm:min-h-[620px] flex flex-col items-center justify-center p-6 sm:p-10 text-center font-serif ${className}`}
       >
         <div className="w-12 h-12 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] flex items-center justify-center text-cyan-900 mb-3">
           <FileText className="w-6 h-6" />
@@ -122,56 +122,49 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
         aria-label={`${meta.label} A4 Preview`}
         style={{
           fontSize: `${Math.max(85, Math.min(115, zoomPct))}%`,
+          fontFamily: '"Times New Roman", Times, serif',
         }}
-        className={`w-full max-w-[794px] bg-white text-slate-900 border border-slate-300 shadow-md rounded-sm px-5 py-6 sm:px-11 sm:py-12 min-h-[560px] sm:min-h-[960px] select-text ${paperFontClass}`}
+        className="a4-paper-sheet w-full max-w-[794px] bg-white text-slate-900 border border-slate-300 shadow-md rounded-sm px-5 py-6 sm:px-11 sm:py-12 min-h-[560px] sm:min-h-[960px] select-text font-serif"
       >
-        {/* Document Top Header */}
-        <header
-          className={`pb-3 mb-4 border-b-2 border-slate-900 ${
-            isCentered ? 'text-center' : 'text-left'
-          }`}
-        >
-          <h1
-            className={`font-bold text-slate-950 leading-tight break-words ${
-              blueprint.headerStyle === 'formal-letter'
-                ? 'text-base sm:text-xl'
-                : 'text-lg sm:text-2xl'
+        {/* Document Top Header (omitted for formal correspondence to start cleanly with sender block) */}
+        {!isFormalLetter && (
+          <header
+            className={`pb-3 mb-4 border-b-2 border-slate-900 ${
+              isCentered ? 'text-center' : 'text-left'
             }`}
           >
-            {blueprint.title}
-          </h1>
+            <h1 className="font-bold text-slate-950 leading-tight break-words text-lg sm:text-2xl font-serif">
+              {blueprint.title}
+            </h1>
 
-          {blueprint.subtitle && (
-            <p
-              className={`mt-1 text-xs sm:text-sm text-cyan-900 ${
-                blueprint.fontMode === 'serif' ? 'italic' : 'font-semibold'
-              }`}
-            >
-              {blueprint.subtitle}
-            </p>
-          )}
+            {blueprint.subtitle && (
+              <p className="mt-1 text-xs sm:text-sm text-cyan-900 italic font-serif">
+                {blueprint.subtitle}
+              </p>
+            )}
 
-          {blueprint.contactLine && (
-            <p className="mt-1.5 text-[11px] sm:text-xs text-slate-700 break-words">
-              {blueprint.contactLine}
-            </p>
-          )}
+            {blueprint.contactLine && (
+              <p className="mt-1.5 text-[11px] sm:text-xs text-slate-700 break-words font-serif">
+                {blueprint.contactLine}
+              </p>
+            )}
 
-          {blueprint.secondaryContactLine && (
-            <p className="mt-0.5 text-[10.5px] sm:text-[11.5px] text-slate-600 break-words">
-              {blueprint.secondaryContactLine}
-            </p>
-          )}
-        </header>
+            {blueprint.secondaryContactLine && (
+              <p className="mt-0.5 text-[10.5px] sm:text-[11.5px] text-slate-600 break-words font-serif">
+                {blueprint.secondaryContactLine}
+              </p>
+            )}
+          </header>
+        )}
 
         {/* Body Blocks */}
-        <div className="space-y-3 text-[11.5px] sm:text-[13px] leading-relaxed text-slate-800">
+        <div className="space-y-3 text-[11.5px] sm:text-[13px] leading-relaxed text-slate-800 font-serif">
           {blueprint.blocks.map((block, bIdx) => {
             if (block.kind === 'section-heading') {
               return (
                 <h2
                   key={`blk-${bIdx}`}
-                  className="pt-2 pb-1 text-[11.5px] sm:text-[13.5px] font-bold tracking-wide text-slate-950 border-b border-slate-300 uppercase"
+                  className="pt-2 pb-1 text-[11.5px] sm:text-[13.5px] font-bold tracking-wide text-slate-950 border-b border-slate-300 uppercase font-serif"
                 >
                   {block.title}
                 </h2>
@@ -190,9 +183,11 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
               return (
                 <p
                   key={`blk-${bIdx}`}
-                  className={`whitespace-pre-line break-words ${alignCls} ${
+                  className={`whitespace-pre-line break-words font-serif ${alignCls} ${
                     block.bold ? 'font-bold text-slate-950' : ''
-                  } ${block.italic ? 'italic' : ''}`}
+                  } ${block.italic ? 'italic' : ''} ${
+                    block.underlineRule ? 'pb-1.5 border-b border-slate-300' : ''
+                  }`}
                 >
                   {block.text}
                 </p>
@@ -201,7 +196,7 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
 
             if (block.kind === 'labeled-line') {
               return (
-                <p key={`blk-${bIdx}`} className="text-left break-words">
+                <p key={`blk-${bIdx}`} className="text-left break-words font-serif">
                   <strong className="font-bold text-slate-950">{block.label}: </strong>
                   <span>{block.value}</span>
                 </p>
@@ -209,10 +204,21 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
             }
 
             if (block.kind === 'bullet-list') {
+              const hasCitations = block.items.some((item) => /^\[\d+\]\s/.test(item));
               return (
-                <ul key={`blk-${bIdx}`} className="list-disc pl-5 space-y-1">
+                <ul
+                  key={`blk-${bIdx}`}
+                  className={`${
+                    hasCitations ? 'list-none pl-0 space-y-1.5' : 'list-disc pl-5 space-y-1'
+                  } font-serif`}
+                >
                   {block.items.map((item, iIdx) => (
-                    <li key={`li-${bIdx}-${iIdx}`} className="text-left break-words">
+                    <li
+                      key={`li-${bIdx}-${iIdx}`}
+                      className={`text-left break-words font-serif ${
+                        /^\[\d+\]\s/.test(item) ? 'pl-5 -indent-5' : ''
+                      }`}
+                    >
                       {item}
                     </li>
                   ))}
@@ -222,7 +228,7 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
 
             if (block.kind === 'entries') {
               return (
-                <div key={`blk-${bIdx}`} className="space-y-3">
+                <div key={`blk-${bIdx}`} className="space-y-3 font-serif">
                   {block.items.map((entry, eIdx) => (
                     <div key={`ent-${bIdx}-${eIdx}`} className="space-y-0.5">
                       <div className="flex flex-wrap items-baseline justify-between gap-x-2">
@@ -263,11 +269,53 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
               );
             }
 
+            if (block.kind === 'table') {
+              return (
+                <div key={`blk-${bIdx}`} className="overflow-x-auto font-serif">
+                  <table className="w-full border-collapse border border-slate-300 text-[11px] sm:text-xs">
+                    <thead>
+                      <tr className="bg-slate-100">
+                        {block.columns.map((col, cIdx) => (
+                          <th
+                            key={`th-${bIdx}-${cIdx}`}
+                            style={
+                              block.colWidthsPct?.[cIdx]
+                                ? { width: `${block.colWidthsPct[cIdx]}%` }
+                                : undefined
+                            }
+                            className="border border-slate-300 px-2.5 py-1.5 text-left font-bold text-cyan-950"
+                          >
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {block.rows.map((row, rIdx) => (
+                        <tr key={`tr-${bIdx}-${rIdx}`}>
+                          {block.columns.map((_, cIdx) => (
+                            <td
+                              key={`td-${bIdx}-${rIdx}-${cIdx}`}
+                              className={`border border-slate-300 px-2.5 py-1.5 align-top break-words ${
+                                cIdx === 0 ? 'font-bold text-slate-950' : 'text-slate-800'
+                              }`}
+                            >
+                              {row[cIdx] || '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            }
+
             if (block.kind === 'address-block') {
               return (
                 <div
                   key={`blk-${bIdx}`}
-                  className={`space-y-0.5 ${
+                  className={`space-y-0.5 font-serif ${
                     block.align === 'right' ? 'text-right' : 'text-left'
                   }`}
                 >
@@ -287,11 +335,11 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
               return (
                 <div
                   key={`blk-${bIdx}`}
-                  className="p-3 rounded bg-slate-50 border border-slate-200 space-y-1 text-[11px] sm:text-xs"
+                  className="p-3 rounded bg-slate-50 border border-slate-200 space-y-1 text-[11px] sm:text-xs font-serif"
                 >
                   {block.rows.map((row, rIdx) => (
                     <div key={`meta-${bIdx}-${rIdx}`} className="flex flex-wrap gap-1.5">
-                      <span className="font-bold text-cyan-900 min-w-[125px] shrink-0">
+                      <span className="font-bold text-cyan-900 min-w-[130px] shrink-0">
                         {row.label}:
                       </span>
                       <span className="text-slate-900 flex-1 break-words">{row.value}</span>
@@ -303,7 +351,7 @@ export const DocumentA4Preview: React.FC<DocumentA4PreviewProps> = ({
 
             if (block.kind === 'signature') {
               return (
-                <div key={`blk-${bIdx}`} className="pt-4 space-y-2">
+                <div key={`blk-${bIdx}`} className="pt-4 space-y-2 font-serif">
                   <p>{block.signOff}</p>
                   <div className="pt-2">
                     <p className="font-bold text-slate-950">{block.name}</p>

@@ -402,6 +402,31 @@ export interface CommentStyleConfig {
   fontSize: string;
 }
 
+export type CareerStudioCategoryKey =
+  | 'international_cv'
+  | 'academic_resume'
+  | 'job_resume'
+  | 'sop'
+  | 'personal_statement'
+  | 'scholarship_letter'
+  | 'research_proposal'
+  | 'study_plan';
+
+export interface CareerStudioCategoryFormConfig {
+  enabled: boolean;
+  showGuidance: boolean;
+  allowPublish: boolean;
+  customHint?: string;
+}
+
+export interface CareerStudioConfig {
+  enabled: boolean;
+  allowVisitorAccess: boolean;
+  allowVisitorPublish: boolean;
+  showPublishedShowcase: boolean;
+  forms: Record<CareerStudioCategoryKey, CareerStudioCategoryFormConfig>;
+}
+
 export interface WebsiteAppearanceConfig {
   activeThemeId: string;
   storedThemes: StoredThemePreset[];
@@ -414,6 +439,7 @@ export interface WebsiteAppearanceConfig {
   profileSectionManager: ProfileSectionManagerConfig;
   footerConfig: FooterConfig;
   commentStyleConfig: CommentStyleConfig;
+  careerStudioConfig: CareerStudioConfig;
 }
 
 export interface WebsiteSettings {
@@ -614,6 +640,22 @@ export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
   commentStyleConfig: {
     fontFamily: '"Times New Roman", Times, serif',
     fontSize: '12px',
+  },
+  careerStudioConfig: {
+    enabled: true,
+    allowVisitorAccess: true,
+    allowVisitorPublish: true,
+    showPublishedShowcase: true,
+    forms: {
+      international_cv: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      academic_resume: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      job_resume: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      sop: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      personal_statement: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      scholarship_letter: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      research_proposal: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+      study_plan: { enabled: true, showGuidance: false, allowPublish: true, customHint: '' },
+    },
   },
 };
 
@@ -3336,6 +3378,34 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
       ...DEFAULT_APPEARANCE_CONFIG.commentStyleConfig,
       ...(src.commentStyleConfig || {}),
     },
+    careerStudioConfig: (() => {
+      const def = DEFAULT_APPEARANCE_CONFIG.careerStudioConfig;
+      const rawCs = (src.careerStudioConfig || {}) as Partial<CareerStudioConfig>;
+      const rawForms = (rawCs.forms || {}) as Record<string, Partial<CareerStudioCategoryFormConfig>>;
+      const legacyLabelToKey: Record<CareerStudioCategoryKey, string> = {
+        international_cv: 'International CV',
+        academic_resume: 'Academic Resume',
+        job_resume: 'Job Resume',
+        sop: 'Statement of Purpose',
+        personal_statement: 'Personal Statement',
+        scholarship_letter: 'Scholarship Motivation Letter',
+        research_proposal: 'Research Proposal',
+        study_plan: 'Study Plan',
+      };
+      const mergedForms = { ...def.forms };
+      (Object.keys(def.forms) as CareerStudioCategoryKey[]).forEach((key) => {
+        const legacyKey = legacyLabelToKey[key];
+        const saved = rawForms[key] || rawForms[legacyKey] || {};
+        mergedForms[key] = { ...def.forms[key], ...saved };
+      });
+      return {
+        enabled: rawCs.enabled ?? def.enabled,
+        allowVisitorAccess: rawCs.allowVisitorAccess ?? def.allowVisitorAccess,
+        allowVisitorPublish: rawCs.allowVisitorPublish ?? def.allowVisitorPublish,
+        showPublishedShowcase: rawCs.showPublishedShowcase ?? def.showPublishedShowcase,
+        forms: mergedForms,
+      };
+    })(),
   };
 }
 

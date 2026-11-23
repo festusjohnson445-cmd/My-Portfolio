@@ -343,13 +343,14 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
             <div className="flex flex-col items-center justify-center p-2 bg-slate-50 rounded-lg border border-slate-150">
               <div className="relative group mb-2 shrink-0">
                 {/* Compact circle */}
-                <div className="w-13 h-14 rounded-full overflow-hidden border border-slate-200 shadow-xs bg-slate-200 flex items-center justify-center">
+                <div className="w-14 h-14 rounded-full overflow-hidden border border-slate-200 shadow-xs bg-slate-200 flex items-center justify-center">
                   {avatarUrl ? (
                     <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
-                  ) : null}
-                  <div className={`w-full h-full ${avatarColor} text-white font-bold text-lg flex items-center justify-center`}>
-                    {initialLetter}
-                  </div>
+                  ) : (
+                    <div className={`w-full h-full ${avatarColor} text-white font-bold text-lg flex items-center justify-center`}>
+                      {initialLetter}
+                    </div>
+                  )}
                 </div>
 
                 <button
@@ -417,7 +418,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
               <input
                 type="text"
                 required
-                placeholder="e.g. David Miller"
+                placeholder="Enter your name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full px-2.5 py-1.5 rounded border border-slate-300 text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#243346] text-[11px] font-sans"
@@ -431,7 +432,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="e.g. Tesla Autopilot Team, Hiring Manager"
+                placeholder="e.g. Hiring Manager, Engineering Lead"
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
                 className="w-full px-2.5 py-1.5 rounded border border-slate-300 text-slate-900 focus:outline-none focus:ring-1 focus:ring-[#243346] text-[11px] font-sans"

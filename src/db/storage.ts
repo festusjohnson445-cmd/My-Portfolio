@@ -6,7 +6,6 @@ import {
   deletedDocuments,
   conversations,
   deletedConversations,
-  learningSessions,
 } from './schema.ts';
 import { eq, desc } from 'drizzle-orm';
 
@@ -59,7 +58,6 @@ const memoryDocuments = new Map<string, any>();
 const memoryDeletedDocs = new Set<string>();
 const memoryConversations = new Map<string, any>();
 const memoryDeletedConvs = new Set<string>();
-const memoryLearningSessions = new Map<string, any>();
 
 // ----------------------------------------------------
 // DEDICATED PROFILE PICTURE CLOUD DATABASE STORAGE
@@ -725,86 +723,4 @@ export async function deleteMessageFromDb(convId: string, msgId: string) {
   return true;
 }
 
-// ----------------------------------------------------
-// LEARNING SESSIONS
-// ----------------------------------------------------
-export async function getLearningSessionsFromDb() {
-  try {
-    const rows = await withDbRetry(async () => {
-      return await db.select().from(learningSessions).orderBy(desc(learningSessions.createdAt));
-    }, 2);
-    if (rows && rows.length > 0) {
-      for (const s of rows) memoryLearningSessions.set(s.id, s);
-      return rows;
-    }
-  } catch {}
-  return Array.from(memoryLearningSessions.values());
-}
 
-export async function getLearningSessionByIdFromDb(id: string) {
-  try {
-    const fromDb = await withDbRetry(async () => {
-      const rows = await db.select().from(learningSessions).where(eq(learningSessions.id, id)).limit(1);
-      return rows[0] || null;
-    }, 2);
-    if (fromDb) {
-      memoryLearningSessions.set(id, fromDb);
-      return fromDb;
-    }
-  } catch {}
-  return memoryLearningSessions.get(id) || null;
-}
-
-export async function saveLearningSessionToDb(sessionData: any, videoBase64?: string, mimeType = 'video/webm') {
-  const sessionId = sessionData.id || `session-${Date.now()}`;
-  let videoUrl = sessionData.videoUrl || '';
-  let hasRecordedVideo = Boolean(sessionData.hasRecordedVideo);
-
-  if (videoBase64) {
-    videoUrl = `/api/learning/videos/${sessionId}`;
-    hasRecordedVideo = true;
-  }
-
-  const record = {
-    id: sessionId,
-    title: sessionData.title || 'Untitled Session',
-    description: sessionData.description || '',
-    category: sessionData.category || 'General',
-    duration: sessionData.duration || '00:00',
-    durationSeconds: sessionData.durationSeconds || 0,
-    videoUrl: videoUrl,
-    videoData: videoBase64 || '',
-    hasRecordedVideo: hasRecordedVideo,
-    sessionData: sessionData,
-    updatedAt: new Date(),
-  };
-
-  memoryLearningSessions.set(sessionId, record);
-
-  try {
-    const inserted = await withDbRetry(async () => {
-      const rows = await db
-        .insert(learningSessions)
-        .values(record)
-        .onConflictDoUpdate({
-          target: learningSessions.id,
-          set: record,
-        })
-        .returning();
-      return rows[0];
-    }, 2);
-    return inserted || record;
-  } catch {
-    return record;
-  }
-}
-
-export async function deleteLearningSessionFromDb(id: string) {
-  memoryLearningSessions.delete(id);
-  try {
-    await withDbRetry(async () => {
-      await db.delete(learningSessions).where(eq(learningSessions.id, id));
-    }, 2);
-  } catch {}
-  return true;
-}

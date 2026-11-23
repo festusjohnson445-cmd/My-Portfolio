@@ -226,7 +226,7 @@ const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => 
   if (richHtml !== null) {
     return (
       <div
-        className="fesline-rich-article space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:list-inside [&_ul]:space-y-1 [&_ul]:pl-2 [&_ol]:list-decimal [&_ol]:list-inside [&_ol]:space-y-1 [&_ol]:pl-2 [&_blockquote]:border-l-4 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline"
+        className="fesline-rich-article max-w-full overflow-x-hidden space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:list-inside [&_ul]:space-y-1 [&_ul]:pl-2 [&_ol]:list-decimal [&_ol]:list-inside [&_ol]:space-y-1 [&_ol]:pl-2 [&_blockquote]:border-l-4 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline [&_table]:w-full [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
         dangerouslySetInnerHTML={{ __html: richHtml }}
       />
     );
@@ -726,10 +726,36 @@ export const ArticlesView: React.FC = () => {
 
         {/* Article Body Container */}
         <article className="w-full bg-white border border-[#b8c6d4] rounded-2xl p-3.5 sm:p-5 shadow-xs space-y-3.5">
-          <header className="text-center border-b border-slate-200 pb-3">
-            <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center">
+          <header className="text-center border-b border-slate-200 pb-3.5 space-y-2">
+            <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center leading-snug">
               {selectedArticle.title}
             </h1>
+            {selectedArticle.summary && (
+              <p className="text-xs sm:text-sm text-slate-600 max-w-3xl mx-auto leading-relaxed">
+                {selectedArticle.summary}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-600 pt-0.5">
+              <span className="px-2.5 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold">
+                {selectedArticle.category}
+              </span>
+              {selectedArticle.authorName && !/^chief\s*admin$/i.test(selectedArticle.authorName.trim()) && (
+                <>
+                  <span className="text-slate-300">·</span>
+                  <span className="font-semibold text-slate-800">By: {selectedArticle.authorName}</span>
+                </>
+              )}
+              <span className="text-slate-300">·</span>
+              <span className="inline-flex items-center gap-1 text-slate-600">
+                <Clock className="w-3 h-3 text-cyan-800" />
+                <span>{selectedArticle.readingTime}</span>
+              </span>
+              <span className="text-slate-300">·</span>
+              <LiveRelativeTime
+                date={selectedArticle.publishedAt || selectedArticle.createdAt}
+                className="text-[11px] text-slate-500 font-medium"
+              />
+            </div>
           </header>
 
           {/* Flexible Visual Hero: Rectangular Full-Fit Media + Top-Right Inscription Overlay */}
@@ -1614,10 +1640,10 @@ export const ArticlesView: React.FC = () => {
                     ) : null}
                     <div className={`${padClass} space-y-2`}>
                       <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
-                        <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                        <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
                           {art.category}
                         </span>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                           {art.status !== 'published' && (
                             <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
                               {art.status}
@@ -1625,7 +1651,11 @@ export const ArticlesView: React.FC = () => {
                           )}
                         </div>
                       </div>
-                      <h3 className="text-sm font-bold text-slate-950 text-center leading-snug">
+                      <h3
+                        className={`text-sm font-bold text-slate-950 leading-snug line-clamp-2 ${
+                          innerLayout.cardTextAlign === 'left' ? 'text-left' : 'text-center'
+                        }`}
+                      >
                         {art.title}
                       </h3>
                       <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${summaryAlignClass}`}>
@@ -1634,46 +1664,58 @@ export const ArticlesView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="px-3.5 pb-2.5 pt-2 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
+                  <div className="px-3.5 pb-2.5 pt-2 bg-slate-50/70 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-semibold text-slate-700">
-                        By: {art.authorName}
-                      </span>
+                      {art.authorName && !/^chief\s*admin$/i.test(art.authorName.trim()) ? (
+                        <span className="truncate font-semibold text-slate-700">
+                          By: {art.authorName}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-slate-600 font-medium">
+                          <Clock className="w-3 h-3 text-cyan-800" />
+                          <span>{art.readingTime}</span>
+                        </span>
+                      )}
                       <LiveRelativeTime
                         date={art.publishedAt || art.createdAt}
-                        className="text-[9px] text-slate-500 shrink-0"
+                        className="text-[9.5px] text-slate-500 shrink-0"
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-2 pt-0.5">
-                      <span className="inline-flex items-center gap-1 shrink-0 text-slate-600">
-                        <Clock className="w-3 h-3" />
-                        <span>{art.readingTime}</span>
-                      </span>
-                      <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-slate-200/70">
+                      <div className="flex items-center gap-2 text-slate-600 font-semibold">
+                        {art.authorName && !/^chief\s*admin$/i.test(art.authorName.trim()) && (
+                          <>
+                            <span className="inline-flex items-center gap-1 shrink-0">
+                              <Clock className="w-3 h-3 text-cyan-800" />
+                              <span>{art.readingTime}</span>
+                            </span>
+                            <span className="text-slate-300">·</span>
+                          </>
+                        )}
                         <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 text-[10px] font-semibold tabular-nums"
+                          className="inline-flex items-center gap-1 tabular-nums"
                           title="Real-time views"
                         >
                           <Eye className="w-3 h-3 text-cyan-800" />
                           <span>{art.viewsCount || 0}</span>
                         </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleLike(art);
-                          }}
-                          aria-label={isLiked ? 'Unlike article' : 'Like article'}
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
-                            isLiked
-                              ? 'bg-rose-50 border-rose-300 text-rose-700'
-                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
-                          }`}
-                        >
-                          <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
-                          <span className="tabular-nums">{art.likesCount || 0}</span>
-                        </button>
                       </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleLike(art);
+                        }}
+                        aria-label={isLiked ? 'Unlike article' : 'Like article'}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
+                          isLiked
+                            ? 'bg-rose-50 border-rose-300 text-rose-700'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
+                        }`}
+                      >
+                        <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                        <span className="tabular-nums">{art.likesCount || 0}</span>
+                      </button>
                     </div>
                   </div>
                 </article>

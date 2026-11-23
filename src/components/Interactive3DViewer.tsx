@@ -314,6 +314,7 @@ export const Interactive3DViewer: React.FC<Interactive3DViewerProps> = ({
     if (!partsListRef.current) return;
 
     partsListRef.current.forEach((part, idx) => {
+      const prevMat = part.mesh.material;
       if (renderMode === 'solid') {
         part.mesh.material = new THREE.MeshStandardMaterial({
           color: idx % 2 === 0 ? 0x94a3b8 : 0x38bdf8,
@@ -321,19 +322,16 @@ export const Interactive3DViewer: React.FC<Interactive3DViewerProps> = ({
           roughness: 0.22,
           wireframe: false,
         });
-      } else if (renderMode === 'wireframe') {
+      } else {
         part.mesh.material = new THREE.MeshStandardMaterial({
           color: 0x38bdf8,
           wireframe: true,
         });
-      } else if (renderMode === 'fea') {
-        const stressColors = [0x1d4ed8, 0x06b6d4, 0x10b981, 0xf59e0b, 0xef4444];
-        part.mesh.material = new THREE.MeshStandardMaterial({
-          color: stressColors[idx % stressColors.length],
-          metalness: 0.3,
-          roughness: 0.5,
-          wireframe: false,
-        });
+      }
+      if (Array.isArray(prevMat)) {
+        prevMat.forEach((m) => m.dispose());
+      } else if (prevMat) {
+        prevMat.dispose();
       }
     });
   }, [renderMode]);
@@ -398,7 +396,17 @@ export const Interactive3DViewer: React.FC<Interactive3DViewerProps> = ({
       <div
         ref={containerRef}
         className="w-full h-full cursor-grab active:cursor-grabbing relative flex-1 touch-none"
-      />
+      >
+        {!webGlSupported && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-[#0c1421] text-slate-300 space-y-2">
+            <Cpu className="w-7 h-7 text-cyan-400" />
+            <p className="text-sm font-semibold text-white">3D WebGL Preview Unavailable</p>
+            <p className="text-xs text-slate-400 max-w-sm">
+              Enable hardware acceleration or WebGL in your browser to inspect this interactive CAD assembly.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Bottom Floating Control Bar */}
       <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-3 pointer-events-none">

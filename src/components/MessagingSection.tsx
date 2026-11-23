@@ -93,7 +93,7 @@ export interface Conversation {
   id: string;
   visitorId?: string;
   defaultLabel: string; // e.g. "Messenger 1"
-  customName?: string;  // e.g. "David Miller (Optomechanics Lead)"
+  customName?: string;  // e.g. "Lead Recruiter (Hardware Engineering)"
   visitorName?: string; // Visitor's custom display name
   roleOrCompany?: string;
   avatarColor?: string;

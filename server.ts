@@ -8,7 +8,6 @@ import { promisify } from 'util';
 import compression from 'compression';
 import crypto from 'crypto';
 import multer from 'multer';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   getGlobalProfileFromDb,
   saveGlobalProfileToDb,
@@ -28,10 +27,6 @@ import {
   deleteMessageFromDb,
   updateMessageInDb,
   getDeletedConversationIdsFromDb,
-  getLearningSessionsFromDb,
-  getLearningSessionByIdFromDb,
-  saveLearningSessionToDb,
-  deleteLearningSessionFromDb,
 } from './src/db/storage.ts';
 
 const app = express();
@@ -63,23 +58,11 @@ app.use(compression({
   }
 }));
 
-// Initialize Google Gen AI with server-side API Key & 120s timeout
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-    timeout: 120000,
-  },
-});
-
 // Set 300MB payload limit to handle large PDF books, complex technical drawings, and 3D CAD models
 app.use(express.json({ limit: '300mb' }));
 app.use(express.urlencoded({ extended: true, limit: '300mb' }));
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
-const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
 // Ensure local cache directories exist (guarded for read-only serverless environments like Vercel)
@@ -87,28 +70,11 @@ try {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!fs.existsSync(RECORDINGS_DIR)) {
-    fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
-  }
   if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   }
 } catch {
   // Silent fallback on read-only serverless filesystems
-}
-
-// Clean error message helper to parse stringified JSON error objects from Gemini SDK
-function cleanErrorMessage(err: any): string {
-  let msg = err?.message || 'An error occurred';
-  if (typeof msg === 'string' && msg.trim().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(msg);
-      if (parsed?.error?.message) {
-        return parsed.error.message;
-      }
-    } catch {}
-  }
-  return msg;
 }
 
 // Helper to determine mime type by extension
@@ -834,322 +800,7 @@ app.post('/api/documents/:id/download', async (req, res) => {
   }
 });
 
-// =================================================================
-// 5. TRAINING & LEARNING SESSIONS (CLOUDSQL PERSISTED)
-// =================================================================
 
-// Learning: Get all teaching / training sessions
-app.get('/api/learning/sessions', async (_req, res) => {
-  try {
-    const sessions = await getLearningSessionsFromDb();
-    res.json({ success: true, sessions });
-  } catch (err: any) {
-    console.error('Error fetching learning sessions:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch sessions' });
-  }
-});
-
-// Learning: Save & upload a teaching session (with optional video base64)
-app.post('/api/learning/sessions', async (req, res) => {
-  try {
-    const { sessionData, videoBase64, mimeType = 'video/webm' } = req.body;
-    if (!sessionData || !sessionData.title) {
-      return res.status(400).json({ success: false, message: 'Session title and metadata are required.' });
-    }
-
-    const saved = await saveLearningSessionToDb(sessionData, videoBase64, mimeType);
-    res.json({ success: true, session: saved });
-  } catch (err: any) {
-    console.error('Error saving learning session:', err);
-    res.status(500).json({ success: false, message: err?.message || 'Failed to save training session.' });
-  }
-});
-
-// Learning: Stream / serve recorded video with HTTP 206 Partial Content
-app.get('/api/learning/videos/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const session = await getLearningSessionByIdFromDb(id);
-
-    if (session && session.videoData && session.videoData.length > 50) {
-      const buffer = Buffer.from(session.videoData, 'base64');
-      res.setHeader('Content-Type', 'video/webm');
-      res.setHeader('Content-Length', buffer.length);
-      return res.send(buffer);
-    }
-
-    const webmPath = path.join(RECORDINGS_DIR, `${id}.webm`);
-    const mp4Path = path.join(RECORDINGS_DIR, `${id}.mp4`);
-    let videoPath = '';
-    let contentType = 'video/webm';
-
-    if (fs.existsSync(webmPath)) {
-      videoPath = webmPath;
-      contentType = 'video/webm';
-    } else if (fs.existsSync(mp4Path)) {
-      videoPath = mp4Path;
-      contentType = 'video/mp4';
-    } else {
-      return res.status(404).send('Video recording not found');
-    }
-
-    const stat = fs.statSync(videoPath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = end - start + 1;
-      const file = fs.createReadStream(videoPath, { start, end });
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': contentType,
-      };
-      res.writeHead(206, head);
-      file.pipe(res);
-    } else {
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': contentType,
-      };
-      res.writeHead(200, head);
-      fs.createReadStream(videoPath).pipe(res);
-    }
-  } catch (err: any) {
-    console.error('Error streaming video:', err);
-    res.status(500).send('Error streaming video');
-  }
-});
-
-// Learning: Delete a recorded session
-app.delete('/api/learning/sessions/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await deleteLearningSessionFromDb(id);
-    const updated = await getLearningSessionsFromDb();
-
-    const webmPath = path.join(RECORDINGS_DIR, `${id}.webm`);
-    const mp4Path = path.join(RECORDINGS_DIR, `${id}.mp4`);
-    if (fs.existsSync(webmPath)) {
-      try { fs.unlinkSync(webmPath); } catch {}
-    }
-    if (fs.existsSync(mp4Path)) {
-      try { fs.unlinkSync(mp4Path); } catch {}
-    }
-
-    res.json({ success: true, sessions: updated });
-  } catch (err: any) {
-    console.error('Error deleting session:', err);
-    res.status(500).json({ success: false, message: err?.message || 'Failed to delete session' });
-  }
-});
-
-// Helper to generate a structured storyboard when remote AI is unavailable or timing out
-function generateFallbackStoryboard(prompt: string, category: string = 'Mechanical Engineering') {
-  const cleanPrompt = (prompt || 'Mechanical Engineering Fundamentals').trim();
-  const title = cleanPrompt.length > 50 ? `${cleanPrompt.slice(0, 48)}...` : cleanPrompt;
-  return {
-    title: `Masterclass: ${title.charAt(0).toUpperCase() + title.slice(1)}`,
-    description: `A comprehensive masterclass on ${cleanPrompt}, breaking down foundational mechanics, real-world constraints, and practical design solutions.`,
-    category: category || 'Mechanical Engineering',
-    duration: '03:45',
-    durationSeconds: 225,
-    scenes: [
-      {
-        sceneNumber: 1,
-        title: 'Core Principles & Problem Definition',
-        durationSeconds: 45,
-        narration: `Welcome to this technical session. Today we are exploring ${cleanPrompt}. We start from first principles to understand the core physics, boundary conditions, and design objectives.`,
-        visualType: 'blueprint',
-        visualElements: [
-          'First-Principles Problem Formulation',
-          'Free-Body Diagram & Force Vectors',
-          'Boundary Conditions & Constraints',
-          'Key Governing Equations',
-        ],
-        keyTakeaway: 'Always establish clear boundary conditions and governing physics before beginning CAD geometry.',
-      },
-      {
-        sceneNumber: 2,
-        title: '3D Geometry & Parametric Modeling',
-        durationSeconds: 50,
-        narration: `Next, we translate these requirements into 3D CAD parametric features. We pay close attention to stress concentrations, fillet radii, and draft angles for manufacturability.`,
-        visualType: '3d-cad',
-        visualElements: [
-          'Parametric Sketch Relations',
-          'Feature Tree & Datum Planes',
-          'Fillet Stress Relief (r/d >= 0.15)',
-          'DFM Draft Angles & Wall Uniformity',
-        ],
-        keyTakeaway: 'Parametric modeling ensures rapid iteration when load cases or tolerances update.',
-      },
-      {
-        sceneNumber: 3,
-        title: 'Stress Analysis & FEA Simulation',
-        durationSeconds: 55,
-        narration: `Now we validate the structure using Finite Element Analysis. We inspect von Mises stress contours, factor of safety distribution, and deflection limits under maximum working loads.`,
-        visualType: 'simulation',
-        visualElements: [
-          'Tetrahedral & Hex Mesh Refinement',
-          'von Mises Stress Distribution',
-          'Factor of Safety (FoS >= 2.0)',
-          'Deflection & Elastic Strain Plots',
-        ],
-        keyTakeaway: 'FEA mesh convergence is required to verify stress results and avoid false singularities.',
-      },
-      {
-        sceneNumber: 4,
-        title: 'GD&T & Tolerance Stack-up',
-        durationSeconds: 45,
-        narration: `With structural integrity confirmed, we apply ASME Y14.5 Geometric Dimensioning and Tolerancing to control datum references, true position, and perpendicularity.`,
-        visualType: 'diagram',
-        visualElements: [
-          'Datum Reference Frame [A|B|C]',
-          'True Position (MMC / RFS)',
-          'Profile of a Surface Tolerance',
-          'Worst-Case Stack-up Calculation',
-        ],
-        keyTakeaway: 'GD&T protects functional assembly while giving manufacturing maximum allowable tolerance.',
-      },
-      {
-        sceneNumber: 5,
-        title: 'Production Verification & Quality Inspection',
-        durationSeconds: 30,
-        narration: `In closing, we establish CMM inspection protocols and First Article Inspection criteria to ensure production parts match the digital twin.`,
-        visualType: 'formula',
-        visualElements: [
-          'CMM Touch Probe Verification',
-          'First Article Inspection (FAI)',
-          'Statistical Process Control (Cpk >= 1.33)',
-          'Design Sign-off & Revision Release',
-        ],
-        keyTakeaway: 'A robust design bridges digital engineering with repeatable factory production.',
-      },
-    ],
-    keyTakeaways: [
-      `Grounded in first-principles physics and clear boundary conditions for ${cleanPrompt}.`,
-      'Parametric CAD models linked with FEA verification ensure structural reliability.',
-      'ASME Y14.5 GD&T controls ensure seamless interchangeability and high yield.',
-    ],
-    tags: [category, 'CAD Modeling', 'FEA Simulation', 'GD&T'],
-  };
-}
-
-// 10. Learning: Generate Animated Video from Prompts/Descriptions
-app.post('/api/learning/generate-animation', async (req, res) => {
-  try {
-    const { prompt, category = 'Mechanical Engineering', instructor = 'Festus, Olorunsogo Johnson' } = req.body;
-    if (!prompt || !prompt.trim()) {
-      return res.status(400).json({ success: false, message: 'Please provide prompt descriptions for the animated video.' });
-    }
-
-    const systemPrompt = `You are an expert AI animated educational video producer and engineering instructor.
-Generate a structured storyboard and script for an animated learning video based on the user's prompt/descriptions.
-The output must be a valid JSON object matching the requested schema with:
-1. title: Catchy, professional title.
-2. description: Summary of the animated learning video.
-3. category: Engineering category (e.g. Mechanical Engineering, CAD & 3D Modeling, GD&T & Tolerance, FEA Simulation, Manufacturing & CNC).
-4. duration: Estimated duration string e.g. "03:30".
-5. durationSeconds: Total seconds integer e.g. 210.
-6. scenes: Array of 4 to 6 scenes. Each scene must contain:
-   - sceneNumber: integer
-   - title: scene title
-   - durationSeconds: integer
-   - narration: exact voiceover / narration script for this scene
-   - visualType: one of ['blueprint', '3d-cad', 'formula', 'diagram', 'simulation']
-   - visualElements: array of 3 to 4 key visual text bullets or formula highlights to display in the animated canvas
-   - keyTakeaway: single sentence core takeaway
-7. keyTakeaways: array of 3 major takeaways for the video.
-8. tags: array of 4 relevant keyword tags.`;
-
-    const schemaConfig = {
-      type: Type.OBJECT,
-      properties: {
-        title: { type: Type.STRING },
-        description: { type: Type.STRING },
-        category: { type: Type.STRING },
-        duration: { type: Type.STRING },
-        durationSeconds: { type: Type.INTEGER },
-        scenes: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              sceneNumber: { type: Type.INTEGER },
-              title: { type: Type.STRING },
-              durationSeconds: { type: Type.INTEGER },
-              narration: { type: Type.STRING },
-              visualType: { type: Type.STRING },
-              visualElements: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              keyTakeaway: { type: Type.STRING },
-            },
-            required: ['sceneNumber', 'title', 'durationSeconds', 'narration', 'visualType', 'visualElements', 'keyTakeaway'],
-          },
-        },
-        keyTakeaways: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-        },
-        tags: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-        },
-      },
-      required: ['title', 'description', 'category', 'duration', 'durationSeconds', 'scenes', 'keyTakeaways', 'tags'],
-    };
-
-    const candidateModels = ['gemini-flash-latest'];
-    let lastError: any = null;
-    let responseText = '';
-
-    for (const modelName of candidateModels) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const configObj: any = {
-            systemInstruction: systemPrompt,
-            responseMimeType: 'application/json',
-            responseSchema: schemaConfig,
-          };
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: `User Prompt / Description: ${prompt}`,
-            config: configObj,
-          });
-
-          if (response && response.text) {
-            responseText = response.text;
-            break;
-          }
-        } catch (callErr: any) {
-          lastError = callErr;
-          console.warn(`[Learning Generator] Model ${modelName} attempt ${attempt} notice:`, cleanErrorMessage(callErr));
-          await new Promise((resolve) => setTimeout(resolve, 600));
-        }
-      }
-      if (responseText) break;
-    }
-
-    if (!responseText) {
-      console.info('[Learning Generator] Model fetch notice: using synthesized animation storyboard.');
-      const fallbackStoryboard = generateFallbackStoryboard(prompt, category);
-      return res.json({ success: true, animation: fallbackStoryboard });
-    }
-
-    const animatedData = JSON.parse(responseText);
-    res.json({ success: true, animation: animatedData });
-  } catch (err: any) {
-    console.error('Animated video generation error:', err);
-    const fallbackStoryboard = generateFallbackStoryboard(req.body?.prompt || 'Engineering Masterclass', req.body?.category);
-    res.json({ success: true, animation: fallbackStoryboard });
-  }
-});
 
 // =================================================================
 // 9. UNIFIED MEDIA OPTIMIZATION PIPELINE (SHARP AVIF & FFMPEG H.264)

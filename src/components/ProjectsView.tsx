@@ -246,27 +246,32 @@ export const ProjectsView: React.FC = () => {
         </div>
 
         {/* Project Detail Header */}
-        <div className="w-full bg-white border border-[#b8c6d4] rounded-2xl p-3.5 sm:p-5 shadow-xs space-y-3">
-          <div className="text-center space-y-1.5 border-b border-slate-200 pb-3">
+        <div className="w-full bg-white border border-[#b8c6d4] rounded-2xl p-3.5 sm:p-5 shadow-xs space-y-3.5">
+          <div className="text-center space-y-2 border-b border-slate-200 pb-3.5">
             {selectedProject.isFeatured && (
               <div className="flex items-center justify-center">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10.5px] font-bold">
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10.5px] font-bold">
                   <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
-                  <span>Featured</span>
+                  <span>Featured Project</span>
                 </span>
               </div>
             )}
-            <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center">
+            <h1 className="text-lg sm:text-2xl font-bold text-slate-950 text-center leading-snug">
               {selectedProject.title}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 max-w-4xl mx-auto leading-relaxed">
-              {selectedProject.description}
-            </p>
-            <div className="flex items-center justify-center gap-3 text-[11px] text-slate-500 pt-0.5">
-              <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-semibold">
+            {selectedProject.description && (
+              <p className="text-xs sm:text-sm text-slate-600 max-w-4xl mx-auto leading-relaxed">
+                {selectedProject.description}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-center gap-2.5 text-[11px] text-slate-600 pt-1">
+              <span className="px-2.5 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold">
                 {selectedProject.category}
               </span>
-              <span className="inline-flex items-center gap-1 text-slate-600 font-semibold">
+              <span className="text-slate-300">·</span>
+              <LiveRelativeTime date={selectedProject.createdAt} className="text-[11px] text-slate-500 font-medium" />
+              <span className="text-slate-300">·</span>
+              <span className="inline-flex items-center gap-1 text-slate-700 font-semibold" title="Real-time views">
                 <Eye className="w-3.5 h-3.5 text-cyan-800" />
                 <span className="tabular-nums">{selectedProject.viewsCount || 0}</span>
                 <span>views</span>
@@ -357,66 +362,71 @@ export const ProjectsView: React.FC = () => {
           )}
 
           {/* Overview, Objectives, Methodology, Results */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {selectedProject.overview && (
-              <div className="w-full p-3.5 rounded-xl bg-[#edf2f8]/60 border border-[#cbd5e1] space-y-1">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
-                  Overview
-                </h2>
-                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
-                  {selectedProject.overview}
-                </p>
-              </div>
-            )}
+          {(selectedProject.overview ||
+            selectedProject.objectives ||
+            selectedProject.methodology ||
+            selectedProject.results) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {selectedProject.overview && (
+                <div className="w-full p-4 rounded-xl bg-[#edf2f8]/65 border border-[#b8c6d4] shadow-2xs space-y-1.5">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-950 text-center border-b border-[#cbd5e1] pb-1.5">
+                    Overview
+                  </h2>
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
+                    {selectedProject.overview}
+                  </p>
+                </div>
+              )}
 
-            {selectedProject.objectives && (
-              <div className="w-full p-3.5 rounded-xl bg-[#edf2f8]/60 border border-[#cbd5e1] space-y-1">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
-                  Objectives
-                </h2>
-                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
-                  {selectedProject.objectives}
-                </p>
-              </div>
-            )}
+              {selectedProject.objectives && (
+                <div className="w-full p-4 rounded-xl bg-[#edf2f8]/65 border border-[#b8c6d4] shadow-2xs space-y-1.5">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-950 text-center border-b border-[#cbd5e1] pb-1.5">
+                    Objectives
+                  </h2>
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
+                    {selectedProject.objectives}
+                  </p>
+                </div>
+              )}
 
-            {selectedProject.methodology && (
-              <div className="w-full p-3.5 rounded-xl bg-[#edf2f8]/60 border border-[#cbd5e1] space-y-1">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
-                  Methodology
-                </h2>
-                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
-                  {selectedProject.methodology}
-                </p>
-              </div>
-            )}
+              {selectedProject.methodology && (
+                <div className="w-full p-4 rounded-xl bg-[#edf2f8]/65 border border-[#b8c6d4] shadow-2xs space-y-1.5">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-950 text-center border-b border-[#cbd5e1] pb-1.5">
+                    Methodology
+                  </h2>
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
+                    {selectedProject.methodology}
+                  </p>
+                </div>
+              )}
 
-            {selectedProject.results && (
-              <div className="w-full p-3.5 rounded-xl bg-[#edf2f8]/60 border border-[#cbd5e1] space-y-1">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center border-b border-slate-200 pb-1">
-                  Results &amp; Findings
-                </h2>
-                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
-                  {selectedProject.results}
-                </p>
-              </div>
-            )}
-          </div>
+              {selectedProject.results && (
+                <div className="w-full p-4 rounded-xl bg-[#edf2f8]/65 border border-[#b8c6d4] shadow-2xs space-y-1.5">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-950 text-center border-b border-[#cbd5e1] pb-1.5">
+                    Results &amp; Findings
+                  </h2>
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line text-justify">
+                    {selectedProject.results}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Specifications Table */}
           {selectedProject.specifications.length > 0 && (
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+            <div className="p-4 rounded-xl bg-slate-50 border border-[#cbd5e1] space-y-2.5">
+              <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center uppercase tracking-wider">
                 Technical Specifications
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                 {selectedProject.specifications.map((spec, idx) => (
                   <div
                     key={idx}
-                    className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-white border border-slate-200"
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white border border-slate-200 shadow-2xs"
                   >
-                    <span className="font-bold text-slate-700">{spec.label}</span>
-                    <span className="text-slate-900">{spec.value}</span>
+                    <span className="font-bold text-slate-700 shrink-0">{spec.label}</span>
+                    <span className="text-slate-950 font-medium text-right break-words">{spec.value}</span>
                   </div>
                 ))}
               </div>
@@ -779,31 +789,51 @@ export const ProjectsView: React.FC = () => {
                     </div>
                   </div>
                 ) : null}
-                <div className="p-3.5 flex-1 flex flex-col justify-between space-y-2">
-                  <div className="space-y-1">
+                <div className="p-4 flex-1 flex flex-col justify-between gap-3">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2 text-[10px]">
-                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
                         {proj.category}
                       </span>
-                      <span className="inline-flex items-center gap-0.5 text-amber-700 font-bold">
+                      <span className="inline-flex items-center gap-0.5 text-amber-700 font-bold shrink-0">
                         <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
                         <span>Featured</span>
                       </span>
                     </div>
-                    <h3 className="text-sm font-bold text-slate-950 text-center">{proj.title}</h3>
+                    <h3 className="text-sm font-bold text-slate-950 text-center leading-snug line-clamp-2">
+                      {proj.title}
+                    </h3>
                     <p className="text-[11px] text-slate-600 line-clamp-2 text-justify leading-relaxed">
                       {proj.description}
                     </p>
+                    {proj.toolsUsed.length > 0 && (
+                      <div className="flex flex-wrap items-center justify-center gap-1 pt-0.5">
+                        {proj.toolsUsed.slice(0, 3).map((tool, tIdx) => (
+                          <span
+                            key={tIdx}
+                            className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-medium text-slate-700 truncate max-w-[110px]"
+                          >
+                            {tool}
+                          </span>
+                        ))}
+                        {proj.toolsUsed.length > 3 && (
+                          <span className="text-[9.5px] text-slate-500 font-semibold">
+                            +{proj.toolsUsed.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center justify-between pt-1 text-[10px]">
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px]">
                     <div className="flex items-center gap-2.5 text-slate-500">
-                      <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
-                      <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Views">
+                      <LiveRelativeTime date={proj.createdAt} className="text-[9.5px] text-slate-500" />
+                      <span className="text-slate-300">·</span>
+                      <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Real-time views">
                         <Eye className="w-3 h-3 text-cyan-800" />
                         <span className="tabular-nums">{proj.viewsCount || 0}</span>
                       </span>
                     </div>
-                    <span className="text-cyan-800 font-semibold">View →</span>
+                    <span className="text-cyan-900 font-bold">View →</span>
                   </div>
                 </div>
               </div>
@@ -933,28 +963,61 @@ export const ProjectsView: React.FC = () => {
                   ) : null}
                   <div className={`${padClass} space-y-2`}>
                     <div className="flex items-center justify-between gap-1.5 text-[10px]">
-                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
+                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
                         {proj.category}
                       </span>
-                      {proj.status !== 'published' && (
-                        <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
-                          {proj.status}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {proj.isFeatured && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 font-bold">
+                            <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                          </span>
+                        )}
+                        {proj.status !== 'published' && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
+                            {proj.status}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <h3 className="text-sm font-bold text-slate-950 text-center leading-snug">
+                    <h3
+                      className={`text-sm font-bold text-slate-950 leading-snug line-clamp-2 ${
+                        innerLayout.cardTextAlign === 'left' ? 'text-left' : 'text-center'
+                      }`}
+                    >
                       {proj.title}
                     </h3>
                     <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${descAlignClass}`}>
                       {proj.description}
                     </p>
+                    {proj.toolsUsed.length > 0 && (
+                      <div
+                        className={`flex flex-wrap gap-1 pt-0.5 ${
+                          innerLayout.cardTextAlign === 'left' ? 'justify-start' : 'justify-center'
+                        }`}
+                      >
+                        {proj.toolsUsed.slice(0, 2).map((tool, tIdx) => (
+                          <span
+                            key={tIdx}
+                            className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-medium text-slate-700 truncate max-w-[110px]"
+                          >
+                            {tool}
+                          </span>
+                        ))}
+                        {proj.toolsUsed.length > 2 && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-semibold text-slate-500">
+                            +{proj.toolsUsed.length - 2}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                <div className="px-3.5 pb-2.5 pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <div className="flex items-center gap-2.5">
-                    <LiveRelativeTime date={proj.createdAt} className="text-[9px] text-slate-500" />
-                    <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Views">
+                <div className="px-3.5 pb-2.5 pt-2 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <div className="flex items-center gap-2">
+                    <LiveRelativeTime date={proj.createdAt} className="text-[9.5px] text-slate-500" />
+                    <span className="text-slate-300">·</span>
+                    <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Real-time views">
                       <Eye className="w-3 h-3 text-cyan-800" />
                       <span className="tabular-nums">{proj.viewsCount || 0}</span>
                     </span>
