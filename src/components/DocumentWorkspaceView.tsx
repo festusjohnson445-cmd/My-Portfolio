@@ -25,6 +25,7 @@ import {
   GeneratedDocumentRecord,
   createEmptyFormPayload,
   getCategoryMeta,
+  normalizeDocumentPayload,
   validateDocumentPayload,
 } from '../types/documentWorkspace';
 import {
@@ -187,10 +188,14 @@ export const DocumentWorkspaceView: React.FC = () => {
   };
 
   const handleClearOrDeleteOutput = async () => {
+    let deleteWarning: string | undefined;
     if (editingRecordId) {
       const existingPublished = publishedDocs.find((d) => d.id === editingRecordId);
       if (existingPublished) {
-        await deleteGeneratedDocumentRecord(existingPublished);
+        const res = await deleteGeneratedDocumentRecord(existingPublished);
+        if (!res.ok && res.error) {
+          deleteWarning = res.error;
+        }
         setPublishedDocs((prev) => prev.filter((d) => d.id !== editingRecordId));
       } else {
         removeLocalDraft(editingRecordId);
@@ -202,7 +207,11 @@ export const DocumentWorkspaceView: React.FC = () => {
     setDraftsByCat((prev) => ({ ...prev, [selectedCategory]: fresh }));
     setCommittedPreviewPayload(fresh);
     setValidationErrors([]);
-    showToast('Document output cleared and removed.', 'info');
+    if (deleteWarning) {
+      showToast(`Cleared locally, but Supabase delete reported: ${deleteWarning}`, 'error');
+    } else {
+      showToast('Document output cleared and removed.', 'info');
+    }
   };
 
   const handleSaveDraft = () => {
@@ -287,12 +296,13 @@ export const DocumentWorkspaceView: React.FC = () => {
 
   const handleLoadIntoEditor = (doc: GeneratedDocumentRecord) => {
     if (!doc.formData) return;
+    const normalized = normalizeDocumentPayload(doc.formData);
     setSelectedCategory(doc.category);
     setDraftsByCat((prev) => ({
       ...prev,
-      [doc.category]: doc.formData,
+      [doc.category]: normalized,
     }));
-    setCommittedPreviewPayload(doc.formData);
+    setCommittedPreviewPayload(normalized);
     setEditingRecordId(doc.id);
     setValidationErrors([]);
     setViewingDoc(null);
@@ -303,12 +313,16 @@ export const DocumentWorkspaceView: React.FC = () => {
   const handleDeletePublished = async (doc: GeneratedDocumentRecord) => {
     setIsDeletingId(doc.id);
     try {
-      await deleteGeneratedDocumentRecord(doc);
+      const res = await deleteGeneratedDocumentRecord(doc);
       setPublishedDocs((prev) => prev.filter((d) => d.id !== doc.id));
       if (viewingDoc?.id === doc.id) setViewingDoc(null);
       if (editingRecordId === doc.id) setEditingRecordId(undefined);
       setConfirmDeleteId(null);
-      showToast('Published document and stored files deleted.', 'info');
+      if (!res.ok && res.error) {
+        showToast(`Removed locally, but Supabase delete failed: ${res.error}`, 'error');
+      } else {
+        showToast('Published document and stored files deleted.', 'info');
+      }
     } finally {
       setIsDeletingId(null);
     }

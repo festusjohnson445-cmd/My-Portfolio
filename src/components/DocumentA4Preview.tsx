@@ -12,66 +12,84 @@ interface DocumentA4PreviewProps {
   className?: string;
 }
 
+const safeTrim = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
 const hasAnyUserInput = (payload: DocumentFormPayload): boolean => {
+  if (!payload || !payload.data) return false;
   switch (payload.category) {
     case 'international_cv':
       return Boolean(
-        payload.data.header.fullName.trim() ||
-          payload.data.header.email.trim() ||
-          payload.data.professionalSummary.trim() ||
-          payload.data.coreCompetencies.trim() ||
-          payload.data.experiences.some((e) => e.roleTitle.trim() || e.organization.trim()) ||
-          payload.data.education.some((e) => e.degree.trim() || e.institution.trim())
+        safeTrim(payload.data.header?.fullName) ||
+          safeTrim(payload.data.header?.email) ||
+          safeTrim(payload.data.professionalSummary) ||
+          safeTrim(payload.data.coreCompetencies) ||
+          safeTrim(payload.data.technicalAndDigitalSkills) ||
+          (payload.data.experiences || []).some((e) => safeTrim(e?.roleTitle) || safeTrim(e?.organization)) ||
+          (payload.data.leadershipRoles || []).some((e) => safeTrim(e?.roleTitle) || safeTrim(e?.organization)) ||
+          (payload.data.selectedProjects || []).some((p) => safeTrim(p?.name)) ||
+          (payload.data.education || []).some((e) => safeTrim(e?.degree) || safeTrim(e?.institution)) ||
+          safeTrim(payload.data.technicalTraining)
       );
     case 'academic_resume':
       return Boolean(
-        payload.data.header.fullName.trim() ||
-          payload.data.researchProfile.trim() ||
-          payload.data.education.some((e) => e.degree.trim() || e.institution.trim()) ||
-          payload.data.publications.some((p) => p.citation.trim())
+        safeTrim(payload.data.header?.fullName) ||
+          safeTrim(payload.data.researchProfile) ||
+          (payload.data.education || []).some((e) => safeTrim(e?.degree) || safeTrim(e?.institution)) ||
+          (payload.data.professionalExperience || []).some((e) => safeTrim(e?.roleTitle) || safeTrim(e?.organization)) ||
+          (payload.data.leadershipRoles || []).some((e) => safeTrim(e?.roleTitle) || safeTrim(e?.organization)) ||
+          (payload.data.selectedProjects || []).some((p) => safeTrim(p?.name)) ||
+          safeTrim(payload.data.technicalAndDigitalSkills) ||
+          safeTrim(payload.data.technicalTraining) ||
+          (payload.data.publications || []).some((p) => safeTrim(p?.citation))
       );
     case 'job_resume':
       return Boolean(
-        payload.data.header.fullName.trim() ||
-          payload.data.targetJobTitle.trim() ||
-          payload.data.professionalSummary.trim() ||
-          payload.data.workExperience.some((w) => w.roleTitle.trim() || w.organization.trim())
+        safeTrim(payload.data.header?.fullName) ||
+          safeTrim(payload.data.targetJobTitle) ||
+          safeTrim(payload.data.professionalSummary) ||
+          safeTrim(payload.data.technicalSkills) ||
+          (payload.data.workExperience || []).some((w) => safeTrim(w?.roleTitle) || safeTrim(w?.organization)) ||
+          (payload.data.leadershipRoles || []).some((l) => safeTrim(l?.roleTitle) || safeTrim(l?.organization)) ||
+          (payload.data.keyProjects || []).some((p) => safeTrim(p?.name)) ||
+          safeTrim(payload.data.technicalTraining)
       );
     case 'sop':
       return Boolean(
-        payload.data.applicantName.trim() ||
-          payload.data.targetDegreeAndProgram.trim() ||
-          payload.data.openingMotivation.trim() ||
-          payload.data.academicFoundation.trim()
+        safeTrim(payload.data.applicantName) ||
+          safeTrim(payload.data.targetDegreeAndProgram) ||
+          safeTrim(payload.data.openingMotivation) ||
+          safeTrim(payload.data.academicFoundation)
       );
     case 'personal_statement':
       return Boolean(
-        payload.data.applicantName.trim() ||
-          payload.data.targetProgramOrOpportunity.trim() ||
-          payload.data.definingStoryAndOrigin.trim() ||
-          payload.data.challengesAndResilience.trim()
+        safeTrim(payload.data.applicantName) ||
+          safeTrim(payload.data.targetProgramOrOpportunity) ||
+          safeTrim(payload.data.definingStoryAndOrigin) ||
+          safeTrim(payload.data.challengesAndResilience)
       );
     case 'scholarship_letter':
       return Boolean(
-        payload.data.applicantName.trim() ||
-          payload.data.scholarshipName.trim() ||
-          payload.data.purposeAndStanding.trim() ||
-          payload.data.motivationAndMerit.trim()
+        safeTrim(payload.data.applicantName) ||
+          safeTrim(payload.data.scholarshipName) ||
+          safeTrim(payload.data.purposeAndStanding) ||
+          safeTrim(payload.data.motivationAndMerit)
       );
     case 'research_proposal':
       return Boolean(
-        payload.data.proposalTitle.trim() ||
-          payload.data.applicantName.trim() ||
-          payload.data.abstractSummary.trim() ||
-          payload.data.problemStatement.trim()
+        safeTrim(payload.data.proposalTitle) ||
+          safeTrim(payload.data.applicantName) ||
+          safeTrim(payload.data.abstractSummary) ||
+          safeTrim(payload.data.problemStatement)
       );
     case 'study_plan':
       return Boolean(
-        payload.data.applicantName.trim() ||
-          payload.data.targetDegree.trim() ||
-          payload.data.purposeAndSpecialization.trim() ||
-          payload.data.academicBackground.trim()
+        safeTrim(payload.data.applicantName) ||
+          safeTrim(payload.data.targetDegree) ||
+          safeTrim(payload.data.purposeAndSpecialization) ||
+          safeTrim(payload.data.academicBackground)
       );
+    default:
+      return false;
   }
 };
 

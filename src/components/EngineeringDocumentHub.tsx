@@ -272,7 +272,7 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
         alt={doc.title}
         loading="lazy"
         decoding="async"
-        className="w-full h-full object-contain object-center bg-white group-hover:scale-[1.02] transition-transform duration-300"
+        className="w-full h-full object-cover object-top bg-white block group-hover:scale-[1.02] transition-transform duration-300"
       />
     );
   }
@@ -1339,88 +1339,81 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   };
 
   return (
-    <div className="w-full space-y-7 font-sans">
-      {/* 1. HERO BANNER: ACCESSORIES & ENGINEERING PORTAL (VISIBLE ONLY TO OWNER WHEN LOGGED IN) */}
+    <div className="w-full space-y-4 font-serif text-slate-900">
+      {/* Compact Centered Title Box (Matches Projects Page) */}
+      <div className="max-w-xs mx-auto px-4 py-2 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs text-center">
+        <h1 className="text-base sm:text-lg font-bold text-slate-950 tracking-tight text-center font-serif">
+          Engineering Hub
+        </h1>
+      </div>
+
+      {/* 1. COMPACT OWNER PORTAL STRIP (VISIBLE ONLY TO OWNER WHEN LOGGED IN) */}
       {isOwner && (
-        <div className="bg-white rounded-3xl border border-slate-300 p-5 sm:p-6 shadow-sm text-slate-800 relative overflow-hidden text-center animate-fade-in">
-          <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0284c7_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
-
-          <div className="relative z-10 flex flex-col items-center justify-center text-center gap-4 max-w-4xl mx-auto">
-            <div className="space-y-2.5 w-full flex flex-col items-center justify-center text-center">
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
-                  <FolderDown className="w-3 h-3 text-cyan-700" />
-                  <span>ACCESSORIES &amp; ARCHIVE</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleOpenUploadModal('general')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Upload</span>
-                  </button>
-                  <button
-                    onClick={() => handleOpenUploadModal('student')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer shadow-sm"
-                  >
-                    <GraduationCap className="w-3 h-3" />
-                    <span>Materials</span>
-                  </button>
-                  <span className="text-[8.5px] sm:text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
-                    <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
-                    <span>Owner Mode</span>
-                  </span>
-                </div>
+        <div className="bg-white rounded-2xl border border-[#b8c6d4] p-3.5 sm:p-4 shadow-2xs text-slate-800 relative overflow-hidden text-center animate-fade-in">
+          <div className="relative z-10 flex flex-col items-center justify-center text-center gap-3 max-w-4xl mx-auto">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 border border-cyan-300 text-cyan-800 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
+                <FolderDown className="w-3 h-3 text-cyan-700" />
+                <span>ACCESSORIES &amp; ARCHIVE</span>
               </div>
+              <button
+                onClick={() => handleOpenUploadModal('general')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-[10px] font-bold transition-all cursor-pointer shadow-2xs font-sans"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Upload</span>
+              </button>
+              <button
+                onClick={() => handleOpenUploadModal('student')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-[10px] font-bold transition-all cursor-pointer shadow-2xs font-sans"
+              >
+                <GraduationCap className="w-3 h-3" />
+                <span>Materials</span>
+              </button>
+              <span className="text-[9px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 font-semibold">
+                <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" />
+                <span>Owner Mode</span>
+              </span>
+            </div>
 
-              <h1 className="text-[13.5px] sm:text-[15.5px] md:text-[17.5px] font-bold font-serif tracking-tight text-slate-900 text-center max-w-2xl mx-auto">
-                Engineering Document Hub &amp; Technical Archive
-              </h1>
-              <p className="text-[9px] sm:text-[10.5px] text-slate-600 max-w-2xl mx-auto leading-relaxed text-center">
-                Centralized repository for mechanical engineering blueprints, ASME Y14.5 GD&amp;T drawings, 3D CAD models (STEP/SLDPRT), student study materials, and calculation datasets. Upload new documents or download existing archives with 1-click.
-              </p>
-
-              {/* Quick Metrics Bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1.5 w-full">
-                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOCUMENTS</span>
-                  <strong className="text-xs sm:text-sm font-bold text-slate-900 font-mono text-center">{approvedDocs.length}</strong>
-                </div>
-                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">TOTAL DOWNLOADS</span>
-                  <strong className="text-xs sm:text-sm font-bold text-cyan-700 font-mono text-center">{totalDownloads.toLocaleString()}</strong>
-                </div>
-                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">SUPPORTED FORMATS</span>
-                  <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-slate-800 block truncate font-mono text-center max-w-full" title={supportedFormatsText}>
-                    {supportedFormatsText}
-                  </strong>
-                </div>
-                <div className="p-2.5 sm:p-3 rounded-xl bg-slate-50 border border-slate-200 shadow-xs flex flex-col items-center justify-center text-center">
-                  <span className="block text-[6.5px] sm:text-[7.5px] font-mono text-slate-500 uppercase tracking-wider text-center">ACCESS LEVEL</span>
-                  <strong className="text-[7.8px] sm:text-[8.5px] font-bold text-emerald-700 flex items-center justify-center gap-1 font-mono text-center">
-                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                    <span>Public 1-Click</span>
-                  </strong>
-                </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full">
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col items-center justify-center text-center">
+                <span className="block text-[7.5px] font-mono text-slate-500 uppercase tracking-wider">TOTAL DOCUMENTS</span>
+                <strong className="text-xs font-bold text-slate-900 font-mono">{approvedDocs.length}</strong>
+              </div>
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col items-center justify-center text-center">
+                <span className="block text-[7.5px] font-mono text-slate-500 uppercase tracking-wider">TOTAL DOWNLOADS</span>
+                <strong className="text-xs font-bold text-cyan-700 font-mono">{totalDownloads.toLocaleString()}</strong>
+              </div>
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col items-center justify-center text-center">
+                <span className="block text-[7.5px] font-mono text-slate-500 uppercase tracking-wider">SUPPORTED FORMATS</span>
+                <strong className="text-[8.5px] font-bold text-slate-800 block truncate font-mono max-w-full" title={supportedFormatsText}>
+                  {supportedFormatsText}
+                </strong>
+              </div>
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col items-center justify-center text-center">
+                <span className="block text-[7.5px] font-mono text-slate-500 uppercase tracking-wider">ACCESS LEVEL</span>
+                <strong className="text-[8.5px] font-bold text-emerald-700 flex items-center justify-center gap-1 font-mono">
+                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                  <span>Public 1-Click</span>
+                </strong>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* 2. SEARCH, CATEGORY FILTER & SORT CONTROLS */}
-      <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-300 shadow-sm space-y-2.5">
+      {/* 2. TOOLBAR: SEARCH, CATEGORY & SORT CONTROLS (Styled like Projects Page) */}
+      <div className="p-2.5 sm:p-3 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] shadow-2xs space-y-2 text-xs font-serif">
         {/* Row 1: Search Box */}
         <div className="relative w-full">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by title, filename, institution, department, uploader, or tag..."
-            className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-[11.5px] sm:text-[12.5px] focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:bg-white transition-all font-sans"
+            placeholder="Search documents, blueprints, study materials..."
+            className="w-full pl-8 pr-8 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-700 transition-all"
           />
           {searchQuery && (
             <button
@@ -1433,36 +1426,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           )}
         </div>
 
-        {/* Row 2: Single-Row Flex Filter, Category & Post Action */}
-        <div className="pt-2 border-t border-slate-200 flex flex-nowrap items-center justify-between gap-1.5 sm:gap-2 min-w-0 w-full">
-          <div className="flex items-center gap-1 min-w-0 shrink-0">
-            <label htmlFor="hub-sort-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden sm:inline">
-              Filter:
-            </label>
-            <select
-              id="hub-sort-filter"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              aria-label="Filter documents"
-              className="w-[74px] sm:w-[118px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
-            >
-              <option value="newest">Newest</option>
-              <option value="downloads">Most Downloaded</option>
-              <option value="title">A-Z</option>
-              <option value="size">Largest</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1 min-w-0 flex-1 justify-center sm:justify-start">
-            <label htmlFor="hub-category-filter" className="text-[10px] font-sans text-slate-500 whitespace-nowrap hidden sm:inline shrink-0">
-              Category:
-            </label>
+        {/* Row 2: Single-Row Flex Filter, Category & Upload/Post Action */}
+        <div className="flex flex-nowrap items-center justify-between gap-1.5 sm:gap-2 min-w-0 w-full">
+          <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <select
               id="hub-category-filter"
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
               aria-label="Category filter"
-              className="w-full min-w-0 max-w-[155px] sm:max-w-[210px] px-1.5 py-1 rounded-md bg-slate-50 border border-slate-300 text-slate-700 text-[10px] font-sans font-normal focus:outline-none focus:ring-1 focus:ring-cyan-600 cursor-pointer truncate"
+              className="flex-1 sm:flex-initial min-w-0 max-w-[155px] sm:max-w-[200px] px-2 py-1 rounded-lg bg-white border border-slate-300 text-slate-800 text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-cyan-700 cursor-pointer truncate"
             >
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
@@ -1470,7 +1442,21 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 </option>
               ))}
             </select>
-            <span className="text-[9.5px] text-cyan-800 font-sans font-medium whitespace-nowrap shrink-0">
+
+            <select
+              id="hub-sort-filter"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              aria-label="Filter documents"
+              className="flex-1 sm:flex-initial min-w-0 max-w-[105px] sm:max-w-[135px] px-2 py-1 rounded-lg bg-white border border-slate-300 text-slate-800 text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-cyan-700 cursor-pointer truncate"
+            >
+              <option value="newest">Newest</option>
+              <option value="downloads">Most Downloaded</option>
+              <option value="title">A-Z</option>
+              <option value="size">Largest</option>
+            </select>
+
+            <span className="text-[10px] text-cyan-900 font-semibold whitespace-nowrap shrink-0">
               ({filteredDocs.length})
             </span>
           </div>
@@ -1478,54 +1464,81 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           <button
             type="button"
             onClick={() => handleOpenUploadModal(isOwner ? 'general' : 'student')}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 hover:bg-cyan-900 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap shadow-2xs"
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold transition-colors cursor-pointer shrink-0 whitespace-nowrap shadow-2xs"
           >
             <Plus className="w-3 h-3 shrink-0" />
             <span>{isOwner ? 'Upload' : 'Post'}</span>
           </button>
         </div>
+
+        {/* Category Quick Pills Bar (Organized Catalog Strip) */}
+        {categories.length > 1 && (
+          <div className="pt-1.5 border-t border-[#b8c6d4]/70 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            {categories.map((cat) => {
+              const isSelected = selectedCategory === cat;
+              const count =
+                cat === 'All'
+                  ? approvedDocs.length
+                  : approvedDocs.filter((d) => d.category === cat).length;
+              return (
+                <button
+                  key={`tab-${cat}`}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-2 py-0.5 rounded-md border text-[10.5px] font-semibold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                    isSelected
+                      ? 'bg-cyan-900 border-cyan-900 text-white shadow-2xs'
+                      : 'bg-white border-slate-300 text-slate-700 hover:border-cyan-700 hover:text-cyan-900'
+                  }`}
+                >
+                  {cat === 'All' ? 'All' : cat} ({count})
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* 4. DOCUMENTS DIRECTORY GRID */}
-      <div className="space-y-4">
+      {/* 3. DOCUMENTS DIRECTORY GRID (3, 4, or 5 Cards per Row on Desktop) */}
+      <div>
         {isLoadingDocs && documents.length === 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {[1, 2, 3].map((s) => (
-              <div key={`doc-skel-${s}`} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 animate-pulse">
-                <div className="w-full h-40 bg-slate-100 rounded-xl" />
-                <div className="h-4 bg-slate-200 rounded w-3/4" />
-                <div className="h-3 bg-slate-100 rounded w-1/2" />
-                <div className="h-8 bg-slate-100 rounded-xl w-full" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+            {[1, 2, 3, 4, 5].map((s) => (
+              <div key={`doc-skel-${s}`} className="bg-white rounded-xl border border-[#b8c6d4] p-3 space-y-2.5 animate-pulse">
+                <div className="w-full aspect-[4/4.2] bg-slate-100 rounded-lg" />
+                <div className="h-3.5 bg-slate-200 rounded w-3/4 mx-auto" />
+                <div className="h-3 bg-slate-100 rounded w-1/2 mx-auto" />
+                <div className="h-7 bg-slate-100 rounded-lg w-full" />
               </div>
             ))}
           </div>
         ) : filteredDocs.length === 0 ? (
-          <div className="p-12 text-center rounded-3xl bg-white border border-slate-300 text-slate-700 space-y-4 shadow-sm">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-700 mx-auto">
-              <FolderDown className="w-7 h-7 text-cyan-700" />
+          <div className="p-8 sm:p-10 text-center rounded-xl bg-white/90 border border-dashed border-[#b8c6d4] text-slate-700 space-y-3 shadow-2xs">
+            <div className="w-12 h-12 rounded-xl bg-[#edf2f8] border border-[#b8c6d4] flex items-center justify-center text-cyan-800 mx-auto">
+              <FolderDown className="w-6 h-6 text-cyan-800" />
             </div>
             <div className="space-y-1">
-              <h3 className="text-xs sm:text-sm font-bold text-slate-900 font-serif">
+              <h3 className="text-sm font-bold text-slate-900 font-serif">
                 {searchQuery ? `No documents found matching "${searchQuery}"` : 'No Documents In This Category Yet'}
               </h3>
-              <p className="text-[9px] sm:text-[9.5px] text-slate-500 max-w-md mx-auto leading-relaxed">
+              <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
                 {searchQuery
                   ? 'Try adjusting your search terms or selecting "All" categories.'
-                  : 'Upload technical drawings, Christian & inspirational books, 3D CAD models, or engineering blueprints.'}
+                  : 'Upload technical drawings, books, 3D CAD models, or study materials.'}
               </p>
             </div>
             {isOwner ? (
               <button
                 onClick={() => handleOpenUploadModal('general')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-bold text-xs shadow-2xs transition-all cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>Upload Document Now</span>
+                <span>Upload</span>
               </button>
             ) : (
               <button
                 onClick={() => handleOpenUploadModal('student')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white font-bold text-[9.5px] sm:text-[10.5px] shadow-sm transition-all cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-bold text-xs shadow-2xs transition-all cursor-pointer"
               >
                 <GraduationCap className="w-3.5 h-3.5" />
                 <span>Post</span>
@@ -1533,80 +1546,77 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
             {filteredDocs.map((doc) => {
               const cleanDesc = sanitizeDocumentDescription(doc.description);
               const isLiked = likedMaterialIds.has(doc.id);
               const fromLabel = (doc.uploaderName || doc.author || '').trim();
               return (
-                <div
+                <article
                   key={doc.id}
                   onClick={() => openPreviewModal(doc)}
-                  className="group bg-white rounded-2xl border border-slate-200/90 hover:border-cyan-500 shadow-sm hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative cursor-pointer"
+                  className="group bg-white rounded-xl border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden relative cursor-pointer"
                 >
-                  {/* Card Top: Full-Fit First Page Preview Thumbnail & Format Badge */}
-                  {(() => {
-                    const isPdfFile =
-                      doc.fileType?.toUpperCase() === 'PDF' ||
-                      Boolean(doc.fileName && /\.pdf$/i.test(doc.fileName));
-                    const canPreview =
-                      Boolean(doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) || isPdfFile;
-                    return (
-                      <div
-                        className="relative w-full h-52 sm:h-64 bg-slate-50/60 overflow-hidden border-b border-slate-200 flex items-center justify-center"
-                      >
-                        <EngineeringHubPdfCardThumbnail doc={doc} />
+                  <div>
+                    {/* Card Top: Full-Bleed First Page Preview Thumbnail */}
+                    {(() => {
+                      const isPdfFile =
+                        doc.fileType?.toUpperCase() === 'PDF' ||
+                        Boolean(doc.fileName && /\.pdf$/i.test(doc.fileName));
+                      const canPreview =
+                        Boolean(doc.previewUrl && !isMockDrawingPreview(doc.previewUrl)) || isPdfFile;
+                      return (
+                        <div className="relative w-full aspect-[4/4.2] bg-white overflow-hidden border-b border-slate-200 p-0">
+                          <EngineeringHubPdfCardThumbnail doc={doc} />
 
-                        {/* Format & Size Badge */}
-                        <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
-                          <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-cyan-300 text-cyan-800 text-[10px] font-mono font-bold shadow-xs">
-                            {doc.fileType}
-                          </span>
-                          <span className="px-2 py-0.5 rounded-md bg-white/95 backdrop-blur-md border border-slate-300 text-slate-700 text-[10px] font-mono font-semibold shadow-xs">
-                            {doc.fileSize}
-                          </span>
-                        </div>
+                          {/* Format & Size Badge */}
+                          <div className="absolute top-2 left-2 flex items-center gap-1">
+                            <span className="px-1.5 py-0.5 rounded bg-white/95 backdrop-blur-xs border border-cyan-300 text-cyan-900 text-[9px] font-mono font-bold shadow-2xs">
+                              {doc.fileType}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-white/95 backdrop-blur-xs border border-slate-300 text-slate-700 text-[9px] font-mono font-semibold shadow-2xs">
+                              {doc.fileSize}
+                            </span>
+                          </div>
 
-                        {/* Preview Button */}
-                        <div className="absolute top-2.5 right-2.5 flex items-center gap-1">
+                          {/* Preview Button */}
                           {canPreview && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openPreviewModal(doc);
-                              }}
-                              className="p-1.5 rounded-lg bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-xs cursor-pointer"
-                              title="View Full Resolution Preview"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="absolute top-2 right-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openPreviewModal(doc);
+                                }}
+                                className="p-1 rounded-md bg-white/95 hover:bg-cyan-50 text-slate-600 hover:text-cyan-800 border border-slate-300 transition-colors shadow-2xs cursor-pointer"
+                                title="Preview Document"
+                              >
+                                <Eye className="w-3 h-3" />
+                              </button>
+                            </div>
                           )}
                         </div>
-                      </div>
-                    );
-                  })()}
+                      );
+                    })()}
 
-                  {/* Card Middle: Content & Metadata */}
-                  <div className="p-3.5 sm:p-4 flex-1 flex flex-col justify-between gap-2.5">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[10px] font-mono text-slate-500">
-                        <span className="text-cyan-700 font-semibold flex items-center gap-1 min-w-0 text-[10px]">
+                    {/* Card Middle: Content & Metadata (Matches Projects Card Structure) */}
+                    <div className="p-2.5 sm:p-3 space-y-1.5">
+                      <div className="flex items-center justify-between gap-1.5 text-[9.5px]">
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold flex items-center gap-1 min-w-0 truncate">
                           {getCategoryIcon(doc.category)}
                           <span className="truncate">{doc.category || 'Document'}</span>
                         </span>
-                        <span className="flex items-center gap-1 shrink-0 text-[10px]">
-                          <Clock className="w-3 h-3 text-slate-400" />
-                          <span>{doc.uploadDate}</span>
+                        <span className="text-[9px] text-slate-500 font-sans shrink-0">
+                          {doc.uploadDate}
                         </span>
                       </div>
 
-                      <h3 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug">
+                      <h3 className="text-xs sm:text-[13px] font-bold text-slate-950 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug text-center">
                         {doc.title}
                       </h3>
 
                       {(doc.level || doc.department || doc.institution) && (
-                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                        <div className="flex flex-wrap items-center justify-center gap-1 text-[9px] font-mono">
                           {doc.level && (
                             <span className="px-1.5 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-900 font-bold">
                               {doc.level}
@@ -1626,20 +1636,17 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       )}
 
                       {cleanDesc && (
-                        <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed text-justify">
+                        <p className="text-[10.5px] text-slate-600 line-clamp-2 leading-relaxed text-justify">
                           {cleanDesc}
                         </p>
                       )}
-                    </div>
 
-                    {/* Tags, From: <Name>, Views, Likes & Downloads */}
-                    <div className="space-y-2 pt-2 border-t border-slate-100">
                       {doc.tags.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          {doc.tags.slice(0, 3).map((tag, i) => (
+                        <div className="flex flex-wrap items-center justify-center gap-1 pt-0.5">
+                          {doc.tags.slice(0, 2).map((tag, i) => (
                             <span
                               key={i}
-                              className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600"
+                              className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9px] font-sans text-slate-600 truncate max-w-[90px]"
                             >
                               #{tag}
                             </span>
@@ -1648,81 +1655,80 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       )}
 
                       {fromLabel && (
-                        <div className="text-[11px] text-slate-600 font-mono truncate" title={fromLabel}>
+                        <div className="text-[9.5px] text-slate-600 font-sans text-center truncate" title={fromLabel}>
                           From: <span className="text-slate-900 font-semibold">{fromLabel}</span>
                         </div>
                       )}
-
-                      <div className="flex items-center justify-between gap-2 text-[10.5px] text-slate-500 font-mono">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-slate-700 font-semibold tabular-nums"
-                            title="Real-time views"
-                          >
-                            <Eye className="w-3 h-3 text-cyan-800" />
-                            <span>{doc.viewsCount || 0}</span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => void handleLikeDocument(doc, e)}
-                            aria-label={isLiked ? 'Unlike document' : 'Like document'}
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-semibold transition-colors cursor-pointer tabular-nums ${
-                              isLiked
-                                ? 'bg-rose-50 border-rose-300 text-rose-700'
-                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
-                            }`}
-                          >
-                            <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
-                            <span>{doc.likesCount || 0}</span>
-                          </button>
-                        </div>
-                        <span className="text-cyan-700 font-bold flex items-center gap-1 shrink-0 tabular-nums">
-                          <FolderDown className="w-3 h-3 text-cyan-600" />
-                          <span>{doc.downloadCount} downloads</span>
-                        </span>
-                      </div>
                     </div>
                   </div>
 
-                  {/* Card Bottom: Direct HTML Download Link & Compact Delete */}
+                  {/* Card Footer: Stats + Download Action */}
                   <div
-                    className="px-3.5 py-2.5 bg-slate-50/90 border-t border-slate-200 flex items-center gap-2"
+                    className="px-2.5 pb-2.5 pt-2 bg-slate-50/80 border-t border-slate-100 space-y-2"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <a
-                      href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
-                      download={doc.fileName}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => {
-                        incrementHubDocumentDownload(doc.id).catch(() => {});
-                        try {
-                          fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
-                        } catch {}
-                      }}
-                      className="flex-1 h-8 px-3 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-[11px] sm:text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer text-center no-underline"
-                    >
-                      <Download className="w-3.5 h-3.5 text-white shrink-0" />
-                      <span className="truncate">Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
-                      <span className="text-[9.5px] opacity-80 font-mono shrink-0">({doc.fileSize})</span>
-                    </a>
+                    <div className="flex items-center justify-between gap-1 text-[9.5px] text-slate-500 font-sans">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="inline-flex items-center gap-0.5 text-slate-700 font-semibold tabular-nums"
+                          title="Real-time views"
+                        >
+                          <Eye className="w-3 h-3 text-cyan-800" />
+                          <span>{doc.viewsCount || 0}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => void handleLikeDocument(doc, e)}
+                          aria-label={isLiked ? 'Unlike document' : 'Like document'}
+                          className={`inline-flex items-center gap-0.5 font-semibold transition-colors cursor-pointer tabular-nums ${
+                            isLiked ? 'text-rose-700' : 'text-slate-600 hover:text-rose-600'
+                          }`}
+                        >
+                          <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                          <span>{doc.likesCount || 0}</span>
+                        </button>
+                      </div>
+                      <span className="text-cyan-800 font-bold flex items-center gap-0.5 shrink-0 tabular-nums">
+                        <FolderDown className="w-3 h-3 text-cyan-700" />
+                        <span>{doc.downloadCount}</span>
+                      </span>
+                    </div>
 
-                    {isOwner && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDocToDelete(doc);
+                    <div className="flex items-center gap-1.5">
+                      <a
+                        href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
+                        download={doc.fileName}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => {
+                          incrementHubDocumentDownload(doc.id).catch(() => {});
+                          try {
+                            fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
+                          } catch {}
                         }}
-                        className="h-8 w-8 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 flex items-center justify-center transition-all cursor-pointer shadow-2xs shrink-0"
-                        title="Delete document (Owner only)"
-                        aria-label="Delete document"
+                        className="flex-1 h-7 px-2 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-semibold text-[10.5px] flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer text-center no-underline"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                        <Download className="w-3 h-3 text-white shrink-0" />
+                        <span className="truncate">Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
+                      </a>
+
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDocToDelete(doc);
+                          }}
+                          className="h-7 w-7 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-300 flex items-center justify-center transition-all cursor-pointer shadow-2xs shrink-0"
+                          title="Delete document (Owner only)"
+                          aria-label="Delete document"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
+                </article>
               );
             })}
           </div>
@@ -2218,8 +2224,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 <span>·</span>
                 <span>Downloads: <strong className="text-cyan-700">{previewModalDoc.downloadCount}</strong></span>
               </div>
-              <div className="flex items-center gap-2">
-                {isOwner && (
+              {isOwner && (
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => {
                       const docToDel = previewModalDoc;
@@ -2232,25 +2238,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Delete</span>
                   </button>
-                )}
-                <a
-                  href={previewModalDoc.downloadUrl || previewModalDoc.dataUrl || `/api/documents/files/${previewModalDoc.id}`}
-                  download={previewModalDoc.fileName}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => {
-                    incrementHubDocumentDownload(previewModalDoc.id).catch(() => {});
-                    try {
-                      fetch(`/api/documents/${previewModalDoc.id}/download`, { method: 'POST' }).catch(() => {});
-                    } catch {}
-                    setPreviewModalDoc(null);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-800 text-white font-semibold text-xs cursor-pointer shadow-2xs transition-all no-underline"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download File</span>
-                </a>
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

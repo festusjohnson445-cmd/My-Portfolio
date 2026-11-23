@@ -93,8 +93,8 @@ const BODY_DARK_RGB: [number, number, number] = [30, 41, 59]; // #1e293b
 const FOOTER_TEXT_RGB: [number, number, number] = [100, 116, 139]; // #64748b
 const FOOTER_RULE_RGB: [number, number, number] = [203, 213, 225]; // #cbd5e1
 
-const cleanLines = (raw: string): string[] =>
-  raw
+const cleanLines = (raw?: string | null): string[] =>
+  (raw || '')
     .split(/\r?\n/)
     .map((s) => s.replace(/^[•\-*]\s*/, '').trim())
     .filter(Boolean);
@@ -105,52 +105,83 @@ const joinNonEmpty = (parts: Array<string | undefined | null>, sep = '  |  '): s
     .filter(Boolean)
     .join(sep);
 
-const splitEssayParagraphs = (raw: string): string[] =>
-  raw
+const splitEssayParagraphs = (raw?: string | null): string[] =>
+  (raw || '')
     .trim()
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
 
-const makeFooterStamp = (ownerName: string, cat: DocumentFormPayload['category']): string => {
+const makeFooterStamp = (
+  ownerName: string | undefined | null,
+  cat: DocumentFormPayload['category']
+): string => {
   const catLabel = getCategoryMeta(cat).label.toUpperCase();
-  const cleanName = ownerName.trim().toUpperCase();
+  const cleanName = (ownerName || '').trim().toUpperCase();
   return cleanName ? `${cleanName}  |  ${catLabel}` : catLabel;
 };
+
+const pushSkillLines = (blocks: BlueprintBlock[], raw: string | undefined) => {
+  const lines = (raw || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return;
+  for (const ln of lines) {
+    const colonIdx = ln.indexOf(':');
+    if (colonIdx > 1 && colonIdx < 48) {
+      const label = ln.slice(0, colonIdx).trim();
+      const val = ln.slice(colonIdx + 1).trim();
+      if (label && val) {
+        blocks.push({ kind: 'labeled-line', label, value: val });
+        continue;
+      }
+    }
+    blocks.push({ kind: 'paragraph', text: ln, align: 'left', spacingAfter: 1.5 });
+  }
+};
+
+const t = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBlueprint => {
   switch (payload.category) {
     case 'international_cv': {
       const d = payload.data;
+      const hdr = (d.header || {}) as any;
       const blocks: BlueprintBlock[] = [];
 
-      if (d.professionalSummary.trim()) {
+      if (t(d.professionalSummary)) {
         blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL PROFILE' });
         blocks.push({
           kind: 'paragraph',
-          text: d.professionalSummary.trim(),
+          text: t(d.professionalSummary),
           align: 'justify',
         });
       }
 
-      if (d.coreCompetencies.trim()) {
+      if (t(d.coreCompetencies)) {
         blocks.push({ kind: 'section-heading', title: 'CORE COMPETENCIES' });
         blocks.push({
           kind: 'paragraph',
-          text: d.coreCompetencies.trim(),
+          text: t(d.coreCompetencies),
           align: 'left',
         });
       }
 
-      const validExps = d.experiences.filter(
-        (e) => e.roleTitle.trim() || e.organization.trim() || e.highlights.trim()
+      if (t(d.technicalAndDigitalSkills)) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL & DIGITAL SKILLS' });
+        pushSkillLines(blocks, d.technicalAndDigitalSkills);
+      }
+
+      const validExps = (d.experiences || []).filter(
+        (e) => e && (t(e.roleTitle) || t(e.organization) || t(e.highlights))
       );
       if (validExps.length > 0) {
-        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL EXPERIENCE' });
+        blocks.push({ kind: 'section-heading', title: 'EXPERIENCE' });
         blocks.push({
           kind: 'entries',
           items: validExps.map((e) => ({
-            primaryLeft: e.roleTitle.trim() || 'Role Title',
+            primaryLeft: t(e.roleTitle) || 'Role Title',
             primaryRight: joinNonEmpty([e.startDate, e.endDate], ' – '),
             secondaryLeft: joinNonEmpty([e.organization, e.location], ', '),
             bullets: cleanLines(e.highlights),
@@ -158,24 +189,62 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const validEdu = d.education.filter((e) => e.degree.trim() || e.institution.trim());
+      const validLeadership = (d.leadershipRoles || []).filter(
+        (l) => l && (t(l.roleTitle) || t(l.organization) || t(l.highlights))
+      );
+      if (validLeadership.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'LEADERSHIP' });
+        blocks.push({
+          kind: 'entries',
+          items: validLeadership.map((l) => ({
+            primaryLeft: t(l.roleTitle) || 'Leadership Role',
+            primaryRight: joinNonEmpty([l.startDate, l.endDate], ' – '),
+            secondaryLeft: joinNonEmpty([l.organization, l.location], ', '),
+            bullets: cleanLines(l.highlights),
+          })),
+        });
+      }
+
+      const validProjects = (d.selectedProjects || []).filter(
+        (p) => p && (t(p.name) || t(p.impactBullets))
+      );
+      if (validProjects.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'SELECTED PROJECTS' });
+        blocks.push({
+          kind: 'entries',
+          items: validProjects.map((p) => ({
+            primaryLeft: t(p.name) || 'Project',
+            primaryRight: t(p.period) || undefined,
+            secondaryLeft: t(p.roleOrContext) || undefined,
+            bullets: cleanLines(p.impactBullets),
+          })),
+        });
+      }
+
+      const validEdu = (d.education || []).filter((e) => e && (t(e.degree) || t(e.institution)));
       if (validEdu.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'EDUCATION' });
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim() || 'Academic Degree',
+            primaryLeft: t(e.degree) || 'Academic Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
-            secondaryRight: e.gpaOrHonors?.trim() || undefined,
-            bodyText: e.thesisOrCoursework?.trim()
-              ? `Thesis / Key Coursework: ${e.thesisOrCoursework.trim()}`
+            secondaryRight: t(e.gpaOrHonors) || undefined,
+            bodyText: t(e.thesisOrCoursework)
+              ? `Thesis / Key Coursework: ${t(e.thesisOrCoursework)}`
               : undefined,
           })),
         });
       }
 
-      const validCerts = d.certifications.filter((c) => c.name.trim());
+      const trainingItems = cleanLines(d.technicalTraining);
+      if (trainingItems.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL TRAINING & DEVELOPMENT' });
+        blocks.push({ kind: 'bullet-list', items: trainingItems });
+      }
+
+      const validCerts = (d.certifications || []).filter((c) => c && t(c.name));
       if (validCerts.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'CERTIFICATIONS & LICENSES' });
         blocks.push({
@@ -186,7 +255,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
                 c.name,
                 c.issuer,
                 c.year,
-                c.credentialId ? `Credential ID: ${c.credentialId}` : '',
+                t(c.credentialId) ? `Credential ID: ${t(c.credentialId)}` : '',
               ],
               ' — '
             )
@@ -194,8 +263,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const validLangs = d.languages.filter((l) => l.language.trim());
-      if (validLangs.length > 0 || d.nationalityOrWorkAuth.trim()) {
+      const validLangs = (d.languages || []).filter((l) => l && t(l.language));
+      if (validLangs.length > 0 || t(d.nationalityOrWorkAuth)) {
         blocks.push({ kind: 'section-heading', title: 'LANGUAGES & ELIGIBILITY' });
         if (validLangs.length > 0) {
           blocks.push({
@@ -203,35 +272,64 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
             label: 'Languages',
             value: validLangs
               .map((l) =>
-                l.proficiency.trim() ? `${l.language.trim()} (${l.proficiency.trim()})` : l.language.trim()
+                t(l.proficiency) ? `${t(l.language)} (${t(l.proficiency)})` : t(l.language)
               )
               .join('  •  '),
           });
         }
-        if (d.nationalityOrWorkAuth.trim()) {
+        if (t(d.nationalityOrWorkAuth)) {
           blocks.push({
             kind: 'labeled-line',
             label: 'Work Authorization / Mobility',
-            value: d.nationalityOrWorkAuth.trim(),
+            value: t(d.nationalityOrWorkAuth),
           });
         }
       }
 
-      const fullName = d.header.fullName.trim() || 'APPLICANT NAME';
+      if (t(d.professionalInterests)) {
+        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL INTERESTS' });
+        blocks.push({
+          kind: 'paragraph',
+          text: t(d.professionalInterests),
+          align: 'left',
+        });
+      }
+
+      const validRefs = (d.references || []).filter((r) => r && t(r.name));
+      if (validRefs.length > 0 || t(d.referencesNote)) {
+        blocks.push({ kind: 'section-heading', title: 'REFERENCES' });
+        if (validRefs.length > 0) {
+          blocks.push({
+            kind: 'bullet-list',
+            items: validRefs.map((r) =>
+              joinNonEmpty([r.name, r.titleAndDepartment, r.institution, r.email], ' — ')
+            ),
+          });
+        }
+        if (t(d.referencesNote)) {
+          blocks.push({
+            kind: 'paragraph',
+            text: t(d.referencesNote),
+            align: 'left',
+            italic: validRefs.length === 0,
+          });
+        }
+      }
+
+      const fullName = t(hdr.fullName) || 'APPLICANT NAME';
+      const headline = t(hdr.headlineOrTargetRole);
       return {
         category: 'international_cv',
         fontMode: 'serif',
         headerStyle: 'ats-centered',
         uppercaseHeaderSubtitle: true,
         title: fullName.toUpperCase(),
-        subtitle: d.header.headlineOrTargetRole.trim()
-          ? d.header.headlineOrTargetRole.trim().toUpperCase()
-          : undefined,
+        subtitle: headline ? headline.toUpperCase() : undefined,
         contactLine: joinNonEmpty([
-          d.header.location,
-          d.header.phone,
-          d.header.email,
-          d.header.linkedinOrPortfolio,
+          hdr.location,
+          hdr.phone,
+          hdr.email,
+          hdr.linkedinOrPortfolio,
           d.orcidOrGithub,
         ]),
         footerText: makeFooterStamp(fullName, 'international_cv'),
@@ -241,48 +339,49 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
     case 'academic_resume': {
       const d = payload.data;
+      const hdr = (d.header || {}) as any;
       const blocks: BlueprintBlock[] = [];
 
-      if (d.researchProfile.trim() || d.researchInterests.trim()) {
+      if (t(d.researchProfile) || t(d.researchInterests)) {
         blocks.push({ kind: 'section-heading', title: 'RESEARCH PROFILE & INTERESTS' });
-        if (d.researchProfile.trim()) {
-          blocks.push({ kind: 'paragraph', text: d.researchProfile.trim(), align: 'justify' });
+        if (t(d.researchProfile)) {
+          blocks.push({ kind: 'paragraph', text: t(d.researchProfile), align: 'justify' });
         }
-        if (d.researchInterests.trim()) {
+        if (t(d.researchInterests)) {
           blocks.push({
             kind: 'labeled-line',
             label: 'Research Areas',
-            value: d.researchInterests.trim(),
+            value: t(d.researchInterests),
           });
         }
       }
 
-      const validEdu = d.education.filter((e) => e.degree.trim() || e.institution.trim());
+      const validEdu = (d.education || []).filter((e) => e && (t(e.degree) || t(e.institution)));
       if (validEdu.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'EDUCATION & ACADEMIC TRAINING' });
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim() || 'Academic Degree',
+            primaryLeft: t(e.degree) || 'Academic Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
-            secondaryRight: e.gpaOrHonors?.trim() || undefined,
-            bodyText: e.thesisOrCoursework?.trim()
-              ? `Thesis / Focus: ${e.thesisOrCoursework.trim()}`
+            secondaryRight: t(e.gpaOrHonors) || undefined,
+            bodyText: t(e.thesisOrCoursework)
+              ? `Thesis / Focus: ${t(e.thesisOrCoursework)}`
               : undefined,
           })),
         });
       }
 
-      const validRes = d.researchAppointments.filter(
-        (r) => r.roleTitle.trim() || r.organization.trim() || r.highlights.trim()
+      const validRes = (d.researchAppointments || []).filter(
+        (r) => r && (t(r.roleTitle) || t(r.organization) || t(r.highlights))
       );
       if (validRes.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'RESEARCH APPOINTMENTS & EXPERIENCE' });
         blocks.push({
           kind: 'entries',
           items: validRes.map((r) => ({
-            primaryLeft: r.roleTitle.trim() || 'Research Role',
+            primaryLeft: t(r.roleTitle) || 'Research Role',
             primaryRight: joinNonEmpty([r.startDate, r.endDate], ' – '),
             secondaryLeft: joinNonEmpty([r.organization, r.location], ', '),
             bullets: cleanLines(r.highlights),
@@ -290,23 +389,71 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const validTeach = d.teachingExperience.filter(
-        (t) => t.roleTitle.trim() || t.organization.trim() || t.highlights.trim()
+      const validTeach = (d.teachingExperience || []).filter(
+        (item) => item && (t(item.roleTitle) || t(item.organization) || t(item.highlights))
       );
       if (validTeach.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'TEACHING & MENTORSHIP EXPERIENCE' });
         blocks.push({
           kind: 'entries',
-          items: validTeach.map((t) => ({
-            primaryLeft: t.roleTitle.trim() || 'Teaching Appointment',
-            primaryRight: joinNonEmpty([t.startDate, t.endDate], ' – '),
-            secondaryLeft: joinNonEmpty([t.organization, t.location], ', '),
-            bullets: cleanLines(t.highlights),
+          items: validTeach.map((item) => ({
+            primaryLeft: t(item.roleTitle) || 'Teaching Appointment',
+            primaryRight: joinNonEmpty([item.startDate, item.endDate], ' – '),
+            secondaryLeft: joinNonEmpty([item.organization, item.location], ', '),
+            bullets: cleanLines(item.highlights),
           })),
         });
       }
 
-      const validPubs = d.publications.filter((p) => p.citation.trim());
+      const validProfExp = (d.professionalExperience || []).filter(
+        (e) => e && (t(e.roleTitle) || t(e.organization) || t(e.highlights))
+      );
+      if (validProfExp.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'EXPERIENCE' });
+        blocks.push({
+          kind: 'entries',
+          items: validProfExp.map((e) => ({
+            primaryLeft: t(e.roleTitle) || 'Role Title',
+            primaryRight: joinNonEmpty([e.startDate, e.endDate], ' – '),
+            secondaryLeft: joinNonEmpty([e.organization, e.location], ', '),
+            bullets: cleanLines(e.highlights),
+          })),
+        });
+      }
+
+      const validLead = (d.leadershipRoles || []).filter(
+        (l) => l && (t(l.roleTitle) || t(l.organization) || t(l.highlights))
+      );
+      if (validLead.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'LEADERSHIP' });
+        blocks.push({
+          kind: 'entries',
+          items: validLead.map((l) => ({
+            primaryLeft: t(l.roleTitle) || 'Leadership Role',
+            primaryRight: joinNonEmpty([l.startDate, l.endDate], ' – '),
+            secondaryLeft: joinNonEmpty([l.organization, l.location], ', '),
+            bullets: cleanLines(l.highlights),
+          })),
+        });
+      }
+
+      const validAcadProjects = (d.selectedProjects || []).filter(
+        (p) => p && (t(p.name) || t(p.impactBullets))
+      );
+      if (validAcadProjects.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'SELECTED PROJECTS' });
+        blocks.push({
+          kind: 'entries',
+          items: validAcadProjects.map((p) => ({
+            primaryLeft: t(p.name) || 'Project',
+            primaryRight: t(p.period) || undefined,
+            secondaryLeft: t(p.roleOrContext) || undefined,
+            bullets: cleanLines(p.impactBullets),
+          })),
+        });
+      }
+
+      const validPubs = (d.publications || []).filter((p) => p && t(p.citation));
       if (validPubs.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'PUBLICATIONS & CONFERENCE PROCEEDINGS' });
         blocks.push({
@@ -320,20 +467,36 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      if (d.grantsAndAwards.trim()) {
+      if (t(d.grantsAndAwards)) {
         blocks.push({ kind: 'section-heading', title: 'GRANTS, FELLOWSHIPS & HONORS' });
         blocks.push({ kind: 'bullet-list', items: cleanLines(d.grantsAndAwards) });
       }
 
-      if (d.technicalMethods.trim()) {
+      if (t(d.technicalMethods)) {
         blocks.push({
           kind: 'section-heading',
           title: 'LABORATORY, COMPUTATIONAL & ANALYTICAL METHODS',
         });
-        blocks.push({ kind: 'paragraph', text: d.technicalMethods.trim(), align: 'left' });
+        blocks.push({ kind: 'paragraph', text: t(d.technicalMethods), align: 'left' });
       }
 
-      const validRefs = d.referees.filter((r) => r.name.trim());
+      if (t(d.technicalAndDigitalSkills)) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL & DIGITAL SKILLS' });
+        pushSkillLines(blocks, d.technicalAndDigitalSkills);
+      }
+
+      const acadTraining = cleanLines(d.technicalTraining);
+      if (acadTraining.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL TRAINING & DEVELOPMENT' });
+        blocks.push({ kind: 'bullet-list', items: acadTraining });
+      }
+
+      if (t(d.professionalInterests)) {
+        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL INTERESTS' });
+        blocks.push({ kind: 'paragraph', text: t(d.professionalInterests), align: 'left' });
+      }
+
+      const validRefs = (d.referees || []).filter((r) => r && t(r.name));
       if (validRefs.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'ACADEMIC REFEREES' });
         blocks.push({
@@ -344,8 +507,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const fullName = d.header.fullName.trim() || 'SCHOLAR NAME';
-      const subText = joinNonEmpty([d.academicTitleOrField, d.header.headlineOrTargetRole], ' | ');
+      const fullName = t(hdr.fullName) || 'SCHOLAR NAME';
+      const subText = joinNonEmpty([d.academicTitleOrField, hdr.headlineOrTargetRole], ' | ');
       return {
         category: 'academic_resume',
         fontMode: 'serif',
@@ -354,10 +517,10 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         title: fullName.toUpperCase(),
         subtitle: subText ? subText.toUpperCase() : undefined,
         contactLine: joinNonEmpty([
-          d.header.location,
-          d.header.phone,
-          d.header.email,
-          d.header.linkedinOrPortfolio,
+          hdr.location,
+          hdr.phone,
+          hdr.email,
+          hdr.linkedinOrPortfolio,
           d.orcidOrScholarUrl,
         ]),
         footerText: makeFooterStamp(fullName, 'academic_resume'),
@@ -367,40 +530,45 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
     case 'job_resume': {
       const d = payload.data;
+      const hdr = (d.header || {}) as any;
       const blocks: BlueprintBlock[] = [];
 
-      if (d.professionalSummary.trim()) {
+      if (t(d.professionalSummary)) {
         blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL PROFILE' });
-        blocks.push({ kind: 'paragraph', text: d.professionalSummary.trim(), align: 'justify' });
+        blocks.push({ kind: 'paragraph', text: t(d.professionalSummary), align: 'justify' });
       }
 
-      if (d.technicalSkills.trim() || d.softAndLeadershipSkills.trim()) {
-        blocks.push({ kind: 'section-heading', title: 'CORE SKILLS & COMPETENCIES' });
-        if (d.technicalSkills.trim()) {
-          blocks.push({
-            kind: 'labeled-line',
-            label: 'Technical & Domain Skills',
-            value: d.technicalSkills.trim(),
-          });
+      if (t(d.technicalSkills) || t(d.softAndLeadershipSkills)) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL & DIGITAL SKILLS' });
+        if (t(d.technicalSkills)) {
+          if (String(d.technicalSkills).includes('\n')) {
+            pushSkillLines(blocks, d.technicalSkills);
+          } else {
+            blocks.push({
+              kind: 'labeled-line',
+              label: 'Technical & Digital Skills',
+              value: t(d.technicalSkills),
+            });
+          }
         }
-        if (d.softAndLeadershipSkills.trim()) {
+        if (t(d.softAndLeadershipSkills)) {
           blocks.push({
             kind: 'labeled-line',
             label: 'Leadership & Operations',
-            value: d.softAndLeadershipSkills.trim(),
+            value: t(d.softAndLeadershipSkills),
           });
         }
       }
 
-      const validWork = d.workExperience.filter(
-        (w) => w.roleTitle.trim() || w.organization.trim() || w.highlights.trim()
+      const validWork = (d.workExperience || []).filter(
+        (w) => w && (t(w.roleTitle) || t(w.organization) || t(w.highlights))
       );
       if (validWork.length > 0) {
-        blocks.push({ kind: 'section-heading', title: 'WORK EXPERIENCE' });
+        blocks.push({ kind: 'section-heading', title: 'EXPERIENCE' });
         blocks.push({
           kind: 'entries',
           items: validWork.map((w) => ({
-            primaryLeft: w.roleTitle.trim() || 'Position Title',
+            primaryLeft: t(w.roleTitle) || 'Position Title',
             primaryRight: joinNonEmpty([w.startDate, w.endDate], ' – '),
             secondaryLeft: joinNonEmpty([w.organization, w.location], ', '),
             bullets: cleanLines(w.highlights),
@@ -408,50 +576,100 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const validProjects = d.keyProjects.filter((p) => p.name.trim() || p.impactBullets.trim());
+      const validLead = (d.leadershipRoles || []).filter(
+        (l) => l && (t(l.roleTitle) || t(l.organization) || t(l.highlights))
+      );
+      if (validLead.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'LEADERSHIP' });
+        blocks.push({
+          kind: 'entries',
+          items: validLead.map((l) => ({
+            primaryLeft: t(l.roleTitle) || 'Leadership Role',
+            primaryRight: joinNonEmpty([l.startDate, l.endDate], ' – '),
+            secondaryLeft: joinNonEmpty([l.organization, l.location], ', '),
+            bullets: cleanLines(l.highlights),
+          })),
+        });
+      }
+
+      const validProjects = (d.keyProjects || []).filter(
+        (p) => p && (t(p.name) || t(p.impactBullets))
+      );
       if (validProjects.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'SELECTED PROJECTS & DELIVERABLES' });
         blocks.push({
           kind: 'entries',
           items: validProjects.map((p) => ({
-            primaryLeft: p.name.trim() || 'Project',
-            primaryRight: p.period.trim() || undefined,
-            secondaryLeft: p.roleOrContext.trim() || undefined,
+            primaryLeft: t(p.name) || 'Project',
+            primaryRight: t(p.period) || undefined,
+            secondaryLeft: t(p.roleOrContext) || undefined,
             bullets: cleanLines(p.impactBullets),
           })),
         });
       }
 
-      const validEdu = d.education.filter((e) => e.degree.trim() || e.institution.trim());
+      const validEdu = (d.education || []).filter((e) => e && (t(e.degree) || t(e.institution)));
       if (validEdu.length > 0) {
         blocks.push({ kind: 'section-heading', title: 'EDUCATION' });
         blocks.push({
           kind: 'entries',
           items: validEdu.map((e) => ({
-            primaryLeft: e.degree.trim() || 'Degree',
+            primaryLeft: t(e.degree) || 'Degree',
             primaryRight: joinNonEmpty([e.startYear, e.endYear], ' – '),
             secondaryLeft: joinNonEmpty([e.institution, e.location], ', '),
-            secondaryRight: e.gpaOrHonors?.trim() || undefined,
+            secondaryRight: t(e.gpaOrHonors) || undefined,
           })),
         });
       }
 
-      const validCerts = d.certifications.filter((c) => c.name.trim());
+      const validCerts = (d.certifications || []).filter((c) => c && t(c.name));
       if (validCerts.length > 0) {
-        blocks.push({ kind: 'section-heading', title: 'CERTIFICATIONS & TRAINING' });
+        blocks.push({ kind: 'section-heading', title: 'CERTIFICATIONS & LICENSES' });
         blocks.push({
           kind: 'bullet-list',
           items: validCerts.map((c) =>
             joinNonEmpty(
-              [c.name, c.issuer, c.year, c.credentialId ? `ID: ${c.credentialId}` : ''],
+              [c.name, c.issuer, c.year, t(c.credentialId) ? `ID: ${t(c.credentialId)}` : ''],
               ' — '
             )
           ),
         });
       }
 
-      const fullName = d.header.fullName.trim() || 'CANDIDATE NAME';
-      const subText = d.targetJobTitle.trim() || d.header.headlineOrTargetRole.trim();
+      const jobTraining = cleanLines(d.technicalTraining);
+      if (jobTraining.length > 0) {
+        blocks.push({ kind: 'section-heading', title: 'TECHNICAL TRAINING & DEVELOPMENT' });
+        blocks.push({ kind: 'bullet-list', items: jobTraining });
+      }
+
+      if (t(d.professionalInterests)) {
+        blocks.push({ kind: 'section-heading', title: 'PROFESSIONAL INTERESTS' });
+        blocks.push({ kind: 'paragraph', text: t(d.professionalInterests), align: 'left' });
+      }
+
+      const validJobRefs = (d.references || []).filter((r) => r && t(r.name));
+      if (validJobRefs.length > 0 || t(d.referencesNote)) {
+        blocks.push({ kind: 'section-heading', title: 'REFERENCES' });
+        if (validJobRefs.length > 0) {
+          blocks.push({
+            kind: 'bullet-list',
+            items: validJobRefs.map((r) =>
+              joinNonEmpty([r.name, r.titleAndDepartment, r.institution, r.email], ' — ')
+            ),
+          });
+        }
+        if (t(d.referencesNote)) {
+          blocks.push({
+            kind: 'paragraph',
+            text: t(d.referencesNote),
+            align: 'left',
+            italic: validJobRefs.length === 0,
+          });
+        }
+      }
+
+      const fullName = t(hdr.fullName) || 'CANDIDATE NAME';
+      const subText = t(d.targetJobTitle) || t(hdr.headlineOrTargetRole);
       return {
         category: 'job_resume',
         fontMode: 'serif',
@@ -460,10 +678,10 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         title: fullName.toUpperCase(),
         subtitle: subText ? subText.toUpperCase() : undefined,
         contactLine: joinNonEmpty([
-          d.header.location,
-          d.header.phone,
-          d.header.email,
-          d.header.linkedinOrPortfolio,
+          hdr.location,
+          hdr.phone,
+          hdr.email,
+          hdr.linkedinOrPortfolio,
         ]),
         footerText: makeFooterStamp(fullName, 'job_resume'),
         blocks,
@@ -474,14 +692,14 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const d = payload.data;
       const blocks: BlueprintBlock[] = [];
       const metaRows = [
-        { label: 'Applicant', value: d.applicantName.trim() },
-        { label: 'Target Program', value: d.targetDegreeAndProgram.trim() },
+        { label: 'Applicant', value: t(d.applicantName) },
+        { label: 'Target Program', value: t(d.targetDegreeAndProgram) },
         {
           label: 'Host Institution',
           value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ' — '),
         },
-        { label: 'Intended Term', value: d.intendedTerm.trim() },
-        { label: 'Faculty / Lab Focus', value: d.targetFacultyOrLab.trim() },
+        { label: 'Intended Term', value: t(d.intendedTerm) },
+        { label: 'Faculty / Lab Focus', value: t(d.targetFacultyOrLab) },
       ].filter((r) => r.value);
 
       if (metaRows.length > 0) {
@@ -495,7 +713,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         d.programAndFacultyFit,
         d.careerGoalsAndClosing,
       ]
-        .map((p) => p.trim())
+        .map((p) => t(p))
         .filter(Boolean);
 
       essayParts.forEach((p) => {
@@ -509,11 +727,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       });
 
-      if (d.applicantName.trim()) {
+      if (t(d.applicantName)) {
         blocks.push({
           kind: 'signature',
           signOff: 'Respectfully submitted,',
-          name: d.applicantName.trim(),
+          name: t(d.applicantName),
           subline: joinNonEmpty([d.applicantEmail, d.applicantLocation], ' · ') || undefined,
         });
       }
@@ -522,7 +740,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         category: 'sop',
         fontMode: 'serif',
         headerStyle: 'academic-essay',
-        title: (d.documentTitle.trim() || 'Statement of Purpose').toUpperCase(),
+        title: (t(d.documentTitle) || 'Statement of Purpose').toUpperCase(),
         subtitle:
           joinNonEmpty([d.targetDegreeAndProgram, d.targetInstitution], ' — ') || undefined,
         contactLine: joinNonEmpty([
@@ -541,9 +759,9 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const blocks: BlueprintBlock[] = [];
 
       const metaRows = [
-        { label: 'Applicant', value: d.applicantName.trim() },
-        { label: 'Target Opportunity', value: d.targetProgramOrOpportunity.trim() },
-        { label: 'Host Organization', value: d.targetOrganization.trim() },
+        { label: 'Applicant', value: t(d.applicantName) },
+        { label: 'Target Opportunity', value: t(d.targetProgramOrOpportunity) },
+        { label: 'Host Organization', value: t(d.targetOrganization) },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
@@ -557,7 +775,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       ];
 
       sections.forEach((sec) => {
-        if (sec.text.trim()) {
+        if (t(sec.text)) {
           blocks.push({ kind: 'section-heading', title: sec.heading });
           splitEssayParagraphs(sec.text).forEach((para) => {
             blocks.push({
@@ -570,11 +788,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         }
       });
 
-      if (d.applicantName.trim()) {
+      if (t(d.applicantName)) {
         blocks.push({
           kind: 'signature',
           signOff: 'Sincerely,',
-          name: d.applicantName.trim(),
+          name: t(d.applicantName),
           subline: joinNonEmpty([d.applicantEmail, d.applicantLocation], ' · ') || undefined,
         });
       }
@@ -583,7 +801,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         category: 'personal_statement',
         fontMode: 'serif',
         headerStyle: 'academic-essay',
-        title: (d.documentTitle.trim() || 'Personal Statement').toUpperCase(),
+        title: (t(d.documentTitle) || 'Personal Statement').toUpperCase(),
         subtitle:
           joinNonEmpty([d.targetProgramOrOpportunity, d.targetOrganization], ' — ') || undefined,
         contactLine: joinNonEmpty([
@@ -607,16 +825,16 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         d.applicantEmail,
         d.applicantPhone,
       ]
-        .map((s) => s.trim())
+        .map((s) => t(s))
         .filter(Boolean);
       if (senderLines.length > 0) {
         blocks.push({ kind: 'address-block', lines: senderLines, align: 'left' });
       }
 
-      if (d.letterDate.trim()) {
+      if (t(d.letterDate)) {
         blocks.push({
           kind: 'paragraph',
-          text: d.letterDate.trim(),
+          text: t(d.letterDate),
           align: 'left',
           bold: false,
           spacingAfter: 3,
@@ -624,20 +842,20 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       }
 
       const recipientLines = [
-        d.recipientTitle.trim() || 'Scholarship Selection Committee',
+        t(d.recipientTitle) || 'Scholarship Selection Committee',
         d.scholarshipName,
         d.sponsoringOrganization,
         d.hostCountryOrUniversity,
       ]
-        .map((s) => s.trim())
+        .map((s) => t(s))
         .filter(Boolean);
       if (recipientLines.length > 0) {
         blocks.push({ kind: 'address-block', lines: recipientLines, align: 'left' });
       }
 
       const subject =
-        d.subjectLine.trim() ||
-        (d.scholarshipName.trim() ? `RE: Application for ${d.scholarshipName.trim()}` : '');
+        t(d.subjectLine) ||
+        (t(d.scholarshipName) ? `RE: Application for ${t(d.scholarshipName)}` : '');
       if (subject) {
         blocks.push({
           kind: 'paragraph',
@@ -649,7 +867,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const salutation = d.salutation.trim() || 'Dear Scholarship Selection Committee,';
+      const salutation = t(d.salutation) || 'Dear Scholarship Selection Committee,';
       blocks.push({ kind: 'paragraph', text: salutation, align: 'left', spacingAfter: 3 });
 
       [
@@ -658,7 +876,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         d.financialNeedContext,
         d.impactAndCommitment,
       ]
-        .map((p) => p.trim())
+        .map((p) => t(p))
         .filter(Boolean)
         .forEach((sec) => {
           splitEssayParagraphs(sec).forEach((para) => {
@@ -673,8 +891,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 
       blocks.push({
         kind: 'signature',
-        signOff: d.signOff.trim() || 'Yours faithfully,',
-        name: d.applicantName.trim() || 'Applicant',
+        signOff: t(d.signOff) || 'Yours faithfully,',
+        name: t(d.applicantName) || 'Applicant',
         subline: joinNonEmpty([d.applicantEmail, d.applicantPhone], ' · ') || undefined,
       });
 
@@ -682,10 +900,10 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         category: 'scholarship_letter',
         fontMode: 'serif',
         headerStyle: 'formal-letter',
-        title: d.scholarshipName.trim()
-          ? `Motivation Letter — ${d.scholarshipName.trim()}`
+        title: t(d.scholarshipName)
+          ? `Motivation Letter — ${t(d.scholarshipName)}`
           : 'Scholarship Motivation Letter',
-        subtitle: d.sponsoringOrganization.trim() || undefined,
+        subtitle: t(d.sponsoringOrganization) || undefined,
         footerText: makeFooterStamp(d.applicantName, 'scholarship_letter'),
         blocks,
       };
@@ -696,27 +914,27 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const blocks: BlueprintBlock[] = [];
 
       const metaRows = [
-        { label: 'Principal Investigator', value: d.applicantName.trim() },
-        { label: 'Contact Email', value: d.applicantEmail.trim() },
+        { label: 'Principal Investigator', value: t(d.applicantName) },
+        { label: 'Contact Email', value: t(d.applicantEmail) },
         {
           label: 'Host Institution',
           value: joinNonEmpty([d.targetInstitution, d.targetDepartment], ', '),
         },
-        { label: 'Proposed Supervisor', value: d.proposedSupervisor.trim() },
-        { label: 'Research Keywords', value: d.keywords.trim() },
+        { label: 'Proposed Supervisor', value: t(d.proposedSupervisor) },
+        { label: 'Research Keywords', value: t(d.keywords) },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
       }
 
-      if (d.abstractSummary.trim()) {
+      if (t(d.abstractSummary)) {
         blocks.push({ kind: 'section-heading', title: '1. ABSTRACT / EXECUTIVE SUMMARY' });
         splitEssayParagraphs(d.abstractSummary).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
         });
       }
 
-      if (d.problemStatement.trim()) {
+      if (t(d.problemStatement)) {
         blocks.push({ kind: 'section-heading', title: '2. BACKGROUND & PROBLEM STATEMENT' });
         splitEssayParagraphs(d.problemStatement).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
@@ -729,14 +947,14 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         blocks.push({ kind: 'bullet-list', items: rqs });
       }
 
-      if (d.literatureGap.trim()) {
+      if (t(d.literatureGap)) {
         blocks.push({ kind: 'section-heading', title: '4. LITERATURE CONTEXT & KNOWLEDGE GAP' });
         splitEssayParagraphs(d.literatureGap).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
         });
       }
 
-      if (d.methodologyDesign.trim()) {
+      if (t(d.methodologyDesign)) {
         blocks.push({
           kind: 'section-heading',
           title: '5. METHODOLOGY & ANALYTICAL DESIGN',
@@ -746,7 +964,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      if (d.expectedContributions.trim()) {
+      if (t(d.expectedContributions)) {
         blocks.push({
           kind: 'section-heading',
           title: '6. EXPECTED OUTCOMES & SIGNIFICANCE',
@@ -756,8 +974,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const milestones = d.timelineMilestones.filter(
-        (m) => m.phase.trim() || m.timeframe.trim() || m.deliverable.trim()
+      const milestones = (d.timelineMilestones || []).filter(
+        (m) => m && (t(m.phase) || t(m.timeframe) || t(m.deliverable))
       );
       if (milestones.length > 0) {
         blocks.push({ kind: 'section-heading', title: '7. RESEARCH TIMELINE & MILESTONES' });
@@ -766,14 +984,14 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
           columns: ['Research Phase', 'Timeframe', 'Key Deliverable'],
           colWidthsPct: [26, 20, 54],
           rows: milestones.map((m) => [
-            m.phase.trim() || 'Phase',
-            m.timeframe.trim() || '—',
-            m.deliverable.trim() || '—',
+            t(m.phase) || 'Phase',
+            t(m.timeframe) || '—',
+            t(m.deliverable) || '—',
           ]),
         });
       }
 
-      if (d.budgetOrResourceNeeds.trim()) {
+      if (t(d.budgetOrResourceNeeds)) {
         blocks.push({
           kind: 'section-heading',
           title: '8. RESOURCES & EQUIPMENT REQUIREMENTS',
@@ -796,7 +1014,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         category: 'research_proposal',
         fontMode: 'serif',
         headerStyle: 'research-title',
-        title: d.proposalTitle.trim() || 'Research Proposal',
+        title: t(d.proposalTitle) || 'Research Proposal',
         subtitle: joinNonEmpty([d.targetInstitution, d.targetDepartment], ' · ') || undefined,
         contactLine: joinNonEmpty([d.applicantName, d.applicantEmail]),
         footerText: makeFooterStamp(d.applicantName, 'research_proposal'),
@@ -809,26 +1027,26 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       const blocks: BlueprintBlock[] = [];
 
       const metaRows = [
-        { label: 'Applicant', value: d.applicantName.trim() },
-        { label: 'Target Degree', value: d.targetDegree.trim() },
+        { label: 'Applicant', value: t(d.applicantName) },
+        { label: 'Target Degree', value: t(d.targetDegree) },
         {
           label: 'Host Institution',
           value: joinNonEmpty([d.hostInstitution, d.hostCountry], ', '),
         },
-        { label: 'Program Duration', value: d.programDuration.trim() },
+        { label: 'Program Duration', value: t(d.programDuration) },
       ].filter((r) => r.value);
       if (metaRows.length > 0) {
         blocks.push({ kind: 'meta-grid', rows: metaRows });
       }
 
-      if (d.academicBackground.trim()) {
+      if (t(d.academicBackground)) {
         blocks.push({ kind: 'section-heading', title: '1. ACADEMIC BACKGROUND & READINESS' });
         splitEssayParagraphs(d.academicBackground).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
         });
       }
 
-      if (d.purposeAndSpecialization.trim()) {
+      if (t(d.purposeAndSpecialization)) {
         blocks.push({
           kind: 'section-heading',
           title: '2. PURPOSE OF STUDY & SPECIALIZATION FOCUS',
@@ -838,8 +1056,8 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      const terms = d.studyTerms.filter(
-        (t) => t.termLabel.trim() || t.courses.trim() || t.academicGoal.trim()
+      const terms = (d.studyTerms || []).filter(
+        (item) => item && (t(item.termLabel) || t(item.courses) || t(item.academicGoal))
       );
       if (terms.length > 0) {
         blocks.push({
@@ -850,15 +1068,15 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
           kind: 'table',
           columns: ['Academic Term', 'Courses & Modules', 'Academic Milestones'],
           colWidthsPct: [22, 39, 39],
-          rows: terms.map((t) => [
-            t.termLabel.trim() || 'Academic Term',
-            t.courses.trim() || '—',
-            t.academicGoal.trim() || '—',
+          rows: terms.map((item) => [
+            t(item.termLabel) || 'Academic Term',
+            t(item.courses) || '—',
+            t(item.academicGoal) || '—',
           ]),
         });
       }
 
-      if (d.languageAndTechnicalPrep.trim()) {
+      if (t(d.languageAndTechnicalPrep)) {
         blocks.push({
           kind: 'section-heading',
           title: '4. LANGUAGE & TECHNICAL PREPARATION',
@@ -868,7 +1086,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      if (d.postStudyCareerImpact.trim()) {
+      if (t(d.postStudyCareerImpact)) {
         blocks.push({
           kind: 'section-heading',
           title: '5. POST-STUDY CAREER & IMPACT PLAN',
@@ -878,11 +1096,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         });
       }
 
-      if (d.applicantName.trim()) {
+      if (t(d.applicantName)) {
         blocks.push({
           kind: 'signature',
           signOff: 'Prepared by,',
-          name: d.applicantName.trim(),
+          name: t(d.applicantName),
           subline: joinNonEmpty([d.applicantEmail, d.applicantLocation], ' · ') || undefined,
         });
       }
@@ -891,7 +1109,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
         category: 'study_plan',
         fontMode: 'serif',
         headerStyle: 'study-plan',
-        title: (d.documentTitle.trim() || 'Academic Study Plan').toUpperCase(),
+        title: (t(d.documentTitle) || 'Academic Study Plan').toUpperCase(),
         subtitle:
           joinNonEmpty([d.targetDegree, d.hostInstitution, d.hostCountry], ' · ') || undefined,
         contactLine: joinNonEmpty([d.applicantName, d.applicantEmail, d.applicantLocation]),

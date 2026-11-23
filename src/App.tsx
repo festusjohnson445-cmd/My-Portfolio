@@ -334,7 +334,7 @@ export default function App() {
               <HomeView onNavigatePart={handleSelectPart} />
 
               {/* Bottom Sequential Navigator */}
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 mt-auto">
+              <div className="w-full max-w-[1440px] mx-auto px-2 sm:px-4 lg:px-5 pb-10 mt-auto">
                 <div className="p-4 sm:p-4.5 rounded-2xl bg-[#e6ecf4] border border-[#b8c6d4] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
                   <div className="text-[11px] sm:text-[13px] text-slate-700">
                     <span className="text-cyan-900 font-bold">NEXT:</span> Explore published mechanical projects, CAD studies, and engineering reports.

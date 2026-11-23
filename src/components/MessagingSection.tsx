@@ -58,6 +58,7 @@ import {
   updateMessageInSupabase,
   markConversationMessagesAsSeenInSupabase,
   deleteConversationFromSupabase,
+  resilientSupabaseUpsert,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -100,10 +101,29 @@ export interface Conversation {
   avatarUrl?: string;   // Visitor's custom uploaded picture
   lastMessage?: string;
   lastTimestamp?: string;
+  lastMessageAtIso?: string;
   unread: boolean;
   important?: boolean;  // Star / Important flag
   messages: ChatMessage[];
 }
+
+const getConvSortMs = (c?: Conversation | null): number => {
+  if (!c) return 0;
+  if (c.lastMessageAtIso) {
+    const parsed = Date.parse(c.lastMessageAtIso);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  const lastMsg = c.messages && c.messages.length > 0 ? c.messages[c.messages.length - 1] : undefined;
+  if (lastMsg?.created_at) {
+    const parsed = Date.parse(lastMsg.created_at);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  if (c.lastTimestamp) {
+    const parsed = Date.parse(c.lastTimestamp);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return 0;
+};
 
 const STORAGE_KEY_CHATS = 'fesline_whatsapp_conversations';
 const STORAGE_KEY_VISITOR_ID = 'fesline_current_visitor_id';
@@ -1574,6 +1594,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                 messages: merged,
                 lastMessage: last?.text || (last?.voiceNote ? '🎤 Voice note' : (last?.attachments?.length ? `📎 ${last.attachments[0].name}` : existing.lastMessage)),
                 lastTimestamp: last?.timestamp || existing.lastTimestamp,
+                lastMessageAtIso: last?.created_at || existing.lastMessageAtIso,
               };
 
               const nextList = prev.map((c, i) => (i === idx ? updatedConv : c));
@@ -1639,17 +1660,36 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
   // Owner toggles important (Star) status on a conversation
   const handleToggleImportant = (convId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setConversations((prev) =>
-      prev.map((c) => {
+    let nextImportantValue = false;
+    setConversations((prev) => {
+      const updated = prev.map((c) => {
         if (c.id === convId) {
+          nextImportantValue = !c.important;
           return {
             ...c,
-            important: !c.important
+            important: nextImportantValue,
           };
         }
         return c;
-      })
-    );
+      });
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    const canonicalId = convId.startsWith('conv_') ? convId : `conv_${convId}`;
+    resilientSupabaseUpsert(
+      'conversations',
+      {
+        id: canonicalId,
+        important: nextImportantValue,
+        updated_at: new Date().toISOString(),
+      },
+      'id'
+    ).catch((err) => {
+      console.warn('[Conversation Important Persist Note]:', err);
+    });
   };
 
   // Owner or visitor initiates inquiry deletion
@@ -1695,15 +1735,35 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         setActiveOwnerConvId(remaining[0]?.id || '');
       }
 
-      // 4. If visitor deleted their active inquiry, reset session with a clean new visitorId
-      if (visitorId === targetId) {
-        const freshId = `visitor-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      // 4. If visitor deleted their active inquiry, reset session with a clean new visitorId & convId
+      const cleanTargetId = targetId.replace(/^conv_/, '');
+      const cleanVisitorId = (visitorId || '').replace(/^conv_/, '');
+      if (
+        !isOwner &&
+        (visitorId === targetId ||
+          cleanVisitorId === cleanTargetId ||
+          targetId === `conv_${cleanVisitorId}`)
+      ) {
+        const freshId = `visitor_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const freshConvId = `conv_${freshId}`;
         try {
+          if (cleanVisitorId) {
+            localStorage.removeItem(`fesline_visitor_chat_${cleanVisitorId}`);
+            localStorage.removeItem(`fesline_visitor_chat_visitor_${cleanVisitorId}`);
+          }
+          if (visitorId) {
+            localStorage.removeItem(`fesline_visitor_chat_${visitorId}`);
+          }
+          localStorage.setItem('visitor_id', freshId);
+          localStorage.setItem('conversation_id', freshConvId);
           localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
+          localStorage.setItem('fesline_current_conversation_id', freshConvId);
+          localStorage.setItem('fesline_visitor_access_key', freshId);
           sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshId);
           document.cookie = `fesline_visitor_id=${encodeURIComponent(freshId)}; path=/; max-age=31536000; SameSite=Lax`;
         } catch {}
         setVisitorId(freshId);
+        setConversationId(freshConvId);
       }
 
       // 5. Clean up from Firestore & Supabase so unread badge drops immediately
@@ -1883,18 +1943,38 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     e.preventDefault();
     if (!editingConv) return;
     const trimmed = editNameInput.trim();
-    setConversations((prev) =>
-      prev.map((c) => {
-        if (c.id === editingConv.id) {
+    const trimmedRole = editRoleInput.trim();
+    const targetId = editingConv.id;
+    setConversations((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === targetId) {
           return {
             ...c,
             customName: trimmed.length > 0 ? trimmed : undefined,
-            roleOrCompany: editRoleInput.trim()
+            roleOrCompany: trimmedRole,
           };
         }
         return c;
-      })
-    );
+      });
+      try {
+        localStorage.setItem(STORAGE_KEY_CHATS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    const canonicalId = targetId.startsWith('conv_') ? targetId : `conv_${targetId}`;
+    resilientSupabaseUpsert(
+      'conversations',
+      {
+        id: canonicalId,
+        custom_name: trimmed,
+        role_or_company: trimmedRole,
+        updated_at: new Date().toISOString(),
+      },
+      'id'
+    ).catch((err) => {
+      console.warn('[Conversation Rename Persist Note]:', err);
+    });
     setEditingConv(null);
   };
 
@@ -2053,6 +2133,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       const targetOwnerConvId = (activeConversation.id && activeConversation.id !== 'inbox-empty') ? activeConversation.id : (activeOwnerConvId || conversations[0]?.id || 'inbox-empty');
       const targetVisitorId = activeConversation.visitorId || targetOwnerConvId.replace(/^conv_/, '');
 
+      const nowIso = new Date().toISOString();
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
@@ -2063,7 +2144,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         timestamp: timeStr,
         status: 'unseen',
         voiceNote: voiceData,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
 
       // 1. Live Message Appending & Chronological Interleaving:
@@ -2084,6 +2165,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
               messages: nextMsgs,
               lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
               lastTimestamp: timeStr,
+              lastMessageAtIso: nowIso,
             };
           }
           return c;
@@ -2157,6 +2239,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         localStorage.setItem('fesline_visitor_access_key', currentVisitorId);
       } catch {}
 
+      const nowIso = new Date().toISOString();
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'visitor',
@@ -2167,7 +2250,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         timestamp: timeStr,
         status: 'unseen',
         voiceNote: voiceData,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
 
       // 1. Live Message Appending & Chronological Interleaving:
@@ -2192,6 +2275,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                 messages: nextMsgs,
                 lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
                 lastTimestamp: timeStr,
+                lastMessageAtIso: nowIso,
               };
             }
             return c;
@@ -2211,6 +2295,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
             messages: [visitorMsg],
             lastMessage: `🎤 Voice note (${formatDuration(duration)})`,
             lastTimestamp: timeStr,
+            lastMessageAtIso: nowIso,
           };
           updated = [newVisitorRecord, ...prev];
         }
@@ -2362,6 +2447,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       const targetOwnerConvId = (activeConversation.id && activeConversation.id !== 'inbox-empty') ? activeConversation.id : (activeOwnerConvId || conversations[0]?.id || 'inbox-empty');
       const targetVisitorId = activeConversation.visitorId || targetOwnerConvId.replace(/^conv_/, '');
 
+      const nowIso = new Date().toISOString();
       const festusMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'festus',
@@ -2372,7 +2458,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         timestamp: timeStr,
         status: 'unseen',
         attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
 
       // 1. Live Message Appending & Chronological Interleaving:
@@ -2393,7 +2479,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
               unread: false,
               messages: nextMsgs,
               lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
-              lastTimestamp: timeStr
+              lastTimestamp: timeStr,
+              lastMessageAtIso: nowIso,
             };
           }
           return c;
@@ -2470,6 +2557,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         localStorage.setItem('fesline_visitor_access_key', currentVisitorId);
       } catch {}
 
+      const nowIso = new Date().toISOString();
       const visitorMsg: ChatMessage = {
         id: generateMessageId(),
         sender: 'visitor',
@@ -2480,7 +2568,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         timestamp: timeStr,
         status: 'unseen', // Unseen until owner logs in and opens it
         attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
       };
 
       // 1. Live Message Appending & Chronological Interleaving:
@@ -2506,7 +2594,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                 unread: true,
                 messages: nextMsgs,
                 lastMessage: currentText || (currentAttachments.length > 0 ? `📎 ${currentAttachments[0].name}` : 'File sent'),
-                lastTimestamp: timeStr
+                lastTimestamp: timeStr,
+                lastMessageAtIso: nowIso,
               };
               return uConv;
             }
@@ -2526,7 +2615,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
             important: false,
             messages: [visitorMsg],
             lastMessage: currentText || 'New visitor message',
-            lastTimestamp: timeStr
+            lastTimestamp: timeStr,
+            lastMessageAtIso: nowIso,
           };
           updated = [newVisitorRecord, ...prev];
         }
@@ -2703,9 +2793,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
           return tA - tB;
         });
 
-        const timeExisting = existing.lastTimestamp ? new Date(existing.lastTimestamp).getTime() : 0;
-        const timeC = c.lastTimestamp ? new Date(c.lastTimestamp).getTime() : 0;
+        const timeExisting = getConvSortMs(existing);
+        const timeC = getConvSortMs(c);
         const isCNewer = timeC >= timeExisting;
+        const latestIso =
+          (isCNewer ? c.lastMessageAtIso : existing.lastMessageAtIso) ||
+          mergedMsgs[mergedMsgs.length - 1]?.created_at ||
+          existing.lastMessageAtIso ||
+          c.lastMessageAtIso;
 
         dedupedMap.set(normalizedKey, {
           ...(isCNewer ? c : existing),
@@ -2714,6 +2809,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
           avatarUrl: c.avatarUrl || existing.avatarUrl || '',
           roleOrCompany: c.roleOrCompany || existing.roleOrCompany || 'Visitor Inquiry',
           messages: mergedMsgs,
+          lastMessageAtIso: latestIso,
           unread: existing.unread || c.unread,
           important: existing.important || c.important,
         });
@@ -2721,11 +2817,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     }
 
     const list = Array.from(dedupedMap.values());
-    list.sort((a, b) => {
-      const timeA = a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : 0;
-      const timeB = b.lastTimestamp ? new Date(b.lastTimestamp).getTime() : 0;
-      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
-    });
+    list.sort((a, b) => getConvSortMs(b) - getConvSortMs(a));
 
     return list;
   }, [conversations, sidebarFilter]);

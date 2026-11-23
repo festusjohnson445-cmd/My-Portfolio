@@ -529,43 +529,29 @@ CREATE INDEX IF NOT EXISTS idx_media_assets_status ON public.media_assets(status
 
 -- 8. ENABLE REALTIME PUBLICATIONS SAFELY
 DO $$
+DECLARE tbl TEXT;
 BEGIN
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.projects;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.articles;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.article_comments;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.profile_experiences;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.profile_publications;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.profile_achievements;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.website_settings;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.media_assets;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
+  FOREACH tbl IN ARRAY ARRAY[
+    'projects',
+    'articles',
+    'article_comments',
+    'profile_experiences',
+    'profile_publications',
+    'profile_achievements',
+    'website_settings',
+    'media_assets',
+    'materials'
+  ]
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_publication_tables
+         WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+       ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+    END IF;
+  END LOOP;
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 -- 9. ENGINEERING HUB: STUDENT MATERIALS FIELDS, REAL-TIME VIEWS & LIKES, VISITOR UPLOAD POLICIES
@@ -710,16 +696,145 @@ WITH CHECK (
   AND (storage.foldername(name))[1] = 'career-studio'
 );
 
+DROP POLICY IF EXISTS "Public Upload Generated Docs to materials" ON storage.objects;
+CREATE POLICY "Public Upload Generated Docs to materials"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'generated-docs'
+);
+
+DROP POLICY IF EXISTS "Public Update Generated Docs in materials" ON storage.objects;
+CREATE POLICY "Public Update Generated Docs in materials"
+ON storage.objects FOR UPDATE TO public
+USING (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'generated-docs'
+)
+WITH CHECK (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'generated-docs'
+);
+
+DROP POLICY IF EXISTS "Public Delete Generated Docs in materials" ON storage.objects;
+CREATE POLICY "Public Delete Generated Docs in materials"
+ON storage.objects FOR DELETE TO public
+USING (
+  bucket_id = 'materials'
+  AND (storage.foldername(name))[1] = 'generated-docs'
+);
+
 DROP POLICY IF EXISTS "Owner Delete Career Studio Objects" ON storage.objects;
 CREATE POLICY "Owner Delete Career Studio Objects"
 ON storage.objects FOR DELETE TO authenticated
 USING (bucket_id = 'materials' AND public.is_portfolio_owner());
 
-DO $$
-BEGIN
-  BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.career_studio_documents;
-  EXCEPTION WHEN duplicate_object THEN NULL;
-  END;
-END $$;
+-- 11. GENERATED DOCUMENTS (CAREER STUDIO LIVE SCHEMA & RPC COUNTERS)
+CREATE TABLE IF NOT EXISTS public.generated_documents (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  author_name TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  form_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  preview_image_url TEXT DEFAULT '',
+  pdf_url TEXT DEFAULT '',
+  docx_url TEXT DEFAULT '',
+  storage_paths TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published', 'archived')),
+  views_count INTEGER NOT NULL DEFAULT 0,
+  downloads_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
+ALTER TABLE public.generated_documents
+  ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS storage_paths TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS views_count INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS downloads_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE public.generated_documents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Generated Documents" ON public.generated_documents;
+CREATE POLICY "Public Read Generated Documents"
+ON public.generated_documents FOR SELECT TO public
+USING (true);
+
+DROP POLICY IF EXISTS "Public Insert Generated Documents" ON public.generated_documents;
+CREATE POLICY "Public Insert Generated Documents"
+ON public.generated_documents FOR INSERT TO public
+WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Update Generated Documents" ON public.generated_documents;
+CREATE POLICY "Public Update Generated Documents"
+ON public.generated_documents FOR UPDATE TO public
+USING (true)
+WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Delete Generated Documents" ON public.generated_documents;
+CREATE POLICY "Public Delete Generated Documents"
+ON public.generated_documents FOR DELETE TO public
+USING (true);
+
+CREATE INDEX IF NOT EXISTS idx_generated_docs_status_created ON public.generated_documents(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_generated_docs_category ON public.generated_documents(category);
+
+CREATE OR REPLACE FUNCTION public.increment_generated_document_views(target_doc_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.generated_documents
+  SET views_count = COALESCE(views_count, 0) + 1
+  WHERE id = target_doc_id
+  RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_generated_document_views(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.increment_generated_document_downloads(target_doc_id TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.generated_documents
+  SET downloads_count = COALESCE(downloads_count, 0) + 1
+  WHERE id = target_doc_id
+  RETURNING downloads_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_generated_document_downloads(TEXT) TO anon, authenticated;
+
+DO $$
+DECLARE tbl TEXT;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'career_studio_documents',
+    'generated_documents',
+    'visitor_profiles',
+    'conversations',
+    'messages',
+    'profiles'
+  ]
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_publication_tables
+         WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+       ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+    END IF;
+  END LOOP;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;

@@ -1236,11 +1236,14 @@ export async function toggleMaterialLikeInSupabase(
         return retry.data;
       }
     }
-    if (typeof fallbackNextCount === 'number') {
-      await supabase
-        .from('materials')
-        .update({ likes_count: Math.max(0, fallbackNextCount) })
-        .eq('id', safeUuid);
+    if (typeof fallbackNextCount === 'number' && getAuthenticatedOwnerUid()) {
+      const { data: sessData } = await supabase.auth.getSession();
+      if (isRealOwnerUser(sessData?.session?.user)) {
+        await supabase
+          .from('materials')
+          .update({ likes_count: Math.max(0, fallbackNextCount) })
+          .eq('id', safeUuid);
+      }
     }
     return null;
   } catch {
@@ -1364,10 +1367,7 @@ export async function saveConversationToSupabaseTable(conv: any): Promise<boolea
     const { error } = await resilientSupabaseUpsert('conversations', payload, 'id');
     if (error) {
       console.error('[Supabase DB Conversations Save Error]:', error);
-      const { error: chatErr } = await resilientSupabaseUpsert('chats', payload, 'id');
-      if (chatErr) {
-        console.error('[Supabase DB Chats Fallback Save Error]:', chatErr);
-      }
+      return false;
     }
     return true;
   } catch (err) {
@@ -1922,7 +1922,6 @@ export async function deleteConversationFromSupabase(conversationId: string): Pr
       .in('id', candidates);
     await supabase.from('messages').delete().in('conversation_id', candidates);
     await supabase.from('conversations').delete().in('id', candidates);
-    await supabase.from('chats').delete().in('id', candidates);
   } catch (err) {
     console.warn('[deleteConversationFromSupabase note]:', err);
   } finally {
@@ -2106,19 +2105,13 @@ export async function updateMessageInSupabase(
 ): Promise<boolean> {
   try {
     const safeId = ensureValidUuid(messageId);
-    let { error } = await supabase
+    const { error } = await supabase
       .from('messages')
       .update({ content: newContent })
       .or(`id.eq.${messageId},id.eq.${safeId}`);
 
     if (error) {
       console.warn('[Supabase update message notice]:', error.message || error);
-      try {
-        await supabase
-          .from('messages')
-          .update({ text: newContent })
-          .or(`id.eq.${messageId},id.eq.${safeId}`);
-      } catch {}
     }
 
     if (conversationId) {
@@ -2534,86 +2527,183 @@ export async function testSupabaseConnection(): Promise<{
 
 export const SUPABASE_RLS_SCHEMA_SQL = `
 -- ============================================================================
--- FESLINE MECHANICAL ENGINEERING: SUPABASE DATABASE & STORAGE RLS POLICIES
+-- FESLINE ENGINEERING PORTFOLIO: COMPLETE IDEMPOTENT SUPABASE SCHEMA & RLS SQL
+-- Safe to run multiple times without modifying or deleting existing records.
 -- ============================================================================
 
--- 1. Storage Buckets Creation
--- Create public 'avatars' bucket
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('avatars', 'avatars', true)
-ON CONFLICT (id) DO UPDATE SET public = true;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Create 'Materials' bucket (with capital 'M' for shared voice notes, files, and images)
+-- 1. OWNER IDENTITY HELPER FUNCTION
+CREATE OR REPLACE FUNCTION public.is_portfolio_owner()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT (
+    auth.uid() IS NOT NULL
+    AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+    AND COALESCE(auth.jwt() ->> 'email', '') <> ''
+    AND COALESCE(auth.jwt() ->> 'email', '') <> 'public_visitor@feslineguest.com'
+  );
+$$;
+
+-- 2. STORAGE BUCKETS
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('Materials', 'Materials', true, 52428800, NULL)
+VALUES ('avatars', 'avatars', true, 52428800, NULL)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
--- Also support lowercase alias 'materials'
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('materials', 'materials', true)
-ON CONFLICT (id) DO UPDATE SET public = true;
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('Materials', 'Materials', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
 
--- Storage RLS: Public read for avatars
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('materials', 'materials', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('projects', 'projects', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('articles', 'articles', true, 209715200, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true, file_size_limit = 209715200, allowed_mime_types = NULL;
+
+-- Storage Policies: avatars
+DROP POLICY IF EXISTS "Public Read Avatars" ON storage.objects;
 CREATE POLICY "Public Read Avatars" ON storage.objects
-FOR SELECT USING (bucket_id = 'avatars');
+FOR SELECT TO public USING (bucket_id = 'avatars');
 
--- Storage RLS: Owner-only upload/update to avatars under auth.uid()
+DROP POLICY IF EXISTS "Owner Upload Avatars" ON storage.objects;
 CREATE POLICY "Owner Upload Avatars" ON storage.objects
 FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+WITH CHECK (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
 
+DROP POLICY IF EXISTS "Visitor Upload Avatars" ON storage.objects;
+CREATE POLICY "Visitor Upload Avatars" ON storage.objects
+FOR INSERT TO public
+WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = 'visitors');
+
+DROP POLICY IF EXISTS "Visitor Update Avatars" ON storage.objects;
+CREATE POLICY "Visitor Update Avatars" ON storage.objects
+FOR UPDATE TO public
+USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = 'visitors')
+WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = 'visitors');
+
+DROP POLICY IF EXISTS "Owner Update Avatars" ON storage.objects;
 CREATE POLICY "Owner Update Avatars" ON storage.objects
 FOR UPDATE TO authenticated
-USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+USING (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
 
+DROP POLICY IF EXISTS "Owner Delete Avatars" ON storage.objects;
 CREATE POLICY "Owner Delete Avatars" ON storage.objects
 FOR DELETE TO authenticated
-USING (bucket_id = 'avatars' AND (storage.foldername(name))[1] = auth.uid()::text);
+USING (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
 
--- Storage RLS for "Materials" bucket: Allow public & authenticated users to upload, read, update, and manage
+-- Storage Policies: Materials (chat files, voice notes, fallback materials)
 DROP POLICY IF EXISTS "Public Upload to Materials Bucket" ON storage.objects;
-CREATE POLICY "Public Upload to Materials Bucket"
-ON storage.objects
-FOR INSERT
-TO public
-WITH CHECK (bucket_id = 'Materials');
+CREATE POLICY "Public Upload to Materials Bucket" ON storage.objects
+FOR INSERT TO public WITH CHECK (bucket_id = 'Materials');
 
 DROP POLICY IF EXISTS "Public Read from Materials Bucket" ON storage.objects;
-CREATE POLICY "Public Read from Materials Bucket"
-ON storage.objects
-FOR SELECT
-TO public
-USING (bucket_id = 'Materials');
+CREATE POLICY "Public Read from Materials Bucket" ON storage.objects
+FOR SELECT TO public USING (bucket_id = 'Materials');
 
 DROP POLICY IF EXISTS "Public Update Materials Bucket" ON storage.objects;
-CREATE POLICY "Public Update Materials Bucket"
-ON storage.objects
-FOR UPDATE
-TO public
-USING (bucket_id = 'Materials')
-WITH CHECK (bucket_id = 'Materials');
+CREATE POLICY "Public Update Materials Bucket" ON storage.objects
+FOR UPDATE TO public USING (bucket_id = 'Materials') WITH CHECK (bucket_id = 'Materials');
 
 DROP POLICY IF EXISTS "Public Delete Materials Bucket" ON storage.objects;
-CREATE POLICY "Public Delete Materials Bucket"
-ON storage.objects
-FOR DELETE
-TO public
-USING (bucket_id = 'Materials');
+CREATE POLICY "Public Delete Materials Bucket" ON storage.objects
+FOR DELETE TO public USING (bucket_id = 'Materials');
 
--- Storage RLS: Public read for materials
+-- Storage Policies: materials (engineering hub, student submissions, generated-docs, career-studio, chat)
+DROP POLICY IF EXISTS "Public Read Materials" ON storage.objects;
 CREATE POLICY "Public Read Materials" ON storage.objects
-FOR SELECT USING (bucket_id = 'materials');
+FOR SELECT TO public USING (bucket_id = 'materials');
 
--- Storage RLS: Owner-only upload to materials under auth.uid()
+DROP POLICY IF EXISTS "Owner Upload Materials" ON storage.objects;
 CREATE POLICY "Owner Upload Materials" ON storage.objects
 FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = auth.uid()::text);
+WITH CHECK (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
 
+DROP POLICY IF EXISTS "Owner Update Materials" ON storage.objects;
+CREATE POLICY "Owner Update Materials" ON storage.objects
+FOR UPDATE TO authenticated
+USING (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+
+DROP POLICY IF EXISTS "Owner Delete Materials" ON storage.objects;
 CREATE POLICY "Owner Delete Materials" ON storage.objects
 FOR DELETE TO authenticated
-USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = auth.uid()::text);
+USING (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
 
--- 2. Profiles Table & RLS
+DROP POLICY IF EXISTS "Public Upload Student Materials to materials" ON storage.objects;
+CREATE POLICY "Public Upload Student Materials to materials" ON storage.objects
+FOR INSERT TO public
+WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'student-submissions');
+
+DROP POLICY IF EXISTS "Public Upload Generated Docs to materials" ON storage.objects;
+CREATE POLICY "Public Upload Generated Docs to materials" ON storage.objects
+FOR INSERT TO public
+WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
+
+DROP POLICY IF EXISTS "Public Update Generated Docs in materials" ON storage.objects;
+CREATE POLICY "Public Update Generated Docs in materials" ON storage.objects
+FOR UPDATE TO public
+USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs')
+WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
+
+DROP POLICY IF EXISTS "Public Delete Generated Docs in materials" ON storage.objects;
+CREATE POLICY "Public Delete Generated Docs in materials" ON storage.objects
+FOR DELETE TO public
+USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
+
+DROP POLICY IF EXISTS "Public Upload Career Studio to materials" ON storage.objects;
+CREATE POLICY "Public Upload Career Studio to materials" ON storage.objects
+FOR INSERT TO public
+WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'career-studio');
+
+DROP POLICY IF EXISTS "Public Upload Chat Media to materials" ON storage.objects;
+CREATE POLICY "Public Upload Chat Media to materials" ON storage.objects
+FOR INSERT TO public
+WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'chat');
+
+-- Storage Policies: projects & articles
+DROP POLICY IF EXISTS "Public Read Projects Bucket" ON storage.objects;
+CREATE POLICY "Public Read Projects Bucket" ON storage.objects
+FOR SELECT TO public USING (bucket_id = 'projects');
+
+DROP POLICY IF EXISTS "Owner Upload Projects Bucket" ON storage.objects;
+CREATE POLICY "Owner Upload Projects Bucket" ON storage.objects
+FOR INSERT TO authenticated WITH CHECK (bucket_id = 'projects' AND public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Owner Update Projects Bucket" ON storage.objects;
+CREATE POLICY "Owner Update Projects Bucket" ON storage.objects
+FOR UPDATE TO authenticated USING (bucket_id = 'projects' AND public.is_portfolio_owner()) WITH CHECK (bucket_id = 'projects' AND public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Owner Delete Projects Bucket" ON storage.objects;
+CREATE POLICY "Owner Delete Projects Bucket" ON storage.objects
+FOR DELETE TO authenticated USING (bucket_id = 'projects' AND public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Public Read Articles Bucket" ON storage.objects;
+CREATE POLICY "Public Read Articles Bucket" ON storage.objects
+FOR SELECT TO public USING (bucket_id = 'articles');
+
+DROP POLICY IF EXISTS "Public Upload Articles Bucket" ON storage.objects;
+CREATE POLICY "Public Upload Articles Bucket" ON storage.objects
+FOR INSERT TO public WITH CHECK (bucket_id = 'articles');
+
+DROP POLICY IF EXISTS "Owner Update Articles Bucket" ON storage.objects;
+CREATE POLICY "Owner Update Articles Bucket" ON storage.objects
+FOR UPDATE TO authenticated USING (bucket_id = 'articles' AND public.is_portfolio_owner()) WITH CHECK (bucket_id = 'articles' AND public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Owner Delete Articles Bucket" ON storage.objects;
+CREATE POLICY "Owner Delete Articles Bucket" ON storage.objects
+FOR DELETE TO authenticated USING (bucket_id = 'articles' AND public.is_portfolio_owner());
+
+-- 3. PROFILES TABLE & RLS
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name TEXT NOT NULL DEFAULT 'Festus, Olorunsogo Johnson',
@@ -2624,25 +2714,23 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS bio JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT '';
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS documents JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
--- Profiles RLS: Visitors have unauthenticated public read access
-CREATE POLICY "Allow public read access to owner profile"
-ON public.profiles FOR SELECT
-USING (true);
+DROP POLICY IF EXISTS "Allow public read access to owner profile" ON public.profiles;
+CREATE POLICY "Allow public read access to owner profile" ON public.profiles FOR SELECT USING (true);
 
--- Profiles RLS: Only authenticated owner can insert/update profile
-CREATE POLICY "Allow owner to update profile"
-ON public.profiles FOR UPDATE
-TO authenticated
-USING (auth.uid() = id);
+DROP POLICY IF EXISTS "Allow owner to update profile" ON public.profiles;
+CREATE POLICY "Allow owner to update profile" ON public.profiles FOR UPDATE TO authenticated USING (auth.uid() = id OR public.is_portfolio_owner()) WITH CHECK (auth.uid() = id OR public.is_portfolio_owner());
 
-CREATE POLICY "Allow owner to insert profile"
-ON public.profiles FOR INSERT
-TO authenticated
-WITH CHECK (auth.uid() = id);
+DROP POLICY IF EXISTS "Allow owner to insert profile" ON public.profiles;
+CREATE POLICY "Allow owner to insert profile" ON public.profiles FOR INSERT TO authenticated WITH CHECK (auth.uid() = id OR public.is_portfolio_owner());
 
--- 3. Materials Table & RLS
+-- 4. MATERIALS TABLE, RLS & RPC COUNTERS
 CREATE TABLE IF NOT EXISTS public.materials (
   id TEXT PRIMARY KEY,
   owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -2651,52 +2739,369 @@ CREATE TABLE IF NOT EXISTS public.materials (
   file_size TEXT,
   file_type TEXT,
   category TEXT,
-  description TEXT,
+  description TEXT DEFAULT '',
   author TEXT,
   preview_url TEXT,
   download_url TEXT,
   file_url TEXT,
   storage_path TEXT,
   tags TEXT[] DEFAULT ARRAY[]::TEXT[],
+  level TEXT DEFAULT '',
+  department TEXT DEFAULT '',
+  institution TEXT DEFAULT '',
   is_approved BOOLEAN DEFAULT true,
   download_count INTEGER DEFAULT 0,
+  views_count INTEGER DEFAULT 0,
+  likes_count INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+ALTER TABLE public.materials
+  ADD COLUMN IF NOT EXISTS owner_id UUID,
+  ADD COLUMN IF NOT EXISTS level TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS department TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS institution TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT true,
+  ADD COLUMN IF NOT EXISTS download_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
 ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
 
--- Materials RLS: Visitors have unauthenticated public read access
-CREATE POLICY "Allow public read access to engineering materials"
-ON public.materials FOR SELECT
-USING (true);
+DROP POLICY IF EXISTS "Allow public read access to engineering materials" ON public.materials;
+CREATE POLICY "Allow public read access to engineering materials" ON public.materials FOR SELECT USING (true);
 
--- Materials RLS: Only authenticated owner can create, update, or delete official materials
-CREATE POLICY "Allow owner to insert materials"
-ON public.materials FOR INSERT
-TO authenticated
-WITH CHECK (auth.uid() = owner_id);
+DROP POLICY IF EXISTS "Allow owner to insert materials" ON public.materials;
+CREATE POLICY "Allow owner to insert materials" ON public.materials FOR INSERT TO authenticated WITH CHECK (auth.uid() = owner_id OR public.is_portfolio_owner());
 
-CREATE POLICY "Allow owner to update materials"
-ON public.materials FOR UPDATE
-TO authenticated
-USING (auth.uid() = owner_id);
+DROP POLICY IF EXISTS "Public Insert Student Materials" ON public.materials;
+CREATE POLICY "Public Insert Student Materials" ON public.materials FOR INSERT TO public WITH CHECK (category = 'Students Materials');
 
-CREATE POLICY "Allow owner to delete materials"
-ON public.materials FOR DELETE
-TO authenticated
-USING (auth.uid() = owner_id);
+DROP POLICY IF EXISTS "Allow owner to update materials" ON public.materials;
+CREATE POLICY "Allow owner to update materials" ON public.materials FOR UPDATE TO authenticated USING (auth.uid() = owner_id OR public.is_portfolio_owner()) WITH CHECK (auth.uid() = owner_id OR public.is_portfolio_owner());
 
--- 4. Real-time Publications
-ALTER PUBLICATION supabase_realtime ADD TABLE public.materials;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+DROP POLICY IF EXISTS "Allow owner to delete materials" ON public.materials;
+DROP POLICY IF EXISTS "Owner Manage All Materials Delete" ON public.materials;
+CREATE POLICY "Owner Manage All Materials Delete" ON public.materials FOR DELETE TO authenticated USING (auth.uid() = owner_id OR public.is_portfolio_owner());
 
--- 5. Projects & Articles Buckets + Tables + Profile Extensions (See supabase_projects_articles_storage.sql)
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('projects', 'projects', true), ('articles', 'articles', true)
-ON CONFLICT (id) DO UPDATE SET public = true;
+CREATE INDEX IF NOT EXISTS idx_materials_created_at ON public.materials(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_materials_category ON public.materials(category);
 
--- 6. Career Studio (generated_documents) Table, RPC Counters & Materials Bucket Policy
+CREATE OR REPLACE FUNCTION public.increment_material_views(target_material_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.materials SET views_count = COALESCE(views_count, 0) + 1 WHERE id = target_material_id RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.increment_material_views(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.increment_material_likes(target_material_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.materials SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = target_material_id RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.increment_material_likes(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.decrement_material_likes(target_material_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.materials SET likes_count = GREATEST(0, COALESCE(likes_count, 0) - 1) WHERE id = target_material_id RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.decrement_material_likes(TEXT) TO anon, authenticated;
+
+-- 5. PROJECTS, ARTICLES, COMMENTS, PROFILE SECTIONS & WEBSITE SETTINGS
+CREATE TABLE IF NOT EXISTS public.projects (
+  id TEXT PRIMARY KEY,
+  slug TEXT UNIQUE,
+  owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'Mechanical Design',
+  description TEXT NOT NULL DEFAULT '',
+  overview TEXT DEFAULT '',
+  objectives TEXT DEFAULT '',
+  methodology TEXT DEFAULT '',
+  specifications JSONB DEFAULT '[]'::jsonb,
+  cad_drawings JSONB DEFAULT '[]'::jsonb,
+  is_cad_project BOOLEAN DEFAULT false,
+  cad_model_type TEXT DEFAULT '',
+  thumbnail_url TEXT DEFAULT '',
+  images JSONB DEFAULT '[]'::jsonb,
+  videos JSONB DEFAULT '[]'::jsonb,
+  tools_used TEXT[] DEFAULT ARRAY[]::TEXT[],
+  results TEXT DEFAULT '',
+  demo_links JSONB DEFAULT '[]'::jsonb,
+  documents JSONB DEFAULT '[]'::jsonb,
+  is_featured BOOLEAN DEFAULT false,
+  status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published', 'archived')),
+  sort_order INTEGER DEFAULT 0,
+  hero_inscription TEXT DEFAULT '',
+  views_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '', ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0;
+ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Published Projects" ON public.projects;
+CREATE POLICY "Public Read Published Projects" ON public.projects FOR SELECT TO public USING (status = 'published' OR public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Insert Projects" ON public.projects;
+CREATE POLICY "Owner Insert Projects" ON public.projects FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Update Projects" ON public.projects;
+CREATE POLICY "Owner Update Projects" ON public.projects FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Delete Projects" ON public.projects;
+CREATE POLICY "Owner Delete Projects" ON public.projects FOR DELETE TO authenticated USING (public.is_portfolio_owner());
+
+CREATE OR REPLACE FUNCTION public.increment_project_views(target_project_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.projects SET views_count = COALESCE(views_count, 0) + 1 WHERE id = target_project_id AND status = 'published' RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.increment_project_views(TEXT) TO anon, authenticated;
+
+CREATE TABLE IF NOT EXISTS public.articles (
+  id TEXT PRIMARY KEY,
+  slug TEXT UNIQUE,
+  owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'General Engineering',
+  difficulty_level TEXT DEFAULT 'Intermediate',
+  reading_time TEXT DEFAULT '5 min read',
+  author_name TEXT NOT NULL DEFAULT 'Contributor',
+  is_admin_author BOOLEAN DEFAULT false,
+  thumbnail_url TEXT DEFAULT '',
+  hero_media JSONB DEFAULT '{}'::jsonb,
+  hero_inscription TEXT DEFAULT '',
+  tldr TEXT DEFAULT '',
+  toc JSONB DEFAULT '[]'::jsonb,
+  images JSONB DEFAULT '[]'::jsonb,
+  videos JSONB DEFAULT '[]'::jsonb,
+  diagrams JSONB DEFAULT '[]'::jsonb,
+  code_blocks JSONB DEFAULT '[]'::jsonb,
+  chart_data JSONB DEFAULT '[]'::jsonb,
+  bom_items JSONB DEFAULT '[]'::jsonb,
+  attachments JSONB DEFAULT '[]'::jsonb,
+  tags TEXT[] DEFAULT ARRAY[]::TEXT[],
+  likes_count INTEGER DEFAULT 0,
+  views_count INTEGER DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('draft', 'pending', 'published', 'archived')),
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.articles ADD COLUMN IF NOT EXISTS hero_inscription TEXT DEFAULT '', ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0;
+ALTER TABLE public.articles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Published Articles" ON public.articles;
+CREATE POLICY "Public Read Published Articles" ON public.articles FOR SELECT TO public USING (status = 'published' OR public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Public Submit Pending Articles or Owner Insert" ON public.articles;
+CREATE POLICY "Public Submit Pending Articles or Owner Insert" ON public.articles FOR INSERT TO public WITH CHECK ((status = 'pending' AND COALESCE(is_admin_author, false) = false) OR public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Update Articles" ON public.articles;
+CREATE POLICY "Owner Update Articles" ON public.articles FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Delete Articles" ON public.articles;
+CREATE POLICY "Owner Delete Articles" ON public.articles FOR DELETE TO authenticated USING (public.is_portfolio_owner());
+
+CREATE OR REPLACE FUNCTION public.increment_article_likes(target_article_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.articles SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = target_article_id AND status = 'published' RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.increment_article_likes(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.decrement_article_likes(target_article_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.articles SET likes_count = GREATEST(0, COALESCE(likes_count, 0) - 1) WHERE id = target_article_id AND status = 'published' RETURNING likes_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.decrement_article_likes(TEXT) TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.increment_article_views(target_article_id TEXT)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE new_count INTEGER;
+BEGIN
+  UPDATE public.articles SET views_count = COALESCE(views_count, 0) + 1 WHERE id = target_article_id AND status = 'published' RETURNING views_count INTO new_count;
+  RETURN COALESCE(new_count, 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.increment_article_views(TEXT) TO anon, authenticated;
+
+CREATE TABLE IF NOT EXISTS public.article_comments (
+  id TEXT PRIMARY KEY,
+  article_id TEXT NOT NULL REFERENCES public.articles(id) ON DELETE CASCADE,
+  author_name TEXT NOT NULL,
+  author_role TEXT DEFAULT 'Visitor',
+  content_markdown TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending', 'approved', 'rejected', 'archived')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.article_comments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Approved Comments" ON public.article_comments;
+CREATE POLICY "Public Read Approved Comments" ON public.article_comments FOR SELECT TO public USING (status = 'approved' OR public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Public Submit Comment Immediately" ON public.article_comments;
+CREATE POLICY "Public Submit Comment Immediately" ON public.article_comments FOR INSERT TO public WITH CHECK (status IN ('approved', 'pending') OR public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Update Comments" ON public.article_comments;
+CREATE POLICY "Owner Update Comments" ON public.article_comments FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Delete Comments" ON public.article_comments;
+CREATE POLICY "Owner Delete Comments" ON public.article_comments FOR DELETE TO authenticated USING (public.is_portfolio_owner());
+
+CREATE TABLE IF NOT EXISTS public.website_settings (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  site_title TEXT DEFAULT 'Fesline Engineering Portfolio',
+  site_tagline TEXT DEFAULT 'Mechanical Engineer | CAD Designer | Web Developer',
+  allow_visitor_articles BOOLEAN DEFAULT true,
+  require_article_approval BOOLEAN DEFAULT true,
+  require_comment_approval BOOLEAN DEFAULT true,
+  admin_author_label TEXT DEFAULT 'Chief Admin',
+  appearance_config JSONB DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.website_settings ADD COLUMN IF NOT EXISTS appearance_config JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.website_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Website Settings" ON public.website_settings;
+CREATE POLICY "Public Read Website Settings" ON public.website_settings FOR SELECT TO public USING (true);
+DROP POLICY IF EXISTS "Owner Manage Website Settings Insert" ON public.website_settings;
+CREATE POLICY "Owner Manage Website Settings Insert" ON public.website_settings FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Manage Website Settings Update" ON public.website_settings;
+CREATE POLICY "Owner Manage Website Settings Update" ON public.website_settings FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+
+CREATE TABLE IF NOT EXISTS public.media_assets (
+  id TEXT PRIMARY KEY,
+  bucket TEXT NOT NULL CHECK (bucket IN ('projects', 'articles', 'materials', 'avatars')),
+  storage_path TEXT NOT NULL DEFAULT '',
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'document')),
+  file_name TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT '',
+  resolution TEXT DEFAULT '',
+  width INTEGER DEFAULT 0,
+  height INTEGER DEFAULT 0,
+  duration_sec NUMERIC(10, 2) DEFAULT 0,
+  original_bytes BIGINT DEFAULT 0,
+  optimized_bytes BIGINT DEFAULT 0,
+  compression_pct NUMERIC(6, 2) DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('queued', 'processing', 'uploading', 'completed', 'failed', 'cancelled')),
+  primary_url TEXT NOT NULL DEFAULT '',
+  fallback_urls JSONB DEFAULT '{}'::jsonb,
+  poster_url TEXT DEFAULT '',
+  vtt_thumbnails_url TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.media_assets ADD COLUMN IF NOT EXISTS fallback_urls JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.media_assets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Media Assets" ON public.media_assets;
+CREATE POLICY "Public Read Media Assets" ON public.media_assets FOR SELECT TO public USING (true);
+DROP POLICY IF EXISTS "Public Insert Media Assets" ON public.media_assets;
+CREATE POLICY "Public Insert Media Assets" ON public.media_assets FOR INSERT TO public WITH CHECK (true);
+DROP POLICY IF EXISTS "Owner Update Media Assets" ON public.media_assets;
+CREATE POLICY "Owner Update Media Assets" ON public.media_assets FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Delete Media Assets" ON public.media_assets;
+CREATE POLICY "Owner Delete Media Assets" ON public.media_assets FOR DELETE TO authenticated USING (public.is_portfolio_owner());
+
+-- 6. MESSAGING TABLES (visitor_profiles, conversations, messages)
+CREATE TABLE IF NOT EXISTS public.visitor_profiles (
+  visitor_id TEXT PRIMARY KEY,
+  display_name TEXT DEFAULT 'Visitor',
+  role_subject TEXT DEFAULT 'Visitor Direct Chat',
+  avatar_url TEXT DEFAULT '',
+  avatar_color TEXT DEFAULT 'bg-slate-700',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.visitor_profiles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read/write visitor_profiles" ON public.visitor_profiles;
+CREATE POLICY "Public read/write visitor_profiles" ON public.visitor_profiles FOR ALL TO public USING (true) WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.conversations (
+  id TEXT PRIMARY KEY,
+  visitor_id TEXT,
+  owner_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  default_label TEXT DEFAULT 'Direct Message',
+  custom_name TEXT,
+  visitor_name TEXT,
+  avatar_url TEXT,
+  role_or_company TEXT DEFAULT 'Visitor Direct Chat',
+  unread BOOLEAN DEFAULT true,
+  unread_count INTEGER DEFAULT 0,
+  important BOOLEAN DEFAULT false,
+  last_message TEXT,
+  last_message_at TIMESTAMPTZ DEFAULT now(),
+  last_timestamp TEXT,
+  messages JSONB DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.conversations
+  ADD COLUMN IF NOT EXISTS visitor_id TEXT,
+  ADD COLUMN IF NOT EXISTS owner_id UUID,
+  ADD COLUMN IF NOT EXISTS default_label TEXT DEFAULT 'Direct Message',
+  ADD COLUMN IF NOT EXISTS custom_name TEXT,
+  ADD COLUMN IF NOT EXISTS visitor_name TEXT,
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT,
+  ADD COLUMN IF NOT EXISTS role_or_company TEXT DEFAULT 'Visitor Direct Chat',
+  ADD COLUMN IF NOT EXISTS unread BOOLEAN DEFAULT true,
+  ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS important BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS last_message TEXT,
+  ADD COLUMN IF NOT EXISTS last_message_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS last_timestamp TEXT,
+  ADD COLUMN IF NOT EXISTS messages JSONB DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read/write conversations" ON public.conversations;
+CREATE POLICY "Public read/write conversations" ON public.conversations FOR ALL TO public USING (true) WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id TEXT NOT NULL,
+  sender_id TEXT NOT NULL,
+  receiver_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  voice_note JSONB,
+  attachments JSONB,
+  status TEXT DEFAULT 'unseen',
+  is_edited BOOLEAN DEFAULT false,
+  edited_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.messages
+  ADD COLUMN IF NOT EXISTS voice_note JSONB,
+  ADD COLUMN IF NOT EXISTS attachments JSONB,
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'unseen',
+  ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read/write messages" ON public.messages;
+CREATE POLICY "Public read/write messages" ON public.messages FOR ALL TO public USING (true) WITH CHECK (true);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON public.messages(conversation_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_messages_unseen_status ON public.messages(status) WHERE status = 'unseen';
+CREATE INDEX IF NOT EXISTS idx_conversations_last_msg ON public.conversations(last_message_at DESC);
+
+-- 7. CAREER STUDIO (generated_documents) TABLE & RPC COUNTERS
 CREATE TABLE IF NOT EXISTS public.generated_documents (
   id TEXT PRIMARY KEY,
   category TEXT NOT NULL,
@@ -2715,64 +3120,64 @@ CREATE TABLE IF NOT EXISTS public.generated_documents (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE public.generated_documents
+  ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS storage_paths TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS views_count INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS downloads_count INTEGER NOT NULL DEFAULT 0;
+
 ALTER TABLE public.generated_documents ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Public Read Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Read Generated Documents"
-ON public.generated_documents FOR SELECT TO public
-USING (true);
-
+CREATE POLICY "Public Read Generated Documents" ON public.generated_documents FOR SELECT TO public USING (true);
 DROP POLICY IF EXISTS "Public Insert Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Insert Generated Documents"
-ON public.generated_documents FOR INSERT TO public
-WITH CHECK (true);
-
+CREATE POLICY "Public Insert Generated Documents" ON public.generated_documents FOR INSERT TO public WITH CHECK (true);
 DROP POLICY IF EXISTS "Public Update Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Update Generated Documents"
-ON public.generated_documents FOR UPDATE TO public
-USING (true)
-WITH CHECK (true);
-
+CREATE POLICY "Public Update Generated Documents" ON public.generated_documents FOR UPDATE TO public USING (true) WITH CHECK (true);
 DROP POLICY IF EXISTS "Public Delete Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Delete Generated Documents"
-ON public.generated_documents FOR DELETE TO public
-USING (true);
+CREATE POLICY "Public Delete Generated Documents" ON public.generated_documents FOR DELETE TO public USING (true);
+
+CREATE INDEX IF NOT EXISTS idx_generated_docs_status_created ON public.generated_documents(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_generated_docs_category ON public.generated_documents(category);
 
 CREATE OR REPLACE FUNCTION public.increment_generated_document_views(target_doc_id TEXT)
-RETURNS INTEGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE new_count INTEGER;
 BEGIN
-  UPDATE public.generated_documents
-  SET views_count = COALESCE(views_count, 0) + 1
-  WHERE id = target_doc_id
-  RETURNING views_count INTO new_count;
+  UPDATE public.generated_documents SET views_count = COALESCE(views_count, 0) + 1 WHERE id = target_doc_id RETURNING views_count INTO new_count;
   RETURN COALESCE(new_count, 0);
 END;
 $$;
+GRANT EXECUTE ON FUNCTION public.increment_generated_document_views(TEXT) TO anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.increment_generated_document_downloads(target_doc_id TEXT)
-RETURNS INTEGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE new_count INTEGER;
 BEGIN
-  UPDATE public.generated_documents
-  SET downloads_count = COALESCE(downloads_count, 0) + 1
-  WHERE id = target_doc_id
-  RETURNING downloads_count INTO new_count;
+  UPDATE public.generated_documents SET downloads_count = COALESCE(downloads_count, 0) + 1 WHERE id = target_doc_id RETURNING downloads_count INTO new_count;
   RETURN COALESCE(new_count, 0);
 END;
 $$;
+GRANT EXECUTE ON FUNCTION public.increment_generated_document_downloads(TEXT) TO anon, authenticated;
 
-DROP POLICY IF EXISTS "Public Upload Generated Docs to materials" ON storage.objects;
-CREATE POLICY "Public Upload Generated Docs to materials"
-ON storage.objects FOR INSERT TO public
-WITH CHECK (
-  bucket_id = 'materials'
-  AND (storage.foldername(name))[1] = 'generated-docs'
-);
+-- 8. REALTIME PUBLICATIONS (Safe & Idempotent)
+DO $$
+DECLARE tbl TEXT;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY[
+    'profiles', 'materials', 'projects', 'articles', 'article_comments',
+    'website_settings', 'media_assets', 'visitor_profiles',
+    'conversations', 'messages', 'generated_documents'
+  ]
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_publication_tables
+         WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = tbl
+       ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', tbl);
+    END IF;
+  END LOOP;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 `;

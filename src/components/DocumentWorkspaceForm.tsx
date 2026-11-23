@@ -393,8 +393,165 @@ const CertificationListEditor: React.FC<{
     ))}
     {items.length === 0 && (
       <p className="text-[11px] text-slate-500 italic font-serif">
-        No certifications added yet. Click "+ Add Certification" if applicable.
+        No certifications added yet. Click &quot;+ Add Certification&quot; if applicable.
       </p>
+    )}
+  </div>
+);
+
+const ProjectListEditor: React.FC<{
+  items: ProjectEntry[];
+  onChange: (next: ProjectEntry[]) => void;
+  emptyLabel?: string;
+}> = ({
+  items,
+  onChange,
+  emptyLabel = 'No projects added yet. Click "+ Project" to add selected projects.',
+}) => (
+  <div className="space-y-2.5">
+    {items.map((proj, idx) => (
+      <div
+        key={proj.id}
+        className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 space-y-2"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10.5px] font-bold text-cyan-900">
+            Selected Project #{idx + 1}
+          </span>
+          <button
+            type="button"
+            onClick={() => onChange(items.filter((x) => x.id !== proj.id))}
+            className="inline-flex items-center gap-1 text-rose-600 hover:text-rose-800 text-[10.5px] font-semibold cursor-pointer"
+          >
+            <Trash2 className="w-3 h-3" />
+            <span>Remove</span>
+          </button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input
+            type="text"
+            value={proj.name}
+            onChange={(e) =>
+              onChange(items.map((x) => (x.id === proj.id ? { ...x, name: e.target.value } : x)))
+            }
+            placeholder="Project Title"
+            className={inputCls}
+          />
+          <input
+            type="text"
+            value={proj.roleOrContext}
+            onChange={(e) =>
+              onChange(
+                items.map((x) =>
+                  x.id === proj.id ? { ...x, roleOrContext: e.target.value } : x
+                )
+              )
+            }
+            placeholder="Role / Tools Used"
+            className={inputCls}
+          />
+          <input
+            type="text"
+            value={proj.period}
+            onChange={(e) =>
+              onChange(items.map((x) => (x.id === proj.id ? { ...x, period: e.target.value } : x)))
+            }
+            placeholder="Year / Period"
+            className={inputCls}
+          />
+        </div>
+        <textarea
+          rows={2}
+          value={proj.impactBullets}
+          onChange={(e) =>
+            onChange(
+              items.map((x) =>
+                x.id === proj.id ? { ...x, impactBullets: e.target.value } : x
+              )
+            )
+          }
+          placeholder="Key objectives, methods, or measurable outcomes (one per line)"
+          className={textareaCls}
+        />
+      </div>
+    ))}
+    {items.length === 0 && (
+      <p className="text-[11px] text-slate-500 italic font-serif">{emptyLabel}</p>
+    )}
+  </div>
+);
+
+const RefereeListEditor: React.FC<{
+  items: RefereeEntry[];
+  onChange: (next: RefereeEntry[]) => void;
+  emptyLabel?: string;
+}> = ({
+  items,
+  onChange,
+  emptyLabel = 'No referees added yet.',
+}) => (
+  <div className="space-y-2">
+    {items.map((ref) => (
+      <div
+        key={ref.id}
+        className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 grid grid-cols-1 sm:grid-cols-4 gap-2 items-center"
+      >
+        <input
+          type="text"
+          value={ref.name}
+          onChange={(e) =>
+            onChange(items.map((x) => (x.id === ref.id ? { ...x, name: e.target.value } : x)))
+          }
+          placeholder="Full Name"
+          className={inputCls}
+        />
+        <input
+          type="text"
+          value={ref.titleAndDepartment}
+          onChange={(e) =>
+            onChange(
+              items.map((x) =>
+                x.id === ref.id ? { ...x, titleAndDepartment: e.target.value } : x
+              )
+            )
+          }
+          placeholder="Title & Department"
+          className={inputCls}
+        />
+        <input
+          type="text"
+          value={ref.institution}
+          onChange={(e) =>
+            onChange(
+              items.map((x) => (x.id === ref.id ? { ...x, institution: e.target.value } : x))
+            )
+          }
+          placeholder="Organization / Institution"
+          className={inputCls}
+        />
+        <div className="flex items-center gap-1.5">
+          <input
+            type="email"
+            value={ref.email}
+            onChange={(e) =>
+              onChange(items.map((x) => (x.id === ref.id ? { ...x, email: e.target.value } : x)))
+            }
+            placeholder="Email Address"
+            className={inputCls}
+          />
+          <button
+            type="button"
+            onClick={() => onChange(items.filter((x) => x.id !== ref.id))}
+            className="p-1.5 text-rose-600 cursor-pointer shrink-0"
+            title="Remove referee"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    ))}
+    {items.length === 0 && (
+      <p className="text-[11px] text-slate-500 italic font-serif">{emptyLabel}</p>
     )}
   </div>
 );
@@ -498,8 +655,28 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
             </div>
           </SectionBlock>
 
+          <SectionBlock title="3. Technical & Digital Skills">
+            <div>
+              <label className={labelCls}>
+                Technical and Digital Skills (one category per line or comma-separated)
+              </label>
+              <textarea
+                rows={3}
+                value={payload.data.technicalAndDigitalSkills || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'international_cv',
+                    data: { ...payload.data, technicalAndDigitalSkills: e.target.value },
+                  })
+                }
+                placeholder="e.g. Domain Software: Tool A, Tool B&#10;Programming & Data: Python, SQL, Office Suite"
+                className={textareaCls}
+              />
+            </div>
+          </SectionBlock>
+
           <SectionBlock
-            title="3. Professional Experience"
+            title="4. Experience"
             action={
               <button
                 type="button"
@@ -539,7 +716,100 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="4. Education"
+            title="5. Leadership"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'international_cv',
+                    data: {
+                      ...payload.data,
+                      leadershipRoles: [
+                        ...(payload.data.leadershipRoles || []),
+                        {
+                          id: makeUid('lead'),
+                          roleTitle: '',
+                          organization: '',
+                          location: '',
+                          startDate: '',
+                          endDate: '',
+                          highlights: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Leadership</span>
+              </button>
+            }
+          >
+            {(payload.data.leadershipRoles || []).length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic font-serif">
+                No leadership roles added yet. Click &quot;+ Add Leadership&quot; if applicable.
+              </p>
+            ) : (
+              <ExperienceListEditor
+                items={payload.data.leadershipRoles || []}
+                titlePlaceholder="Leadership Title (e.g. Team Lead, President)"
+                orgPlaceholder="Organization / Association"
+                onChange={(leadershipRoles) =>
+                  onChange({
+                    category: 'international_cv',
+                    data: { ...payload.data, leadershipRoles },
+                  })
+                }
+              />
+            )}
+          </SectionBlock>
+
+          <SectionBlock
+            title="6. Projects / Selected Projects"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'international_cv',
+                    data: {
+                      ...payload.data,
+                      selectedProjects: [
+                        ...(payload.data.selectedProjects || []),
+                        {
+                          id: makeUid('proj'),
+                          name: '',
+                          roleOrContext: '',
+                          period: '',
+                          impactBullets: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Project</span>
+              </button>
+            }
+          >
+            <ProjectListEditor
+              items={payload.data.selectedProjects || []}
+              emptyLabel='No selected projects added yet. Click "+ Add Project" if applicable.'
+              onChange={(selectedProjects) =>
+                onChange({
+                  category: 'international_cv',
+                  data: { ...payload.data, selectedProjects },
+                })
+              }
+            />
+          </SectionBlock>
+
+          <SectionBlock
+            title="7. Education"
             action={
               <button
                 type="button"
@@ -579,8 +849,28 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
             />
           </SectionBlock>
 
+          <SectionBlock title="8. Technical Training and Development">
+            <div>
+              <label className={labelCls}>
+                Training Programs, Workshops &amp; Courses (one per line)
+              </label>
+              <textarea
+                rows={3}
+                value={payload.data.technicalTraining || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'international_cv',
+                    data: { ...payload.data, technicalTraining: e.target.value },
+                  })
+                }
+                placeholder="Enter workshops, short courses, or professional development programs..."
+                className={textareaCls}
+              />
+            </div>
+          </SectionBlock>
+
           <SectionBlock
-            title="5. Cert. & Lang"
+            title="9. Cert. & Lang"
             action={
               <div className="flex items-center gap-1.5">
                 <button
@@ -689,6 +979,84 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+          </SectionBlock>
+
+          <SectionBlock title="10. Professional Interests (Optional)">
+            <div>
+              <label className={labelCls}>Areas of Interest (Optional)</label>
+              <input
+                type="text"
+                value={payload.data.professionalInterests || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'international_cv',
+                    data: { ...payload.data, professionalInterests: e.target.value },
+                  })
+                }
+                placeholder="e.g. Applied Research, Sustainability, Community Mentoring..."
+                className={inputCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="11. References (Optional)"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'international_cv',
+                    data: {
+                      ...payload.data,
+                      references: [
+                        ...(payload.data.references || []),
+                        {
+                          id: makeUid('ref'),
+                          name: '',
+                          titleAndDepartment: '',
+                          institution: '',
+                          email: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Reference</span>
+              </button>
+            }
+          >
+            <div>
+              <label className={labelCls}>Reference Statement (Optional)</label>
+              <input
+                type="text"
+                value={payload.data.referencesNote || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'international_cv',
+                    data: { ...payload.data, referencesNote: e.target.value },
+                  })
+                }
+                placeholder="e.g. Academic and professional references available upon request"
+                className={inputCls}
+              />
+            </div>
+            {(payload.data.references || []).length > 0 && (
+              <div className="pt-2 border-t border-slate-200">
+                <RefereeListEditor
+                  items={payload.data.references || []}
+                  onChange={(references) =>
+                    onChange({
+                      category: 'international_cv',
+                      data: { ...payload.data, references },
+                    })
+                  }
+                />
               </div>
             )}
           </SectionBlock>
@@ -816,7 +1184,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="4. Research Appointments & Teaching Experience"
+            title="4. Research Appoint. & Teaching Exp."
             action={
               <div className="flex items-center gap-1.5">
                 <button
@@ -841,10 +1209,9 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                       },
                     })
                   }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer whitespace-nowrap"
                 >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Research</span>
+                  <span>+ Research</span>
                 </button>
                 <button
                   type="button"
@@ -868,10 +1235,9 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                       },
                     })
                   }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer whitespace-nowrap"
                 >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Teaching</span>
+                  <span>+ Teach Exp.</span>
                 </button>
               </div>
             }
@@ -906,158 +1272,280 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="5. Publications, Grants, Methods & Referees"
+            title="5. Experience"
             action={
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        publications: [
-                          ...payload.data.publications,
-                          {
-                            id: makeUid('pub'),
-                            citation: '',
-                            venueOrJournal: '',
-                            year: '',
-                            doiOrUrl: '',
-                          },
-                        ],
-                      },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Publication</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        referees: [
-                          ...payload.data.referees,
-                          {
-                            id: makeUid('ref'),
-                            name: '',
-                            titleAndDepartment: '',
-                            institution: '',
-                            email: '',
-                          },
-                        ],
-                      },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Referee</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: {
+                      ...payload.data,
+                      professionalExperience: [
+                        ...(payload.data.professionalExperience || []),
+                        {
+                          id: makeUid('exp'),
+                          roleTitle: '',
+                          organization: '',
+                          location: '',
+                          startDate: '',
+                          endDate: '',
+                          highlights: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Experience</span>
+              </button>
             }
           >
-            {payload.data.publications.map((pub: PublicationEntry) => (
-              <div
-                key={pub.id}
-                className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 space-y-2"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10.5px] font-bold text-cyan-900">Publication</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          publications: payload.data.publications.filter((x) => x.id !== pub.id),
-                        },
-                      })
-                    }
-                    className="text-rose-600 text-[10.5px] font-semibold cursor-pointer"
-                  >
-                    Remove
-                  </button>
-                </div>
-                <textarea
-                  rows={2}
-                  value={pub.citation}
-                  onChange={(e) =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        publications: payload.data.publications.map((x) =>
-                          x.id === pub.id ? { ...x, citation: e.target.value } : x
-                        ),
-                      },
-                    })
-                  }
-                  placeholder="Authors & Paper Title"
-                  className={textareaCls}
-                />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <input
-                    type="text"
-                    value={pub.venueOrJournal}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          publications: payload.data.publications.map((x) =>
-                            x.id === pub.id ? { ...x, venueOrJournal: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Journal / Conference"
-                    className={inputCls}
-                  />
-                  <input
-                    type="text"
-                    value={pub.year}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          publications: payload.data.publications.map((x) =>
-                            x.id === pub.id ? { ...x, year: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Year"
-                    className={inputCls}
-                  />
-                  <input
-                    type="text"
-                    value={pub.doiOrUrl || ''}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          publications: payload.data.publications.map((x) =>
-                            x.id === pub.id ? { ...x, doiOrUrl: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="DOI / URL (Optional)"
-                    className={inputCls}
-                  />
-                </div>
-              </div>
-            ))}
+            {(payload.data.professionalExperience || []).length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic font-serif">
+                No additional work experience added yet.
+              </p>
+            ) : (
+              <ExperienceListEditor
+                items={payload.data.professionalExperience || []}
+                onChange={(professionalExperience) =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: { ...payload.data, professionalExperience },
+                  })
+                }
+              />
+            )}
+          </SectionBlock>
 
+          <SectionBlock
+            title="6. Leadership"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: {
+                      ...payload.data,
+                      leadershipRoles: [
+                        ...(payload.data.leadershipRoles || []),
+                        {
+                          id: makeUid('lead'),
+                          roleTitle: '',
+                          organization: '',
+                          location: '',
+                          startDate: '',
+                          endDate: '',
+                          highlights: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Leadership</span>
+              </button>
+            }
+          >
+            {(payload.data.leadershipRoles || []).length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic font-serif">
+                No academic or organization leadership roles added yet.
+              </p>
+            ) : (
+              <ExperienceListEditor
+                items={payload.data.leadershipRoles || []}
+                titlePlaceholder="Leadership Role"
+                orgPlaceholder="Society / Department / Organization"
+                onChange={(leadershipRoles) =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: { ...payload.data, leadershipRoles },
+                  })
+                }
+              />
+            )}
+          </SectionBlock>
+
+          <SectionBlock
+            title="7. Projects / Selected Projects"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: {
+                      ...payload.data,
+                      selectedProjects: [
+                        ...(payload.data.selectedProjects || []),
+                        {
+                          id: makeUid('proj'),
+                          name: '',
+                          roleOrContext: '',
+                          period: '',
+                          impactBullets: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Project</span>
+              </button>
+            }
+          >
+            <ProjectListEditor
+              items={payload.data.selectedProjects || []}
+              emptyLabel='No selected projects added yet. Click "+ Add Project" if applicable.'
+              onChange={(selectedProjects) =>
+                onChange({
+                  category: 'academic_resume',
+                  data: { ...payload.data, selectedProjects },
+                })
+              }
+            />
+          </SectionBlock>
+
+          <SectionBlock
+            title="8. Publications"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: {
+                      ...payload.data,
+                      publications: [
+                        ...payload.data.publications,
+                        {
+                          id: makeUid('pub'),
+                          citation: '',
+                          venueOrJournal: '',
+                          year: '',
+                          doiOrUrl: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer whitespace-nowrap"
+              >
+                <span>+ Publication</span>
+              </button>
+            }
+          >
+            {payload.data.publications.length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic font-serif">
+                No publications added yet. Click &quot;+ Publication&quot; to add an entry.
+              </p>
+            ) : (
+              payload.data.publications.map((pub: PublicationEntry) => (
+                <div
+                  key={pub.id}
+                  className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] font-bold text-cyan-900">Publication</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChange({
+                          category: 'academic_resume',
+                          data: {
+                            ...payload.data,
+                            publications: payload.data.publications.filter((x) => x.id !== pub.id),
+                          },
+                        })
+                      }
+                      className="text-rose-600 text-[10.5px] font-semibold cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={pub.citation}
+                    onChange={(e) =>
+                      onChange({
+                        category: 'academic_resume',
+                        data: {
+                          ...payload.data,
+                          publications: payload.data.publications.map((x) =>
+                            x.id === pub.id ? { ...x, citation: e.target.value } : x
+                          ),
+                        },
+                      })
+                    }
+                    placeholder="Authors & Paper Title"
+                    className={textareaCls}
+                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      value={pub.venueOrJournal}
+                      onChange={(e) =>
+                        onChange({
+                          category: 'academic_resume',
+                          data: {
+                            ...payload.data,
+                            publications: payload.data.publications.map((x) =>
+                              x.id === pub.id ? { ...x, venueOrJournal: e.target.value } : x
+                            ),
+                          },
+                        })
+                      }
+                      placeholder="Journal / Conference"
+                      className={inputCls}
+                    />
+                    <input
+                      type="text"
+                      value={pub.year}
+                      onChange={(e) =>
+                        onChange({
+                          category: 'academic_resume',
+                          data: {
+                            ...payload.data,
+                            publications: payload.data.publications.map((x) =>
+                              x.id === pub.id ? { ...x, year: e.target.value } : x
+                            ),
+                          },
+                        })
+                      }
+                      placeholder="Year"
+                      className={inputCls}
+                    />
+                    <input
+                      type="text"
+                      value={pub.doiOrUrl || ''}
+                      onChange={(e) =>
+                        onChange({
+                          category: 'academic_resume',
+                          data: {
+                            ...payload.data,
+                            publications: payload.data.publications.map((x) =>
+                              x.id === pub.id ? { ...x, doiOrUrl: e.target.value } : x
+                            ),
+                          },
+                        })
+                      }
+                      placeholder="DOI / URL (Optional)"
+                      className={inputCls}
+                    />
+                  </div>
+                </div>
+              ))
+            )}
+          </SectionBlock>
+
+          <SectionBlock title="9. Grants, Fellowships & Honors">
             <div>
               <label className={labelCls}>Grants, Fellowships &amp; Academic Honors (one per line)</label>
               <textarea
@@ -1073,6 +1561,9 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                 className={textareaCls}
               />
             </div>
+          </SectionBlock>
+
+          <SectionBlock title="10. Laboratory, Computational & Analytical Methods">
             <div>
               <label className={labelCls}>Laboratory, Computational &amp; Analytical Methods</label>
               <textarea
@@ -1088,99 +1579,100 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                 className={textareaCls}
               />
             </div>
+          </SectionBlock>
 
-            {payload.data.referees.map((ref: RefereeEntry) => (
-              <div
-                key={ref.id}
-                className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 grid grid-cols-1 sm:grid-cols-4 gap-2 items-center"
+          <SectionBlock title="11. Technical & Digital Skills">
+            <div>
+              <label className={labelCls}>
+                Technical and Digital Skills (one category per line or comma-separated)
+              </label>
+              <textarea
+                rows={2}
+                value={payload.data.technicalAndDigitalSkills || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: { ...payload.data, technicalAndDigitalSkills: e.target.value },
+                  })
+                }
+                placeholder="e.g. Software & Research Tools: R, MATLAB, LaTeX, Office Suite"
+                className={textareaCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock title="12. Technical Training and Development">
+            <div>
+              <label className={labelCls}>Training Programs &amp; Academic Workshops (one per line)</label>
+              <textarea
+                rows={2}
+                value={payload.data.technicalTraining || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: { ...payload.data, technicalTraining: e.target.value },
+                  })
+                }
+                placeholder="List workshops, lab trainings, or academic development courses..."
+                className={textareaCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock title="13. Professional Interests (Optional)">
+            <div>
+              <label className={labelCls}>Professional &amp; Academic Interests (Optional)</label>
+              <input
+                type="text"
+                value={payload.data.professionalInterests || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: { ...payload.data, professionalInterests: e.target.value },
+                  })
+                }
+                placeholder="e.g. Open Science, Peer Mentoring, Policy Outreach..."
+                className={inputCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="14. Referees"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'academic_resume',
+                    data: {
+                      ...payload.data,
+                      referees: [
+                        ...payload.data.referees,
+                        {
+                          id: makeUid('ref'),
+                          name: '',
+                          titleAndDepartment: '',
+                          institution: '',
+                          email: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer whitespace-nowrap"
               >
-                <input
-                  type="text"
-                  value={ref.name}
-                  onChange={(e) =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        referees: payload.data.referees.map((x) =>
-                          x.id === ref.id ? { ...x, name: e.target.value } : x
-                        ),
-                      },
-                    })
-                  }
-                  placeholder="Referee Name"
-                  className={inputCls}
-                />
-                <input
-                  type="text"
-                  value={ref.titleAndDepartment}
-                  onChange={(e) =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        referees: payload.data.referees.map((x) =>
-                          x.id === ref.id ? { ...x, titleAndDepartment: e.target.value } : x
-                        ),
-                      },
-                    })
-                  }
-                  placeholder="Title & Department"
-                  className={inputCls}
-                />
-                <input
-                  type="text"
-                  value={ref.institution}
-                  onChange={(e) =>
-                    onChange({
-                      category: 'academic_resume',
-                      data: {
-                        ...payload.data,
-                        referees: payload.data.referees.map((x) =>
-                          x.id === ref.id ? { ...x, institution: e.target.value } : x
-                        ),
-                      },
-                    })
-                  }
-                  placeholder="Institution"
-                  className={inputCls}
-                />
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="email"
-                    value={ref.email}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          referees: payload.data.referees.map((x) =>
-                            x.id === ref.id ? { ...x, email: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Referee Email"
-                    className={inputCls}
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onChange({
-                        category: 'academic_resume',
-                        data: {
-                          ...payload.data,
-                          referees: payload.data.referees.filter((x) => x.id !== ref.id),
-                        },
-                      })
-                    }
-                    className="p-1.5 text-rose-600 cursor-pointer shrink-0"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
+                <span>+ Referees</span>
+              </button>
+            }
+          >
+            <RefereeListEditor
+              items={payload.data.referees}
+              emptyLabel='No referees added yet. Click "+ Referees" to add academic referees.'
+              onChange={(referees) =>
+                onChange({ category: 'academic_resume', data: { ...payload.data, referees } })
+              }
+            />
           </SectionBlock>
         </>
       )}
@@ -1213,7 +1705,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
             </div>
           </SectionBlock>
 
-          <SectionBlock title="2. Executive Summary & Core Skills">
+          <SectionBlock title="2. Executive Summary & Technical / Digital Skills">
             <div>
               <label className={labelCls}>Executive Summary *</label>
               <textarea
@@ -1231,7 +1723,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className={labelCls}>Technical Stack &amp; Tools</label>
+                <label className={labelCls}>Technical &amp; Digital Skills</label>
                 <textarea
                   rows={2}
                   value={payload.data.technicalSkills}
@@ -1264,7 +1756,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="3. Work Experience"
+            title="3. Experience"
             action={
               <button
                 type="button"
@@ -1304,180 +1796,125 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="4. Key Projects, Education & Certifications"
+            title="4. Leadership"
             action={
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      category: 'job_resume',
-                      data: {
-                        ...payload.data,
-                        keyProjects: [
-                          ...payload.data.keyProjects,
-                          {
-                            id: makeUid('proj'),
-                            name: '',
-                            roleOrContext: '',
-                            period: '',
-                            impactBullets: '',
-                          },
-                        ],
-                      },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Project</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      category: 'job_resume',
-                      data: {
-                        ...payload.data,
-                        education: [
-                          ...payload.data.education,
-                          {
-                            id: makeUid('edu'),
-                            degree: '',
-                            institution: '',
-                            location: '',
-                            startYear: '',
-                            endYear: '',
-                            gpaOrHonors: '',
-                            thesisOrCoursework: '',
-                          },
-                        ],
-                      },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Edu</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      category: 'job_resume',
-                      data: {
-                        ...payload.data,
-                        certifications: [
-                          ...payload.data.certifications,
-                          { id: makeUid('cert'), name: '', issuer: '', year: '', credentialId: '' },
-                        ],
-                      },
-                    })
-                  }
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-800 text-white text-[10.5px] font-semibold cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>Add Cert</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'job_resume',
+                    data: {
+                      ...payload.data,
+                      leadershipRoles: [
+                        ...(payload.data.leadershipRoles || []),
+                        {
+                          id: makeUid('lead'),
+                          roleTitle: '',
+                          organization: '',
+                          location: '',
+                          startDate: '',
+                          endDate: '',
+                          highlights: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Leadership</span>
+              </button>
             }
           >
-            {payload.data.keyProjects.map((proj: ProjectEntry) => (
-              <div
-                key={proj.id}
-                className="p-2.5 rounded-lg bg-[#f8fafc] border border-slate-200 space-y-2"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10.5px] font-bold text-cyan-900">Key Project</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onChange({
-                        category: 'job_resume',
-                        data: {
-                          ...payload.data,
-                          keyProjects: payload.data.keyProjects.filter((x) => x.id !== proj.id),
-                        },
-                      })
-                    }
-                    className="text-rose-600 text-[10.5px] font-semibold cursor-pointer"
-                  >
-                    Remove
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <input
-                    type="text"
-                    value={proj.name}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'job_resume',
-                        data: {
-                          ...payload.data,
-                          keyProjects: payload.data.keyProjects.map((x) =>
-                            x.id === proj.id ? { ...x, name: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Project Name"
-                    className={inputCls}
-                  />
-                  <input
-                    type="text"
-                    value={proj.roleOrContext}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'job_resume',
-                        data: {
-                          ...payload.data,
-                          keyProjects: payload.data.keyProjects.map((x) =>
-                            x.id === proj.id ? { ...x, roleOrContext: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Role / Tools Used"
-                    className={inputCls}
-                  />
-                  <input
-                    type="text"
-                    value={proj.period}
-                    onChange={(e) =>
-                      onChange({
-                        category: 'job_resume',
-                        data: {
-                          ...payload.data,
-                          keyProjects: payload.data.keyProjects.map((x) =>
-                            x.id === proj.id ? { ...x, period: e.target.value } : x
-                          ),
-                        },
-                      })
-                    }
-                    placeholder="Year / Period"
-                    className={inputCls}
-                  />
-                </div>
-                <textarea
-                  rows={2}
-                  value={proj.impactBullets}
-                  onChange={(e) =>
-                    onChange({
-                      category: 'job_resume',
-                      data: {
-                        ...payload.data,
-                        keyProjects: payload.data.keyProjects.map((x) =>
-                          x.id === proj.id ? { ...x, impactBullets: e.target.value } : x
-                        ),
-                      },
-                    })
-                  }
-                  placeholder="Quantified deliverables (one per line)"
-                  className={textareaCls}
-                />
-              </div>
-            ))}
+            {(payload.data.leadershipRoles || []).length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic font-serif">
+                No leadership entries added yet. Click &quot;+ Add Leadership&quot; if applicable.
+              </p>
+            ) : (
+              <ExperienceListEditor
+                items={payload.data.leadershipRoles || []}
+                titlePlaceholder="Leadership Title"
+                orgPlaceholder="Organization / Team"
+                onChange={(leadershipRoles) =>
+                  onChange({ category: 'job_resume', data: { ...payload.data, leadershipRoles } })
+                }
+              />
+            )}
+          </SectionBlock>
 
+          <SectionBlock
+            title="5. Key Projects / Selected Projects"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'job_resume',
+                    data: {
+                      ...payload.data,
+                      keyProjects: [
+                        ...payload.data.keyProjects,
+                        {
+                          id: makeUid('proj'),
+                          name: '',
+                          roleOrContext: '',
+                          period: '',
+                          impactBullets: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Project</span>
+              </button>
+            }
+          >
+            <ProjectListEditor
+              items={payload.data.keyProjects}
+              emptyLabel='No projects added yet. Click "+ Add Project" if applicable.'
+              onChange={(keyProjects) =>
+                onChange({ category: 'job_resume', data: { ...payload.data, keyProjects } })
+              }
+            />
+          </SectionBlock>
+
+          <SectionBlock
+            title="6. Education"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'job_resume',
+                    data: {
+                      ...payload.data,
+                      education: [
+                        ...payload.data.education,
+                        {
+                          id: makeUid('edu'),
+                          degree: '',
+                          institution: '',
+                          location: '',
+                          startYear: '',
+                          endYear: '',
+                          gpaOrHonors: '',
+                          thesisOrCoursework: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Edu</span>
+              </button>
+            }
+          >
             <EducationListEditor
               items={payload.data.education}
               showThesis={false}
@@ -1485,13 +1922,136 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                 onChange({ category: 'job_resume', data: { ...payload.data, education } })
               }
             />
+          </SectionBlock>
 
+          <SectionBlock
+            title="7. Certifications"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'job_resume',
+                    data: {
+                      ...payload.data,
+                      certifications: [
+                        ...payload.data.certifications,
+                        { id: makeUid('cert'), name: '', issuer: '', year: '', credentialId: '' },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-800 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Cert</span>
+              </button>
+            }
+          >
             <CertificationListEditor
               items={payload.data.certifications}
               onChange={(certifications) =>
                 onChange({ category: 'job_resume', data: { ...payload.data, certifications } })
               }
             />
+          </SectionBlock>
+
+          <SectionBlock title="8. Technical Training and Development">
+            <div>
+              <label className={labelCls}>
+                Training Programs &amp; Professional Development (one per line)
+              </label>
+              <textarea
+                rows={2}
+                value={payload.data.technicalTraining || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'job_resume',
+                    data: { ...payload.data, technicalTraining: e.target.value },
+                  })
+                }
+                placeholder="List workshops, short courses, or executive training programs..."
+                className={textareaCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock title="9. Professional Interests (Optional)">
+            <div>
+              <label className={labelCls}>Professional Interests (Optional)</label>
+              <input
+                type="text"
+                value={payload.data.professionalInterests || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'job_resume',
+                    data: { ...payload.data, professionalInterests: e.target.value },
+                  })
+                }
+                placeholder="e.g. Process Automation, Cross-Functional Mentorship..."
+                className={inputCls}
+              />
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="10. References (Optional)"
+            action={
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    category: 'job_resume',
+                    data: {
+                      ...payload.data,
+                      references: [
+                        ...(payload.data.references || []),
+                        {
+                          id: makeUid('ref'),
+                          name: '',
+                          titleAndDepartment: '',
+                          institution: '',
+                          email: '',
+                        },
+                      ],
+                    },
+                  })
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>Add Reference</span>
+              </button>
+            }
+          >
+            <div>
+              <label className={labelCls}>Reference Statement (Optional)</label>
+              <input
+                type="text"
+                value={payload.data.referencesNote || ''}
+                onChange={(e) =>
+                  onChange({
+                    category: 'job_resume',
+                    data: { ...payload.data, referencesNote: e.target.value },
+                  })
+                }
+                placeholder="e.g. Professional references available upon request"
+                className={inputCls}
+              />
+            </div>
+            {(payload.data.references || []).length > 0 && (
+              <div className="pt-2 border-t border-slate-200">
+                <RefereeListEditor
+                  items={payload.data.references || []}
+                  onChange={(references) =>
+                    onChange({
+                      category: 'job_resume',
+                      data: { ...payload.data, references },
+                    })
+                  }
+                />
+              </div>
+            )}
           </SectionBlock>
         </>
       )}

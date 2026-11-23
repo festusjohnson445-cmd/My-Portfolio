@@ -707,13 +707,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       publications,
       achievements,
       documents: documents.length > 0 ? documents.map((d) => ({
+        id: d.id,
         title: d.title,
         issuer: d.issuer,
-        id: d.credentialId,
+        credentialId: d.credentialId,
         date: d.date,
         description: d.description,
-        competencies: d.competencies,
+        competencies: d.competencies || [],
         credentialGroup: d.credentialGroup,
+        parentSpecializationId: d.parentSpecializationId,
         parentSpecializationTitle: d.parentSpecializationId
           ? documents.find((p) => p.id === d.parentSpecializationId)?.title
           : undefined,

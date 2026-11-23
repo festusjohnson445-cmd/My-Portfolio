@@ -2693,19 +2693,22 @@ export async function toggleArticleLikeInSupabase(
     }
 
     if (typeof fallbackNextCount === 'number') {
-      const safeTarget = Math.max(0, fallbackNextCount);
-      const { data: updData, error: updError } = await supabase
-        .from('articles')
-        .update({ likes_count: safeTarget })
-        .eq('id', articleId)
-        .select('likes_count')
-        .maybeSingle();
-      if (!updError && updData && typeof updData.likes_count === 'number') {
-        const current = getCachedArticles(true);
-        setCachedArticles(
-          current.map((a) => (a.id === articleId ? { ...a, likesCount: updData.likes_count } : a))
-        );
-        return updData.likes_count;
+      const { user } = await getValidatedSession().catch(() => ({ user: null as any }));
+      if (isRealOwnerUser(user)) {
+        const safeTarget = Math.max(0, fallbackNextCount);
+        const { data: updData, error: updError } = await supabase
+          .from('articles')
+          .update({ likes_count: safeTarget })
+          .eq('id', articleId)
+          .select('likes_count')
+          .maybeSingle();
+        if (!updError && updData && typeof updData.likes_count === 'number') {
+          const current = getCachedArticles(true);
+          setCachedArticles(
+            current.map((a) => (a.id === articleId ? { ...a, likesCount: updData.likes_count } : a))
+          );
+          return updData.likes_count;
+        }
       }
     }
   } catch {}

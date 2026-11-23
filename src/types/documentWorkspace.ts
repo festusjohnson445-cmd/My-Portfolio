@@ -96,10 +96,17 @@ export interface InternationalCvData {
   orcidOrGithub: string;
   professionalSummary: string;
   coreCompetencies: string;
+  technicalAndDigitalSkills: string;
   experiences: ExperienceEntry[];
+  leadershipRoles: ExperienceEntry[];
+  selectedProjects: ProjectEntry[];
   education: EducationEntry[];
+  technicalTraining: string;
   certifications: CertificationEntry[];
   languages: LanguageEntry[];
+  professionalInterests: string;
+  references: RefereeEntry[];
+  referencesNote: string;
 }
 
 export interface AcademicResumeData {
@@ -111,9 +118,15 @@ export interface AcademicResumeData {
   education: EducationEntry[];
   researchAppointments: ExperienceEntry[];
   teachingExperience: ExperienceEntry[];
+  professionalExperience: ExperienceEntry[];
+  leadershipRoles: ExperienceEntry[];
+  selectedProjects: ProjectEntry[];
   publications: PublicationEntry[];
   grantsAndAwards: string;
   technicalMethods: string;
+  technicalAndDigitalSkills: string;
+  technicalTraining: string;
+  professionalInterests: string;
   referees: RefereeEntry[];
 }
 
@@ -124,9 +137,14 @@ export interface JobResumeData {
   technicalSkills: string;
   softAndLeadershipSkills: string;
   workExperience: ExperienceEntry[];
+  leadershipRoles: ExperienceEntry[];
   keyProjects: ProjectEntry[];
   education: EducationEntry[];
   certifications: CertificationEntry[];
+  technicalTraining: string;
+  professionalInterests: string;
+  references: RefereeEntry[];
+  referencesNote: string;
 }
 
 export interface SopData {
@@ -370,6 +388,7 @@ export const createEmptyFormPayload = (
           orcidOrGithub: '',
           professionalSummary: '',
           coreCompetencies: '',
+          technicalAndDigitalSkills: '',
           experiences: [
             {
               id: makeUid('exp'),
@@ -381,6 +400,8 @@ export const createEmptyFormPayload = (
               highlights: '',
             },
           ],
+          leadershipRoles: [],
+          selectedProjects: [],
           education: [
             {
               id: makeUid('edu'),
@@ -393,8 +414,12 @@ export const createEmptyFormPayload = (
               thesisOrCoursework: '',
             },
           ],
+          technicalTraining: '',
           certifications: [],
           languages: [],
+          professionalInterests: '',
+          references: [],
+          referencesNote: '',
         },
       };
 
@@ -438,9 +463,15 @@ export const createEmptyFormPayload = (
             },
           ],
           teachingExperience: [],
+          professionalExperience: [],
+          leadershipRoles: [],
+          selectedProjects: [],
           publications: [],
           grantsAndAwards: '',
           technicalMethods: '',
+          technicalAndDigitalSkills: '',
+          technicalTraining: '',
+          professionalInterests: '',
           referees: [],
         },
       };
@@ -472,6 +503,7 @@ export const createEmptyFormPayload = (
               highlights: '',
             },
           ],
+          leadershipRoles: [],
           keyProjects: [],
           education: [
             {
@@ -486,6 +518,10 @@ export const createEmptyFormPayload = (
             },
           ],
           certifications: [],
+          technicalTraining: '',
+          professionalInterests: '',
+          references: [],
+          referencesNote: '',
         },
       };
 
@@ -611,19 +647,98 @@ export const createEmptyFormPayload = (
   }
 };
 
+export const normalizeDocumentPayload = (rawPayload: DocumentFormPayload): DocumentFormPayload => {
+  if (!rawPayload || !rawPayload.category) {
+    return createEmptyFormPayload('international_cv');
+  }
+  const base = createEmptyFormPayload(rawPayload.category);
+  const rawData: any = rawPayload.data || {};
+  switch (rawPayload.category) {
+    case 'international_cv': {
+      const b = base.data as InternationalCvData;
+      return {
+        category: 'international_cv',
+        data: {
+          ...b,
+          ...rawData,
+          header: { ...b.header, ...(rawData.header || {}) },
+          experiences: Array.isArray(rawData.experiences) ? rawData.experiences : b.experiences,
+          leadershipRoles: Array.isArray(rawData.leadershipRoles) ? rawData.leadershipRoles : [],
+          selectedProjects: Array.isArray(rawData.selectedProjects) ? rawData.selectedProjects : [],
+          education: Array.isArray(rawData.education) ? rawData.education : b.education,
+          certifications: Array.isArray(rawData.certifications) ? rawData.certifications : [],
+          languages: Array.isArray(rawData.languages) ? rawData.languages : [],
+          references: Array.isArray(rawData.references) ? rawData.references : [],
+        },
+      };
+    }
+    case 'academic_resume': {
+      const b = base.data as AcademicResumeData;
+      return {
+        category: 'academic_resume',
+        data: {
+          ...b,
+          ...rawData,
+          header: { ...b.header, ...(rawData.header || {}) },
+          education: Array.isArray(rawData.education) ? rawData.education : b.education,
+          researchAppointments: Array.isArray(rawData.researchAppointments)
+            ? rawData.researchAppointments
+            : b.researchAppointments,
+          teachingExperience: Array.isArray(rawData.teachingExperience)
+            ? rawData.teachingExperience
+            : [],
+          professionalExperience: Array.isArray(rawData.professionalExperience)
+            ? rawData.professionalExperience
+            : [],
+          leadershipRoles: Array.isArray(rawData.leadershipRoles) ? rawData.leadershipRoles : [],
+          selectedProjects: Array.isArray(rawData.selectedProjects) ? rawData.selectedProjects : [],
+          publications: Array.isArray(rawData.publications) ? rawData.publications : [],
+          referees: Array.isArray(rawData.referees) ? rawData.referees : [],
+        },
+      };
+    }
+    case 'job_resume': {
+      const b = base.data as JobResumeData;
+      return {
+        category: 'job_resume',
+        data: {
+          ...b,
+          ...rawData,
+          header: { ...b.header, ...(rawData.header || {}) },
+          workExperience: Array.isArray(rawData.workExperience)
+            ? rawData.workExperience
+            : b.workExperience,
+          leadershipRoles: Array.isArray(rawData.leadershipRoles) ? rawData.leadershipRoles : [],
+          keyProjects: Array.isArray(rawData.keyProjects) ? rawData.keyProjects : [],
+          education: Array.isArray(rawData.education) ? rawData.education : b.education,
+          certifications: Array.isArray(rawData.certifications) ? rawData.certifications : [],
+          references: Array.isArray(rawData.references) ? rawData.references : [],
+        },
+      };
+    }
+    default:
+      return {
+        category: rawPayload.category,
+        data: { ...(base.data as any), ...rawData },
+      } as DocumentFormPayload;
+  }
+};
+
+const safeStr = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
 export const extractDocumentTitle = (payload: DocumentFormPayload): string => {
   switch (payload.category) {
     case 'international_cv':
-      return payload.data.header.fullName
-        ? `${payload.data.header.fullName} — International CV`
+      return safeStr(payload.data.header?.fullName)
+        ? `${safeStr(payload.data.header?.fullName)} — International CV`
         : 'Untitled International CV';
     case 'academic_resume':
-      return payload.data.header.fullName
-        ? `${payload.data.header.fullName} — Academic Resume`
+      return safeStr(payload.data.header?.fullName)
+        ? `${safeStr(payload.data.header?.fullName)} — Academic Resume`
         : 'Untitled Academic Resume';
     case 'job_resume': {
-      const name = payload.data.header.fullName.trim();
-      const role = payload.data.targetJobTitle.trim();
+      const name = safeStr(payload.data.header?.fullName);
+      const role = safeStr(payload.data.targetJobTitle);
       if (name && role) return `${name} — ${role}`;
       if (name) return `${name} — Job Resume`;
       if (role) return `${role} — Job Resume`;
@@ -631,32 +746,32 @@ export const extractDocumentTitle = (payload: DocumentFormPayload): string => {
     }
     case 'sop':
       return (
-        payload.data.documentTitle.trim() ||
-        (payload.data.targetDegreeAndProgram
-          ? `Statement of Purpose — ${payload.data.targetDegreeAndProgram}`
+        safeStr(payload.data.documentTitle) ||
+        (safeStr(payload.data.targetDegreeAndProgram)
+          ? `Statement of Purpose — ${safeStr(payload.data.targetDegreeAndProgram)}`
           : 'Statement of Purpose')
       );
     case 'personal_statement':
       return (
-        payload.data.documentTitle.trim() ||
-        (payload.data.targetProgramOrOpportunity
-          ? `Personal Statement — ${payload.data.targetProgramOrOpportunity}`
+        safeStr(payload.data.documentTitle) ||
+        (safeStr(payload.data.targetProgramOrOpportunity)
+          ? `Personal Statement — ${safeStr(payload.data.targetProgramOrOpportunity)}`
           : 'Personal Statement')
       );
     case 'scholarship_letter':
       return (
-        payload.data.subjectLine.trim() ||
-        (payload.data.scholarshipName
-          ? `Motivation Letter — ${payload.data.scholarshipName}`
+        safeStr(payload.data.subjectLine) ||
+        (safeStr(payload.data.scholarshipName)
+          ? `Motivation Letter — ${safeStr(payload.data.scholarshipName)}`
           : 'Scholarship Motivation Letter')
       );
     case 'research_proposal':
-      return payload.data.proposalTitle.trim() || 'Untitled Research Proposal';
+      return safeStr(payload.data.proposalTitle) || 'Untitled Research Proposal';
     case 'study_plan':
       return (
-        payload.data.documentTitle.trim() ||
-        (payload.data.targetDegree
-          ? `Study Plan — ${payload.data.targetDegree}`
+        safeStr(payload.data.documentTitle) ||
+        (safeStr(payload.data.targetDegree)
+          ? `Study Plan — ${safeStr(payload.data.targetDegree)}`
           : 'Academic Study Plan')
       );
   }
@@ -667,47 +782,47 @@ export const extractDocumentAuthor = (payload: DocumentFormPayload): string => {
     case 'international_cv':
     case 'academic_resume':
     case 'job_resume':
-      return payload.data.header.fullName.trim();
+      return safeStr(payload.data.header?.fullName);
     case 'sop':
     case 'personal_statement':
     case 'scholarship_letter':
     case 'research_proposal':
     case 'study_plan':
-      return payload.data.applicantName.trim();
+      return safeStr(payload.data.applicantName);
   }
 };
 
 export const extractDocumentSummary = (payload: DocumentFormPayload): string => {
   switch (payload.category) {
     case 'international_cv':
-      return payload.data.professionalSummary.trim().slice(0, 220);
+      return safeStr(payload.data.professionalSummary).slice(0, 220);
     case 'academic_resume':
-      return payload.data.researchProfile.trim().slice(0, 220);
+      return safeStr(payload.data.researchProfile).slice(0, 220);
     case 'job_resume':
-      return payload.data.professionalSummary.trim().slice(0, 220);
+      return safeStr(payload.data.professionalSummary).slice(0, 220);
     case 'sop':
       return (
-        payload.data.openingMotivation.trim() ||
-        `${payload.data.targetDegreeAndProgram} at ${payload.data.targetInstitution}`
+        safeStr(payload.data.openingMotivation) ||
+        `${safeStr(payload.data.targetDegreeAndProgram)} at ${safeStr(payload.data.targetInstitution)}`
       ).slice(0, 220);
     case 'personal_statement':
       return (
-        payload.data.definingStoryAndOrigin.trim() ||
-        payload.data.targetProgramOrOpportunity
+        safeStr(payload.data.definingStoryAndOrigin) ||
+        safeStr(payload.data.targetProgramOrOpportunity)
       ).slice(0, 220);
     case 'scholarship_letter':
       return (
-        payload.data.purposeAndStanding.trim() ||
-        `${payload.data.scholarshipName} — ${payload.data.sponsoringOrganization}`
+        safeStr(payload.data.purposeAndStanding) ||
+        `${safeStr(payload.data.scholarshipName)} — ${safeStr(payload.data.sponsoringOrganization)}`
       ).slice(0, 220);
     case 'research_proposal':
       return (
-        payload.data.abstractSummary.trim() || payload.data.problemStatement.trim()
+        safeStr(payload.data.abstractSummary) || safeStr(payload.data.problemStatement)
       ).slice(0, 220);
     case 'study_plan':
       return (
-        payload.data.purposeAndSpecialization.trim() ||
-        `${payload.data.targetDegree} at ${payload.data.hostInstitution}`
+        safeStr(payload.data.purposeAndSpecialization) ||
+        `${safeStr(payload.data.targetDegree)} at ${safeStr(payload.data.hostInstitution)}`
       ).slice(0, 220);
   }
 };
@@ -720,71 +835,71 @@ export const validateDocumentPayload = (
   switch (payload.category) {
     case 'international_cv': {
       const d = payload.data;
-      if (!d.header.fullName.trim()) errors.push('Full Name is required.');
-      if (!d.header.email.trim()) errors.push('Email Address is required.');
-      if (!d.professionalSummary.trim()) errors.push('Professional Summary is required.');
+      if (!safeStr(d.header?.fullName)) errors.push('Full Name is required.');
+      if (!safeStr(d.header?.email)) errors.push('Email Address is required.');
+      if (!safeStr(d.professionalSummary)) errors.push('Professional Summary is required.');
       break;
     }
     case 'academic_resume': {
       const d = payload.data;
-      if (!d.header.fullName.trim()) errors.push('Full Name is required.');
-      if (!d.header.email.trim()) errors.push('Email Address is required.');
-      if (!d.researchProfile.trim()) errors.push('Research Profile is required.');
+      if (!safeStr(d.header?.fullName)) errors.push('Full Name is required.');
+      if (!safeStr(d.header?.email)) errors.push('Email Address is required.');
+      if (!safeStr(d.researchProfile)) errors.push('Research Profile is required.');
       break;
     }
     case 'job_resume': {
       const d = payload.data;
-      if (!d.header.fullName.trim()) errors.push('Full Name is required.');
-      if (!d.header.email.trim()) errors.push('Email Address is required.');
-      if (!d.targetJobTitle.trim()) errors.push('Target Job Title is required.');
-      if (!d.professionalSummary.trim()) errors.push('Executive Summary is required.');
+      if (!safeStr(d.header?.fullName)) errors.push('Full Name is required.');
+      if (!safeStr(d.header?.email)) errors.push('Email Address is required.');
+      if (!safeStr(d.targetJobTitle)) errors.push('Target Job Title is required.');
+      if (!safeStr(d.professionalSummary)) errors.push('Executive Summary is required.');
       break;
     }
     case 'sop': {
       const d = payload.data;
-      if (!d.applicantName.trim()) errors.push('Applicant Full Name is required.');
-      if (!d.targetDegreeAndProgram.trim()) errors.push('Target Degree & Program is required.');
-      if (!d.targetInstitution.trim()) errors.push('Target University / Institution is required.');
-      if (!d.openingMotivation.trim() && !d.academicFoundation.trim()) {
+      if (!safeStr(d.applicantName)) errors.push('Applicant Full Name is required.');
+      if (!safeStr(d.targetDegreeAndProgram)) errors.push('Target Degree & Program is required.');
+      if (!safeStr(d.targetInstitution)) errors.push('Target University / Institution is required.');
+      if (!safeStr(d.openingMotivation) && !safeStr(d.academicFoundation)) {
         errors.push('At least the Opening Motivation or Academic Foundation section is required.');
       }
       break;
     }
     case 'personal_statement': {
       const d = payload.data;
-      if (!d.applicantName.trim()) errors.push('Applicant Full Name is required.');
-      if (!d.targetProgramOrOpportunity.trim()) {
+      if (!safeStr(d.applicantName)) errors.push('Applicant Full Name is required.');
+      if (!safeStr(d.targetProgramOrOpportunity)) {
         errors.push('Target Program / Opportunity is required.');
       }
-      if (!d.definingStoryAndOrigin.trim() && !d.valuesAndFutureContribution.trim()) {
+      if (!safeStr(d.definingStoryAndOrigin) && !safeStr(d.valuesAndFutureContribution)) {
         errors.push('Please complete at least one narrative section.');
       }
       break;
     }
     case 'scholarship_letter': {
       const d = payload.data;
-      if (!d.applicantName.trim()) errors.push('Applicant Full Name is required.');
-      if (!d.scholarshipName.trim()) errors.push('Scholarship Name is required.');
-      if (!d.purposeAndStanding.trim() && !d.motivationAndMerit.trim()) {
+      if (!safeStr(d.applicantName)) errors.push('Applicant Full Name is required.');
+      if (!safeStr(d.scholarshipName)) errors.push('Scholarship Name is required.');
+      if (!safeStr(d.purposeAndStanding) && !safeStr(d.motivationAndMerit)) {
         errors.push('Letter body motivation content is required.');
       }
       break;
     }
     case 'research_proposal': {
       const d = payload.data;
-      if (!d.proposalTitle.trim()) errors.push('Research Proposal Title is required.');
-      if (!d.applicantName.trim()) errors.push('Author / Principal Investigator Name is required.');
-      if (!d.abstractSummary.trim() && !d.problemStatement.trim()) {
+      if (!safeStr(d.proposalTitle)) errors.push('Research Proposal Title is required.');
+      if (!safeStr(d.applicantName)) errors.push('Author / Principal Investigator Name is required.');
+      if (!safeStr(d.abstractSummary) && !safeStr(d.problemStatement)) {
         errors.push('Abstract or Problem Statement is required.');
       }
       break;
     }
     case 'study_plan': {
       const d = payload.data;
-      if (!d.applicantName.trim()) errors.push('Applicant Full Name is required.');
-      if (!d.targetDegree.trim()) errors.push('Target Degree / Program is required.');
-      if (!d.hostInstitution.trim()) errors.push('Host University / Institution is required.');
-      if (!d.purposeAndSpecialization.trim() && !d.academicBackground.trim()) {
+      if (!safeStr(d.applicantName)) errors.push('Applicant Full Name is required.');
+      if (!safeStr(d.targetDegree)) errors.push('Target Degree / Program is required.');
+      if (!safeStr(d.hostInstitution)) errors.push('Host University / Institution is required.');
+      if (!safeStr(d.purposeAndSpecialization) && !safeStr(d.academicBackground)) {
         errors.push('Academic Background or Purpose of Study is required.');
       }
       break;

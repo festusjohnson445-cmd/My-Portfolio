@@ -148,11 +148,18 @@ export function generateAndDownloadResume(data: ResumeDataProps): void {
   };
 
   // --- HEADER ---
+  const centerX = pageWidth / 2;
   doc.setFont('times', 'bold');
   doc.setFontSize(17);
   doc.setTextColor(15, 23, 42);
-  doc.text((data.fullName || 'Festus, Olorunsogo Johnson').toUpperCase(), margin, y);
-  y += 6.2;
+  const nameLines = doc.splitTextToSize(
+    (data.fullName || 'Festus, Olorunsogo Johnson').toUpperCase(),
+    contentWidth
+  ) as string[];
+  nameLines.forEach((ln) => {
+    doc.text(ln, centerX, y, { align: 'center' });
+    y += 6.2;
+  });
 
   doc.setFont('times', 'italic');
   doc.setFontSize(11);
@@ -160,9 +167,12 @@ export function generateAndDownloadResume(data: ResumeDataProps): void {
   const headerLines = doc.splitTextToSize(
     data.header || 'Lead Mechanical Design Engineer · Precision Mechanisms, Flight Gimbals & FEA Topology',
     contentWidth
-  );
-  doc.text(headerLines, margin, y);
-  y += headerLines.length * 4.9 + 1.2;
+  ) as string[];
+  headerLines.forEach((ln) => {
+    doc.text(ln, centerX, y, { align: 'center' });
+    y += 4.9;
+  });
+  y += 1.2;
 
   doc.setFont('times', 'normal');
   doc.setFontSize(10);
@@ -173,9 +183,12 @@ export function generateAndDownloadResume(data: ResumeDataProps): void {
   if (data.discipline) contactParts.push(`Discipline: ${data.discipline}`);
   if (data.badges) contactParts.push(`Credentials: ${data.badges}`);
 
-  const contactLines = doc.splitTextToSize(contactParts.join('  |  '), contentWidth);
-  doc.text(contactLines, margin, y);
-  y += contactLines.length * 4.6 + 1.8;
+  const contactLines = doc.splitTextToSize(contactParts.join('  |  '), contentWidth) as string[];
+  contactLines.forEach((ln) => {
+    doc.text(ln, centerX, y, { align: 'center' });
+    y += 4.6;
+  });
+  y += 1.8;
 
   doc.setDrawColor(30, 41, 59);
   doc.setLineWidth(0.55);

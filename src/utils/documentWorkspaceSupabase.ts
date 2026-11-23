@@ -6,6 +6,7 @@ import {
   extractDocumentAuthor,
   extractDocumentSummary,
   extractDocumentTitle,
+  normalizeDocumentPayload,
 } from '../types/documentWorkspace';
 import {
   dataUrlToBlob,
@@ -23,7 +24,11 @@ const safeReadLocal = (key: string): GeneratedDocumentRecord[] => {
     const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? parsed.map((rec: any) =>
+          rec && rec.formData ? { ...rec, formData: normalizeDocumentPayload(rec.formData) } : rec
+        )
+      : [];
   } catch {
     return [];
   }
@@ -43,7 +48,7 @@ const mapRowToRecord = (row: any): GeneratedDocumentRecord => ({
   title: String(row.title || 'Untitled Document'),
   authorName: String(row.author_name || ''),
   summary: String(row.summary || ''),
-  formData: row.form_data as DocumentFormPayload,
+  formData: normalizeDocumentPayload(row.form_data as DocumentFormPayload),
   previewImageUrl: String(row.preview_image_url || ''),
   pdfUrl: String(row.pdf_url || ''),
   docxUrl: String(row.docx_url || ''),

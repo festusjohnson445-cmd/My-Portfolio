@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS public.messages (
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS voice_note JSONB;
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS attachments JSONB;
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'unseen';
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT false;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
 ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON public.messages (conversation_id, created_at ASC);

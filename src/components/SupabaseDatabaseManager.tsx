@@ -25,6 +25,28 @@ export interface SupabaseTableDescriptor {
   template: () => Record<string, any>;
 }
 
+const makeFallbackUuid = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
+const isMissingColumnError = (msg: string | undefined, col: string): boolean => {
+  if (!msg) return false;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes(col.toLowerCase()) &&
+    (lower.includes('does not exist') ||
+      lower.includes('could not find') ||
+      lower.includes('schema cache'))
+  );
+};
+
 const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
   {
     name: 'profiles',
@@ -32,9 +54,9 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     pk: 'id',
     description: 'Owner bio, avatar, header, credentials & metadata',
     template: () => ({
-      id: getAuthenticatedOwnerUid() || crypto.randomUUID(),
-      full_name: '',
-      header: '',
+      id: getAuthenticatedOwnerUid() || makeFallbackUuid(),
+      full_name: 'Festus, Olorunsogo Johnson',
+      header: 'Lead Mechanical Design Engineer',
       avatar_url: '',
       bio: {},
       documents: [],
@@ -52,11 +74,12 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
       slug: `project-${Date.now()}`,
       title: 'New Engineering Project',
       category: 'Mechanical Design',
-      summary: '',
       description: '',
-      tools: [],
-      featured: false,
-      likes_count: 0,
+      tools_used: [],
+      is_featured: false,
+      status: 'published',
+      hero_inscription: '',
+      views_count: 0,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }),
@@ -74,10 +97,13 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
       category: 'Mechanical Systems',
       summary: '',
       content: '',
-      author_name: 'Festus, Olorunsogo Johnson',
+      author_name: 'chief admin',
+      is_admin_author: true,
+      difficulty_level: 'Intermediate',
+      reading_time: '5 min read',
       status: 'published',
-      featured: false,
       likes_count: 0,
+      views_count: 0,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }),
@@ -91,8 +117,8 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
       id: `cmt_${Date.now()}`,
       article_id: '',
       author_name: '',
-      author_email: '',
-      body: '',
+      author_role: 'Visitor',
+      content_markdown: '',
       status: 'approved',
       created_at: new Date().toISOString(),
     }),
@@ -167,16 +193,19 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     pk: 'id',
     description: 'Optimized image & video pipeline records (Direct-to-Supabase + HF Worker)',
     template: () => ({
-      id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '',
-      page_type: 'project',
+      id: makeFallbackUuid(),
+      bucket: 'projects',
+      storage_path: '',
       media_type: 'image',
-      status: 'queued',
-      raw_path: '',
       file_name: '',
+      format: 'webp',
+      primary_url: '',
       original_bytes: 0,
       optimized_bytes: 0,
-      compression_percent: 0,
+      compression_pct: 0,
+      status: 'queued',
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     }),
   },
   {
@@ -186,17 +215,22 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     description: 'Uploaded credential & reference documents',
     template: () => ({
       id: `mat_${Date.now()}`,
+      owner_id: getAuthenticatedOwnerUid() || undefined,
       title: '',
+      file_name: 'document.pdf',
       category: 'Credential',
       file_url: '',
+      views_count: 0,
+      likes_count: 0,
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     }),
   },
   {
     name: 'generated_documents',
     label: 'generated_documents',
     pk: 'id',
-    description: 'Document Studio generated CVs, resumes, SOPs, letters, proposals & study plans',
+    description: 'Career Studio generated CVs, resumes, SOPs, letters, proposals & study plans',
     template: () => ({
       id: `doc_${Date.now()}`,
       category: 'international_cv',
@@ -205,7 +239,10 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
       summary: '',
       form_data: {},
       status: 'published',
+      views_count: 0,
+      downloads_count: 0,
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     }),
   },
   {
@@ -213,15 +250,25 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     label: 'conversations',
     pk: 'id',
     description: 'Visitor inquiry & direct chat threads',
-    template: () => ({
-      id: `conv_${Date.now()}`,
-      visitor_name: '',
-      visitor_email: '',
-      subject: '',
-      status: 'open',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }),
+    template: () => {
+      const vid = `visitor_${Date.now()}`;
+      return {
+        id: `conv_${vid}`,
+        visitor_id: vid,
+        owner_id: getAuthenticatedOwnerUid() || undefined,
+        default_label: 'Direct Message',
+        custom_name: '',
+        visitor_name: '',
+        role_or_company: 'Visitor Direct Chat',
+        unread: false,
+        unread_count: 0,
+        important: false,
+        last_message: '',
+        last_message_at: new Date().toISOString(),
+        last_timestamp: '',
+        updated_at: new Date().toISOString(),
+      };
+    },
   },
   {
     name: 'messages',
@@ -229,10 +276,12 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     pk: 'id',
     description: 'Individual messages inside inquiry threads',
     template: () => ({
-      id: `msg_${Date.now()}`,
+      id: makeFallbackUuid(),
       conversation_id: '',
-      sender_role: 'owner',
+      sender_id: getAuthenticatedOwnerUid() || 'festus',
+      receiver_id: '',
       content: '',
+      status: 'unseen',
       created_at: new Date().toISOString(),
     }),
   },
@@ -240,13 +289,13 @@ const SUPABASE_TABLES: SupabaseTableDescriptor[] = [
     name: 'visitor_profiles',
     label: 'visitor_profiles',
     pk: 'visitor_id',
-    description: 'Visitor preferences & bookmarks (saved projects/articles)',
+    description: 'Visitor messaging identities & avatars',
     template: () => ({
       visitor_id: `visitor_${Date.now()}`,
       display_name: '',
-      email: '',
-      liked_projects: [],
-      liked_articles: [],
+      role_subject: 'Visitor Direct Chat',
+      avatar_url: '',
+      avatar_color: 'bg-slate-700',
       updated_at: new Date().toISOString(),
     }),
   },
@@ -350,14 +399,14 @@ export const SupabaseDatabaseManager: React.FC<SupabaseDatabaseManagerProps> = (
         .order('updated_at', { ascending: false })
         .limit(200);
 
-      if (res.error && /column .*updated_at.* does not exist/i.test(res.error.message || '')) {
+      if (res.error && isMissingColumnError(res.error.message, 'updated_at')) {
         res = await supabase
           .from(tableName)
           .select('*', { count: 'exact' })
           .order('created_at', { ascending: false })
           .limit(200);
       }
-      if (res.error && /column .*created_at.* does not exist/i.test(res.error.message || '')) {
+      if (res.error && isMissingColumnError(res.error.message, 'created_at')) {
         res = await supabase.from(tableName).select('*', { count: 'exact' }).limit(200);
       }
 
