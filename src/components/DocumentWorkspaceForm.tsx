@@ -580,7 +580,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
           </SectionBlock>
 
           <SectionBlock
-            title="5. Certifications & Languages (Optional)"
+            title="5. Cert. & Lang"
             action={
               <div className="flex items-center gap-1.5">
                 <button
@@ -619,7 +619,7 @@ export const DocumentWorkspaceForm: React.FC<DocumentWorkspaceFormProps> = ({
                   className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-900 text-white text-[10.5px] font-semibold cursor-pointer"
                 >
                   <Plus className="w-3 h-3" />
-                  <span>Add Language</span>
+                  <span>Add Lang</span>
                 </button>
               </div>
             }

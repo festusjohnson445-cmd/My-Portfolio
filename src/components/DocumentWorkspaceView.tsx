@@ -469,7 +469,7 @@ export const DocumentWorkspaceView: React.FC = () => {
                 No templates are currently enabled.
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5">
+              <div className="grid grid-cols-4 lg:grid-cols-8 gap-1">
                 {availableCategories.map((cat) => {
                   const isSelected = selectedCategory === cat.id;
                   return (
@@ -477,17 +477,17 @@ export const DocumentWorkspaceView: React.FC = () => {
                       key={cat.id}
                       type="button"
                       onClick={() => handleSelectCategory(cat.id)}
-                      className={`p-2 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between gap-1 font-serif ${
+                      className={`px-1.5 py-1 rounded-md border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 min-w-0 font-serif ${
                         isSelected
                           ? 'bg-cyan-900 border-cyan-900 text-white shadow-xs'
                           : 'bg-[#f8fafc] border-slate-300 text-slate-800 hover:bg-white hover:border-cyan-700'
                       }`}
                     >
-                      <span className="text-[11px] font-bold leading-tight font-serif">
+                      <span className="text-[9.5px] sm:text-[10px] font-bold leading-tight truncate w-full font-serif">
                         {cat.shortLabel}
                       </span>
                       <span
-                        className={`text-[9.5px] font-serif ${
+                        className={`text-[8px] leading-none truncate w-full font-serif ${
                           isSelected ? 'text-cyan-200' : 'text-slate-500'
                         }`}
                       >
@@ -624,9 +624,6 @@ export const DocumentWorkspaceView: React.FC = () => {
                   <FileText className="w-4 h-4 text-cyan-800 shrink-0" />
                   <span className="font-bold text-slate-900">
                     {activeMeta.label} — Live A4 Preview
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-300 text-[10px] font-semibold text-slate-700">
-                    Selectable Text
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
