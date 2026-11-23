@@ -42,6 +42,8 @@ import {
   RotateCcw,
   Database,
   Home,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -88,6 +90,8 @@ import {
   BUILT_IN_THEMES,
   DEFAULT_WEBSITE_SETTINGS,
   DEFAULT_HOMEPAGE_CONFIG,
+  DEFAULT_HERO_LAYOUT_CONFIG,
+  normalizeHeroElementOrder,
   type PortfolioProject,
   type PortfolioArticle,
   type ArticleComment,
@@ -108,6 +112,8 @@ import {
   type MediaAssetRecord,
   type MediaAspectRatio,
   type HomepageConfig,
+  type HeroLayoutConfig,
+  type HeroElementKey,
   formatBytes,
 } from '../utils/portfolioSupabase';
 import {
@@ -121,9 +127,9 @@ import {
   uploadMaterialToSupabaseBucket,
   uploadMaterialThumbnailToBucket,
   getAuthenticatedOwnerUid,
-  supabaseSignOutOwner,
   SUPABASE_RLS_SCHEMA_SQL,
 } from '../utils/supabase';
+import { performFullAdminSignOut } from '../utils/adminSecurity';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import {
   resolveSkillStatus,
@@ -519,7 +525,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   );
 
   const handleSignOut = async () => {
-    await supabaseSignOutOwner();
+    await performFullAdminSignOut('manual');
     setOwnerAuthenticated(false);
     onNavigatePart('home');
   };
@@ -3140,9 +3146,268 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                           </div>
                         </div>
 
+                        {/* Hero Section Height, Position, Padding, Margins & Inner Length Controls */}
+                        {(() => {
+                          const hl: HeroLayoutConfig = {
+                            ...DEFAULT_HERO_LAYOUT_CONFIG,
+                            ...(hc.heroLayout || {}),
+                            heroElementOrder: normalizeHeroElementOrder(hc.heroLayout?.heroElementOrder),
+                          };
+                          const patchHeroLayout = (updater: (cur: HeroLayoutConfig) => HeroLayoutConfig) =>
+                            patchHomepage((c) => {
+                              const curHl: HeroLayoutConfig = {
+                                ...DEFAULT_HERO_LAYOUT_CONFIG,
+                                ...(c.heroLayout || {}),
+                                heroElementOrder: normalizeHeroElementOrder(c.heroLayout?.heroElementOrder),
+                              };
+                              return {
+                                ...c,
+                                heroLayout: updater(curHl),
+                              };
+                            });
+
+                          const moveHeroElement = (idx: number, direction: -1 | 1) => {
+                            const targetIdx = idx + direction;
+                            if (targetIdx < 0 || targetIdx >= hl.heroElementOrder.length) return;
+                            patchHeroLayout((cur) => {
+                              const nextOrder = [...cur.heroElementOrder];
+                              const [moved] = nextOrder.splice(idx, 1);
+                              nextOrder.splice(targetIdx, 0, moved);
+                              return { ...cur, heroElementOrder: nextOrder };
+                            });
+                          };
+
+                          const elementMeta: Record<HeroElementKey, { label: string; hint: string }> = {
+                            badge: { label: 'Role Badge & Credentials', hint: 'Availability pill + role & certs' },
+                            title: { label: 'Welcome Prefix & Portfolio Heading', hint: 'Main H1 welcome title' },
+                            description: { label: 'Hero Description Statement', hint: 'Intro summary paragraph' },
+                            cta: { label: 'CTA Action Buttons', hint: 'Primary & secondary buttons row' },
+                          };
+
+                          const renderRangeField = (
+                            label: string,
+                            value: number,
+                            min: number,
+                            max: number,
+                            step: number,
+                            onChangeNum: (val: number) => void
+                          ) => (
+                            <div className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="text-[10px] font-bold text-slate-700">{label}</label>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min={min}
+                                    max={max}
+                                    step={step}
+                                    value={value}
+                                    onChange={(e) => {
+                                      const parsed = Number(e.target.value);
+                                      if (!Number.isNaN(parsed)) {
+                                        onChangeNum(Math.min(max, Math.max(min, parsed)));
+                                      }
+                                    }}
+                                    className="w-14 px-1.5 py-0.5 text-right text-[10px] font-mono rounded border border-slate-300 bg-white text-slate-900"
+                                  />
+                                  <span className="text-[10px] text-slate-500 font-mono">px</span>
+                                </div>
+                              </div>
+                              <input
+                                type="range"
+                                min={min}
+                                max={max}
+                                step={step}
+                                value={value}
+                                onChange={(e) => onChangeNum(Number(e.target.value))}
+                                className="w-full accent-cyan-800 cursor-pointer h-1.5"
+                              />
+                            </div>
+                          );
+
+                          return (
+                            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                <div>
+                                  <h5 className="font-bold text-slate-900">
+                                    2. Hero Height, Position, Padding, Margins &amp; Inner Length
+                                  </h5>
+                                  <p className="text-[10px] text-slate-600">
+                                    Adjust Hero vertical height, re-order inner blocks, customize alignment, padding, margins, and element widths. Updates preview live; click Save All Settings to persist to Supabase.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    patchHeroLayout(() => DEFAULT_HERO_LAYOUT_CONFIG);
+                                    showNotice('Hero layout settings reset to compact defaults (click Save All Settings to persist).');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 text-[10px] font-semibold cursor-pointer shrink-0"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Reset Hero Layout</span>
+                                </button>
+                              </div>
+
+                              {/* Section Height & Alignment */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                                {renderRangeField('Hero Min Height', hl.heroMinHeight, 200, 640, 10, (val) =>
+                                  patchHeroLayout((cur) => ({ ...cur, heroMinHeight: val }))
+                                )}
+                                {renderRangeField('Outer Top/Bottom Padding', hl.heroPaddingY, 12, 120, 2, (val) =>
+                                  patchHeroLayout((cur) => ({ ...cur, heroPaddingY: val }))
+                                )}
+                                <div className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 space-y-1.5">
+                                  <label className="block text-[10px] font-bold text-slate-700">
+                                    Inner Horizontal Alignment
+                                  </label>
+                                  <div className="grid grid-cols-3 gap-1">
+                                    {(['left', 'center', 'right'] as const).map((align) => (
+                                      <button
+                                        key={align}
+                                        type="button"
+                                        onClick={() => patchHeroLayout((cur) => ({ ...cur, heroTextAlign: align }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold capitalize border cursor-pointer transition-colors ${
+                                          hl.heroTextAlign === align
+                                            ? 'bg-cyan-900 text-white border-cyan-900'
+                                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                                        }`}
+                                      >
+                                        {align}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 space-y-1.5">
+                                  <label className="block text-[10px] font-bold text-slate-700">
+                                    Inner Vertical Position
+                                  </label>
+                                  <div className="grid grid-cols-3 gap-1">
+                                    {(
+                                      [
+                                        { id: 'start', label: 'Top' },
+                                        { id: 'center', label: 'Center' },
+                                        { id: 'end', label: 'Bottom' },
+                                      ] as const
+                                    ).map((pos) => (
+                                      <button
+                                        key={pos.id}
+                                        type="button"
+                                        onClick={() => patchHeroLayout((cur) => ({ ...cur, heroVerticalAlign: pos.id }))}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold border cursor-pointer transition-colors ${
+                                          hl.heroVerticalAlign === pos.id
+                                            ? 'bg-cyan-900 text-white border-cyan-900'
+                                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                                        }`}
+                                      >
+                                        {pos.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Inner Padding & Element Lengths (Max Widths) */}
+                              <div className="space-y-1.5">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                  Inner Container Padding &amp; Content Lengths
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                                  {renderRangeField('Inner Padding Left/Right', hl.heroInnerPaddingX, 0, 80, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroInnerPaddingX: val }))
+                                  )}
+                                  {renderRangeField('Inner Padding Top/Bottom', hl.heroInnerPaddingY, 0, 64, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroInnerPaddingY: val }))
+                                  )}
+                                  {renderRangeField('Container Max Length', hl.heroContentMaxWidth, 480, 1200, 16, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroContentMaxWidth: val }))
+                                  )}
+                                  {renderRangeField('Role Badge Max Length', hl.heroBadgeMaxWidth, 240, 960, 10, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroBadgeMaxWidth: val }))
+                                  )}
+                                  {renderRangeField('Description Max Length', hl.heroDescriptionMaxWidth, 320, 960, 16, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroDescriptionMaxWidth: val }))
+                                  )}
+                                  {renderRangeField('CTA Row Max Length', hl.heroCtaMaxWidth, 260, 720, 12, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroCtaMaxWidth: val }))
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Element Margins & Button Gap */}
+                              <div className="space-y-1.5">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                  Inner Content Margins &amp; Spacing
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                                  {renderRangeField('Badge Bottom Margin', hl.heroBadgeMarginBottom, 0, 48, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroBadgeMarginBottom: val }))
+                                  )}
+                                  {renderRangeField('Heading Bottom Margin', hl.heroTitleMarginBottom, 0, 48, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroTitleMarginBottom: val }))
+                                  )}
+                                  {renderRangeField('Description Bottom Margin', hl.heroDescriptionMarginBottom, 0, 48, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroDescriptionMarginBottom: val }))
+                                  )}
+                                  {renderRangeField('CTA Top Margin', hl.heroCtaMarginTop, 0, 48, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroCtaMarginTop: val }))
+                                  )}
+                                  {renderRangeField('CTA Button Gap', hl.heroCtaGap, 4, 36, 2, (val) =>
+                                    patchHeroLayout((cur) => ({ ...cur, heroCtaGap: val }))
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Re-arrange Inner Elements Order */}
+                              <div className="space-y-1.5">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                  Re-arrange Inner Elements Position (Top to Bottom Order)
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  {hl.heroElementOrder.map((key, idx) => (
+                                    <div
+                                      key={key}
+                                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border border-slate-200 bg-slate-50"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-[11px] font-bold text-slate-900 truncate">
+                                          {idx + 1}. {elementMeta[key].label}
+                                        </div>
+                                        <div className="text-[9.5px] text-slate-500 truncate">
+                                          {elementMeta[key].hint}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                          type="button"
+                                          disabled={idx === 0}
+                                          onClick={() => moveHeroElement(idx, -1)}
+                                          title="Move Up"
+                                          className="p-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                          <ArrowUp className="w-3 h-3 text-slate-700" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={idx === hl.heroElementOrder.length - 1}
+                                          onClick={() => moveHeroElement(idx, 1)}
+                                          title="Move Down"
+                                          className="p-1 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                          <ArrowDown className="w-3 h-3 text-slate-700" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         {/* Explore More Header */}
                         <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2">
-                          <h5 className="font-bold text-slate-900">2. Explore Section Header</h5>
+                          <h5 className="font-bold text-slate-900">3. Explore Section Header</h5>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                             <div>
                               <label className="block text-[10px] font-bold text-slate-700 mb-0.5">
@@ -3188,7 +3453,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
                         {/* 5 Portal Cards */}
                         <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3">
-                          <h5 className="font-bold text-slate-900">3. Homepage Portal Cards</h5>
+                          <h5 className="font-bold text-slate-900">4. Homepage Portal Cards</h5>
                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                             {cardEntries.map(({ key, label, hasBadge }) => {
                               const fallbackCard =

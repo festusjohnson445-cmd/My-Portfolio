@@ -3160,14 +3160,44 @@ END;
 $$;
 GRANT EXECUTE ON FUNCTION public.increment_generated_document_downloads(TEXT) TO anon, authenticated;
 
--- 8. REALTIME PUBLICATIONS (Safe & Idempotent)
+-- 8. ADMIN SINGLE-SESSION LOCK TABLE & RLS
+CREATE TABLE IF NOT EXISTS public.admin_sessions (
+  id TEXT PRIMARY KEY DEFAULT 'active_admin',
+  owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  active_session_id TEXT NOT NULL DEFAULT '',
+  is_active BOOLEAN NOT NULL DEFAULT false,
+  last_heartbeat_at TIMESTAMPTZ DEFAULT now(),
+  expires_at TIMESTAMPTZ DEFAULT (now() + interval '5 minutes'),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.admin_sessions
+  ADD COLUMN IF NOT EXISTS owner_id UUID,
+  ADD COLUMN IF NOT EXISTS active_session_id TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT (now() + interval '5 minutes'),
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
+ALTER TABLE public.admin_sessions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Active Admin Lock Status" ON public.admin_sessions;
+CREATE POLICY "Public Read Active Admin Lock Status" ON public.admin_sessions FOR SELECT TO public USING (true);
+DROP POLICY IF EXISTS "Owner Manage Admin Sessions Insert" ON public.admin_sessions;
+CREATE POLICY "Owner Manage Admin Sessions Insert" ON public.admin_sessions FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Manage Admin Sessions Update" ON public.admin_sessions;
+CREATE POLICY "Owner Manage Admin Sessions Update" ON public.admin_sessions FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
+DROP POLICY IF EXISTS "Owner Manage Admin Sessions Delete" ON public.admin_sessions;
+CREATE POLICY "Owner Manage Admin Sessions Delete" ON public.admin_sessions FOR DELETE TO authenticated USING (public.is_portfolio_owner());
+
+-- 9. REALTIME PUBLICATIONS (Safe & Idempotent)
 DO $$
 DECLARE tbl TEXT;
 BEGIN
   FOREACH tbl IN ARRAY ARRAY[
     'profiles', 'materials', 'projects', 'articles', 'article_comments',
     'website_settings', 'media_assets', 'visitor_profiles',
-    'conversations', 'messages', 'generated_documents'
+    'conversations', 'messages', 'generated_documents', 'admin_sessions'
   ]
   LOOP
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)

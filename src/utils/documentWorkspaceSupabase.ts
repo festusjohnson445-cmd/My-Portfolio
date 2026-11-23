@@ -45,7 +45,7 @@ const safeWriteLocal = (key: string, items: GeneratedDocumentRecord[]) => {
 const mapRowToRecord = (row: any): GeneratedDocumentRecord => ({
   id: String(row.id),
   category: (row.category || 'international_cv') as DocumentWorkspaceCategory,
-  title: String(row.title || 'Untitled Document'),
+  title: String(row.title && String(row.title).trim().toLowerCase() !== 'untitled document' ? row.title : ''),
   authorName: String(row.author_name || ''),
   summary: String(row.summary || ''),
   formData: normalizeDocumentPayload(row.form_data as DocumentFormPayload),

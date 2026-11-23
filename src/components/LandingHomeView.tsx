@@ -17,6 +17,9 @@ import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
   DEFAULT_HOMEPAGE_CONFIG,
+  DEFAULT_HERO_LAYOUT_CONFIG,
+  HeroElementKey,
+  normalizeHeroElementOrder,
 } from '../utils/portfolioSupabase';
 import { useUserColorMode, resolveEffectiveTheme } from '../utils/userThemeMode';
 
@@ -38,6 +41,11 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
   const cardAnimClass = appearance.cardAnimationEnabled ? 'card-anim-enabled' : '';
 
   const activeConfig = appearance.homepageConfig || DEFAULT_HOMEPAGE_CONFIG;
+  const heroLayout = {
+    ...DEFAULT_HERO_LAYOUT_CONFIG,
+    ...(activeConfig.heroLayout || {}),
+    heroElementOrder: normalizeHeroElementOrder(activeConfig.heroLayout?.heroElementOrder),
+  };
 
   const defaultHeroMessage =
     bio.header ||
@@ -49,23 +57,126 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
     activeConfig.heroTitle?.trim() ||
     (bio.fullName ? `${bio.fullName.split(',')[0]}'s Portfolio` : "Festus, Olorunsogo's Portfolio");
 
+  const flexAlignClass =
+    heroLayout.heroTextAlign === 'left'
+      ? 'items-start text-left'
+      : heroLayout.heroTextAlign === 'right'
+        ? 'items-end text-right'
+        : 'items-center text-center';
+
+  const verticalSectionAlign =
+    heroLayout.heroVerticalAlign === 'start'
+      ? 'items-start'
+      : heroLayout.heroVerticalAlign === 'end'
+        ? 'items-end'
+        : 'items-center';
+
+  const renderHeroElement = (key: HeroElementKey) => {
+    switch (key) {
+      case 'badge':
+        return (
+          <div
+            key="badge"
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/90 backdrop-blur-xs border border-slate-300 text-xs font-serif text-cyan-950 shadow-xs max-w-full"
+            style={{
+              maxWidth: `min(100%, ${heroLayout.heroBadgeMaxWidth}px)`,
+              marginBottom: `${heroLayout.heroBadgeMarginBottom}px`,
+            }}
+          >
+            <span className="relative flex h-2 w-2 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span className="font-serif font-bold shrink-0">{activeConfig.heroBadgeRole}</span>
+            <span className="text-slate-300 shrink-0">|</span>
+            <span className="font-mono text-slate-600 truncate text-[11px]" title={dynamicCertifications}>
+              {dynamicCertifications}
+            </span>
+          </div>
+        );
+
+      case 'title':
+        return (
+          <h1
+            key="title"
+            className="text-3xl sm:text-4xl md:text-5xl lg:text-[3.4rem] font-bold tracking-tight text-slate-950 leading-tight font-serif w-full"
+            style={{ marginBottom: `${heroLayout.heroTitleMarginBottom}px` }}
+          >
+            {activeConfig.heroWelcomePrefix}{' '}
+            <span className="text-cyan-900 block mt-1">{portfolioTitleText}</span>
+          </h1>
+        );
+
+      case 'description':
+        return (
+          <p
+            key="description"
+            className="text-sm sm:text-base md:text-lg text-slate-700 leading-relaxed font-sans font-normal w-full"
+            style={{
+              maxWidth: `min(100%, ${heroLayout.heroDescriptionMaxWidth}px)`,
+              marginBottom: `${heroLayout.heroDescriptionMarginBottom}px`,
+            }}
+          >
+            {heroMessage}
+          </p>
+        );
+
+      case 'cta':
+        return (
+          <div
+            key="cta"
+            className="grid grid-cols-2 w-full"
+            style={{
+              maxWidth: `min(100%, ${heroLayout.heroCtaMaxWidth}px)`,
+              marginTop: `${heroLayout.heroCtaMarginTop}px`,
+              gap: `${heroLayout.heroCtaGap}px`,
+            }}
+          >
+            {/* Primary User CTA: My Profile */}
+            <button
+              onClick={() => onNavigatePart('profile')}
+              className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-serif font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
+            >
+              <User className="w-4 h-4 text-cyan-200 group-hover:scale-110 transition-transform shrink-0" />
+              <span className="truncate">{activeConfig.heroPrimaryCtaLabel}</span>
+            </button>
+
+            {/* Secondary CTA: Explore Engineering Hub */}
+            <button
+              onClick={() => onNavigatePart('overview')}
+              className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-serif font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
+            >
+              <Layers className="w-4 h-4 text-cyan-800 shrink-0" />
+              <span className="truncate">{activeConfig.heroSecondaryCtaLabel}</span>
+            </button>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="flex-1 w-full flex flex-col font-serif text-[0.95em]" style={{ color: activeTheme.textColor }}>
       {/* ======================================================== */}
       {/* 1. HERO SECTION WITH MODERN ENGINEERING STYLING          */}
       {/* ======================================================== */}
       <section
-        className="relative overflow-hidden pt-5 pb-10 sm:pt-8 sm:pb-14 border-b"
+        className={`relative overflow-hidden flex ${verticalSectionAlign} border-b`}
         style={{
           borderColor: activeTheme.borderColor,
           backgroundColor: activeTheme.surfaceBg,
+          minHeight: `${heroLayout.heroMinHeight}px`,
+          paddingTop: `${heroLayout.heroPaddingY}px`,
+          paddingBottom: `${heroLayout.heroPaddingY}px`,
         }}
       >
         {/* Per-User Local Light/Dark Mode Toggle (Top-Right Corner of Hero) */}
         <button
           type="button"
           onClick={() => toggleUserColorMode()}
-          className="absolute top-2.5 right-3 sm:top-3.5 sm:right-5 z-20 p-2 rounded-full bg-white/90 hover:bg-white text-slate-800 border border-slate-300 shadow-xs transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
+          className="absolute top-2.5 right-2.5 sm:top-4 sm:right-5 z-20 p-1.5 sm:p-2 rounded-full bg-white/90 hover:bg-white text-slate-800 border border-slate-300 shadow-xs transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-700/50"
           aria-label={userColorMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           title={userColorMode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
@@ -122,53 +233,18 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
           <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-500/20 to-transparent pointer-events-none hero-anim-blueprint-scan" />
         )}
 
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-0">
-          <div className="flex flex-col items-center text-center max-w-4xl mx-auto">
-
-            {/* Live Availability & Verified Credential Badge */}
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/90 backdrop-blur-xs border border-slate-300 text-xs font-serif text-cyan-950 shadow-xs mb-5 max-w-full">
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="font-serif font-bold shrink-0">{activeConfig.heroBadgeRole}</span>
-              <span className="text-slate-300 shrink-0">|</span>
-              <span className="font-mono text-slate-600 truncate text-[11px]" title={dynamicCertifications}>
-                {dynamicCertifications}
-              </span>
-            </div>
-
-            {/* Main Welcome Heading */}
-            <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight text-slate-950 leading-tight font-serif">
-              {activeConfig.heroWelcomePrefix}{' '}
-              <span className="text-cyan-900 block mt-0.5 sm:mt-1">{portfolioTitleText}</span>
-            </h1>
-
-            {/* Subtitle & Engineering Statement */}
-            <p className="mt-3 text-sm sm:text-base md:text-lg text-slate-700 max-w-2xl leading-relaxed font-sans font-normal">
-              {heroMessage}
-            </p>
-
-            {/* CTA Action Buttons */}
-            <div className="mt-6 grid grid-cols-2 gap-3 w-full max-w-md mx-auto">
-              {/* Primary User CTA: My Profile */}
-              <button
-                onClick={() => onNavigatePart('profile')}
-                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-serif font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
-              >
-                <User className="w-4 h-4 text-cyan-200 group-hover:scale-110 transition-transform shrink-0" />
-                <span className="truncate">{activeConfig.heroPrimaryCtaLabel}</span>
-              </button>
-
-              {/* Secondary CTA: Explore Engineering Hub */}
-              <button
-                onClick={() => onNavigatePart('overview')}
-                className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-serif font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
-              >
-                <Layers className="w-4 h-4 text-cyan-800 shrink-0" />
-                <span className="truncate">{activeConfig.heroSecondaryCtaLabel}</span>
-              </button>
-            </div>
+        <div className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div
+            className={`flex flex-col ${flexAlignClass} mx-auto w-full`}
+            style={{
+              maxWidth: `min(100%, ${heroLayout.heroContentMaxWidth}px)`,
+              paddingLeft: `${heroLayout.heroInnerPaddingX}px`,
+              paddingRight: `${heroLayout.heroInnerPaddingX}px`,
+              paddingTop: `${heroLayout.heroInnerPaddingY}px`,
+              paddingBottom: `${heroLayout.heroInnerPaddingY}px`,
+            }}
+          >
+            {heroLayout.heroElementOrder.map((key) => renderHeroElement(key))}
           </div>
         </div>
       </section>

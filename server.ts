@@ -2174,6 +2174,235 @@ app.post('/api/media/jobs/:jobId/cancel', async (req, res) => {
   return res.json({ success: true, status: 'cancelled' });
 });
 
+// =================================================================
+// 10. ADMIN SINGLE-SESSION LOCK & EMAIL VERIFICATION PIPELINE
+// =================================================================
+const ADMIN_LOCK_WINDOW_MS = 5 * 60 * 1000;
+interface ServerAdminSessionLock {
+  ownerUid: string;
+  sessionId: string;
+  lastHeartbeatAt: number;
+  expiresAt: number;
+}
+let activeServerAdminLock: ServerAdminSessionLock | null = null;
+
+interface ServerOtpChallenge {
+  uid: string;
+  email: string;
+  salt: string;
+  hash: string;
+  expiresAt: number;
+  attempts: number;
+}
+const pendingServerOtpChallenges = new Map<string, ServerOtpChallenge>();
+
+async function verifyAuthenticatedOwnerJwt(req: express.Request): Promise<{ uid: string; email: string } | null> {
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const { supabaseUrl, anonKey } = resolveSupabaseHeaders(req);
+  try {
+    const resp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: {
+        apikey: anonKey,
+        Authorization: authHeader,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) return null;
+    const user: any = await resp.json().catch(() => null);
+    if (!user || !user.id || user.is_anonymous) return null;
+    const email = String(user.email || '').trim().toLowerCase();
+    if (!email || email === 'public_visitor@feslineguest.com') return null;
+    return { uid: String(user.id), email };
+  } catch {
+    return null;
+  }
+}
+
+function getFreshAdminLock(): ServerAdminSessionLock | null {
+  if (!activeServerAdminLock) return null;
+  const now = Date.now();
+  if (now >= activeServerAdminLock.expiresAt && now - activeServerAdminLock.lastHeartbeatAt >= ADMIN_LOCK_WINDOW_MS) {
+    activeServerAdminLock = null;
+    return null;
+  }
+  return activeServerAdminLock;
+}
+
+app.get('/api/admin/session/status', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  const querySessionId = String(req.query.sessionId || '').trim();
+  const lock = getFreshAdminLock();
+  if (!lock) {
+    return res.json({ active: false, isSameSession: false });
+  }
+  return res.json({
+    active: true,
+    isSameSession: Boolean(querySessionId && lock.sessionId === querySessionId),
+    expiresAt: new Date(lock.expiresAt).toISOString(),
+  });
+});
+
+app.post('/api/admin/session/claim', async (req, res) => {
+  const owner = await verifyAuthenticatedOwnerJwt(req);
+  if (!owner) {
+    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
+  }
+  const sessionId = String(req.body?.sessionId || '').trim();
+  if (!sessionId || sessionId.length < 8) {
+    return res.status(400).json({ success: false, message: 'Invalid session identifier.' });
+  }
+  const lock = getFreshAdminLock();
+  if (lock && lock.sessionId !== sessionId) {
+    return res.status(409).json({
+      success: false,
+      message: 'Another Admin session is already active. Only one active Admin session is permitted at a time.',
+    });
+  }
+  const now = Date.now();
+  activeServerAdminLock = {
+    ownerUid: owner.uid,
+    sessionId,
+    lastHeartbeatAt: now,
+    expiresAt: now + ADMIN_LOCK_WINDOW_MS,
+  };
+  return res.json({ success: true, expiresAt: new Date(activeServerAdminLock.expiresAt).toISOString() });
+});
+
+app.post('/api/admin/session/heartbeat', async (req, res) => {
+  const owner = await verifyAuthenticatedOwnerJwt(req);
+  if (!owner) {
+    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
+  }
+  const sessionId = String(req.body?.sessionId || '').trim();
+  if (!sessionId || sessionId.length < 8) {
+    return res.status(400).json({ success: false, message: 'Invalid session identifier.' });
+  }
+  const lock = getFreshAdminLock();
+  if (lock && lock.sessionId !== sessionId) {
+    return res.status(409).json({
+      success: false,
+      message: 'Admin session superseded or active elsewhere.',
+    });
+  }
+  const now = Date.now();
+  activeServerAdminLock = {
+    ownerUid: owner.uid,
+    sessionId,
+    lastHeartbeatAt: now,
+    expiresAt: now + ADMIN_LOCK_WINDOW_MS,
+  };
+  return res.json({ success: true, expiresAt: new Date(activeServerAdminLock.expiresAt).toISOString() });
+});
+
+app.post('/api/admin/session/release', async (req, res) => {
+  const sessionId = String(req.body?.sessionId || '').trim();
+  const owner = await verifyAuthenticatedOwnerJwt(req);
+  if (activeServerAdminLock) {
+    if ((sessionId && activeServerAdminLock.sessionId === sessionId) || (owner && activeServerAdminLock.ownerUid === owner.uid)) {
+      activeServerAdminLock = null;
+    }
+  }
+  return res.json({ success: true });
+});
+
+app.post('/api/admin/otp/send', async (req, res) => {
+  const owner = await verifyAuthenticatedOwnerJwt(req);
+  if (!owner) {
+    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
+  }
+
+  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+  const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fesline Admin <onboarding@resend.dev>').trim();
+
+  if (!resendApiKey) {
+    return res.json({ success: true, delivery: 'supabase_otp' });
+  }
+
+  const code = String(crypto.randomInt(100000, 1000000));
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.createHmac('sha256', salt).update(code).digest('hex');
+  pendingServerOtpChallenges.set(owner.uid, {
+    uid: owner.uid,
+    email: owner.email,
+    salt,
+    hash,
+    expiresAt: Date.now() + ADMIN_LOCK_WINDOW_MS,
+    attempts: 0,
+  });
+
+  try {
+    const emailResp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [owner.email],
+        subject: 'Your Admin Login Verification Passcode',
+        html: `<div style="font-family:Georgia,serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #cbd5e1;border-radius:12px;">
+          <h2 style="color:#0f172a;margin:0 0 12px;">Admin Sign-In Verification</h2>
+          <p style="color:#334155;font-size:14px;line-height:1.5;">Copy the 6-digit verification passcode below and paste it into the Admin Login dialog to complete authentication. This code expires in 5 minutes.</p>
+          <div style="margin:20px 0;padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:6px;color:#0e7490;">${code}</div>
+          <p style="color:#64748b;font-size:12px;margin:0;">If you did not attempt to sign in, please change your password immediately.</p>
+        </div>`,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!emailResp.ok) {
+      pendingServerOtpChallenges.delete(owner.uid);
+      return res.json({ success: true, delivery: 'supabase_otp' });
+    }
+    return res.json({ success: true, delivery: 'server_email' });
+  } catch {
+    pendingServerOtpChallenges.delete(owner.uid);
+    return res.json({ success: true, delivery: 'supabase_otp' });
+  }
+});
+
+app.post('/api/admin/otp/verify', async (req, res) => {
+  const owner = await verifyAuthenticatedOwnerJwt(req);
+  if (!owner) {
+    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
+  }
+
+  const submittedCode = String(req.body?.code || '').replace(/\D/g, '').trim();
+  if (!/^\d{6}$/.test(submittedCode)) {
+    return res.status(400).json({ success: false, message: 'Please enter a valid 6-digit passcode.' });
+  }
+
+  const challenge = pendingServerOtpChallenges.get(owner.uid);
+  if (!challenge) {
+    return res.status(400).json({ success: false, message: 'No active verification challenge found. Please request a new passcode.' });
+  }
+  if (Date.now() > challenge.expiresAt) {
+    pendingServerOtpChallenges.delete(owner.uid);
+    return res.status(400).json({ success: false, message: 'Verification passcode expired. Please request a new one.' });
+  }
+
+  challenge.attempts += 1;
+  if (challenge.attempts > 5) {
+    pendingServerOtpChallenges.delete(owner.uid);
+    return res.status(429).json({ success: false, message: 'Too many incorrect passcode attempts. Please sign in again.' });
+  }
+
+  const candidateHash = crypto.createHmac('sha256', challenge.salt).update(submittedCode).digest('hex');
+  const expectedBuf = Buffer.from(challenge.hash, 'hex');
+  const candidateBuf = Buffer.from(candidateHash, 'hex');
+  const isMatch = expectedBuf.length === candidateBuf.length && crypto.timingSafeEqual(expectedBuf, candidateBuf);
+
+  if (!isMatch) {
+    return res.status(401).json({ success: false, message: 'Incorrect 6-digit verification passcode.' });
+  }
+
+  pendingServerOtpChallenges.delete(owner.uid);
+  return res.json({ success: true, verified: true });
+});
+
 // Global JSON error handler for all /api/* routes so Express never emits HTML 500 pages
 app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[API Error Handler]:', err);

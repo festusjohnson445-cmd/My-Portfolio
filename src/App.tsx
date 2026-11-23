@@ -16,12 +16,21 @@ import {
   getStoredDocuments,
   syncGlobalProfileWithServer,
   setOwnerAuthenticated,
+  useProfileSync,
 } from './utils/profileState';
 import {
   supabase,
   onSupabaseAuthStateChange,
   isRealOwnerUser,
 } from './utils/supabase';
+import {
+  hasVerifiedAdminSession,
+  isAdminOtpPending,
+  performFullAdminSignOut,
+  startAdminSessionWatchdog,
+  clearLocalAdminVerification,
+  type AdminSignOutReason,
+} from './utils/adminSecurity';
 import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
@@ -69,6 +78,8 @@ export default function App() {
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [userColorMode] = useUserColorMode();
+  const { isOwner, ownerUid } = useProfileSync();
+  const [autoSignOutNotice, setAutoSignOutNotice] = useState<string | null>(null);
 
   const websiteSettings = useWebsiteSettingsSync();
   const appearance = websiteSettings.appearanceConfig;
@@ -77,20 +88,33 @@ export default function App() {
   const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const footerCfg = appearance.footerConfig;
 
-  // Top-level onAuthStateChange session listener — ignore anonymous / public visitor chat sessions
+  // Top-level onAuthStateChange session listener — enforces 6-digit email verification & single session lock
   useEffect(() => {
+    const syncSessionAuth = (session: any) => {
+      const user = session?.user;
+      if (isRealOwnerUser(user)) {
+        if (hasVerifiedAdminSession(user.id)) {
+          setOwnerAuthenticated(true, user.id);
+        } else {
+          setOwnerAuthenticated(false);
+          if (!isAdminOtpPending()) {
+            clearLocalAdminVerification();
+            void supabase.auth.signOut().catch(() => {});
+          }
+        }
+      } else {
+        clearLocalAdminVerification();
+        setOwnerAuthenticated(false);
+      }
+    };
+
     supabase.auth
       .getSession()
       .then(({ data: { session }, error }) => {
         if (error) {
           console.warn('[Supabase Initial Session Check]:', error.message);
         }
-        const ownerActive = isRealOwnerUser(session?.user);
-        if (ownerActive) {
-          setOwnerAuthenticated(true, session?.user?.id);
-        } else {
-          setOwnerAuthenticated(false);
-        }
+        syncSessionAuth(session);
       })
       .catch(() => {
         setOwnerAuthenticated(false);
@@ -99,18 +123,49 @@ export default function App() {
     const {
       data: { subscription },
     } = onSupabaseAuthStateChange((_event, session) => {
-      const ownerActive = isRealOwnerUser(session?.user);
-      if (ownerActive) {
-        setOwnerAuthenticated(true, session?.user?.id);
-      } else {
-        setOwnerAuthenticated(false);
-      }
+      syncSessionAuth(session);
     });
 
     return () => {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Global Admin Security Watchdog: 5-min inactivity, 5-min offline, single active session heartbeat
+  useEffect(() => {
+    if (!isOwner || !ownerUid) return;
+
+    const handleAutoSignOut = async (reason: AdminSignOutReason) => {
+      await performFullAdminSignOut(reason);
+      setOwnerAuthenticated(false);
+      setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
+
+      if (reason === 'inactivity') {
+        setAutoSignOutNotice('Signed out automatically after 5 minutes of inactivity.');
+      } else if (reason === 'offline') {
+        setAutoSignOutNotice('Signed out automatically after being offline for 5 minutes.');
+      } else if (reason === 'concurrent') {
+        setAutoSignOutNotice('Admin session signed out because only one active session is permitted.');
+      }
+    };
+
+    const stopWatchdog = startAdminSessionWatchdog({
+      ownerUid,
+      onAutoSignOut: (reason) => {
+        void handleAutoSignOut(reason);
+      },
+    });
+
+    return () => {
+      stopWatchdog();
+    };
+  }, [isOwner, ownerUid]);
+
+  useEffect(() => {
+    if (!autoSignOutNotice) return;
+    const t = window.setTimeout(() => setAutoSignOutNotice(null), 8000);
+    return () => window.clearTimeout(t);
+  }, [autoSignOutNotice]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -499,6 +554,21 @@ export default function App() {
         >
           <ArrowUp className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" />
         </button>
+      )}
+
+      {/* Global Auto Sign-Out Security Notice */}
+      {autoSignOutNotice && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-950 text-white border border-amber-400/50 shadow-2xl text-xs font-sans font-semibold flex items-center gap-3 max-w-md w-[calc(100%-2rem)]">
+          <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="flex-1">{autoSignOutNotice}</span>
+          <button
+            type="button"
+            onClick={() => setAutoSignOutNotice(null)}
+            className="text-slate-300 hover:text-white text-xs font-bold cursor-pointer shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
     </div>
   );

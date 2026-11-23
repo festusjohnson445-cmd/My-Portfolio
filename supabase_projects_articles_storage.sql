@@ -816,6 +816,152 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.increment_generated_document_downloads(TEXT) TO anon, authenticated;
 
+-- 12. ADMIN SINGLE-SESSION LOCKS (Restrict Multiple Logins + 5-Min Timeout)
+CREATE TABLE IF NOT EXISTS public.admin_session_locks (
+  owner_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  device_info TEXT DEFAULT '',
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '5 minutes'),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.admin_session_locks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Owner Manage Session Lock" ON public.admin_session_locks;
+CREATE POLICY "Owner Manage Session Lock"
+ON public.admin_session_locks FOR ALL TO authenticated
+USING (auth.uid() = owner_id AND public.is_portfolio_owner())
+WITH CHECK (auth.uid() = owner_id AND public.is_portfolio_owner());
+
+CREATE OR REPLACE FUNCTION public.check_admin_session_lock(p_session_id TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_row public.admin_session_locks%ROWTYPE;
+BEGIN
+  IF v_uid IS NULL OR NOT public.is_portfolio_owner() THEN
+    RETURN jsonb_build_object('allowed', false, 'reason', 'Unauthorized account.');
+  END IF;
+
+  SELECT * INTO v_row FROM public.admin_session_locks WHERE owner_id = v_uid;
+
+  IF FOUND
+     AND v_row.is_active = true
+     AND v_row.last_active_at > (now() - interval '5 minutes')
+     AND v_row.session_id <> COALESCE(p_session_id, '') THEN
+    RETURN jsonb_build_object(
+      'allowed', false,
+      'reason', 'Multiple logins restricted: Chief Admin is already signed in on another device or tab. Please sign out there or wait 5 minutes of inactivity.',
+      'active_session_id', v_row.session_id,
+      'last_active_at', v_row.last_active_at
+    );
+  END IF;
+
+  RETURN jsonb_build_object('allowed', true);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.check_admin_session_lock(TEXT) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.claim_admin_session_lock(p_session_id TEXT, p_device_info TEXT DEFAULT '')
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_row public.admin_session_locks%ROWTYPE;
+BEGIN
+  IF v_uid IS NULL OR NOT public.is_portfolio_owner() THEN
+    RETURN jsonb_build_object('success', false, 'message', 'Unauthorized account.');
+  END IF;
+
+  SELECT * INTO v_row FROM public.admin_session_locks WHERE owner_id = v_uid FOR UPDATE;
+
+  IF FOUND
+     AND v_row.is_active = true
+     AND v_row.last_active_at > (now() - interval '5 minutes')
+     AND v_row.session_id <> COALESCE(p_session_id, '') THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'message', 'Multiple logins restricted: Chief Admin is already signed in on another device or tab.'
+    );
+  END IF;
+
+  INSERT INTO public.admin_session_locks (owner_id, session_id, device_info, is_active, last_active_at, expires_at, updated_at)
+  VALUES (v_uid, p_session_id, COALESCE(p_device_info, ''), true, now(), now() + interval '5 minutes', now())
+  ON CONFLICT (owner_id) DO UPDATE SET
+    session_id = EXCLUDED.session_id,
+    device_info = EXCLUDED.device_info,
+    is_active = true,
+    last_active_at = now(),
+    expires_at = now() + interval '5 minutes',
+    updated_at = now();
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.claim_admin_session_lock(TEXT, TEXT) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.heartbeat_admin_session_lock(p_session_id TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+  v_updated INTEGER;
+BEGIN
+  IF v_uid IS NULL OR NOT public.is_portfolio_owner() THEN
+    RETURN jsonb_build_object('valid', false);
+  END IF;
+
+  UPDATE public.admin_session_locks
+  SET last_active_at = now(),
+      expires_at = now() + interval '5 minutes',
+      updated_at = now()
+  WHERE owner_id = v_uid
+    AND session_id = COALESCE(p_session_id, '')
+    AND is_active = true
+    AND last_active_at > (now() - interval '5 minutes');
+
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+  RETURN jsonb_build_object('valid', v_updated > 0);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.heartbeat_admin_session_lock(TEXT) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.release_admin_session_lock(p_session_id TEXT DEFAULT NULL)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+BEGIN
+  IF v_uid IS NULL THEN
+    RETURN false;
+  END IF;
+
+  UPDATE public.admin_session_locks
+  SET is_active = false,
+      updated_at = now()
+  WHERE owner_id = v_uid
+    AND (p_session_id IS NULL OR session_id = p_session_id);
+
+  RETURN true;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.release_admin_session_lock(TEXT) TO authenticated;
+
 DO $$
 DECLARE tbl TEXT;
 BEGIN
@@ -825,7 +971,8 @@ BEGIN
     'visitor_profiles',
     'conversations',
     'messages',
-    'profiles'
+    'profiles',
+    'admin_session_locks'
   ]
   LOOP
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)

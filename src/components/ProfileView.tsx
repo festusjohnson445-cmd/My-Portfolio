@@ -101,6 +101,18 @@ import {
   isRealOwnerUser,
 } from '../utils/supabase';
 import {
+  getOrCreateAdminTabSessionId,
+  setAdminOtpPending,
+  markAdminSessionVerified,
+  clearLocalAdminVerification,
+  checkExistingActiveAdminLock,
+  claimAdminSessionLock,
+  performFullAdminSignOut,
+  sendAdminEmailVerificationCode,
+  verifyAdminEmailVerificationCode,
+  type OtpDeliveryMode,
+} from '../utils/adminSecurity';
+import {
   fetchExperiencesFromSupabase,
   getCachedExperiences,
   upsertExperienceToSupabase,
@@ -481,16 +493,47 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showSupabaseSettingsModal, setShowSupabaseSettingsModal] = useState(false);
-  // Email starts empty so nothing is displayed until the user types or clicks autofill
+  // Email starts empty so nothing is displayed until the user types
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authStep, setAuthStep] = useState<'credentials' | 'otp'>('credentials');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpDeliveryMode, setOtpDeliveryMode] = useState<OtpDeliveryMode>('supabase_otp');
+  const [otpTargetEmail, setOtpTargetEmail] = useState('');
+  const [otpAccessToken, setOtpAccessToken] = useState('');
+  const [otpNotice, setOtpNotice] = useState<string | null>(null);
+  const [otpResendCooldown, setOtpResendCooldown] = useState(0);
   const [isAtsPreviewModalOpen, setIsAtsPreviewModalOpen] = useState(false);
 
   useEffect(() => {
     setIsOwnerAuthenticated(syncIsOwner);
     if (syncOwnerUid) setAuthenticatedUid(syncOwnerUid);
   }, [syncIsOwner, syncOwnerUid]);
+
+  useEffect(() => {
+    if (otpResendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpResendCooldown]);
+
+  const resetAuthModalState = async (signOutPendingSession = false) => {
+    setIsAuthModalOpen(false);
+    setAuthError(null);
+    setOtpNotice(null);
+    setAuthPin('');
+    setOtpCode('');
+    setAuthStep('credentials');
+    setOtpTargetEmail('');
+    setOtpAccessToken('');
+    setOtpResendCooldown(0);
+    setAdminOtpPending(null);
+    if (signOutPendingSession) {
+      await supabaseSignOutOwner();
+    }
+  };
 
   // Support direct URL access e.g. #admin or ?admin=true
   useEffect(() => {
@@ -507,7 +550,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   useEffect(() => {
     const handleOpenAuth = () => {
       setAuthError(null);
+      setOtpNotice(null);
       setAuthPin('');
+      setOtpCode('');
+      setAuthStep('credentials');
+      setAdminOtpPending(null);
       setIsAuthModalOpen(true);
     };
     window.addEventListener('open-owner-auth-modal', handleOpenAuth);
@@ -520,49 +567,195 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return saved ? parseInt(saved, 10) : initialResumeDownloadCount || 0;
   });
 
+  const maskAdminEmail = (email: string) => {
+    const [local, domain] = email.split('@');
+    if (!local || !domain) return email;
+    const head = local.slice(0, 2);
+    return `${head}${'*'.repeat(Math.max(2, Math.min(6, local.length - 2)))}@${domain}`;
+  };
+
   const handleOwnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setOtpNotice(null);
     setIsAuthenticating(true);
 
     const cleanEmail = authEmail.trim();
     const cleanPassword = authPin.trim();
+    const sessionId = getOrCreateAdminTabSessionId();
 
     try {
-      // Genuine Supabase Auth integration using supabase.auth.signInWithPassword
+      // If already signed in as owner in this browser, prevent duplicate concurrent login
+      if (syncIsOwner) {
+        setAuthError('An Admin session is already active. Please sign out before signing in again.');
+        return;
+      }
+
+      // Mark OTP challenge pending BEFORE signInWithPassword so App.tsx keeps admin UI locked until 6-digit verification completes
+      clearLocalAdminVerification();
+      setAdminOtpPending(cleanEmail);
+
+      // Step 1: Verify credentials via Supabase Auth
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password: cleanPassword,
       });
 
       if (error) {
+        setAdminOtpPending(null);
         setAuthError(error.message || 'Authentication failed. Please verify your credentials.');
         return;
       }
 
-      if (data?.session && data.user && isRealOwnerUser(data.user)) {
-        setAuthenticatedUid(data.user.id);
-        syncSetOwner(true, data.user.id);
-        setIsOwnerAuthenticated(true);
-        setIsAuthModalOpen(false);
-        setAuthPin('');
-        setAuthError(null);
-        showNotification(`Authenticated as ${data.user.email}.`);
-      } else if (data?.session) {
-        await supabaseSignOutOwner();
+      if (!data?.session || !data?.user || !isRealOwnerUser(data.user)) {
+        setAdminOtpPending(null);
+        if (data?.session) {
+          await supabaseSignOutOwner();
+        }
         setAuthError('This account is not authorized as the portfolio owner.');
-      } else {
-        setAuthError('Authentication succeeded but no active session was returned.');
+        return;
       }
+
+      // Step 2: Restrict multiple concurrent Admin logins across tabs/browsers/devices
+      const lockCheck = await checkExistingActiveAdminLock(sessionId);
+      if (lockCheck.locked) {
+        setAdminOtpPending(null);
+        await supabaseSignOutOwner();
+        setAuthError(
+          lockCheck.reason ||
+            'Another Admin session is currently active. Multiple simultaneous Admin logins are restricted.'
+        );
+        return;
+      }
+
+      // Step 3: Trigger 6-digit email verification passcode to the authenticated Admin email
+      const authenticatedEmail = data.user.email || cleanEmail;
+      setAdminOtpPending(authenticatedEmail);
+      const otpResult = await sendAdminEmailVerificationCode({
+        email: authenticatedEmail,
+        accessToken: data.session.access_token,
+      });
+
+      if (!otpResult.ok) {
+        setAdminOtpPending(null);
+        await supabaseSignOutOwner();
+        setAuthError(
+          otpResult.message || 'Unable to send 6-digit verification passcode to your email.'
+        );
+        return;
+      }
+
+      setOtpTargetEmail(authenticatedEmail);
+      setOtpAccessToken(data.session.access_token);
+      setOtpDeliveryMode(otpResult.deliveryMode);
+      setOtpCode('');
+      setOtpResendCooldown(60);
+      setOtpNotice(
+        `A 6-digit verification passcode has been sent to ${maskAdminEmail(authenticatedEmail)}. Check your inbox, copy the 6-digit passcode, and paste it below.`
+      );
+      setAuthStep('otp');
     } catch (err: any) {
+      setAdminOtpPending(null);
+      await supabaseSignOutOwner();
       setAuthError(err?.message || 'Failed to authenticate owner with Supabase.');
     } finally {
       setIsAuthenticating(false);
     }
   };
 
+  const handleVerifyEmailOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setOtpNotice(null);
+    setIsAuthenticating(true);
+
+    const sessionId = getOrCreateAdminTabSessionId();
+
+    try {
+      // Re-verify single-session lock before completing verification
+      const lockCheck = await checkExistingActiveAdminLock(sessionId);
+      if (lockCheck.locked) {
+        setAdminOtpPending(null);
+        await supabaseSignOutOwner();
+        setAuthStep('credentials');
+        setAuthError(
+          lockCheck.reason ||
+            'Another Admin session became active while verifying. Multiple Admin logins are restricted.'
+        );
+        return;
+      }
+
+      const verifyRes = await verifyAdminEmailVerificationCode({
+        email: otpTargetEmail || authEmail.trim(),
+        code: otpCode,
+        deliveryMode: otpDeliveryMode,
+        accessToken: otpAccessToken,
+      });
+
+      if (!verifyRes.ok || !verifyRes.session || !verifyRes.user || !isRealOwnerUser(verifyRes.user)) {
+        setAuthError(verifyRes.message || 'Invalid or expired 6-digit verification passcode.');
+        return;
+      }
+
+      // Claim single active Admin session lock
+      const claimRes = await claimAdminSessionLock(
+        verifyRes.user.id,
+        sessionId,
+        verifyRes.session.access_token
+      );
+      if (!claimRes.ok) {
+        setAdminOtpPending(null);
+        await supabaseSignOutOwner();
+        setAuthStep('credentials');
+        setAuthError(
+          claimRes.error ||
+            'Another Admin session is currently active. Only one active Admin login is allowed.'
+        );
+        return;
+      }
+
+      markAdminSessionVerified(verifyRes.user.id, sessionId);
+      setAuthenticatedUid(verifyRes.user.id);
+      syncSetOwner(true, verifyRes.user.id);
+      setIsOwnerAuthenticated(true);
+      await resetAuthModalState(false);
+      showNotification(`Verified and signed in as ${verifyRes.user.email}.`);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Verification failed. Please check the 6-digit passcode.');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleResendEmailOtp = async () => {
+    if (otpResendCooldown > 0 || isAuthenticating) return;
+    setAuthError(null);
+    setOtpNotice(null);
+    setIsAuthenticating(true);
+    try {
+      const targetEmail = otpTargetEmail || authEmail.trim();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token || otpAccessToken;
+      const otpResult = await sendAdminEmailVerificationCode({
+        email: targetEmail,
+        accessToken: token,
+      });
+      if (!otpResult.ok) {
+        setAuthError(otpResult.message || 'Unable to resend passcode right now.');
+        return;
+      }
+      setOtpDeliveryMode(otpResult.deliveryMode);
+      setOtpResendCooldown(60);
+      setOtpNotice(
+        `A fresh 6-digit verification passcode has been sent to ${maskAdminEmail(targetEmail)}.`
+      );
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
   const handleOwnerLogout = async () => {
-    await supabaseSignOutOwner();
+    await performFullAdminSignOut('manual');
     syncSetOwner(false);
     setIsOwnerAuthenticated(false);
     setIsEditingBio(false);
@@ -3219,7 +3412,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       )}
 
       {/* ======================================================== */}
-      {/* 5. SUPABASE OWNER ADMIN LOGIN MODAL                       */}
+      {/* 5. SUPABASE OWNER ADMIN LOGIN MODAL (2-STEP EMAIL OTP)   */}
       {/* ======================================================== */}
       {isAuthModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
@@ -3228,18 +3421,20 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             <div className="px-5 py-3.5 bg-[#0f172a] text-white flex items-center justify-between border-b border-slate-800">
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
-                  <KeyRound className="w-3.5 h-3.5 text-cyan-300" />
+                  {authStep === 'otp' ? (
+                    <ShieldCheck className="w-3.5 h-3.5 text-cyan-300" />
+                  ) : (
+                    <KeyRound className="w-3.5 h-3.5 text-cyan-300" />
+                  )}
                 </div>
                 <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
-                  Sign in
+                  {authStep === 'otp' ? 'Email Verification' : 'Sign in'}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  setIsAuthModalOpen(false);
-                  setAuthError(null);
-                  setAuthPin('');
+                  void resetAuthModalState(authStep === 'otp');
                 }}
                 className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
                 title="Close modal"
@@ -3248,94 +3443,176 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </button>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleOwnerLogin} className="p-5 sm:p-6 space-y-4">
-              {authError && (
-                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
-                  <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <span>{authError}</span>
-                </div>
-              )}
+            {authStep === 'credentials' ? (
+              <form onSubmit={handleOwnerLogin} className="p-5 sm:p-6 space-y-4">
+                {authError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{authError}</span>
+                  </div>
+                )}
 
-              {/* Email */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Email
-                </label>
-                <div className="relative">
-                  <input
-                    type="email"
-                    required
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="example@email.com"
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
-                  />
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                {/* Email */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Email
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="example@email.com"
+                      className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
+                    />
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                  </div>
                 </div>
-              </div>
 
-              {/* Password */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    autoFocus
-                    value={authPin}
-                    onChange={(e) => setAuthPin(e.target.value)}
-                    placeholder="Enter password"
-                    className="w-full pl-9 pr-10 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-mono tracking-wider"
-                  />
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                {/* Password */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      autoFocus
+                      value={authPin}
+                      onChange={(e) => setAuthPin(e.target.value)}
+                      placeholder="Enter password"
+                      className="w-full pl-9 pr-10 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-mono tracking-wider"
+                    />
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Buttons */}
+                <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-800 cursor-pointer"
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    title={showPassword ? 'Hide password' : 'Show password'}
+                    onClick={() => {
+                      void resetAuthModalState(false);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
                   >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating}
+                    className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Sending Code...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Unlock className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>Sign in</span>
+                      </>
+                    )}
                   </button>
                 </div>
-              </div>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyEmailOtp} className="p-5 sm:p-6 space-y-4">
+                {authError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{authError}</span>
+                  </div>
+                )}
 
-              {/* Buttons */}
-              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAuthModalOpen(false);
-                    setAuthError(null);
-                    setAuthPin('');
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
+                {otpNotice && (
+                  <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed flex items-start gap-2">
+                    <Mail className="w-4 h-4 text-cyan-700 shrink-0 mt-0.5" />
+                    <span>{otpNotice}</span>
+                  </div>
+                )}
 
-                <button
-                  type="submit"
-                  disabled={isAuthenticating}
-                  className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
-                >
-                  {isAuthenticating ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Authenticating...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                      <span>Sign in</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5 text-center">
+                    6-Digit Verification Passcode
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    required
+                    autoFocus
+                    maxLength={6}
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    className="w-full px-4 py-3 rounded-xl border-2 border-[#b8c6d4] bg-[#f8fafc] text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-700 focus:border-cyan-700 text-center text-xl font-mono font-bold tracking-[0.45em]"
+                  />
+                  <div className="mt-2 flex items-center justify-between text-[11px] text-slate-600">
+                    <span>Sent to authenticated email</span>
+                    <button
+                      type="button"
+                      disabled={otpResendCooldown > 0 || isAuthenticating}
+                      onClick={() => void handleResendEmailOtp()}
+                      className="font-semibold text-cyan-800 hover:underline disabled:opacity-50 disabled:no-underline cursor-pointer"
+                    >
+                      {otpResendCooldown > 0 ? `Resend in ${otpResendCooldown}s` : 'Resend Passcode'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isAuthenticating}
+                    onClick={() => {
+                      void (async () => {
+                        setAdminOtpPending(null);
+                        await supabaseSignOutOwner();
+                        setAuthStep('credentials');
+                        setOtpCode('');
+                        setAuthError(null);
+                        setOtpNotice(null);
+                      })();
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating || otpCode.length !== 6}
+                    className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>Verify &amp; Sign in</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

@@ -841,10 +841,12 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
     ])
   );
 
+  const preservedSessionLock = (memoryBio as any)?._adminSessionLock;
   const mergedBio: ProfileBioData = {
     ...DEFAULT_BIO_DATA,
     ...cleanBioInput,
     ...(combinedDeletedIds.length > 0 ? { deletedDocIds: combinedDeletedIds } : {}),
+    ...(preservedSessionLock ? { _adminSessionLock: preservedSessionLock } : {}),
   };
   delete (mergedBio as any).documents;
   memoryBio = mergedBio;

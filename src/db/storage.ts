@@ -438,7 +438,7 @@ export async function saveDocumentToDb(doc: any) {
 
   const record = {
     id: docId,
-    title: doc.title || 'Untitled Document',
+    title: (doc.title && String(doc.title).trim().toLowerCase() !== 'untitled document') ? doc.title : (doc.fileName ? String(doc.fileName).replace(/\.[^.]+$/, '') : ''),
     fileName: doc.fileName || `${docId}.bin`,
     fileSize: doc.fileSize || '0 KB',
     fileType: doc.fileType || 'Document',

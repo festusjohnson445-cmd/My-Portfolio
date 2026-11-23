@@ -310,6 +310,27 @@ export interface HomepageCardItemConfig {
   ctaLabel: string;
 }
 
+export type HeroElementKey = 'badge' | 'title' | 'description' | 'cta';
+
+export interface HeroLayoutConfig {
+  heroMinHeight: number;
+  heroPaddingY: number;
+  heroInnerPaddingX: number;
+  heroInnerPaddingY: number;
+  heroContentMaxWidth: number;
+  heroBadgeMaxWidth: number;
+  heroDescriptionMaxWidth: number;
+  heroCtaMaxWidth: number;
+  heroTextAlign: 'left' | 'center' | 'right';
+  heroVerticalAlign: 'start' | 'center' | 'end';
+  heroElementOrder: HeroElementKey[];
+  heroBadgeMarginBottom: number;
+  heroTitleMarginBottom: number;
+  heroDescriptionMarginBottom: number;
+  heroCtaMarginTop: number;
+  heroCtaGap: number;
+}
+
 export interface HomepageConfig {
   heroBadgeRole: string;
   heroBadgeCertifications: string;
@@ -318,6 +339,7 @@ export interface HomepageConfig {
   heroDescription: string;
   heroPrimaryCtaLabel: string;
   heroSecondaryCtaLabel: string;
+  heroLayout?: HeroLayoutConfig;
   exploreBadge: string;
   exploreTitle: string;
   exploreSubtitle: string;
@@ -541,6 +563,39 @@ export const DEFAULT_BUILT_IN_PROFILE_SECTIONS: BuiltInProfileSectionConfig[] = 
   { id: 'followMe', label: 'Follow Me', visible: true },
 ];
 
+export const DEFAULT_HERO_ELEMENT_ORDER: HeroElementKey[] = ['badge', 'title', 'description', 'cta'];
+
+export const DEFAULT_HERO_LAYOUT_CONFIG: HeroLayoutConfig = {
+  heroMinHeight: 320,
+  heroPaddingY: 36,
+  heroInnerPaddingX: 16,
+  heroInnerPaddingY: 8,
+  heroContentMaxWidth: 896,
+  heroBadgeMaxWidth: 760,
+  heroDescriptionMaxWidth: 672,
+  heroCtaMaxWidth: 448,
+  heroTextAlign: 'center',
+  heroVerticalAlign: 'center',
+  heroElementOrder: DEFAULT_HERO_ELEMENT_ORDER,
+  heroBadgeMarginBottom: 16,
+  heroTitleMarginBottom: 12,
+  heroDescriptionMarginBottom: 20,
+  heroCtaMarginTop: 4,
+  heroCtaGap: 14,
+};
+
+export function normalizeHeroElementOrder(order?: unknown): HeroElementKey[] {
+  if (!Array.isArray(order)) return [...DEFAULT_HERO_ELEMENT_ORDER];
+  const valid = order.filter(
+    (k): k is HeroElementKey => k === 'badge' || k === 'title' || k === 'description' || k === 'cta'
+  );
+  const unique = Array.from(new Set(valid));
+  DEFAULT_HERO_ELEMENT_ORDER.forEach((k) => {
+    if (!unique.includes(k)) unique.push(k);
+  });
+  return unique;
+}
+
 export const DEFAULT_HOMEPAGE_CONFIG: HomepageConfig = {
   heroBadgeRole: 'Lead Mechanical Engineer • CAD drafting',
   heroBadgeCertifications: '',
@@ -549,6 +604,7 @@ export const DEFAULT_HOMEPAGE_CONFIG: HomepageConfig = {
   heroDescription: '',
   heroPrimaryCtaLabel: 'My Profile',
   heroSecondaryCtaLabel: 'Engineering Hub',
+  heroLayout: DEFAULT_HERO_LAYOUT_CONFIG,
   exploreBadge: 'Navigation & Portals',
   exploreTitle: 'Explore More',
   exploreSubtitle:
@@ -3328,6 +3384,11 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
     homepageConfig: {
       ...DEFAULT_HOMEPAGE_CONFIG,
       ...rawHome,
+      heroLayout: {
+        ...DEFAULT_HERO_LAYOUT_CONFIG,
+        ...(rawHome.heroLayout || {}),
+        heroElementOrder: normalizeHeroElementOrder(rawHome.heroLayout?.heroElementOrder),
+      },
       cards: {
         profile: { ...DEFAULT_HOMEPAGE_CONFIG.cards.profile, ...(rawHomeCards.profile || {}) },
         overview: { ...DEFAULT_HOMEPAGE_CONFIG.cards.overview, ...(rawHomeCards.overview || {}) },
@@ -3409,6 +3470,7 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
         forms: mergedForms,
       };
     })(),
+    ...((src as any).activeAdminSession ? { activeAdminSession: (src as any).activeAdminSession } : {}),
   };
 }
 

@@ -94,6 +94,21 @@ function sanitizeDocumentDescription(desc?: string): string {
   return trimmed;
 }
 
+function sanitizeDocumentTitle(title?: string, fileName?: string): string {
+  const clean = (title || '').trim();
+  if (clean && clean.toLowerCase() !== 'untitled document') {
+    return clean;
+  }
+  const rawFile = (fileName || '').trim();
+  if (rawFile) {
+    const withoutExt = rawFile.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    if (withoutExt && withoutExt.toLowerCase() !== 'untitled document') {
+      return withoutExt;
+    }
+  }
+  return '';
+}
+
 export type DocumentCategory = string;
 
 export const STUDENT_LEVELS = ['100L', '200L', '300L', '400L', '500L', '600L'] as const;
@@ -552,7 +567,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
             supaDocsMap.set(m.id, {
               id: m.id,
-              title: m.title || existing?.title || 'Untitled Document',
+              title: sanitizeDocumentTitle(m.title || existing?.title, m.file_name || existing?.fileName),
               fileName: m.file_name || existing?.fileName || 'document.pdf',
               fileSize: m.file_size || existing?.fileSize || 'Standard',
               fileType: m.file_type || existing?.fileType || 'PDF',
@@ -849,7 +864,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     setUploadError(null);
     setUploadSuccessMsg(null);
     setQueuedFiles([]);
-    setUploaderName('');
+    setUploaderName(isOwner ? 'Chief Admin' : '');
     setIsUploadModalOpen(true);
   };
 
@@ -857,6 +872,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     if (!isOwner && nextMode === 'general') return;
     setUploadFormMode(nextMode);
     setUploadError(null);
+    if (isOwner && !uploaderName.trim()) {
+      setUploaderName('Chief Admin');
+    }
     setQueuedFiles((prev) =>
       prev.map((item) => ({
         ...item,
@@ -936,7 +954,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       return;
     }
 
-    if (!uploaderName.trim()) {
+    if (!isOwner && !uploaderName.trim()) {
       setUploadError('Please enter your name in the "From" field.');
       return;
     }
@@ -980,7 +998,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
     const allowPublicStudentUpload = effectiveMode === 'student' && !activeSession?.user;
     const ownerUid = activeSession?.user?.id;
-    const effectiveUploader = uploaderName.trim();
+    const effectiveUploader = isOwner ? (uploaderName.trim() || 'Chief Admin') : uploaderName.trim();
 
     const total = queuedFiles.length;
     setUploadProgress({ current: 0, total, percent: 15, currentFileName: 'Uploading...' });
@@ -1548,6 +1566,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
             {filteredDocs.map((doc) => {
+              const displayTitle = sanitizeDocumentTitle(doc.title, doc.fileName);
               const cleanDesc = sanitizeDocumentDescription(doc.description);
               const isLiked = likedMaterialIds.has(doc.id);
               const fromLabel = (doc.uploaderName || doc.author || '').trim();
@@ -1611,9 +1630,11 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                         </span>
                       </div>
 
-                      <h3 className="text-xs sm:text-[13px] font-bold text-slate-950 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug text-center">
-                        {doc.title}
-                      </h3>
+                      {displayTitle && (
+                        <h3 className="text-xs sm:text-[13px] font-bold text-slate-950 group-hover:text-cyan-800 transition-colors line-clamp-2 leading-snug text-center">
+                          {displayTitle}
+                        </h3>
+                      )}
 
                       {(doc.level || doc.department || doc.institution) && (
                         <div className="flex flex-wrap items-center justify-center gap-1 text-[9px] font-mono">
@@ -1636,7 +1657,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       )}
 
                       {cleanDesc && (
-                        <p className="text-[10.5px] text-slate-600 line-clamp-2 leading-relaxed text-justify">
+                        <p className="text-[10.5px] text-slate-600 line-clamp-2 leading-relaxed text-center w-full">
                           {cleanDesc}
                         </p>
                       )}
@@ -1655,7 +1676,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       )}
 
                       {fromLabel && (
-                        <div className="text-[9.5px] text-slate-600 font-sans text-center truncate" title={fromLabel}>
+                        <div className="text-[9.5px] text-slate-600 font-sans text-left w-full truncate" title={`From: ${fromLabel}`}>
                           From: <span className="text-slate-900 font-semibold">{fromLabel}</span>
                         </div>
                       )}
@@ -1815,7 +1836,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               </div>
             ) : (
               <form onSubmit={handlePublishAllQueued} className="space-y-3.5 flex-1 min-h-0 min-w-0 w-full overflow-y-auto overflow-x-hidden box-border">
-                {/* From (Uploader's Name) Bar — never auto-filled */}
+                {/* From (Uploader's Name) Bar — automatically set to Chief Admin when admin is logged in */}
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 w-full min-w-0 box-border">
                   <label className="block text-[10.5px] font-bold text-slate-700 uppercase tracking-wider">
                     From (Uploader Name) *
@@ -1823,10 +1844,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                   <input
                     type="text"
                     required
-                    value={uploaderName}
-                    onChange={(e) => setUploaderName(e.target.value)}
-                    placeholder="Enter your name"
-                    className="w-full min-w-0 box-border p-2 rounded-lg bg-white border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans"
+                    readOnly={isOwner}
+                    value={isOwner ? 'Chief Admin' : uploaderName}
+                    onChange={(e) => {
+                      if (!isOwner) setUploaderName(e.target.value);
+                    }}
+                    placeholder={isOwner ? 'Chief Admin' : 'Enter your name'}
+                    className={`w-full min-w-0 box-border p-2 rounded-lg border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-600 font-sans ${
+                      isOwner ? 'bg-cyan-50/70 font-semibold text-cyan-950 cursor-default' : 'bg-white'
+                    }`}
                   />
                 </div>
 
@@ -2175,7 +2201,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               <div className="min-w-0">
                 <span className="text-[10px] font-mono text-cyan-700 block font-semibold">{previewModalDoc.category}</span>
                 <h3 className="text-base sm:text-lg font-bold text-slate-900 truncate max-w-[600px]">
-                  {previewModalDoc.title}
+                  {sanitizeDocumentTitle(previewModalDoc.title, previewModalDoc.fileName) || previewModalDoc.fileName}
                 </h3>
                 {(previewModalDoc.uploaderName || previewModalDoc.author || previewModalDoc.level || previewModalDoc.institution) && (
                   <p className="text-[11px] font-mono text-slate-500 mt-0.5 truncate">
