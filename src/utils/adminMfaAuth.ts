@@ -2,6 +2,7 @@ import type { Session, User } from '@supabase/supabase-js';
 import {
   supabase,
   AUTHORIZED_ADMIN_EMAIL,
+  AUTHORIZED_ADMIN_EMAILS,
   isAuthorizedAdminEmail,
   isEmailConfirmedUser,
   isRealOwnerUser,
@@ -10,6 +11,7 @@ import {
 
 export {
   AUTHORIZED_ADMIN_EMAIL,
+  AUTHORIZED_ADMIN_EMAILS,
   isAuthorizedAdminEmail,
   isEmailConfirmedUser,
   getSessionAalClaim,
@@ -264,9 +266,16 @@ export async function startAdminTotpEnrollment(
     throw new Error(error?.message || 'Unable to generate authenticator QR enrollment.');
   }
 
+  const rawQr = String(data.totp.qr_code || '').trim();
+  const formattedQr = rawQr.startsWith('data:image/')
+    ? rawQr
+    : rawQr
+    ? `data:image/svg+xml;utf8,${encodeURIComponent(rawQr)}`
+    : '';
+
   return {
     factorId: data.id,
-    qrCode: data.totp.qr_code,
+    qrCode: formattedQr,
     secret: data.totp.secret,
     uri: data.totp.uri,
     friendlyName: data.friendly_name || finalFriendlyName,

@@ -127,10 +127,16 @@ export const withCacheBuster = withRecordVersion;
 // 2. OWNER AUTHENTICATION (EMAIL/PASSWORD VIA SUPABASE AUTH)
 // ============================================================================
 
-export const AUTHORIZED_ADMIN_EMAIL = 'festusjohnson028@gmail.com';
+export const AUTHORIZED_ADMIN_EMAIL = 'festusjohnson445@gmail.com';
+export const AUTHORIZED_ADMIN_EMAILS = [
+  'festusjohnson445@gmail.com',
+  'festusjohnson028@gmail.com',
+] as const;
 
 export function isAuthorizedAdminEmail(email?: string | null): boolean {
-  return Boolean(email && email.trim().toLowerCase() === AUTHORIZED_ADMIN_EMAIL);
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return (AUTHORIZED_ADMIN_EMAILS as readonly string[]).includes(normalized);
 }
 
 export function isEmailConfirmedUser(user?: User | null): boolean {
@@ -2563,13 +2569,13 @@ AS $$
   SELECT (
     auth.uid() IS NOT NULL
     AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
-    AND LOWER(COALESCE(auth.jwt() ->> 'email', '')) = 'festusjohnson028@gmail.com'
+    AND LOWER(COALESCE(auth.jwt() ->> 'email', '')) IN ('festusjohnson445@gmail.com', 'festusjohnson028@gmail.com')
     AND COALESCE(auth.jwt() ->> 'aal', '') = 'aal2'
     AND EXISTS (
       SELECT 1
       FROM auth.users u
       WHERE u.id = auth.uid()
-        AND LOWER(COALESCE(u.email, '')) = 'festusjohnson028@gmail.com'
+        AND LOWER(COALESCE(u.email, '')) IN ('festusjohnson445@gmail.com', 'festusjohnson028@gmail.com')
         AND COALESCE(u.email_confirmed_at, u.confirmed_at) IS NOT NULL
         AND (u.banned_until IS NULL OR u.banned_until <= now())
     )

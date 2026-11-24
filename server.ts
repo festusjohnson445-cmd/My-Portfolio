@@ -150,7 +150,10 @@ function formatProfileResponse(row: any) {
 // =================================================================
 // 0b. SUPABASE ADMIN AAL2 AUTHENTICATION & AUTHORIZATION GUARD
 // =================================================================
-const AUTHORIZED_ADMIN_EMAIL = 'festusjohnson028@gmail.com';
+const AUTHORIZED_ADMIN_EMAILS = new Set([
+  'festusjohnson445@gmail.com',
+  'festusjohnson028@gmail.com',
+]);
 const MEDIA_RELAY_DEFAULT_URL = 'https://teszyojnwaedjvqaqake.supabase.co';
 const MEDIA_RELAY_DEFAULT_ANON_KEY = 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex';
 
@@ -222,7 +225,7 @@ async function verifyAdminAal2Request(req: express.Request): Promise<
     }
 
     const email = String(user.email || '').trim().toLowerCase();
-    if (email !== AUTHORIZED_ADMIN_EMAIL) {
+    if (!AUTHORIZED_ADMIN_EMAILS.has(email)) {
       return { ok: false, status: 403, message: 'Restricted to authorized administrator email.' };
     }
 

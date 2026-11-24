@@ -3580,17 +3580,20 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       ? 'Account Recovery'
                       : authStep === 'recovery_reset'
                       ? 'Set New Password'
-                      : 'Administrator Sign In'}
+                      : 'Sign In'}
                   </h3>
-                  <p className="text-[10px] text-cyan-300/90 font-medium">
-                    {authStep === 'mfa_enroll'
-                      ? 'Step 2 of 2 · One-time Authenticator Enrollment'
-                      : authStep === 'mfa_verify'
-                      ? 'Step 2 of 2 · Mandatory AAL2 TOTP Challenge'
-                      : authStep === 'recovery_request' || authStep === 'recovery_reset'
-                      ? 'Email Recovery (MFA Remains Mandatory)'
-                      : 'Restricted Access · Confirmed Email + 2FA Required'}
-                  </p>
+                  {(authStep === 'mfa_enroll' ||
+                    authStep === 'mfa_verify' ||
+                    authStep === 'recovery_request' ||
+                    authStep === 'recovery_reset') && (
+                    <p className="text-[10px] text-cyan-300/90 font-medium">
+                      {authStep === 'mfa_enroll'
+                        ? 'Step 2 of 2 · One-time Authenticator Enrollment'
+                        : authStep === 'mfa_verify'
+                        ? 'Step 2 of 2 · Mandatory AAL2 TOTP Challenge'
+                        : 'Email Recovery (MFA Remains Mandatory)'}
+                    </p>
+                  )}
                 </div>
               </div>
               <button
@@ -3624,7 +3627,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Authorized Administrator Email
+                    Email
                   </label>
                   <div className="relative">
                     <input
@@ -3633,7 +3636,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       autoComplete="username"
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="Enter authorized admin email"
+                      placeholder="Enter email"
                       className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     />
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
@@ -3641,22 +3644,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
-                      Password
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthError(null);
-                        setRecoveryNotice(null);
-                        setAuthStep('recovery_request');
-                      }}
-                      className="text-[11px] font-semibold text-cyan-800 hover:underline cursor-pointer"
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Password
+                  </label>
                   <div className="relative">
                     <input
                       type={showPassword ? 'text' : 'password'}
@@ -3679,13 +3669,6 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 flex items-start gap-2">
-                  <ShieldCheck className="w-4 h-4 text-cyan-800 shrink-0 mt-0.5" />
-                  <span>
-                    Public registration is disabled. After password check, a 6-digit Duo Mobile or Google Authenticator TOTP code is mandatory.
-                  </span>
                 </div>
 
                 <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
@@ -3712,7 +3695,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     ) : (
                       <>
                         <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Continue to 2FA</span>
+                        <span>Proceed</span>
                       </>
                     )}
                   </button>

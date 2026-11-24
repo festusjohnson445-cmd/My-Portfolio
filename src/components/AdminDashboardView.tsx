@@ -5273,7 +5273,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         </h5>
                         <p className="text-[11px] text-slate-600 leading-relaxed">
                           If your password is compromised, dispatch a password reset link exclusively to{' '}
-                          <strong>{AUTHORIZED_ADMIN_EMAIL}</strong>. If all Duo Mobile devices are lost, remove old MFA factors in Supabase Authentication → Users and re-enroll a new QR code on next sign-in.
+                          <strong>{liveAal2Status?.user?.email || AUTHORIZED_ADMIN_EMAIL}</strong>. If all Duo Mobile devices are lost, remove old MFA factors in Supabase Authentication → Users and re-enroll a new QR code on next sign-in.
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
                           <button
@@ -5281,7 +5281,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                             disabled={mfaActionBusy}
                             onClick={async () => {
                               setMfaActionBusy(true);
-                              const res = await sendAdminPasswordRecovery(AUTHORIZED_ADMIN_EMAIL);
+                              const targetEmail = liveAal2Status?.user?.email || AUTHORIZED_ADMIN_EMAIL;
+                              const res = await sendAdminPasswordRecovery(targetEmail);
                               setMfaActionMsg({
                                 type: res.ok ? 'success' : 'error',
                                 text: res.message,
