@@ -44,6 +44,11 @@ import {
   Home,
   ArrowUp,
   ArrowDown,
+  Smartphone,
+  QrCode,
+  LifeBuoy,
+  ShieldAlert,
+  Lock,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -124,12 +129,27 @@ import {
 } from '../utils/profileState';
 import { deleteDocumentPersistently, recordDeletedDocId } from '../utils/documentStorage';
 import {
+  supabase,
   uploadMaterialToSupabaseBucket,
   uploadMaterialThumbnailToBucket,
   getAuthenticatedOwnerUid,
+  getAuthenticatedBearerHeaders,
   SUPABASE_RLS_SCHEMA_SQL,
 } from '../utils/supabase';
-import { performFullAdminSignOut } from '../utils/adminSecurity';
+import {
+  AUTHORIZED_ADMIN_EMAIL,
+  verifyLiveAdminAal2,
+  listAdminTotpFactors,
+  startAdminTotpEnrollment,
+  cancelPendingTotpEnrollment,
+  verifyAdminTotpChallenge,
+  unenrollAdminFactor,
+  sendAdminPasswordRecovery,
+  signOutAdminSession,
+  type AdminTotpFactorInfo,
+  type TotpEnrollmentPayload,
+  type LiveAdminAal2Status,
+} from '../utils/adminMfaAuth';
 import { renderPdfFirstPageToImage } from '../utils/pdfRenderer';
 import {
   resolveSkillStatus,
@@ -270,10 +290,29 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
   // Website Settings Sub-Tabs & Builders
   const [settingsSubTab, setSettingsSubTab] = useState<
-    'appearance' | 'homepage' | 'projects_articles' | 'profile_sections' | 'career_studio' | 'footer' | 'moderation' | 'supabase_tables'
+    | 'appearance'
+    | 'homepage'
+    | 'projects_articles'
+    | 'profile_sections'
+    | 'career_studio'
+    | 'footer'
+    | 'moderation'
+    | 'security_mfa'
+    | 'supabase_tables'
   >('appearance');
   const [showRlsSqlModal, setShowRlsSqlModal] = useState(false);
   const [copiedRlsSql, setCopiedRlsSql] = useState(false);
+
+  // Security & MFA (AAL2 / TOTP Device & Recovery Management) State
+  const [liveAal2Status, setLiveAal2Status] = useState<LiveAdminAal2Status | null>(null);
+  const [mfaDevices, setMfaDevices] = useState<AdminTotpFactorInfo[]>([]);
+  const [mfaDevicesLoading, setMfaDevicesLoading] = useState(false);
+  const [newDeviceName, setNewDeviceName] = useState('Backup Authenticator');
+  const [newDeviceEnrollment, setNewDeviceEnrollment] = useState<TotpEnrollmentPayload | null>(null);
+  const [newDeviceCode, setNewDeviceCode] = useState('');
+  const [newDeviceShowKey, setNewDeviceShowKey] = useState(false);
+  const [mfaActionBusy, setMfaActionBusy] = useState(false);
+  const [mfaActionMsg, setMfaActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [careerStudioDocs, setCareerStudioDocs] = useState<GeneratedDocumentRecord[]>([]);
   const [heroBgUploading, setHeroBgUploading] = useState(false);
   const [themeImportOpen, setThemeImportOpen] = useState(false);
@@ -419,6 +458,51 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
     }
   };
 
+  const refreshMfaSecurityPanel = async () => {
+    setMfaDevicesLoading(true);
+    try {
+      const live = await verifyLiveAdminAal2();
+      setLiveAal2Status(live);
+      if (!live.ok) {
+        setOwnerAuthenticated(false);
+        return;
+      }
+      const factors = await listAdminTotpFactors();
+      setMfaDevices(factors.verified);
+    } catch {
+    } finally {
+      setMfaDevicesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    const enforceLiveAal2 = async () => {
+      const live = await verifyLiveAdminAal2();
+      if (!active) return;
+      setLiveAal2Status(live);
+      if (!live.ok) {
+        setOwnerAuthenticated(false);
+      }
+    };
+    void enforceLiveAal2();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      void enforceLiveAal2();
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isOwner && activeTab === 'settings' && settingsSubTab === 'security_mfa') {
+      void refreshMfaSecurityPanel();
+    }
+  }, [isOwner, activeTab, settingsSubTab]);
+
   useEffect(() => {
     if (isOwner) {
       loadAllAdminData();
@@ -525,7 +609,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   );
 
   const handleSignOut = async () => {
-    await performFullAdminSignOut('manual');
+    await signOutAdminSession('global');
     setOwnerAuthenticated(false);
     onNavigatePart('home');
   };
@@ -2084,11 +2168,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                               localStorage.removeItem(`fesline_profile_thumb_v2_${doc.id}`);
                             } catch {}
                             const latestDocs = getStoredDocuments().filter((d) => d.id !== doc.id);
+                            const authHeaders = await getAuthenticatedBearerHeaders();
                             await Promise.allSettled([
                               deleteDocumentPersistently(doc.id),
                               saveDocuments(latestDocs, [doc.id]),
-                              fetch(`/api/documents/${doc.id}`, { method: 'DELETE' }),
-                              fetch(`/api/profile/documents/${doc.id}`, { method: 'DELETE' }),
+                              fetch(`/api/documents/${doc.id}`, { method: 'DELETE', headers: authHeaders }),
+                              fetch(`/api/profile/documents/${doc.id}`, { method: 'DELETE', headers: authHeaders }),
                             ]);
                             showNotice('Credential permanently deleted.');
                           }}
@@ -2631,6 +2716,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                       { id: 'career_studio', label: 'Career Studio Forms', icon: <FileText className="w-3 h-3" /> },
                       { id: 'footer', label: 'Footer & Lock Position', icon: <Sparkles className="w-3 h-3" /> },
                       { id: 'moderation', label: 'Comment & General Rules', icon: <Type className="w-3 h-3" /> },
+                      { id: 'security_mfa', label: 'Security & MFA (2FA)', icon: <ShieldCheck className="w-3 h-3" /> },
                       { id: 'supabase_tables', label: 'Supabase Database Tables', icon: <Database className="w-3 h-3" /> },
                     ].map((st) => (
                       <button
@@ -4884,6 +4970,338 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                             })}
                           </div>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* (e3) SECURITY, AAL2 SESSION, MFA DEVICE MANAGEMENT & RECOVERY */}
+                  {settingsSubTab === 'security_mfa' && (
+                    <div className="w-full max-w-full overflow-hidden p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-4 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                        <div>
+                          <h4 className="font-bold text-slate-950 flex items-center gap-1.5">
+                            <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                            <span>Administrator Security &amp; Mandatory TOTP MFA (AAL2)</span>
+                          </h4>
+                          <p className="text-[11px] text-slate-600">
+                            Manage Duo Mobile / Authenticator devices, monitor live AAL2 session assurance, and configure recovery.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void refreshMfaSecurityPanel()}
+                          disabled={mfaDevicesLoading}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-[11px] font-semibold cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${mfaDevicesLoading ? 'animate-spin' : ''}`} />
+                          <span>Refresh</span>
+                        </button>
+                      </div>
+
+                      {mfaActionMsg && (
+                        <div
+                          className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
+                            mfaActionMsg.type === 'success'
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                              : 'bg-rose-50 border-rose-200 text-rose-800'
+                          }`}
+                        >
+                          {mfaActionMsg.type === 'success' ? (
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          ) : (
+                            <ShieldAlert className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>{mfaActionMsg.text}</span>
+                        </div>
+                      )}
+
+                      {/* Live Session Assurance Summary */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                        <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-1">
+                          <span className="text-[10px] font-bold uppercase text-slate-500">Authorized Email</span>
+                          <p className="font-bold text-slate-950 truncate">
+                            {liveAal2Status?.user?.email || AUTHORIZED_ADMIN_EMAIL}
+                          </p>
+                          <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-emerald-700">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Email Confirmed &amp; Exclusive
+                          </span>
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-1">
+                          <span className="text-[10px] font-bold uppercase text-slate-500">Assurance Level</span>
+                          <p className="font-bold text-emerald-800 uppercase">
+                            {liveAal2Status?.currentLevel === 'aal2' ? 'AAL2 Verified' : 'Checking...'}
+                          </p>
+                          <span className="text-[10.5px] text-slate-600 block">
+                            Enforced by Postgres RLS &amp; Server API
+                          </span>
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-1">
+                          <span className="text-[10px] font-bold uppercase text-slate-500">Session Controls</span>
+                          <p className="text-[11px] text-slate-700">
+                            Token expires:{' '}
+                            <span className="font-mono font-semibold">
+                              {liveAal2Status?.expiresAt
+                                ? new Date(liveAal2Status.expiresAt).toLocaleTimeString()
+                                : 'Active'}
+                            </span>
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void handleSignOut()}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 text-[11px] font-semibold cursor-pointer"
+                          >
+                            <LogOut className="w-3 h-3" />
+                            <span>Sign Out All Devices</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Enrolled TOTP Devices */}
+                      <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <h5 className="font-bold text-slate-950 flex items-center gap-1.5">
+                              <Smartphone className="w-3.5 h-3.5 text-cyan-800" />
+                              <span>Registered Authenticator Devices ({mfaDevices.length})</span>
+                            </h5>
+                            <p className="text-[11px] text-slate-600">
+                              Enroll a backup Duo Mobile or Google Authenticator device in case your primary phone is lost.
+                            </p>
+                          </div>
+                        </div>
+
+                        {mfaDevices.length === 0 ? (
+                          <p className="text-[11px] text-slate-500 italic">Loading enrolled devices...</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {mfaDevices.map((dev) => (
+                              <div
+                                key={dev.id}
+                                className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-950">{dev.friendlyName}</span>
+                                    <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold uppercase">
+                                      Verified TOTP
+                                    </span>
+                                  </div>
+                                  <p className="text-[10.5px] text-slate-500 font-mono">
+                                    Factor ID: {dev.id.slice(0, 12)}…
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={mfaActionBusy || mfaDevices.length <= 1}
+                                  title={
+                                    mfaDevices.length <= 1
+                                      ? 'Enroll another device before removing your final authenticator.'
+                                      : 'Remove authenticator device'
+                                  }
+                                  onClick={async () => {
+                                    setMfaActionBusy(true);
+                                    setMfaActionMsg(null);
+                                    try {
+                                      const res = await unenrollAdminFactor(dev.id);
+                                      if (!res.ok) {
+                                        setMfaActionMsg({
+                                          type: 'error',
+                                          text: res.message || 'Unable to remove device.',
+                                        });
+                                        return;
+                                      }
+                                      setMfaActionMsg({
+                                        type: 'success',
+                                        text: `Removed authenticator device "${dev.friendlyName}".`,
+                                      });
+                                      await refreshMfaSecurityPanel();
+                                    } finally {
+                                      setMfaActionBusy(false);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-rose-50 hover:bg-rose-100 disabled:opacity-45 text-rose-700 border border-rose-200 text-[11px] font-semibold cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Remove</span>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Enroll Backup Authenticator Device */}
+                        {!newDeviceEnrollment ? (
+                          <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                            <input
+                              type="text"
+                              value={newDeviceName}
+                              onChange={(e) => setNewDeviceName(e.target.value)}
+                              placeholder="Backup device label (e.g. Spare Duo)"
+                              className="flex-1 min-w-[180px] px-2.5 py-1.5 rounded border border-slate-300 bg-slate-50 text-xs"
+                            />
+                            <button
+                              type="button"
+                              disabled={mfaActionBusy}
+                              onClick={async () => {
+                                setMfaActionBusy(true);
+                                setMfaActionMsg(null);
+                                try {
+                                  const payload = await startAdminTotpEnrollment(
+                                    newDeviceName.trim() || 'Backup Authenticator'
+                                  );
+                                  setNewDeviceEnrollment(payload);
+                                  setNewDeviceCode('');
+                                  setNewDeviceShowKey(false);
+                                } catch (err: any) {
+                                  setMfaActionMsg({
+                                    type: 'error',
+                                    text: err?.message || 'Unable to initialize QR enrollment.',
+                                  });
+                                } finally {
+                                  setMfaActionBusy(false);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer"
+                            >
+                              <QrCode className="w-3.5 h-3.5" />
+                              <span>Enroll Additional Authenticator</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-cyan-50/70 border border-cyan-200 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-slate-950">
+                                Scan QR Code for "{newDeviceEnrollment.friendlyName}"
+                              </span>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const fid = newDeviceEnrollment.factorId;
+                                  setNewDeviceEnrollment(null);
+                                  setNewDeviceCode('');
+                                  setNewDeviceShowKey(false);
+                                  await cancelPendingTotpEnrollment(fid);
+                                }}
+                                className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            <div className="flex flex-col sm:flex-row items-center gap-4">
+                              <img
+                                src={newDeviceEnrollment.qrCode}
+                                alt="Backup Authenticator QR Code"
+                                className="w-36 h-36 bg-white p-1.5 rounded-lg border border-slate-300 object-contain shrink-0"
+                              />
+                              <div className="flex-1 w-full space-y-2">
+                                <p className="text-[11px] text-slate-700">
+                                  Scan with Duo Mobile or another TOTP authenticator app, then enter the 6-digit code to activate this backup device.
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => setNewDeviceShowKey((v) => !v)}
+                                  className="text-[11px] font-semibold text-cyan-800 hover:underline cursor-pointer"
+                                >
+                                  {newDeviceShowKey ? 'Hide setup key' : 'Show manual setup key'}
+                                </button>
+                                {newDeviceShowKey && newDeviceEnrollment.secret && (
+                                  <code className="block p-1.5 rounded bg-white border border-slate-300 text-[10.5px] font-mono break-all select-all">
+                                    {newDeviceEnrollment.secret}
+                                  </code>
+                                )}
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    maxLength={6}
+                                    value={newDeviceCode}
+                                    onChange={(e) =>
+                                      setNewDeviceCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                                    }
+                                    placeholder="6-digit code"
+                                    className="w-36 px-3 py-1.5 rounded border border-slate-300 bg-white font-mono text-sm font-bold tracking-widest text-center"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={mfaActionBusy || newDeviceCode.length !== 6}
+                                    onClick={async () => {
+                                      setMfaActionBusy(true);
+                                      setMfaActionMsg(null);
+                                      try {
+                                        const res = await verifyAdminTotpChallenge(
+                                          newDeviceEnrollment.factorId,
+                                          newDeviceCode
+                                        );
+                                        if (!res.ok) {
+                                          setMfaActionMsg({
+                                            type: 'error',
+                                            text: res.message || 'Verification failed.',
+                                          });
+                                          return;
+                                        }
+                                        setNewDeviceEnrollment(null);
+                                        setNewDeviceCode('');
+                                        setNewDeviceShowKey(false);
+                                        setMfaActionMsg({
+                                          type: 'success',
+                                          text: 'Backup authenticator device verified and activated.',
+                                        });
+                                        await refreshMfaSecurityPanel();
+                                      } finally {
+                                        setMfaActionBusy(false);
+                                      }
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+                                  >
+                                    Verify &amp; Save
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Account Recovery & Database RLS Enforcement */}
+                      <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-2.5">
+                        <h5 className="font-bold text-slate-950 flex items-center gap-1.5">
+                          <LifeBuoy className="w-3.5 h-3.5 text-cyan-800" />
+                          <span>Account Recovery &amp; Server RLS Hardening</span>
+                        </h5>
+                        <p className="text-[11px] text-slate-600 leading-relaxed">
+                          If your password is compromised, dispatch a password reset link exclusively to{' '}
+                          <strong>{AUTHORIZED_ADMIN_EMAIL}</strong>. If all Duo Mobile devices are lost, remove old MFA factors in Supabase Authentication → Users and re-enroll a new QR code on next sign-in.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={mfaActionBusy}
+                            onClick={async () => {
+                              setMfaActionBusy(true);
+                              const res = await sendAdminPasswordRecovery(AUTHORIZED_ADMIN_EMAIL);
+                              setMfaActionMsg({
+                                type: res.ok ? 'success' : 'error',
+                                text: res.message,
+                              });
+                              setMfaActionBusy(false);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-900 text-xs font-semibold cursor-pointer"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Send Password Recovery Email</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowRlsSqlModal(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-cyan-950 text-xs font-semibold cursor-pointer"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Open AAL2 RLS SQL Update</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

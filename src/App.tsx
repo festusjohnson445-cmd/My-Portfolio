@@ -21,16 +21,13 @@ import {
 import {
   supabase,
   onSupabaseAuthStateChange,
-  isRealOwnerUser,
 } from './utils/supabase';
 import {
-  hasVerifiedAdminSession,
-  isAdminOtpPending,
-  performFullAdminSignOut,
-  startAdminSessionWatchdog,
-  clearLocalAdminVerification,
-  type AdminSignOutReason,
-} from './utils/adminSecurity';
+  verifyLiveAdminAal2,
+  isAuthorizedAdminEmail,
+  isEmailConfirmedUser,
+  signOutAdminSession,
+} from './utils/adminMfaAuth';
 import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
@@ -79,7 +76,6 @@ export default function App() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [userColorMode] = useUserColorMode();
   const { isOwner, ownerUid } = useProfileSync();
-  const [autoSignOutNotice, setAutoSignOutNotice] = useState<string | null>(null);
 
   const websiteSettings = useWebsiteSettingsSync();
   const appearance = websiteSettings.appearanceConfig;
@@ -88,22 +84,46 @@ export default function App() {
   const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const footerCfg = appearance.footerConfig;
 
-  // Top-level onAuthStateChange session listener — enforces 6-digit email verification & single session lock
+  // Top-level onAuthStateChange listener — strictly enforces authorized email,
+  // confirmed email, and mandatory Supabase TOTP AAL2 assurance before unlocking admin state.
   useEffect(() => {
-    const syncSessionAuth = (session: any) => {
+    let mounted = true;
+
+    const syncSessionAuth = async (event: string, session: any) => {
+      if (!mounted) return;
+
+      if (event === 'PASSWORD_RECOVERY') {
+        setOwnerAuthenticated(false);
+        setActivePart((cur) => (cur === 'admin' ? 'profile' : cur));
+        window.dispatchEvent(new CustomEvent('open-owner-recovery-modal'));
+        return;
+      }
+
       const user = session?.user;
-      if (isRealOwnerUser(user)) {
-        if (hasVerifiedAdminSession(user.id)) {
-          setOwnerAuthenticated(true, user.id);
-        } else {
+      if (!user) {
+        setOwnerAuthenticated(false);
+        return;
+      }
+
+      if ((user as any).is_anonymous) {
+        setOwnerAuthenticated(false);
+        return;
+      }
+
+      if (!isAuthorizedAdminEmail(user.email) || !isEmailConfirmedUser(user)) {
+        await signOutAdminSession('local');
+        if (mounted) {
           setOwnerAuthenticated(false);
-          if (!isAdminOtpPending()) {
-            clearLocalAdminVerification();
-            void supabase.auth.signOut().catch(() => {});
-          }
+          setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
         }
+        return;
+      }
+
+      const live = await verifyLiveAdminAal2();
+      if (!mounted) return;
+      if (live.ok && live.user) {
+        setOwnerAuthenticated(true, live.user.id);
       } else {
-        clearLocalAdminVerification();
         setOwnerAuthenticated(false);
       }
     };
@@ -114,58 +134,52 @@ export default function App() {
         if (error) {
           console.warn('[Supabase Initial Session Check]:', error.message);
         }
-        syncSessionAuth(session);
+        void syncSessionAuth('INITIAL_SESSION', session);
       })
       .catch(() => {
-        setOwnerAuthenticated(false);
+        if (mounted) setOwnerAuthenticated(false);
       });
 
     const {
       data: { subscription },
-    } = onSupabaseAuthStateChange((_event, session) => {
-      syncSessionAuth(session);
+    } = onSupabaseAuthStateChange((event, session) => {
+      void syncSessionAuth(event, session);
     });
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
   }, []);
 
-  // Global Admin Security Watchdog: 5-min inactivity, 5-min offline, single active session heartbeat
+  // Periodic AAL2 & token expiry monitor while an administrator session is active
   useEffect(() => {
     if (!isOwner || !ownerUid) return;
 
-    const handleAutoSignOut = async (reason: AdminSignOutReason) => {
-      await performFullAdminSignOut(reason);
-      setOwnerAuthenticated(false);
-      setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
-
-      if (reason === 'inactivity') {
-        setAutoSignOutNotice('Signed out automatically after 5 minutes of inactivity.');
-      } else if (reason === 'offline') {
-        setAutoSignOutNotice('Signed out automatically after being offline for 5 minutes.');
-      } else if (reason === 'concurrent') {
-        setAutoSignOutNotice('Admin session signed out because only one active session is permitted.');
+    const checkSessionValidity = async () => {
+      const live = await verifyLiveAdminAal2();
+      if (!live.ok) {
+        setOwnerAuthenticated(false);
+        setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
       }
     };
 
-    const stopWatchdog = startAdminSessionWatchdog({
-      ownerUid,
-      onAutoSignOut: (reason) => {
-        void handleAutoSignOut(reason);
-      },
-    });
+    const timer = window.setInterval(() => {
+      void checkSessionValidity();
+    }, 60_000);
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void checkSessionValidity();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
-      stopWatchdog();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [isOwner, ownerUid]);
-
-  useEffect(() => {
-    if (!autoSignOutNotice) return;
-    const t = window.setTimeout(() => setAutoSignOutNotice(null), 8000);
-    return () => window.clearTimeout(t);
-  }, [autoSignOutNotice]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -438,15 +452,47 @@ export default function App() {
           {visitedParts.has('documents') && <DocumentWorkspaceView />}
         </section>
 
-        {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER) */}
+        {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER — AAL2 ENFORCED) */}
         <section
           id="admin"
           className={`relative flex-1 w-full flex-col border-b border-[#b0bece] ${
             activePart === 'admin' ? 'flex' : 'hidden'
           }`}
         >
-          {visitedParts.has('admin') && (
+          {visitedParts.has('admin') && isOwner && (
             <AdminDashboardView onNavigatePart={handleSelectPart} />
+          )}
+          {visitedParts.has('admin') && !isOwner && (
+            <div className="flex-1 w-full max-w-xl mx-auto px-4 py-16 text-center font-serif">
+              <div className="p-6 rounded-2xl bg-white border border-[#b8c6d4] shadow-xs space-y-3">
+                <Lock className="w-6 h-6 text-cyan-900 mx-auto" />
+                <h1 className="text-base font-bold text-slate-950">Administrator MFA Required</h1>
+                <p className="text-xs text-slate-600">
+                  Confirmed administrator credentials and 6-digit TOTP verification (AAL2) are required to access the Admin Dashboard.
+                </p>
+                <div className="flex items-center justify-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPart('home')}
+                    className="px-3.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold cursor-pointer"
+                  >
+                    Return Home
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleSelectPart('profile');
+                      window.setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+                      }, 80);
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Sign In with 2FA
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </section>
       </main>
@@ -554,21 +600,6 @@ export default function App() {
         >
           <ArrowUp className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" />
         </button>
-      )}
-
-      {/* Global Auto Sign-Out Security Notice */}
-      {autoSignOutNotice && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-950 text-white border border-amber-400/50 shadow-2xl text-xs font-sans font-semibold flex items-center gap-3 max-w-md w-[calc(100%-2rem)]">
-          <Lock className="w-4 h-4 text-amber-400 shrink-0" />
-          <span className="flex-1">{autoSignOutNotice}</span>
-          <button
-            type="button"
-            onClick={() => setAutoSignOutNotice(null)}
-            className="text-slate-300 hover:text-white text-xs font-bold cursor-pointer shrink-0"
-          >
-            Dismiss
-          </button>
-        </div>
       )}
     </div>
   );

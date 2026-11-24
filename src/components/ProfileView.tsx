@@ -50,6 +50,10 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
+  Smartphone,
+  QrCode,
+  RefreshCw,
+  LifeBuoy,
 } from 'lucide-react';
 import { PortfolioPart } from './Navbar';
 import { generateAndDownloadResume } from '../utils/generateResumePdf';
@@ -88,8 +92,6 @@ import { loadDocumentsPersistently, deleteDocumentPersistently, recordDeletedDoc
 import { SupabaseSettingsModal } from './SupabaseSettingsModal';
 import {
   supabase,
-  supabaseSignInOwner,
-  supabaseSignOutOwner,
   getAuthenticatedOwnerUid,
   uploadAvatarToSupabaseBucket,
   uploadMaterialToSupabaseBucket,
@@ -99,19 +101,24 @@ import {
   withRecordVersion,
   withCacheBuster,
   isRealOwnerUser,
+  getAuthenticatedBearerHeaders,
 } from '../utils/supabase';
 import {
-  getOrCreateAdminTabSessionId,
-  setAdminOtpPending,
-  markAdminSessionVerified,
-  clearLocalAdminVerification,
-  checkExistingActiveAdminLock,
-  claimAdminSessionLock,
-  performFullAdminSignOut,
-  sendAdminEmailVerificationCode,
-  verifyAdminEmailVerificationCode,
-  type OtpDeliveryMode,
-} from '../utils/adminSecurity';
+  AUTHORIZED_ADMIN_EMAIL,
+  isAuthorizedAdminEmail,
+  isEmailConfirmedUser,
+  verifyLiveAdminAal2,
+  listAdminTotpFactors,
+  startAdminTotpEnrollment,
+  cancelPendingTotpEnrollment,
+  verifyAdminTotpChallenge,
+  checkAdminAuthRateLimit,
+  recordAdminAuthAttempt,
+  sendAdminPasswordRecovery,
+  signOutAdminSession,
+  type AdminTotpFactorInfo,
+  type TotpEnrollmentPayload,
+} from '../utils/adminMfaAuth';
 import {
   fetchExperiencesFromSupabase,
   getCachedExperiences,
@@ -485,7 +492,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [docToDelete, setDocToDelete] = useState<{ id: string; title: string } | null>(null);
   const [isDeletingDoc, setIsDeletingDoc] = useState(false);
 
-  // 4. OWNER ACCESS CONTROL (Restricting changes to Festus Johnson only)
+  // 4. OWNER ACCESS CONTROL (Restricting changes strictly to confirmed Festus Johnson + AAL2 TOTP MFA)
   const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState<boolean>(syncIsOwner);
   const [authenticatedUid, setAuthenticatedUid] = useState<string>(() => syncOwnerUid || getAuthenticatedOwnerUid());
   const [copiedUid, setCopiedUid] = useState(false);
@@ -493,17 +500,23 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showSupabaseSettingsModal, setShowSupabaseSettingsModal] = useState(false);
-  // Email starts empty so nothing is displayed until the user types
   const [authEmail, setAuthEmail] = useState('');
   const [authPin, setAuthPin] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
-  const [authStep, setAuthStep] = useState<'credentials' | 'otp'>('credentials');
-  const [otpCode, setOtpCode] = useState('');
-  const [otpDeliveryMode, setOtpDeliveryMode] = useState<OtpDeliveryMode>('supabase_otp');
-  const [otpTargetEmail, setOtpTargetEmail] = useState('');
-  const [otpAccessToken, setOtpAccessToken] = useState('');
-  const [otpNotice, setOtpNotice] = useState<string | null>(null);
-  const [otpResendCooldown, setOtpResendCooldown] = useState(0);
+  const [authStep, setAuthStep] = useState<
+    'credentials' | 'mfa_enroll' | 'mfa_verify' | 'recovery_request' | 'recovery_reset'
+  >('credentials');
+  const [mfaCode, setMfaCode] = useState('');
+  const [totpFactors, setTotpFactors] = useState<AdminTotpFactorInfo[]>([]);
+  const [selectedFactorId, setSelectedFactorId] = useState('');
+  const [enrollmentData, setEnrollmentData] = useState<TotpEnrollmentPayload | null>(null);
+  const [showSetupKey, setShowSetupKey] = useState(false);
+  const [deviceFriendlyName, setDeviceFriendlyName] = useState('Duo Mobile');
+  const [rateLimitSeconds, setRateLimitSeconds] = useState(0);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showRecoveryGuide, setShowRecoveryGuide] = useState(false);
   const [isAtsPreviewModalOpen, setIsAtsPreviewModalOpen] = useState(false);
 
   useEffect(() => {
@@ -512,27 +525,59 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   }, [syncIsOwner, syncOwnerUid]);
 
   useEffect(() => {
-    if (otpResendCooldown <= 0) return;
+    if (rateLimitSeconds <= 0) return;
     const timer = window.setInterval(() => {
-      setOtpResendCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      setRateLimitSeconds((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [otpResendCooldown]);
+  }, [rateLimitSeconds]);
 
-  const resetAuthModalState = async (signOutPendingSession = false) => {
+  const wipeEnrollmentMemory = () => {
+    setEnrollmentData(null);
+    setShowSetupKey(false);
+    setMfaCode('');
+  };
+
+  const resetAuthModalState = async (signOutPendingAal1 = false) => {
+    const pendingFactorId = authStep === 'mfa_enroll' ? enrollmentData?.factorId : null;
+    wipeEnrollmentMemory();
     setIsAuthModalOpen(false);
     setAuthError(null);
-    setOtpNotice(null);
+    setRecoveryNotice(null);
     setAuthPin('');
-    setOtpCode('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setTotpFactors([]);
+    setSelectedFactorId('');
+    setShowRecoveryGuide(false);
     setAuthStep('credentials');
-    setOtpTargetEmail('');
-    setOtpAccessToken('');
-    setOtpResendCooldown(0);
-    setAdminOtpPending(null);
-    if (signOutPendingSession) {
-      await supabaseSignOutOwner();
+
+    if (pendingFactorId) {
+      await cancelPendingTotpEnrollment(pendingFactorId);
     }
+    if (signOutPendingAal1) {
+      await signOutAdminSession('local');
+    }
+  };
+
+  const routeAuthenticatedUserToMfaStep = async (fallbackEmail?: string) => {
+    const factors = await listAdminTotpFactors();
+    if (factors.verified.length > 0) {
+      setTotpFactors(factors.verified);
+      setSelectedFactorId(factors.verified[0].id);
+      wipeEnrollmentMemory();
+      setAuthStep('mfa_verify');
+      if (fallbackEmail) setAuthEmail(fallbackEmail);
+      return;
+    }
+
+    const payload = await startAdminTotpEnrollment(deviceFriendlyName || 'Duo Mobile');
+    setEnrollmentData(payload);
+    setSelectedFactorId(payload.factorId);
+    setMfaCode('');
+    setShowSetupKey(false);
+    setAuthStep('mfa_enroll');
+    if (fallbackEmail) setAuthEmail(fallbackEmail);
   };
 
   // Support direct URL access e.g. #admin or ?admin=true
@@ -546,19 +591,50 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     }
   }, []);
 
-  // Listen for double-click event from the base footer on the profile page
+  // Listen for double-click lock event & Supabase PASSWORD_RECOVERY event
   useEffect(() => {
-    const handleOpenAuth = () => {
+    const handleOpenAuth = async () => {
       setAuthError(null);
-      setOtpNotice(null);
+      setRecoveryNotice(null);
       setAuthPin('');
-      setOtpCode('');
+      setMfaCode('');
+      setShowRecoveryGuide(false);
+
+      // If user has an AAL1 session waiting on MFA, resume directly into TOTP challenge/enrollment
+      try {
+        const { data } = await supabase.auth.getSession();
+        const user = data?.session?.user;
+        if (user && isRealOwnerUser(user)) {
+          const live = await verifyLiveAdminAal2();
+          if (!live.ok) {
+            await routeAuthenticatedUserToMfaStep(user.email || AUTHORIZED_ADMIN_EMAIL);
+            setIsAuthModalOpen(true);
+            return;
+          }
+        }
+      } catch {}
+
       setAuthStep('credentials');
-      setAdminOtpPending(null);
       setIsAuthModalOpen(true);
     };
+
+    const handleOpenRecovery = () => {
+      setAuthError(null);
+      setRecoveryNotice(
+        'Enter your new administrator password below. Once updated, you will still need to complete your 6-digit TOTP authenticator check.'
+      );
+      setNewPassword('');
+      setConfirmPassword('');
+      setAuthStep('recovery_reset');
+      setIsAuthModalOpen(true);
+    };
+
     window.addEventListener('open-owner-auth-modal', handleOpenAuth);
-    return () => window.removeEventListener('open-owner-auth-modal', handleOpenAuth);
+    window.addEventListener('open-owner-recovery-modal', handleOpenRecovery);
+    return () => {
+      window.removeEventListener('open-owner-auth-modal', handleOpenAuth);
+      window.removeEventListener('open-owner-recovery-modal', handleOpenRecovery);
+    };
   }, []);
 
   // Resume Download count tracker
@@ -567,200 +643,262 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     return saved ? parseInt(saved, 10) : initialResumeDownloadCount || 0;
   });
 
-  const maskAdminEmail = (email: string) => {
-    const [local, domain] = email.split('@');
-    if (!local || !domain) return email;
-    const head = local.slice(0, 2);
-    return `${head}${'*'.repeat(Math.max(2, Math.min(6, local.length - 2)))}@${domain}`;
-  };
-
   const handleOwnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    setOtpNotice(null);
+    setRecoveryNotice(null);
     setIsAuthenticating(true);
 
-    const cleanEmail = authEmail.trim();
-    const cleanPassword = authPin.trim();
-    const sessionId = getOrCreateAdminTabSessionId();
+    const cleanEmail = authEmail.trim().toLowerCase();
+    const cleanPassword = authPin;
 
     try {
-      // If already signed in as owner in this browser, prevent duplicate concurrent login
       if (syncIsOwner) {
-        setAuthError('An Admin session is already active. Please sign out before signing in again.');
+        setAuthError('An administrator AAL2 session is already active.');
         return;
       }
 
-      // Mark OTP challenge pending BEFORE signInWithPassword so App.tsx keeps admin UI locked until 6-digit verification completes
-      clearLocalAdminVerification();
-      setAdminOtpPending(cleanEmail);
+      if (!isAuthorizedAdminEmail(cleanEmail)) {
+        await recordAdminAuthAttempt({ action: 'login', success: false, email: cleanEmail });
+        setAuthError(
+          'Access denied. Administrator login is restricted strictly to the authorized administrator account.'
+        );
+        return;
+      }
 
-      // Step 1: Verify credentials via Supabase Auth
+      const rate = await checkAdminAuthRateLimit('login', cleanEmail);
+      if (rate.blocked) {
+        setRateLimitSeconds(rate.retryAfterSeconds);
+        setAuthError(
+          rate.message || 'Too many failed sign-in attempts. Please wait before trying again.'
+        );
+        return;
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password: cleanPassword,
       });
 
-      if (error) {
-        setAdminOtpPending(null);
-        setAuthError(error.message || 'Authentication failed. Please verify your credentials.');
-        return;
-      }
-
-      if (!data?.session || !data?.user || !isRealOwnerUser(data.user)) {
-        setAdminOtpPending(null);
-        if (data?.session) {
-          await supabaseSignOutOwner();
-        }
-        setAuthError('This account is not authorized as the portfolio owner.');
-        return;
-      }
-
-      // Step 2: Restrict multiple concurrent Admin logins across tabs/browsers/devices
-      const lockCheck = await checkExistingActiveAdminLock(sessionId);
-      if (lockCheck.locked) {
-        setAdminOtpPending(null);
-        await supabaseSignOutOwner();
-        setAuthError(
-          lockCheck.reason ||
-            'Another Admin session is currently active. Multiple simultaneous Admin logins are restricted.'
-        );
-        return;
-      }
-
-      // Step 3: Trigger 6-digit email verification passcode to the authenticated Admin email
-      const authenticatedEmail = data.user.email || cleanEmail;
-      setAdminOtpPending(authenticatedEmail);
-      const otpResult = await sendAdminEmailVerificationCode({
-        email: authenticatedEmail,
-        accessToken: data.session.access_token,
+      const attemptRes = await recordAdminAuthAttempt({
+        action: 'login',
+        success: Boolean(!error && data?.session && data?.user),
+        email: cleanEmail,
       });
 
-      if (!otpResult.ok) {
-        setAdminOtpPending(null);
-        await supabaseSignOutOwner();
+      if (error || !data?.session || !data?.user) {
+        if (attemptRes.blocked) {
+          setRateLimitSeconds(attemptRes.retryAfterSeconds);
+        }
         setAuthError(
-          otpResult.message || 'Unable to send 6-digit verification passcode to your email.'
+          attemptRes.blocked
+            ? attemptRes.message || 'Too many failed attempts. Account temporarily rate-limited.'
+            : error?.message || 'Invalid credentials. Please verify your email and password.'
         );
         return;
       }
 
-      setOtpTargetEmail(authenticatedEmail);
-      setOtpAccessToken(data.session.access_token);
-      setOtpDeliveryMode(otpResult.deliveryMode);
-      setOtpCode('');
-      setOtpResendCooldown(60);
-      setOtpNotice(
-        `A 6-digit verification passcode has been sent to ${maskAdminEmail(authenticatedEmail)}. Check your inbox, copy the 6-digit passcode, and paste it below.`
-      );
-      setAuthStep('otp');
+      if (!isAuthorizedAdminEmail(data.user.email) || (data.user as any).is_anonymous) {
+        await signOutAdminSession('local');
+        setAuthError('Unauthorized account rejected.');
+        return;
+      }
+
+      if (!isEmailConfirmedUser(data.user)) {
+        await signOutAdminSession('local');
+        setAuthError(
+          'Your administrator email address has not been confirmed in Supabase. Confirm your email before signing in.'
+        );
+        return;
+      }
+
+      setAuthPin('');
+      await routeAuthenticatedUserToMfaStep(data.user.email || cleanEmail);
     } catch (err: any) {
-      setAdminOtpPending(null);
-      await supabaseSignOutOwner();
-      setAuthError(err?.message || 'Failed to authenticate owner with Supabase.');
+      await signOutAdminSession('local');
+      setAuthError(err?.message || 'Unable to authenticate with Supabase Auth.');
     } finally {
       setIsAuthenticating(false);
     }
   };
 
-  const handleVerifyEmailOtp = async (e: React.FormEvent) => {
+  const handleVerifyEnrollment = async (e: React.FormEvent) => {
     e.preventDefault();
-    setAuthError(null);
-    setOtpNotice(null);
-    setIsAuthenticating(true);
+    if (!enrollmentData?.factorId) {
+      setAuthError('Enrollment session expired. Please generate a fresh QR code.');
+      return;
+    }
 
-    const sessionId = getOrCreateAdminTabSessionId();
+    setAuthError(null);
+    setIsAuthenticating(true);
+    const targetEmail = authEmail.trim().toLowerCase() || AUTHORIZED_ADMIN_EMAIL;
 
     try {
-      // Re-verify single-session lock before completing verification
-      const lockCheck = await checkExistingActiveAdminLock(sessionId);
-      if (lockCheck.locked) {
-        setAdminOtpPending(null);
-        await supabaseSignOutOwner();
-        setAuthStep('credentials');
-        setAuthError(
-          lockCheck.reason ||
-            'Another Admin session became active while verifying. Multiple Admin logins are restricted.'
-        );
+      const rate = await checkAdminAuthRateLimit('mfa', targetEmail);
+      if (rate.blocked) {
+        setRateLimitSeconds(rate.retryAfterSeconds);
+        setAuthError(rate.message || 'Too many failed 2FA attempts. Please wait.');
         return;
       }
 
-      const verifyRes = await verifyAdminEmailVerificationCode({
-        email: otpTargetEmail || authEmail.trim(),
-        code: otpCode,
-        deliveryMode: otpDeliveryMode,
-        accessToken: otpAccessToken,
+      const verifyRes = await verifyAdminTotpChallenge(enrollmentData.factorId, mfaCode);
+      const attemptRes = await recordAdminAuthAttempt({
+        action: 'mfa',
+        success: verifyRes.ok,
+        email: targetEmail,
       });
 
-      if (!verifyRes.ok || !verifyRes.session || !verifyRes.user || !isRealOwnerUser(verifyRes.user)) {
-        setAuthError(verifyRes.message || 'Invalid or expired 6-digit verification passcode.');
-        return;
-      }
-
-      // Claim single active Admin session lock
-      const claimRes = await claimAdminSessionLock(
-        verifyRes.user.id,
-        sessionId,
-        verifyRes.session.access_token
-      );
-      if (!claimRes.ok) {
-        setAdminOtpPending(null);
-        await supabaseSignOutOwner();
-        setAuthStep('credentials');
+      if (!verifyRes.ok || !verifyRes.user) {
+        if (attemptRes.blocked) {
+          setRateLimitSeconds(attemptRes.retryAfterSeconds);
+        }
         setAuthError(
-          claimRes.error ||
-            'Another Admin session is currently active. Only one active Admin login is allowed.'
+          attemptRes.blocked
+            ? attemptRes.message || 'Too many failed verification attempts. Please wait.'
+            : verifyRes.message || 'Invalid 6-digit passcode. Confirm your Duo Mobile clock is synced.'
         );
         return;
       }
 
-      markAdminSessionVerified(verifyRes.user.id, sessionId);
+      wipeEnrollmentMemory();
       setAuthenticatedUid(verifyRes.user.id);
       syncSetOwner(true, verifyRes.user.id);
       setIsOwnerAuthenticated(true);
       await resetAuthModalState(false);
-      showNotification(`Verified and signed in as ${verifyRes.user.email}.`);
+      showNotification('Duo Mobile / Authenticator 2FA activated and AAL2 session verified.');
     } catch (err: any) {
-      setAuthError(err?.message || 'Verification failed. Please check the 6-digit passcode.');
+      setAuthError(err?.message || 'Failed to activate TOTP authenticator.');
     } finally {
       setIsAuthenticating(false);
     }
   };
 
-  const handleResendEmailOtp = async () => {
-    if (otpResendCooldown > 0 || isAuthenticating) return;
+  const handleVerifyMfaChallenge = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFactorId) {
+      setAuthError('Select a verified authenticator device to continue.');
+      return;
+    }
+
     setAuthError(null);
-    setOtpNotice(null);
     setIsAuthenticating(true);
+    const targetEmail = authEmail.trim().toLowerCase() || AUTHORIZED_ADMIN_EMAIL;
+
     try {
-      const targetEmail = otpTargetEmail || authEmail.trim();
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token || otpAccessToken;
-      const otpResult = await sendAdminEmailVerificationCode({
-        email: targetEmail,
-        accessToken: token,
-      });
-      if (!otpResult.ok) {
-        setAuthError(otpResult.message || 'Unable to resend passcode right now.');
+      const rate = await checkAdminAuthRateLimit('mfa', targetEmail);
+      if (rate.blocked) {
+        setRateLimitSeconds(rate.retryAfterSeconds);
+        setAuthError(rate.message || 'Too many failed 2FA attempts. Please wait.');
         return;
       }
-      setOtpDeliveryMode(otpResult.deliveryMode);
-      setOtpResendCooldown(60);
-      setOtpNotice(
-        `A fresh 6-digit verification passcode has been sent to ${maskAdminEmail(targetEmail)}.`
-      );
+
+      const verifyRes = await verifyAdminTotpChallenge(selectedFactorId, mfaCode);
+      const attemptRes = await recordAdminAuthAttempt({
+        action: 'mfa',
+        success: verifyRes.ok,
+        email: targetEmail,
+      });
+
+      if (!verifyRes.ok || !verifyRes.user) {
+        if (attemptRes.blocked) {
+          setRateLimitSeconds(attemptRes.retryAfterSeconds);
+        }
+        setAuthError(
+          attemptRes.blocked
+            ? attemptRes.message || 'Too many failed verification attempts. Please wait.'
+            : verifyRes.message || 'Invalid 6-digit TOTP passcode.'
+        );
+        return;
+      }
+
+      setAuthenticatedUid(verifyRes.user.id);
+      syncSetOwner(true, verifyRes.user.id);
+      setIsOwnerAuthenticated(true);
+      await resetAuthModalState(false);
+      showNotification(`AAL2 Two-Factor session verified for ${verifyRes.user.email}.`);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Two-factor authentication check failed.');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleRegenerateQrEnrollment = async () => {
+    setAuthError(null);
+    setIsAuthenticating(true);
+    try {
+      const payload = await startAdminTotpEnrollment(deviceFriendlyName || 'Duo Mobile');
+      setEnrollmentData(payload);
+      setSelectedFactorId(payload.factorId);
+      setMfaCode('');
+      setShowSetupKey(false);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Could not generate a new authenticator QR code.');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleSendRecoveryEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setRecoveryNotice(null);
+    setIsAuthenticating(true);
+    try {
+      const res = await sendAdminPasswordRecovery(authEmail || AUTHORIZED_ADMIN_EMAIL);
+      if (!res.ok) {
+        setAuthError(res.message);
+        return;
+      }
+      setRecoveryNotice(res.message);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
+
+  const handleCompletePasswordRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setRecoveryNotice(null);
+    if (newPassword.length < 10) {
+      setAuthError('Choose a strong password of at least 10 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+
+    setIsAuthenticating(true);
+    try {
+      const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error || !data?.user) {
+        setAuthError(error?.message || 'Unable to update password.');
+        return;
+      }
+      if (!isRealOwnerUser(data.user)) {
+        await signOutAdminSession('local');
+        setAuthError('Recovered account is not authorized or email is unconfirmed.');
+        return;
+      }
+      setNewPassword('');
+      setConfirmPassword('');
+      setRecoveryNotice('Password updated. Complete mandatory 6-digit TOTP verification below.');
+      await routeAuthenticatedUserToMfaStep(data.user.email || AUTHORIZED_ADMIN_EMAIL);
+    } catch (err: any) {
+      setAuthError(err?.message || 'Password update failed.');
     } finally {
       setIsAuthenticating(false);
     }
   };
 
   const handleOwnerLogout = async () => {
-    await performFullAdminSignOut('manual');
+    await signOutAdminSession('global');
     syncSetOwner(false);
     setIsOwnerAuthenticated(false);
     setIsEditingBio(false);
     setIsDocumentModalOpen(false);
-    showNotification('Logged out from Supabase Owner mode. Profile is in public visitor view.');
+    showNotification('Signed out globally from all administrator sessions.');
   };
 
   const [copiedAts, setCopiedAts] = useState(false);
@@ -1331,11 +1469,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     if (selectedPreviewDoc?.id === id) {
       setSelectedPreviewDoc(null);
     }
+    const authHeaders = await getAuthenticatedBearerHeaders();
     await Promise.allSettled([
       saveStoredDocuments(updated, [id]),
       deleteDocumentPersistently(id),
-      fetch(`/api/documents/${id}`, { method: 'DELETE' }),
-      fetch(`/api/profile/documents/${id}`, { method: 'DELETE' }),
+      fetch(`/api/documents/${id}`, { method: 'DELETE', headers: authHeaders }),
+      fetch(`/api/profile/documents/${id}`, { method: 'DELETE', headers: authHeaders }),
     ]);
     showNotification(`"${title}" deleted permanently.`);
   };
@@ -3412,7 +3551,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
       )}
 
       {/* ======================================================== */}
-      {/* 5. SUPABASE OWNER ADMIN LOGIN MODAL (2-STEP EMAIL OTP)   */}
+      {/* 5. SUPABASE ADMINISTRATOR LOGIN & MANDATORY TOTP 2FA     */}
       {/* ======================================================== */}
       {isAuthModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-fade-in font-sans">
@@ -3421,20 +3560,43 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
             <div className="px-5 py-3.5 bg-[#0f172a] text-white flex items-center justify-between border-b border-slate-800">
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0">
-                  {authStep === 'otp' ? (
-                    <ShieldCheck className="w-3.5 h-3.5 text-cyan-300" />
+                  {authStep === 'mfa_enroll' ? (
+                    <QrCode className="w-3.5 h-3.5 text-cyan-300" />
+                  ) : authStep === 'mfa_verify' ? (
+                    <Smartphone className="w-3.5 h-3.5 text-cyan-300" />
+                  ) : authStep === 'recovery_request' || authStep === 'recovery_reset' ? (
+                    <LifeBuoy className="w-3.5 h-3.5 text-cyan-300" />
                   ) : (
                     <KeyRound className="w-3.5 h-3.5 text-cyan-300" />
                   )}
                 </div>
-                <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
-                  {authStep === 'otp' ? 'Email Verification' : 'Sign in'}
-                </h3>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold font-serif text-white leading-tight">
+                    {authStep === 'mfa_enroll'
+                      ? 'Set Up Duo Mobile 2FA'
+                      : authStep === 'mfa_verify'
+                      ? 'Two-Factor Verification'
+                      : authStep === 'recovery_request'
+                      ? 'Account Recovery'
+                      : authStep === 'recovery_reset'
+                      ? 'Set New Password'
+                      : 'Administrator Sign In'}
+                  </h3>
+                  <p className="text-[10px] text-cyan-300/90 font-medium">
+                    {authStep === 'mfa_enroll'
+                      ? 'Step 2 of 2 · One-time Authenticator Enrollment'
+                      : authStep === 'mfa_verify'
+                      ? 'Step 2 of 2 · Mandatory AAL2 TOTP Challenge'
+                      : authStep === 'recovery_request' || authStep === 'recovery_reset'
+                      ? 'Email Recovery (MFA Remains Mandatory)'
+                      : 'Restricted Access · Confirmed Email + 2FA Required'}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  void resetAuthModalState(authStep === 'otp');
+                  void resetAuthModalState(authStep === 'mfa_enroll' || authStep === 'mfa_verify');
                 }}
                 className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
                 title="Close modal"
@@ -3443,43 +3605,64 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </button>
             </div>
 
-            {authStep === 'credentials' ? (
+            {authStep === 'credentials' && (
               <form onSubmit={handleOwnerLogin} className="p-5 sm:p-6 space-y-4">
                 {authError && (
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
                     <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                    <span>{authError}</span>
+                    <div className="flex-1">
+                      <span>{authError}</span>
+                      {rateLimitSeconds > 0 && (
+                        <p className="mt-1 text-[11px] font-mono text-rose-700">
+                          Retry available in {Math.floor(rateLimitSeconds / 60)}:
+                          {String(rateLimitSeconds % 60).padStart(2, '0')}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {/* Email */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Email
+                    Authorized Administrator Email
                   </label>
                   <div className="relative">
                     <input
                       type="email"
                       required
+                      autoComplete="username"
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="example@email.com"
+                      placeholder="Enter authorized admin email"
                       className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-xs sm:text-sm font-sans"
                     />
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
                   </div>
                 </div>
 
-                {/* Password */}
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Password
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthError(null);
+                        setRecoveryNotice(null);
+                        setAuthStep('recovery_request');
+                      }}
+                      className="text-[11px] font-semibold text-cyan-800 hover:underline cursor-pointer"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <div className="relative">
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
                       autoFocus
+                      autoComplete="current-password"
                       value={authPin}
                       onChange={(e) => setAuthPin(e.target.value)}
                       placeholder="Enter password"
@@ -3498,7 +3681,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   </div>
                 </div>
 
-                {/* Buttons */}
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 flex items-start gap-2">
+                  <ShieldCheck className="w-4 h-4 text-cyan-800 shrink-0 mt-0.5" />
+                  <span>
+                    Public registration is disabled. After password check, a 6-digit Duo Mobile or Google Authenticator TOTP code is mandatory.
+                  </span>
+                </div>
+
                 <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                   <button
                     type="button"
@@ -3512,25 +3701,27 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
                   <button
                     type="submit"
-                    disabled={isAuthenticating}
+                    disabled={isAuthenticating || rateLimitSeconds > 0}
                     className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
                   >
                     {isAuthenticating ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Sending Code...</span>
+                        <span>Verifying...</span>
                       </>
                     ) : (
                       <>
                         <Unlock className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Sign in</span>
+                        <span>Continue to 2FA</span>
                       </>
                     )}
                   </button>
                 </div>
               </form>
-            ) : (
-              <form onSubmit={handleVerifyEmailOtp} className="p-5 sm:p-6 space-y-4">
+            )}
+
+            {authStep === 'mfa_enroll' && (
+              <form onSubmit={handleVerifyEnrollment} className="p-5 sm:p-6 space-y-3.5">
                 {authError && (
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
                     <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -3538,16 +3729,69 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   </div>
                 )}
 
-                {otpNotice && (
-                  <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed flex items-start gap-2">
-                    <Mail className="w-4 h-4 text-cyan-700 shrink-0 mt-0.5" />
-                    <span>{otpNotice}</span>
+                <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-[11.5px] leading-relaxed">
+                  Open <strong>Duo Mobile</strong> (or Google Authenticator), tap <strong>Add Account (+) → Scan QR code</strong>, and enter the first 6-digit passcode to activate mandatory 2FA.
+                </div>
+
+                <div>
+                  <label className="block text-[10.5px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Device Name
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={deviceFriendlyName}
+                      onChange={(e) => setDeviceFriendlyName(e.target.value)}
+                      placeholder="Duo Mobile"
+                      className="flex-1 px-3 py-1.5 rounded-lg border border-[#b8c6d4] bg-[#f8fafc] text-xs text-slate-900"
+                    />
+                    <button
+                      type="button"
+                      disabled={isAuthenticating}
+                      onClick={() => void handleRegenerateQrEnrollment()}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>New QR</span>
+                    </button>
+                  </div>
+                </div>
+
+                {enrollmentData?.qrCode ? (
+                  <div className="flex flex-col items-center justify-center p-3 rounded-xl bg-white border-2 border-slate-200">
+                    <img
+                      src={enrollmentData.qrCode}
+                      alt="Scan QR code in Duo Mobile or Authenticator App"
+                      className="w-44 h-44 object-contain"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSetupKey((v) => !v)}
+                      className="mt-2 text-[11px] font-semibold text-cyan-800 hover:underline cursor-pointer"
+                    >
+                      {showSetupKey ? 'Hide Manual Setup Key' : 'Cannot scan? View one-time setup key'}
+                    </button>
+                    {showSetupKey && enrollmentData.secret && (
+                      <div className="mt-2 w-full p-2 rounded-lg bg-slate-100 border border-slate-300 text-center">
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-0.5">
+                          One-Time Setup Key (Cleared after activation)
+                        </p>
+                        <code className="text-[11px] font-mono font-bold text-slate-900 break-all select-all">
+                          {enrollmentData.secret}
+                        </code>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="py-8 flex items-center justify-center text-xs text-slate-500 gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Preparing QR code...</span>
                   </div>
                 )}
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5 text-center">
-                    6-Digit Verification Passcode
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1 text-center">
+                    First 6-Digit Authenticator Code
                   </label>
                   <input
                     type="text"
@@ -3556,23 +3800,131 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     required
                     autoFocus
                     maxLength={6}
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    className="w-full px-4 py-2.5 rounded-xl border-2 border-[#b8c6d4] bg-[#f8fafc] text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-700 text-center text-xl font-mono font-bold tracking-[0.45em]"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isAuthenticating}
+                    onClick={() => void resetAuthModalState(true)}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel Setup
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating || mfaCode.length !== 6 || !enrollmentData || rateLimitSeconds > 0}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Activating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-3.5 h-3.5 text-cyan-200" />
+                        <span>Verify &amp; Activate MFA</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {authStep === 'mfa_verify' && (
+              <form onSubmit={handleVerifyMfaChallenge} className="p-5 sm:p-6 space-y-4">
+                {authError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2 animate-fade-in">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <span>{authError}</span>
+                      {rateLimitSeconds > 0 && (
+                        <p className="mt-1 text-[11px] font-mono text-rose-700">
+                          Retry available in {Math.floor(rateLimitSeconds / 60)}:
+                          {String(rateLimitSeconds % 60).padStart(2, '0')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {recoveryNotice && (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs">
+                    {recoveryNotice}
+                  </div>
+                )}
+
+                <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed flex items-start gap-2">
+                  <Smartphone className="w-4 h-4 text-cyan-700 shrink-0 mt-0.5" />
+                  <span>
+                    Open <strong>Duo Mobile</strong> or your registered TOTP authenticator app and enter the current 6-digit passcode to elevate your session to <strong>AAL2</strong>.
+                  </span>
+                </div>
+
+                {totpFactors.length > 1 && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Authenticator Device
+                    </label>
+                    <select
+                      value={selectedFactorId}
+                      onChange={(e) => setSelectedFactorId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-xs font-semibold text-slate-900"
+                    >
+                      {totpFactors.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.friendlyName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5 text-center">
+                    6-Digit Authenticator Code
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    required
+                    autoFocus
+                    maxLength={6}
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="000000"
                     className="w-full px-4 py-3 rounded-xl border-2 border-[#b8c6d4] bg-[#f8fafc] text-slate-950 focus:outline-none focus:ring-2 focus:ring-cyan-700 focus:border-cyan-700 text-center text-xl font-mono font-bold tracking-[0.45em]"
                   />
                   <div className="mt-2 flex items-center justify-between text-[11px] text-slate-600">
-                    <span>Sent to authenticated email</span>
+                    <span>Refreshes every 30s</span>
                     <button
                       type="button"
-                      disabled={otpResendCooldown > 0 || isAuthenticating}
-                      onClick={() => void handleResendEmailOtp()}
-                      className="font-semibold text-cyan-800 hover:underline disabled:opacity-50 disabled:no-underline cursor-pointer"
+                      onClick={() => setShowRecoveryGuide((v) => !v)}
+                      className="font-semibold text-cyan-800 hover:underline cursor-pointer"
                     >
-                      {otpResendCooldown > 0 ? `Resend in ${otpResendCooldown}s` : 'Resend Passcode'}
+                      Lost authenticator device?
                     </button>
                   </div>
                 </div>
+
+                {showRecoveryGuide && (
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-[11px] leading-relaxed space-y-1">
+                    <p className="font-bold">Authenticator Recovery Procedure</p>
+                    <p>
+                      1. If you enrolled a secondary backup authenticator app, select it in the device dropdown above.
+                    </p>
+                    <p>
+                      2. If all authenticator devices are lost, remove the lost TOTP factor in Supabase Dashboard → Authentication → Users → MFA Factors, then sign back in to enroll a replacement Duo Mobile QR code.
+                    </p>
+                  </div>
+                )}
 
                 <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-2">
                   <button
@@ -3580,22 +3932,20 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     disabled={isAuthenticating}
                     onClick={() => {
                       void (async () => {
-                        setAdminOtpPending(null);
-                        await supabaseSignOutOwner();
+                        await signOutAdminSession('local');
                         setAuthStep('credentials');
-                        setOtpCode('');
+                        setMfaCode('');
                         setAuthError(null);
-                        setOtpNotice(null);
                       })();
                     }}
                     className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
                   >
-                    Back
+                    Sign Out
                   </button>
 
                   <button
                     type="submit"
-                    disabled={isAuthenticating || otpCode.length !== 6}
+                    disabled={isAuthenticating || mfaCode.length !== 6 || rateLimitSeconds > 0}
                     className="inline-flex items-center justify-center gap-1.5 px-4.5 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
                   >
                     {isAuthenticating ? (
@@ -3606,7 +3956,153 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     ) : (
                       <>
                         <ShieldCheck className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Verify &amp; Sign in</span>
+                        <span>Verify &amp; Unlock Admin</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {authStep === 'recovery_request' && (
+              <form onSubmit={handleSendRecoveryEmail} className="p-5 sm:p-6 space-y-4">
+                {authError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+                {recoveryNotice && (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs leading-relaxed">
+                    {recoveryNotice}
+                  </div>
+                )}
+
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11.5px] text-slate-700 space-y-1.5">
+                  <p className="font-bold text-slate-900">Password &amp; MFA Recovery Policy</p>
+                  <p>
+                    Password reset links are sent strictly to the confirmed administrator email. Completing password recovery still requires your 6-digit TOTP authenticator code.
+                  </p>
+                  <p className="text-slate-600">
+                    If you lost all registered Duo Mobile devices, reset your MFA factors from your Supabase Project Dashboard under <strong>Authentication → Users</strong> before re-enrolling.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Confirmed Administrator Email
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="festusjohnson028@gmail.com"
+                    className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 text-xs sm:text-sm"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthError(null);
+                      setRecoveryNotice(null);
+                      setAuthStep('credentials');
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer"
+                  >
+                    Back to Sign In
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Sending...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Send Recovery Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {authStep === 'recovery_reset' && (
+              <form onSubmit={handleCompletePasswordRecovery} className="p-5 sm:p-6 space-y-4">
+                {authError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+                {recoveryNotice && (
+                  <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed">
+                    {recoveryNotice}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    New Password (min 10 chars)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={10}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter new strong password"
+                    className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 text-xs sm:text-sm font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Confirm New Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={10}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new password"
+                    className="w-full px-3 py-2 rounded-xl border border-[#b8c6d4] bg-[#f8fafc] text-slate-900 text-xs sm:text-sm font-mono"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void resetAuthModalState(true)}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAuthenticating}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-800 hover:bg-cyan-900 disabled:opacity-60 text-white text-xs font-bold cursor-pointer"
+                  >
+                    {isAuthenticating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Updating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>Save Password &amp; Continue to 2FA</span>
                       </>
                     )}
                   </button>

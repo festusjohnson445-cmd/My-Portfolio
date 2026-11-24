@@ -4,6 +4,7 @@ import {
   getResolvedSupabaseConfig,
   getValidatedSession,
   isRealOwnerUser,
+  getSessionAalClaim,
 } from './supabase';
 import { probeLocalFileDuration, setCachedMediaDuration } from './mediaMetadata';
 
@@ -1049,11 +1050,16 @@ async function uploadBlobDirectToBucket(params: {
       ]);
       if (refreshed?.data?.session) data = refreshed.data;
     }
-    if (data?.session?.user && isRealOwnerUser(data.session.user)) {
+    const isAal2Owner = Boolean(
+      data?.session?.user &&
+        isRealOwnerUser(data.session.user) &&
+        getSessionAalClaim(data.session) === 'aal2'
+    );
+    if (isAal2Owner && data?.session?.user) {
       ownerPrefix = ownerPrefix || data.session.user.id;
     }
     const isExpired = data?.session?.expires_at ? data.session.expires_at * 1000 <= Date.now() + 5000 : false;
-    if (data?.session?.access_token && !isExpired) {
+    if (data?.session?.access_token && !isExpired && isAal2Owner) {
       bearerToken = data.session.access_token;
     }
   } catch {}
@@ -1267,7 +1273,11 @@ export async function saveMediaAssetRecord(record: MediaAssetRecord): Promise<vo
 
   try {
     const { data } = await supabase.auth.getSession();
-    const isOwner = Boolean(data?.session?.user && isRealOwnerUser(data.session.user));
+    const isOwner = Boolean(
+      data?.session?.user &&
+        isRealOwnerUser(data.session.user) &&
+        getSessionAalClaim(data.session) === 'aal2'
+    );
     if (isOwner) {
       await supabase.from('media_assets').upsert(payload, { onConflict: 'id' });
     } else {
@@ -3470,7 +3480,6 @@ function mergeAppearanceConfig(raw?: Partial<WebsiteAppearanceConfig> | null): W
         forms: mergedForms,
       };
     })(),
-    ...((src as any).activeAdminSession ? { activeAdminSession: (src as any).activeAdminSession } : {}),
   };
 }
 

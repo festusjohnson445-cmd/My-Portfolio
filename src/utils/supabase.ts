@@ -127,17 +127,78 @@ export const withCacheBuster = withRecordVersion;
 // 2. OWNER AUTHENTICATION (EMAIL/PASSWORD VIA SUPABASE AUTH)
 // ============================================================================
 
+export const AUTHORIZED_ADMIN_EMAIL = 'festusjohnson028@gmail.com';
+
+export function isAuthorizedAdminEmail(email?: string | null): boolean {
+  return Boolean(email && email.trim().toLowerCase() === AUTHORIZED_ADMIN_EMAIL);
+}
+
+export function isEmailConfirmedUser(user?: User | null): boolean {
+  if (!user) return false;
+  return Boolean(user.email_confirmed_at || (user as any).confirmed_at);
+}
+
+export function getSessionAalClaim(session?: Session | null): 'aal1' | 'aal2' | null {
+  const token = session?.access_token;
+  if (!token || typeof token !== 'string') return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (base64.length % 4)) % 4;
+    const padded = base64 + '='.repeat(padLen);
+    const decoded =
+      typeof atob === 'function'
+        ? atob(padded)
+        : Buffer.from(padded, 'base64').toString('utf-8');
+    const payload = JSON.parse(decoded);
+    if (payload?.aal === 'aal2') return 'aal2';
+    if (payload?.aal === 'aal1') return 'aal1';
+  } catch {}
+  return null;
+}
+
+export async function getAuthenticatedBearerHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data?.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
- * Validate that an active Supabase session exists before any write operation.
- * Throws explicit error to halt write operations if unauthenticated.
+ * Validate that an active AAL2 Supabase session exists for the explicitly authorized,
+ * email-confirmed administrator before any administrative write operation.
  */
 export async function getValidatedSession(): Promise<{ session: Session; user: User }> {
   const { data, error } = await supabase.auth.getSession();
   if (error || !data?.session?.user) {
     throw new Error(error?.message || 'Authentication required: Active Supabase session is required to perform this action.');
   }
-  cachedOwnerUid = data.session.user.id;
-  return { session: data.session, user: data.session.user };
+
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  const liveUser = userData?.user || data.session.user;
+  if (userErr || !isRealOwnerUser(liveUser)) {
+    throw new Error('Unauthorized: Confirmed administrator email authorization is required.');
+  }
+
+  const jwtAal = getSessionAalClaim(data.session);
+  const { data: aalData, error: aalErr } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  const currentAal = aalData?.currentLevel || jwtAal;
+  if (aalErr || currentAal !== 'aal2' || jwtAal !== 'aal2') {
+    throw new Error('Two-Factor Authentication (AAL2) verification is required to perform administrative operations.');
+  }
+
+  const { data: factorsData } = await supabase.auth.mfa.listFactors();
+  const verifiedTotp = (factorsData?.totp || []).filter((f) => f.status === 'verified');
+  if (verifiedTotp.length === 0) {
+    throw new Error('Mandatory TOTP authenticator enrollment is required before accessing administrative operations.');
+  }
+
+  cachedOwnerUid = liveUser.id;
+  return { session: data.session, user: liveUser };
 }
 
 /**
@@ -239,77 +300,30 @@ export function getAuthenticatedOwnerUid(): string {
 }
 
 /**
- * Verify that a Supabase User object belongs to a real authenticated owner
- * (and NOT an anonymous or shared public visitor guest account).
+ * Verify that a Supabase User object belongs to the explicitly authorized,
+ * email-confirmed administrator (and NOT an anonymous, unconfirmed, or unauthorized account).
  */
 export function isRealOwnerUser(user?: User | null): boolean {
   if (!user) return false;
   if ((user as any).is_anonymous) return false;
-  const email = (user.email || '').trim().toLowerCase();
-  if (!email || email === 'public_visitor@feslineguest.com') return false;
+  if (!isAuthorizedAdminEmail(user.email)) return false;
+  if (!isEmailConfirmedUser(user)) return false;
   return true;
 }
 
 /**
- * Check if active session exists for a real owner
+ * Check if active AAL2 session exists for the authorized, email-confirmed administrator
  */
 export async function hasActiveOwnerSession(): Promise<boolean> {
   try {
     const { data } = await supabase.auth.getSession();
-    return isRealOwnerUser(data?.session?.user);
+    const session = data?.session;
+    if (!session || !isRealOwnerUser(session.user)) return false;
+    if (getSessionAalClaim(session) !== 'aal2') return false;
+    const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    return aalData?.currentLevel === 'aal2';
   } catch {
     return false;
-  }
-}
-
-/**
- * Silent authentication fallback helper for visitors when Anonymous Sign-in is disabled in Supabase.
- * First tries signInAnonymously(). If disabled or fails, silently signs in with a shared public guest user.
- * Since sign-ins are not strictly rate-limited like sign-ups, this completely avoids "email rate limit exceeded" errors.
- */
-export async function silentAuthVisitor(accessKey?: string): Promise<{ user: User | null; session: Session | null; error: Error | null }> {
-  try {
-    // 1. Try standard anonymous sign-in first
-    const { data: anonData, error: anonError } = await supabase.auth.signInAnonymously();
-    if (!anonError && anonData?.user) {
-      return { user: anonData.user, session: anonData.session, error: null };
-    }
-
-    console.warn('[Supabase Auth] Anonymous sign-in failed/disabled, attempting silent shared email guest fallback...', anonError?.message);
-
-    // 2. Fallback: Silent shared guest account (permanently bypasses email signup rate limits)
-    const sharedEmail = 'public_visitor@feslineguest.com';
-    const sharedPassword = 'VisitorGuestPass_Shared_123!';
-
-    // Try to sign in with the shared guest credentials
-    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-      email: sharedEmail,
-      password: sharedPassword,
-    });
-
-    if (!signInError && signInData?.user) {
-      return { user: signInData.user, session: signInData.session, error: null };
-    }
-
-    // If sign in fails because the shared account is not registered yet, register it exactly once
-    if (signInError?.message?.toLowerCase().includes('invalid') || signInError?.message?.toLowerCase().includes('not found')) {
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: sharedEmail,
-        password: sharedPassword,
-      });
-
-      if (!signUpError && signUpData?.user) {
-        return { user: signUpData.user, session: signUpData.session, error: null };
-      }
-      
-      return { user: null, session: null, error: new Error(signUpError?.message || signInError?.message || 'Authentication failed') };
-    }
-
-    // Return sign in error if not credentials-related (or return the original anonymous error)
-    return { user: null, session: null, error: new Error(signInError?.message || anonError?.message || 'Authentication failed') };
-  } catch (err: any) {
-    console.error('[Supabase Auth Silent Fallback Error]:', err);
-    return { user: null, session: null, error: err };
   }
 }
 
@@ -449,13 +463,15 @@ export async function uploadMaterialToSupabaseBucket(
   uid?: string,
   allowPublicStudentUpload = false
 ): Promise<{ publicUrl: string; downloadUrl: string; storagePath: string }> {
-  // 1. Session verification: owner uses auth.uid(); visitor Student Materials uploads use student-submissions/
+  // 1. Session verification: AAL2 owner uses auth.uid(); visitor Student Materials uploads use student-submissions/
   const { data: sessionData } = await supabase.auth.getSession();
-  const activeUser = sessionData?.session?.user;
-  if (!activeUser && !allowPublicStudentUpload) {
-    throw new Error('Authentication required: Active Supabase session is required to perform this action.');
+  const activeSession = sessionData?.session;
+  const activeUser = activeSession?.user;
+  const isAal2Owner = Boolean(activeUser && isRealOwnerUser(activeUser) && getSessionAalClaim(activeSession) === 'aal2');
+  if (!isAal2Owner && !allowPublicStudentUpload) {
+    throw new Error('Authentication required: AAL2 administrator session is required to perform this upload.');
   }
-  const folderPrefix = activeUser ? uid || activeUser.id : 'student-submissions';
+  const folderPrefix = isAal2Owner && activeUser ? uid || activeUser.id : 'student-submissions';
 
   const cleanName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
   const timestamp = Date.now();
@@ -537,9 +553,11 @@ export async function uploadMaterialThumbnailToBucket(
   try {
     if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
     const { data: sessionData } = await supabase.auth.getSession();
-    const activeUser = sessionData?.session?.user;
-    if (!activeUser && !allowPublicStudentUpload) return null;
-    const folderPrefix = activeUser ? uid || activeUser.id : 'student-submissions';
+    const activeSession = sessionData?.session;
+    const activeUser = activeSession?.user;
+    const isAal2Owner = Boolean(activeUser && isRealOwnerUser(activeUser) && getSessionAalClaim(activeSession) === 'aal2');
+    if (!isAal2Owner && !allowPublicStudentUpload) return null;
+    const folderPrefix = isAal2Owner && activeUser ? uid || activeUser.id : 'student-submissions';
 
     const parts = dataUrl.split(',');
     const mimeMatch = parts[0].match(/:(.*?);/);
@@ -2534,19 +2552,34 @@ export const SUPABASE_RLS_SCHEMA_SQL = `
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 1. OWNER IDENTITY HELPER FUNCTION
+-- 1. OWNER IDENTITY & MANDATORY AAL2 MFA + CONFIRMED EMAIL HELPER FUNCTION
 CREATE OR REPLACE FUNCTION public.is_portfolio_owner()
 RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, auth
 AS $$
   SELECT (
     auth.uid() IS NOT NULL
     AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
-    AND COALESCE(auth.jwt() ->> 'email', '') <> ''
-    AND COALESCE(auth.jwt() ->> 'email', '') <> 'public_visitor@feslineguest.com'
+    AND LOWER(COALESCE(auth.jwt() ->> 'email', '')) = 'festusjohnson028@gmail.com'
+    AND COALESCE(auth.jwt() ->> 'aal', '') = 'aal2'
+    AND EXISTS (
+      SELECT 1
+      FROM auth.users u
+      WHERE u.id = auth.uid()
+        AND LOWER(COALESCE(u.email, '')) = 'festusjohnson028@gmail.com'
+        AND COALESCE(u.email_confirmed_at, u.confirmed_at) IS NOT NULL
+        AND (u.banned_until IS NULL OR u.banned_until <= now())
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM auth.mfa_factors mf
+      WHERE mf.user_id = auth.uid()
+        AND mf.factor_type = 'totp'
+        AND mf.status = 'verified'
+    )
   );
 $$;
 
@@ -2579,7 +2612,7 @@ FOR SELECT TO public USING (bucket_id = 'avatars');
 DROP POLICY IF EXISTS "Owner Upload Avatars" ON storage.objects;
 CREATE POLICY "Owner Upload Avatars" ON storage.objects
 FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+WITH CHECK (bucket_id = 'avatars' AND public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Visitor Upload Avatars" ON storage.objects;
 CREATE POLICY "Visitor Upload Avatars" ON storage.objects
@@ -2595,12 +2628,13 @@ WITH CHECK (bucket_id = 'avatars' AND (storage.foldername(name))[1] = 'visitors'
 DROP POLICY IF EXISTS "Owner Update Avatars" ON storage.objects;
 CREATE POLICY "Owner Update Avatars" ON storage.objects
 FOR UPDATE TO authenticated
-USING (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+USING (bucket_id = 'avatars' AND public.is_portfolio_owner())
+WITH CHECK (bucket_id = 'avatars' AND public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Owner Delete Avatars" ON storage.objects;
 CREATE POLICY "Owner Delete Avatars" ON storage.objects
 FOR DELETE TO authenticated
-USING (bucket_id = 'avatars' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+USING (bucket_id = 'avatars' AND public.is_portfolio_owner());
 
 -- Storage Policies: Materials (chat files, voice notes, fallback materials)
 DROP POLICY IF EXISTS "Public Upload to Materials Bucket" ON storage.objects;
@@ -2627,17 +2661,18 @@ FOR SELECT TO public USING (bucket_id = 'materials');
 DROP POLICY IF EXISTS "Owner Upload Materials" ON storage.objects;
 CREATE POLICY "Owner Upload Materials" ON storage.objects
 FOR INSERT TO authenticated
-WITH CHECK (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+WITH CHECK (bucket_id = 'materials' AND public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Owner Update Materials" ON storage.objects;
 CREATE POLICY "Owner Update Materials" ON storage.objects
 FOR UPDATE TO authenticated
-USING (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+USING (bucket_id = 'materials' AND public.is_portfolio_owner())
+WITH CHECK (bucket_id = 'materials' AND public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Owner Delete Materials" ON storage.objects;
 CREATE POLICY "Owner Delete Materials" ON storage.objects
 FOR DELETE TO authenticated
-USING (bucket_id = 'materials' AND ((storage.foldername(name))[1] = auth.uid()::text OR public.is_portfolio_owner()));
+USING (bucket_id = 'materials' AND public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Public Upload Student Materials to materials" ON storage.objects;
 CREATE POLICY "Public Upload Student Materials to materials" ON storage.objects
@@ -2650,15 +2685,7 @@ FOR INSERT TO public
 WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
 
 DROP POLICY IF EXISTS "Public Update Generated Docs in materials" ON storage.objects;
-CREATE POLICY "Public Update Generated Docs in materials" ON storage.objects
-FOR UPDATE TO public
-USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs')
-WITH CHECK (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
-
 DROP POLICY IF EXISTS "Public Delete Generated Docs in materials" ON storage.objects;
-CREATE POLICY "Public Delete Generated Docs in materials" ON storage.objects
-FOR DELETE TO public
-USING (bucket_id = 'materials' AND (storage.foldername(name))[1] = 'generated-docs');
 
 DROP POLICY IF EXISTS "Public Upload Career Studio to materials" ON storage.objects;
 CREATE POLICY "Public Upload Career Studio to materials" ON storage.objects
@@ -2725,10 +2752,13 @@ DROP POLICY IF EXISTS "Allow public read access to owner profile" ON public.prof
 CREATE POLICY "Allow public read access to owner profile" ON public.profiles FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Allow owner to update profile" ON public.profiles;
-CREATE POLICY "Allow owner to update profile" ON public.profiles FOR UPDATE TO authenticated USING (auth.uid() = id OR public.is_portfolio_owner()) WITH CHECK (auth.uid() = id OR public.is_portfolio_owner());
+CREATE POLICY "Allow owner to update profile" ON public.profiles FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Allow owner to insert profile" ON public.profiles;
-CREATE POLICY "Allow owner to insert profile" ON public.profiles FOR INSERT TO authenticated WITH CHECK (auth.uid() = id OR public.is_portfolio_owner());
+CREATE POLICY "Allow owner to insert profile" ON public.profiles FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
+
+DROP POLICY IF EXISTS "Allow owner to delete profile" ON public.profiles;
+CREATE POLICY "Allow owner to delete profile" ON public.profiles FOR DELETE TO authenticated USING (public.is_portfolio_owner());
 
 -- 4. MATERIALS TABLE, RLS & RPC COUNTERS
 CREATE TABLE IF NOT EXISTS public.materials (
@@ -2774,17 +2804,17 @@ DROP POLICY IF EXISTS "Allow public read access to engineering materials" ON pub
 CREATE POLICY "Allow public read access to engineering materials" ON public.materials FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Allow owner to insert materials" ON public.materials;
-CREATE POLICY "Allow owner to insert materials" ON public.materials FOR INSERT TO authenticated WITH CHECK (auth.uid() = owner_id OR public.is_portfolio_owner());
+CREATE POLICY "Allow owner to insert materials" ON public.materials FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Public Insert Student Materials" ON public.materials;
 CREATE POLICY "Public Insert Student Materials" ON public.materials FOR INSERT TO public WITH CHECK (category = 'Students Materials');
 
 DROP POLICY IF EXISTS "Allow owner to update materials" ON public.materials;
-CREATE POLICY "Allow owner to update materials" ON public.materials FOR UPDATE TO authenticated USING (auth.uid() = owner_id OR public.is_portfolio_owner()) WITH CHECK (auth.uid() = owner_id OR public.is_portfolio_owner());
+CREATE POLICY "Allow owner to update materials" ON public.materials FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
 
 DROP POLICY IF EXISTS "Allow owner to delete materials" ON public.materials;
 DROP POLICY IF EXISTS "Owner Manage All Materials Delete" ON public.materials;
-CREATE POLICY "Owner Manage All Materials Delete" ON public.materials FOR DELETE TO authenticated USING (auth.uid() = owner_id OR public.is_portfolio_owner());
+CREATE POLICY "Owner Manage All Materials Delete" ON public.materials FOR DELETE TO authenticated USING (public.is_portfolio_owner());
 
 CREATE INDEX IF NOT EXISTS idx_materials_created_at ON public.materials(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_materials_category ON public.materials(category);
@@ -3133,9 +3163,11 @@ CREATE POLICY "Public Read Generated Documents" ON public.generated_documents FO
 DROP POLICY IF EXISTS "Public Insert Generated Documents" ON public.generated_documents;
 CREATE POLICY "Public Insert Generated Documents" ON public.generated_documents FOR INSERT TO public WITH CHECK (true);
 DROP POLICY IF EXISTS "Public Update Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Update Generated Documents" ON public.generated_documents FOR UPDATE TO public USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Owner Update Generated Documents" ON public.generated_documents;
+CREATE POLICY "Owner Update Generated Documents" ON public.generated_documents FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
 DROP POLICY IF EXISTS "Public Delete Generated Documents" ON public.generated_documents;
-CREATE POLICY "Public Delete Generated Documents" ON public.generated_documents FOR DELETE TO public USING (true);
+DROP POLICY IF EXISTS "Owner Delete Generated Documents" ON public.generated_documents;
+CREATE POLICY "Owner Delete Generated Documents" ON public.generated_documents FOR DELETE TO authenticated USING (public.is_portfolio_owner());
 
 CREATE INDEX IF NOT EXISTS idx_generated_docs_status_created ON public.generated_documents(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_generated_docs_category ON public.generated_documents(category);
@@ -3160,44 +3192,16 @@ END;
 $$;
 GRANT EXECUTE ON FUNCTION public.increment_generated_document_downloads(TEXT) TO anon, authenticated;
 
--- 8. ADMIN SINGLE-SESSION LOCK TABLE & RLS
-CREATE TABLE IF NOT EXISTS public.admin_sessions (
-  id TEXT PRIMARY KEY DEFAULT 'active_admin',
-  owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-  active_session_id TEXT NOT NULL DEFAULT '',
-  is_active BOOLEAN NOT NULL DEFAULT false,
-  last_heartbeat_at TIMESTAMPTZ DEFAULT now(),
-  expires_at TIMESTAMPTZ DEFAULT (now() + interval '5 minutes'),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
+-- 8. CLEANUP DEPRECATED SESSION LOCK TABLE & REALTIME PUBLICATIONS (Safe & Idempotent)
+DROP TABLE IF EXISTS public.admin_sessions CASCADE;
 
-ALTER TABLE public.admin_sessions
-  ADD COLUMN IF NOT EXISTS owner_id UUID,
-  ADD COLUMN IF NOT EXISTS active_session_id TEXT NOT NULL DEFAULT '',
-  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ DEFAULT now(),
-  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT (now() + interval '5 minutes'),
-  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
-
-ALTER TABLE public.admin_sessions ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Public Read Active Admin Lock Status" ON public.admin_sessions;
-CREATE POLICY "Public Read Active Admin Lock Status" ON public.admin_sessions FOR SELECT TO public USING (true);
-DROP POLICY IF EXISTS "Owner Manage Admin Sessions Insert" ON public.admin_sessions;
-CREATE POLICY "Owner Manage Admin Sessions Insert" ON public.admin_sessions FOR INSERT TO authenticated WITH CHECK (public.is_portfolio_owner());
-DROP POLICY IF EXISTS "Owner Manage Admin Sessions Update" ON public.admin_sessions;
-CREATE POLICY "Owner Manage Admin Sessions Update" ON public.admin_sessions FOR UPDATE TO authenticated USING (public.is_portfolio_owner()) WITH CHECK (public.is_portfolio_owner());
-DROP POLICY IF EXISTS "Owner Manage Admin Sessions Delete" ON public.admin_sessions;
-CREATE POLICY "Owner Manage Admin Sessions Delete" ON public.admin_sessions FOR DELETE TO authenticated USING (public.is_portfolio_owner());
-
--- 9. REALTIME PUBLICATIONS (Safe & Idempotent)
 DO $$
 DECLARE tbl TEXT;
 BEGIN
   FOREACH tbl IN ARRAY ARRAY[
     'profiles', 'materials', 'projects', 'articles', 'article_comments',
     'website_settings', 'media_assets', 'visitor_profiles',
-    'conversations', 'messages', 'generated_documents', 'admin_sessions'
+    'conversations', 'messages', 'generated_documents'
   ]
   LOOP
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)

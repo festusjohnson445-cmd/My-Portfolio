@@ -59,6 +59,7 @@ import {
   markConversationMessagesAsSeenInSupabase,
   deleteConversationFromSupabase,
   resilientSupabaseUpsert,
+  getAuthenticatedBearerHeaders,
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
@@ -1772,7 +1773,11 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       await deleteConversationFromSupabase(targetId);
 
       // 6. Delete from backend database (Cloud SQL / PostgreSQL) with SSE broadcast
-      const res = await fetch(`/api/chats/${encodeURIComponent(targetId)}`, { method: 'DELETE' });
+      const authHeaders = isOwner ? await getAuthenticatedBearerHeaders() : {};
+      const res = await fetch(`/api/chats/${encodeURIComponent(targetId)}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
       if (!res.ok) {
         console.warn('Backend delete returned status:', res.status);
       }

@@ -30,6 +30,7 @@ import {
   supabaseSignOutOwner,
   getSupabaseCurrentUser,
   hasActiveOwnerSession,
+  getAuthenticatedBearerHeaders,
 } from './supabase';
 
 export const STORAGE_KEY_AVATAR = 'fesline_custom_profile_avatar';
@@ -252,9 +253,11 @@ let lastLocalDocSaveTimestamp = 0;
  */
 export async function pushProfileToServer(payload: { avatar?: string; bio?: ProfileBioData; documents?: DocumentItem[] }) {
   try {
+    const authHeaders = await getAuthenticatedBearerHeaders();
+    if (!authHeaders.Authorization) return;
     const res = await fetch('/api/profile', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify(payload),
     });
     if (res.ok) {
@@ -789,7 +792,8 @@ export async function resetStoredAvatar(): Promise<string> {
     localStorage.removeItem(STORAGE_KEY_AVATAR);
     localStorage.removeItem('fesline_custom_profile_avatar_meta');
     await clearAvatarFromIndexedDB();
-    await fetch('/api/profile/picture', { method: 'DELETE' });
+    const authHeaders = await getAuthenticatedBearerHeaders();
+    await fetch('/api/profile/picture', { method: 'DELETE', headers: authHeaders });
     await saveProfileToFirestore({ avatar: '' });
     pushProfileToServer({ avatar: '' }).catch(() => {});
     await saveProfileToSupabaseTable({ avatarUrl: '' }, ownerUid).catch(() => {});

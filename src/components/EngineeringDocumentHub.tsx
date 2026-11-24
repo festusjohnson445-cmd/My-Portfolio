@@ -78,6 +78,8 @@ import {
   toggleMaterialLikeInSupabase,
   getAuthenticatedOwnerUid,
   ensureValidUuid,
+  getAuthenticatedBearerHeaders,
+  getSessionAalClaim,
 } from '../utils/supabase';
 import { PortfolioPart } from './Navbar';
 
@@ -646,7 +648,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       }
 
       try {
-        const res = await fetch('/api/documents?all=true');
+        const authHeaders = isOwner ? await getAuthenticatedBearerHeaders() : {};
+        const res = await fetch(isOwner ? '/api/documents?all=true' : '/api/documents', {
+          headers: authHeaders,
+        });
         if (res.ok) {
           const json = await res.json();
           if (json && json.success && Array.isArray(json.documents)) {
@@ -989,14 +994,15 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     const { data: sessionData } = await supabase.auth.getSession();
     const activeSession = sessionData?.session;
 
-    if (effectiveMode === 'general' && (!isOwner || !activeSession?.user)) {
+    const isAal2Session = Boolean(activeSession?.user && getSessionAalClaim(activeSession) === 'aal2');
+    if (effectiveMode === 'general' && (!isOwner || !isAal2Session)) {
       setIsPublishing(false);
-      setUploadError('Active owner session is required for the General Upload Form.');
-      showToast('Owner authentication required for General Upload Form.', 'error');
+      setUploadError('Active AAL2 MFA owner session is required for the General Upload Form.');
+      showToast('MFA verification (AAL2) required for General Upload Form.', 'error');
       return;
     }
 
-    const allowPublicStudentUpload = effectiveMode === 'student' && !activeSession?.user;
+    const allowPublicStudentUpload = effectiveMode === 'student' && !isAal2Session;
     const ownerUid = activeSession?.user?.id;
     const effectiveUploader = isOwner ? (uploaderName.trim() || 'Chief Admin') : uploaderName.trim();
 
@@ -1112,9 +1118,10 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
       if (isLocalHost) {
         try {
+          const authHeaders = isOwner ? await getAuthenticatedBearerHeaders() : {};
           await fetch('/api/documents/batch', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
             body: JSON.stringify({ documents: newDocs }),
           });
         } catch {}
@@ -1232,11 +1239,12 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     // 3. Await deletion across Supabase, Firestore, IndexedDB, and CloudSQL backend
     try {
       const storagePath = (targetDoc as any)?.storagePath;
+      const authHeaders = await getAuthenticatedBearerHeaders();
       const deleteTasks: Promise<any>[] = [
         deleteMaterialFromSupabaseTable(id),
         deleteHubDocumentFromFirestore(id, storagePath),
         deleteHubDocumentPersistently(id),
-        fetch(`/api/documents/${id}`, { method: 'DELETE' }),
+        fetch(`/api/documents/${id}`, { method: 'DELETE', headers: authHeaders }),
       ];
       if (storagePath) {
         deleteTasks.push(deleteMaterialFromSupabaseBucket(storagePath));

@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from './supabase';
+import { supabase, isSupabaseConfigured, hasActiveOwnerSession } from './supabase';
 import {
   DocumentFormPayload,
   DocumentWorkspaceCategory,
@@ -63,13 +63,14 @@ const mapRowToRecord = (row: any): GeneratedDocumentRecord => ({
 const uploadGeneratedAsset = async (
   path: string,
   blob: Blob,
-  contentType: string
+  contentType: string,
+  allowUpsert = false
 ): Promise<{ publicUrl: string; storagePath: string } | null> => {
   if (!isSupabaseConfigured()) return null;
   try {
     const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, blob, {
       contentType,
-      upsert: true,
+      upsert: allowUpsert,
     });
     if (error) {
       console.warn('[DocWorkspace Storage Upload Warning]:', error.message);
@@ -189,7 +190,10 @@ export const publishGeneratedDocument = async (
   existingId?: string
 ): Promise<{ record: GeneratedDocumentRecord; syncedToSupabase: boolean; warning?: string }> => {
   const now = new Date().toISOString();
-  const id = existingId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const isOwnerSession = await hasActiveOwnerSession().catch(() => false);
+  const id = existingId && isOwnerSession
+    ? existingId
+    : (!existingId ? `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` : existingId);
 
   const previewDataUrl = renderDocumentFirstPageDataUrl(payload);
   const pdfBlob = exportDocumentToPdfBlob(payload);
@@ -200,17 +204,20 @@ export const publishGeneratedDocument = async (
   let pdfUrl = '';
   let docxUrl = '';
 
+  const assetSuffix = isOwnerSession ? id : `${id}_${Date.now().toString(36)}`;
+
   if (isSupabaseConfigured()) {
     const thumbBlob = previewDataUrl ? dataUrlToBlob(previewDataUrl) : null;
     const [thumbUpload, pdfUpload, docxUpload] = await Promise.all([
       thumbBlob
-        ? uploadGeneratedAsset(`generated-docs/${id}/page1.jpg`, thumbBlob, 'image/jpeg')
+        ? uploadGeneratedAsset(`generated-docs/${assetSuffix}/page1.jpg`, thumbBlob, 'image/jpeg', isOwnerSession)
         : Promise.resolve(null),
-      uploadGeneratedAsset(`generated-docs/${id}/document.pdf`, pdfBlob, 'application/pdf'),
+      uploadGeneratedAsset(`generated-docs/${assetSuffix}/document.pdf`, pdfBlob, 'application/pdf', isOwnerSession),
       uploadGeneratedAsset(
-        `generated-docs/${id}/document.docx`,
+        `generated-docs/${assetSuffix}/document.docx`,
         docxBlob,
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        isOwnerSession
       ),
     ]);
 
@@ -266,11 +273,39 @@ export const publishGeneratedDocument = async (
         updated_at: now,
       };
 
-      const { data, error } = await supabase
-        .from('generated_documents')
-        .upsert(dbRow, { onConflict: 'id' })
-        .select('*')
-        .single();
+      let data: any = null;
+      let error: any = null;
+
+      if (isOwnerSession) {
+        const res = await supabase
+          .from('generated_documents')
+          .upsert(dbRow, { onConflict: 'id' })
+          .select('*')
+          .single();
+        data = res.data;
+        error = res.error;
+      } else {
+        const res = await supabase
+          .from('generated_documents')
+          .insert(dbRow)
+          .select('*')
+          .single();
+        data = res.data;
+        error = res.error;
+        if (error && (error.code === '23505' || String(error.message || '').toLowerCase().includes('duplicate'))) {
+          const freshId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const retry = await supabase
+            .from('generated_documents')
+            .insert({ ...dbRow, id: freshId })
+            .select('*')
+            .single();
+          data = retry.data;
+          error = retry.error;
+          if (!error && data) {
+            record.id = freshId;
+          }
+        }
+      }
 
       if (error) {
         warning = error.message;

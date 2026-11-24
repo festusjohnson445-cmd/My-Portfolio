@@ -147,6 +147,140 @@ function formatProfileResponse(row: any) {
   };
 }
 
+// =================================================================
+// 0b. SUPABASE ADMIN AAL2 AUTHENTICATION & AUTHORIZATION GUARD
+// =================================================================
+const AUTHORIZED_ADMIN_EMAIL = 'festusjohnson028@gmail.com';
+const MEDIA_RELAY_DEFAULT_URL = 'https://teszyojnwaedjvqaqake.supabase.co';
+const MEDIA_RELAY_DEFAULT_ANON_KEY = 'sb_publishable_-XgRARzNT0COeyl9FE66Lw_-k6wMWex';
+
+function decodeJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (base64.length % 4)) % 4;
+    const padded = base64 + '='.repeat(padLen);
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function verifyAdminAal2Request(req: express.Request): Promise<
+  | { ok: true; uid: string; email: string }
+  | { ok: false; status: number; message: string }
+> {
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (!authHeader.startsWith('Bearer ')) {
+    return { ok: false, status: 401, message: 'Administrator Bearer token required.' };
+  }
+
+  const rawToken = authHeader.slice(7).trim();
+  const jwtPayload = decodeJwtPayload(rawToken);
+  if (!jwtPayload) {
+    return { ok: false, status: 401, message: 'Invalid authorization token.' };
+  }
+  if (jwtPayload.exp && Number(jwtPayload.exp) * 1000 <= Date.now()) {
+    return { ok: false, status: 401, message: 'Administrator session expired. Please sign in again.' };
+  }
+  if (jwtPayload.aal !== 'aal2') {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Mandatory Two-Factor Authentication (AAL2) is required.',
+    };
+  }
+
+  const supabaseUrl = (
+    (req.headers['x-supabase-url'] as string) ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    MEDIA_RELAY_DEFAULT_URL
+  ).replace(/\/+$/, '');
+  const anonKey =
+    (req.headers['x-supabase-anon-key'] as string) ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    MEDIA_RELAY_DEFAULT_ANON_KEY;
+
+  try {
+    const resp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: {
+        apikey: anonKey,
+        Authorization: `Bearer ${rawToken}`,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) {
+      return { ok: false, status: 401, message: 'Unable to validate Supabase administrator session.' };
+    }
+    const user: any = await resp.json().catch(() => null);
+    if (!user || !user.id || user.is_anonymous) {
+      return { ok: false, status: 403, message: 'Anonymous or invalid user rejected.' };
+    }
+
+    const email = String(user.email || '').trim().toLowerCase();
+    if (email !== AUTHORIZED_ADMIN_EMAIL) {
+      return { ok: false, status: 403, message: 'Restricted to authorized administrator email.' };
+    }
+
+    if (!user.email_confirmed_at && !user.confirmed_at) {
+      return {
+        ok: false,
+        status: 403,
+        message: 'Confirmed administrator email is required before performing this action.',
+      };
+    }
+
+    if (Array.isArray(user.factors) && !user.factors.some((f: any) => f.status === 'verified')) {
+      return {
+        ok: false,
+        status: 403,
+        message: 'Verified TOTP authenticator enrollment is required.',
+      };
+    }
+
+    return { ok: true, uid: String(user.id), email };
+  } catch {
+    return { ok: false, status: 401, message: 'Authentication verification timed out.' };
+  }
+}
+
+async function requireAdminAal2(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const result = await verifyAdminAal2Request(req);
+  if (!result.ok) {
+    return res.status(result.status).json({ success: false, message: result.message });
+  }
+  (req as any).adminUser = result;
+  return next();
+}
+
+function isVisitorAllowedMediaTarget(bucket: string, targetPath: string): boolean {
+  const clean = String(targetPath || '').replace(/^\/+/, '');
+  if (!clean || clean.includes('..')) return false;
+  if (bucket === 'articles') {
+    return clean.startsWith('submissions/') || clean.startsWith('visitor-submissions/');
+  }
+  if (bucket === 'materials') {
+    return (
+      clean.startsWith('student-submissions/') ||
+      clean.startsWith('career-studio/') ||
+      clean.startsWith('generated-docs/') ||
+      clean.startsWith('chat/')
+    );
+  }
+  if (bucket === 'avatars') {
+    return clean.startsWith('visitors/');
+  }
+  return false;
+}
+
 // Active SSE clients for instant sub-millisecond message and chat delivery
 const chatSseClients = new Set<express.Response>();
 
@@ -328,8 +462,8 @@ app.post('/api/chats', async (req, res) => {
   }
 });
 
-// Delete a full conversation thread / inquiry by id
-app.delete('/api/chats/:id', async (req, res) => {
+// Delete a full conversation thread / inquiry by id (Admin AAL2 required)
+app.delete('/api/chats/:id', requireAdminAal2, async (req, res) => {
   try {
     const { id } = req.params;
     await deleteConversationFromDb(id);
@@ -446,8 +580,8 @@ app.get(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
   }
 });
 
-// Dedicated profile picture upload & update endpoint
-app.post(['/api/profile/picture', '/api/profile/avatar'], async (req, res) => {
+// Dedicated profile picture upload & update endpoint (Admin AAL2 required)
+app.post(['/api/profile/picture', '/api/profile/avatar'], requireAdminAal2, async (req, res) => {
   try {
     const avatarData = req.body.avatar || req.body.picture || req.body.image || req.body.fileBinary || req.body.dataUrl;
     if (avatarData === undefined) {
@@ -479,8 +613,8 @@ app.post(['/api/profile/picture', '/api/profile/avatar'], async (req, res) => {
   }
 });
 
-// Remove profile picture endpoint
-app.delete(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) => {
+// Remove profile picture endpoint (Admin AAL2 required)
+app.delete(['/api/profile/picture', '/api/profile/avatar'], requireAdminAal2, async (_req, res) => {
   try {
     await deleteProfilePictureFromDb('global');
     res.json({ success: true, message: 'Profile picture removed successfully', url: '', avatar: '' });
@@ -490,8 +624,8 @@ app.delete(['/api/profile/picture', '/api/profile/avatar'], async (_req, res) =>
   }
 });
 
-// Delete an inquiry by id (Dedicated endpoint for inquiries deletion)
-app.delete('/api/inquiries/:id', async (req, res) => {
+// Delete an inquiry by id (Dedicated endpoint for inquiries deletion, Admin AAL2 required)
+app.delete('/api/inquiries/:id', requireAdminAal2, async (req, res) => {
   try {
     const { id } = req.params;
     await deleteConversationFromDb(id);
@@ -504,8 +638,8 @@ app.delete('/api/inquiries/:id', async (req, res) => {
   }
 });
 
-// Diagnostic System Health Check Endpoint
-app.get('/api/diagnostics', async (_req, res) => {
+// Diagnostic System Health Check Endpoint (Admin AAL2 required)
+app.get('/api/diagnostics', requireAdminAal2, async (_req, res) => {
   try {
     let cloudSqlStatus = 'ok';
     let cloudSqlError = null;
@@ -539,8 +673,8 @@ app.get('/api/diagnostics', async (_req, res) => {
   }
 });
 
-// Update global profile (admin/owner uploads, bio changes, avatar)
-app.post('/api/profile', async (req, res) => {
+// Update global profile (admin/owner uploads, bio changes, avatar — Admin AAL2 required)
+app.post('/api/profile', requireAdminAal2, async (req, res) => {
   try {
     const updated = await saveGlobalProfileToDb(req.body);
     const formatted = formatProfileResponse(updated);
@@ -551,8 +685,8 @@ app.post('/api/profile', async (req, res) => {
   }
 });
 
-// Delete a document from global profile
-app.delete('/api/profile/documents/:id', async (req, res) => {
+// Delete a document from global profile (Admin AAL2 required)
+app.delete('/api/profile/documents/:id', requireAdminAal2, async (req, res) => {
   try {
     const { id } = req.params;
     const profile = await getGlobalProfileFromDb();
@@ -572,11 +706,15 @@ app.delete('/api/profile/documents/:id', async (req, res) => {
 // 4. ENGINEERING HUB DOCUMENTS & CLOUD STORAGE (CLOUDSQL PERSISTED)
 // =================================================================
 
-// Get all documents (visitors get approved documents, owners get all)
+// Get all documents (visitors get approved documents, AAL2 admin gets all)
 app.get('/api/documents', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    const includePending = req.query.all === 'true';
+    let includePending = false;
+    if (req.query.all === 'true') {
+      const auth = await verifyAdminAal2Request(req);
+      includePending = auth.ok;
+    }
     const docs = await getDocumentsFromDb(includePending);
     const deletedIds = await getDeletedDocumentIdsFromDb();
 
@@ -655,6 +793,15 @@ app.post('/api/documents', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid document data' });
     }
 
+    const isPublicStudentSubmission =
+      newDoc.category === 'Students Materials' && newDoc.uploaderType !== 'owner';
+    if (!isPublicStudentSubmission) {
+      const auth = await verifyAdminAal2Request(req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
+      }
+    }
+
     const docId = newDoc.id || `doc-${Date.now()}`;
     const ext = (newDoc.fileName || '').split('.').pop() || 'bin';
     const uploadTimestamp = newDoc.uploadTimestamp || Date.now();
@@ -701,6 +848,16 @@ app.post('/api/documents/batch', async (req, res) => {
     const { documents: incomingDocs } = req.body;
     if (!Array.isArray(incomingDocs) || incomingDocs.length === 0) {
       return res.status(400).json({ success: false, message: 'No documents provided for batch upload' });
+    }
+
+    const allPublicStudentSubmissions = incomingDocs.every(
+      (d: any) => d && d.category === 'Students Materials' && d.uploaderType !== 'owner'
+    );
+    if (!allPublicStudentSubmissions) {
+      const auth = await verifyAdminAal2Request(req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
+      }
     }
 
     const savedBatch: any[] = [];
@@ -750,8 +907,8 @@ app.post('/api/documents/batch', async (req, res) => {
   }
 });
 
-// Approve a pending visitor document
-app.patch('/api/documents/:id/approve', async (req, res) => {
+// Approve a pending visitor document (Admin AAL2 required)
+app.patch('/api/documents/:id/approve', requireAdminAal2, async (req, res) => {
   try {
     const { id } = req.params;
     const doc = await getDocumentByIdFromDb(id);
@@ -766,8 +923,8 @@ app.patch('/api/documents/:id/approve', async (req, res) => {
   }
 });
 
-// Delete an uploaded document permanently
-app.delete('/api/documents/:id', async (req, res) => {
+// Delete an uploaded document permanently (Admin AAL2 required)
+app.delete('/api/documents/:id', requireAdminAal2, async (req, res) => {
   try {
     const { id } = req.params;
     await deleteDocumentFromDb(id);
@@ -1373,6 +1530,12 @@ app.post('/api/media/upload-to-bucket', async (req, res) => {
   const contentType = String(req.body?.contentType || file.mimetype || 'application/octet-stream');
   const cleanName = (file.originalname || `upload_${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
   const storagePath = explicitPath || `${folderPrefix}/${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${cleanName}`;
+  if (!isVisitorAllowedMediaTarget(bucket, storagePath)) {
+    const auth = await verifyAdminAal2Request(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+  }
   const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
   try {
@@ -1755,6 +1918,12 @@ app.post('/api/media/optimize-image', async (req, res) => {
 
   const bucket: 'projects' | 'articles' = req.body?.bucket === 'articles' ? 'articles' : 'projects';
   const folderPrefix = String(req.body?.folderPrefix || 'images').replace(/[^a-zA-Z0-9_/-]/g, '_');
+  if (!isVisitorAllowedMediaTarget(bucket, `${folderPrefix}/image.avif`)) {
+    const auth = await verifyAdminAal2Request(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+  }
   const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
 
   try {
@@ -1927,6 +2096,12 @@ app.post('/api/media/video/init', async (req, res) => {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const bucket: 'projects' | 'articles' = body.bucket === 'articles' ? 'articles' : 'projects';
     const folderPrefix = String(body.folderPrefix || 'videos').replace(/[^a-zA-Z0-9_/-]/g, '_').slice(0, 64);
+    if (!isVisitorAllowedMediaTarget(bucket, `${folderPrefix}/video.mp4`)) {
+      const auth = await verifyAdminAal2Request(req);
+      if (!auth.ok) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
+      }
+    }
     const originalName = String(body.fileName || `video_${Date.now()}.mp4`);
     const originalSize = Number(body.fileSize) || 0;
     const { supabaseUrl, anonKey, authHeader } = resolveSupabaseHeaders(req);
@@ -2098,8 +2273,8 @@ app.get('/api/media/jobs/:jobId', (req, res) => {
   res.json({ success: true, job: serializePublicJob(job) });
 });
 
-// Retry failed video job without re-uploading from device if temp artifact exists
-app.post('/api/media/jobs/:jobId/retry', (req, res) => {
+// Retry failed video job without re-uploading from device if temp artifact exists (Admin AAL2 required)
+app.post('/api/media/jobs/:jobId/retry', requireAdminAal2, (req, res) => {
   const job = loadVideoJob(req.params.jobId);
   if (!job) {
     return res.status(404).json({ success: false, message: 'Video job not found or expired.' });
@@ -2175,232 +2350,163 @@ app.post('/api/media/jobs/:jobId/cancel', async (req, res) => {
 });
 
 // =================================================================
-// 10. ADMIN SINGLE-SESSION LOCK & EMAIL VERIFICATION PIPELINE
+// 10. ADMIN AUTHENTICATION RATE LIMITING & FAILED-ATTEMPT PROTECTION
 // =================================================================
-const ADMIN_LOCK_WINDOW_MS = 5 * 60 * 1000;
-interface ServerAdminSessionLock {
-  ownerUid: string;
-  sessionId: string;
-  lastHeartbeatAt: number;
-  expiresAt: number;
-}
-let activeServerAdminLock: ServerAdminSessionLock | null = null;
+const AUTH_MAX_FAILED_ATTEMPTS = 5;
+const AUTH_LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 
-interface ServerOtpChallenge {
-  uid: string;
-  email: string;
-  salt: string;
-  hash: string;
-  expiresAt: number;
-  attempts: number;
+interface AuthAttemptBucket {
+  failedCount: number;
+  firstFailedAt: number;
+  lockedUntil: number;
 }
-const pendingServerOtpChallenges = new Map<string, ServerOtpChallenge>();
 
-async function verifyAuthenticatedOwnerJwt(req: express.Request): Promise<{ uid: string; email: string } | null> {
-  const authHeader = String(req.headers.authorization || '').trim();
-  if (!authHeader.startsWith('Bearer ')) return null;
-  const { supabaseUrl, anonKey } = resolveSupabaseHeaders(req);
-  try {
-    const resp = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      method: 'GET',
-      headers: {
-        apikey: anonKey,
-        Authorization: authHeader,
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!resp.ok) return null;
-    const user: any = await resp.json().catch(() => null);
-    if (!user || !user.id || user.is_anonymous) return null;
-    const email = String(user.email || '').trim().toLowerCase();
-    if (!email || email === 'public_visitor@feslineguest.com') return null;
-    return { uid: String(user.id), email };
-  } catch {
-    return null;
+const adminAuthRateBuckets = new Map<string, AuthAttemptBucket>();
+
+function getClientIpAddress(req: express.Request): string {
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function buildRateLimitKeys(req: express.Request, action: string, email?: string): string[] {
+  const ip = getClientIpAddress(req);
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const keys = [`${action}:ip:${ip}`];
+  if (cleanEmail) {
+    keys.push(`${action}:email:${cleanEmail}:ip:${ip}`);
   }
+  return keys;
 }
 
-function getFreshAdminLock(): ServerAdminSessionLock | null {
-  if (!activeServerAdminLock) return null;
+function evaluateRateBuckets(keys: string[]) {
   const now = Date.now();
-  if (now >= activeServerAdminLock.expiresAt && now - activeServerAdminLock.lastHeartbeatAt >= ADMIN_LOCK_WINDOW_MS) {
-    activeServerAdminLock = null;
-    return null;
+  let maxLockedUntil = 0;
+  let maxFailed = 0;
+
+  for (const key of keys) {
+    const bucket = adminAuthRateBuckets.get(key);
+    if (!bucket) continue;
+
+    if (bucket.lockedUntil > now) {
+      maxLockedUntil = Math.max(maxLockedUntil, bucket.lockedUntil);
+      maxFailed = AUTH_MAX_FAILED_ATTEMPTS;
+      continue;
+    }
+
+    if (now - bucket.firstFailedAt > AUTH_LOCKOUT_WINDOW_MS) {
+      adminAuthRateBuckets.delete(key);
+      continue;
+    }
+
+    maxFailed = Math.max(maxFailed, bucket.failedCount);
   }
-  return activeServerAdminLock;
+
+  const blocked = maxLockedUntil > now;
+  const retryAfterSeconds = blocked ? Math.max(1, Math.ceil((maxLockedUntil - now) / 1000)) : 0;
+  return {
+    blocked,
+    remainingAttempts: blocked ? 0 : Math.max(0, AUTH_MAX_FAILED_ATTEMPTS - maxFailed),
+    retryAfterSeconds,
+    lockedUntil: blocked ? new Date(maxLockedUntil).toISOString() : null,
+  };
 }
 
-app.get('/api/admin/session/status', (req, res) => {
+// Periodically prune stale rate-limit records
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of adminAuthRateBuckets.entries()) {
+    if (b.lockedUntil <= now && now - b.firstFailedAt > AUTH_LOCKOUT_WINDOW_MS) {
+      adminAuthRateBuckets.delete(k);
+    }
+  }
+}, 5 * 60 * 1000).unref?.();
+
+app.get('/api/admin/auth/status', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  const querySessionId = String(req.query.sessionId || '').trim();
-  const lock = getFreshAdminLock();
-  if (!lock) {
-    return res.json({ active: false, isSameSession: false });
+  const rawAction = String(req.query.action || 'login');
+  const action = ['login', 'mfa', 'recovery'].includes(rawAction) ? rawAction : 'login';
+  const email = typeof req.query.email === 'string' ? req.query.email : undefined;
+  const status = evaluateRateBuckets(buildRateLimitKeys(req, action, email));
+
+  if (status.blocked) {
+    return res.status(429).json({
+      success: false,
+      ...status,
+      message: `Too many failed ${action.toUpperCase()} attempts. Please wait ${Math.ceil(
+        status.retryAfterSeconds / 60
+      )} minute(s) before trying again.`,
+    });
   }
+  return res.json({ success: true, ...status });
+});
+
+app.post('/api/admin/auth/attempt', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  const rawAction = String(req.body?.action || 'login');
+  const action = ['login', 'mfa', 'recovery'].includes(rawAction) ? rawAction : 'login';
+  const success = Boolean(req.body?.success);
+  const email = typeof req.body?.email === 'string' ? req.body.email : undefined;
+  const keys = buildRateLimitKeys(req, action, email);
+
+  const preStatus = evaluateRateBuckets(keys);
+  if (preStatus.blocked) {
+    return res.status(429).json({
+      success: false,
+      ...preStatus,
+      message: `Too many failed ${action.toUpperCase()} attempts. Try again in ${Math.ceil(
+        preStatus.retryAfterSeconds / 60
+      )} minute(s).`,
+    });
+  }
+
+  const now = Date.now();
+  if (success) {
+    for (const key of keys) {
+      adminAuthRateBuckets.delete(key);
+    }
+    return res.json({
+      success: true,
+      blocked: false,
+      remainingAttempts: AUTH_MAX_FAILED_ATTEMPTS,
+      retryAfterSeconds: 0,
+      lockedUntil: null,
+    });
+  }
+
+  for (const key of keys) {
+    const cur = adminAuthRateBuckets.get(key);
+    if (!cur || now - cur.firstFailedAt > AUTH_LOCKOUT_WINDOW_MS) {
+      adminAuthRateBuckets.set(key, {
+        failedCount: 1,
+        firstFailedAt: now,
+        lockedUntil: 0,
+      });
+    } else {
+      cur.failedCount += 1;
+      if (cur.failedCount >= AUTH_MAX_FAILED_ATTEMPTS) {
+        cur.lockedUntil = now + AUTH_LOCKOUT_WINDOW_MS;
+      }
+      adminAuthRateBuckets.set(key, cur);
+    }
+  }
+
+  const postStatus = evaluateRateBuckets(keys);
+  if (postStatus.blocked) {
+    return res.status(429).json({
+      success: false,
+      ...postStatus,
+      message: `Too many failed ${action.toUpperCase()} attempts. Locked for 15 minutes for security.`,
+    });
+  }
+
   return res.json({
-    active: true,
-    isSameSession: Boolean(querySessionId && lock.sessionId === querySessionId),
-    expiresAt: new Date(lock.expiresAt).toISOString(),
+    success: true,
+    ...postStatus,
+    message:
+      postStatus.remainingAttempts <= 2
+        ? `${postStatus.remainingAttempts} attempt(s) remaining before temporary lockout.`
+        : undefined,
   });
-});
-
-app.post('/api/admin/session/claim', async (req, res) => {
-  const owner = await verifyAuthenticatedOwnerJwt(req);
-  if (!owner) {
-    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
-  }
-  const sessionId = String(req.body?.sessionId || '').trim();
-  if (!sessionId || sessionId.length < 8) {
-    return res.status(400).json({ success: false, message: 'Invalid session identifier.' });
-  }
-  const lock = getFreshAdminLock();
-  if (lock && lock.sessionId !== sessionId) {
-    return res.status(409).json({
-      success: false,
-      message: 'Another Admin session is already active. Only one active Admin session is permitted at a time.',
-    });
-  }
-  const now = Date.now();
-  activeServerAdminLock = {
-    ownerUid: owner.uid,
-    sessionId,
-    lastHeartbeatAt: now,
-    expiresAt: now + ADMIN_LOCK_WINDOW_MS,
-  };
-  return res.json({ success: true, expiresAt: new Date(activeServerAdminLock.expiresAt).toISOString() });
-});
-
-app.post('/api/admin/session/heartbeat', async (req, res) => {
-  const owner = await verifyAuthenticatedOwnerJwt(req);
-  if (!owner) {
-    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
-  }
-  const sessionId = String(req.body?.sessionId || '').trim();
-  if (!sessionId || sessionId.length < 8) {
-    return res.status(400).json({ success: false, message: 'Invalid session identifier.' });
-  }
-  const lock = getFreshAdminLock();
-  if (lock && lock.sessionId !== sessionId) {
-    return res.status(409).json({
-      success: false,
-      message: 'Admin session superseded or active elsewhere.',
-    });
-  }
-  const now = Date.now();
-  activeServerAdminLock = {
-    ownerUid: owner.uid,
-    sessionId,
-    lastHeartbeatAt: now,
-    expiresAt: now + ADMIN_LOCK_WINDOW_MS,
-  };
-  return res.json({ success: true, expiresAt: new Date(activeServerAdminLock.expiresAt).toISOString() });
-});
-
-app.post('/api/admin/session/release', async (req, res) => {
-  const sessionId = String(req.body?.sessionId || '').trim();
-  const owner = await verifyAuthenticatedOwnerJwt(req);
-  if (activeServerAdminLock) {
-    if ((sessionId && activeServerAdminLock.sessionId === sessionId) || (owner && activeServerAdminLock.ownerUid === owner.uid)) {
-      activeServerAdminLock = null;
-    }
-  }
-  return res.json({ success: true });
-});
-
-app.post('/api/admin/otp/send', async (req, res) => {
-  const owner = await verifyAuthenticatedOwnerJwt(req);
-  if (!owner) {
-    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
-  }
-
-  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
-  const fromEmail = (process.env.RESEND_FROM_EMAIL || 'Fesline Admin <onboarding@resend.dev>').trim();
-
-  if (!resendApiKey) {
-    return res.json({ success: true, delivery: 'supabase_otp' });
-  }
-
-  const code = String(crypto.randomInt(100000, 1000000));
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.createHmac('sha256', salt).update(code).digest('hex');
-  pendingServerOtpChallenges.set(owner.uid, {
-    uid: owner.uid,
-    email: owner.email,
-    salt,
-    hash,
-    expiresAt: Date.now() + ADMIN_LOCK_WINDOW_MS,
-    attempts: 0,
-  });
-
-  try {
-    const emailResp = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${resendApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: fromEmail,
-        to: [owner.email],
-        subject: 'Your Admin Login Verification Passcode',
-        html: `<div style="font-family:Georgia,serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #cbd5e1;border-radius:12px;">
-          <h2 style="color:#0f172a;margin:0 0 12px;">Admin Sign-In Verification</h2>
-          <p style="color:#334155;font-size:14px;line-height:1.5;">Copy the 6-digit verification passcode below and paste it into the Admin Login dialog to complete authentication. This code expires in 5 minutes.</p>
-          <div style="margin:20px 0;padding:14px;background:#f1f5f9;border-radius:8px;text-align:center;font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:6px;color:#0e7490;">${code}</div>
-          <p style="color:#64748b;font-size:12px;margin:0;">If you did not attempt to sign in, please change your password immediately.</p>
-        </div>`,
-      }),
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!emailResp.ok) {
-      pendingServerOtpChallenges.delete(owner.uid);
-      return res.json({ success: true, delivery: 'supabase_otp' });
-    }
-    return res.json({ success: true, delivery: 'server_email' });
-  } catch {
-    pendingServerOtpChallenges.delete(owner.uid);
-    return res.json({ success: true, delivery: 'supabase_otp' });
-  }
-});
-
-app.post('/api/admin/otp/verify', async (req, res) => {
-  const owner = await verifyAuthenticatedOwnerJwt(req);
-  if (!owner) {
-    return res.status(401).json({ success: false, message: 'Authenticated owner credentials required.' });
-  }
-
-  const submittedCode = String(req.body?.code || '').replace(/\D/g, '').trim();
-  if (!/^\d{6}$/.test(submittedCode)) {
-    return res.status(400).json({ success: false, message: 'Please enter a valid 6-digit passcode.' });
-  }
-
-  const challenge = pendingServerOtpChallenges.get(owner.uid);
-  if (!challenge) {
-    return res.status(400).json({ success: false, message: 'No active verification challenge found. Please request a new passcode.' });
-  }
-  if (Date.now() > challenge.expiresAt) {
-    pendingServerOtpChallenges.delete(owner.uid);
-    return res.status(400).json({ success: false, message: 'Verification passcode expired. Please request a new one.' });
-  }
-
-  challenge.attempts += 1;
-  if (challenge.attempts > 5) {
-    pendingServerOtpChallenges.delete(owner.uid);
-    return res.status(429).json({ success: false, message: 'Too many incorrect passcode attempts. Please sign in again.' });
-  }
-
-  const candidateHash = crypto.createHmac('sha256', challenge.salt).update(submittedCode).digest('hex');
-  const expectedBuf = Buffer.from(challenge.hash, 'hex');
-  const candidateBuf = Buffer.from(candidateHash, 'hex');
-  const isMatch = expectedBuf.length === candidateBuf.length && crypto.timingSafeEqual(expectedBuf, candidateBuf);
-
-  if (!isMatch) {
-    return res.status(401).json({ success: false, message: 'Incorrect 6-digit verification passcode.' });
-  }
-
-  pendingServerOtpChallenges.delete(owner.uid);
-  return res.json({ success: true, verified: true });
 });
 
 // Global JSON error handler for all /api/* routes so Express never emits HTML 500 pages
