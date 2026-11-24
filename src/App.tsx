@@ -309,10 +309,10 @@ export default function App() {
         backgroundColor: activeTheme.pageBg,
         color: activeTheme.textColor,
       }}
-      className={`w-full max-w-full flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 overflow-x-hidden transition-colors duration-200 ${
+      className={`w-full max-w-full flex flex-col justify-between font-serif selection:bg-slate-300 selection:text-slate-950 transition-colors duration-200 ${
         activePart === 'messaging'
           ? 'h-screen h-[100dvh] max-h-[100dvh] overflow-hidden'
-          : 'min-h-screen'
+          : 'min-h-screen overflow-x-clip'
       }`}
     >
       {/* 1. Sticky Navigation Bar */}

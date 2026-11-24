@@ -21,11 +21,12 @@
     font-family: "Times New Roman", Times, "Tinos", "Liberation Serif", serif;
     font-size: 15px; /* Compact sleek typography baseline */
     scroll-behavior: smooth;
+    scroll-padding-top: 4.75rem;
     background-color: var(--bg-primary, #dce1e8);
     color: var(--text-primary, #0f172a);
     width: 100%;
     min-height: 100%;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 
   body {
@@ -36,7 +37,7 @@
     line-height: 1.5;
     width: 100%;
     min-height: 100%;
-    overflow-x: hidden;
+    overflow-x: clip;
     margin: 0;
     padding: 0;
   }
@@ -161,6 +162,7 @@ html.user-dark-mode {
   --navbar-bg: rgba(15, 23, 42, 0.96);
 }
 
+html.user-dark-mode header.fesline-global-header,
 html.user-dark-mode header.sticky {
   background-color: rgba(15, 23, 42, 0.95) !important;
   border-color: #334155 !important;

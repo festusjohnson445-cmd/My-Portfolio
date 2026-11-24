@@ -58,15 +58,13 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => unsub();
   }, [isOwner]);
 
-  // Lock body scroll when left drawer is open
+  // Lock body scroll when left drawer is open while preserving previous overflow (e.g. messaging shell)
   useEffect(() => {
-    if (menuOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
+    if (!menuOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     return () => {
-      document.body.style.overflow = '';
+      document.body.style.overflow = prevOverflow;
     };
   }, [menuOpen]);
 
@@ -116,9 +114,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     onSelectPart(part, sectionId);
   };
 
+  const isMessaging = activePart === 'messaging';
+
   return (
     <>
-      <header className="sticky top-0 z-40 w-full bg-[#d6dce4]/95 backdrop-blur-md border-b border-[#abb8c7] shadow-xs transition-all font-serif">
+      <header
+        className={`fesline-global-header ${
+          isMessaging ? 'sticky top-0 shrink-0' : 'fixed top-0 left-0 right-0'
+        } z-40 w-full bg-[#d6dce4]/95 backdrop-blur-md border-b border-[#abb8c7] shadow-xs transition-all font-serif`}
+      >
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-3">
           {/* LEFT: MENU BUTTON & FESLINE BRAND */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -254,6 +258,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
       </header>
+      {!isMessaging && <div className="h-16 w-full shrink-0" aria-hidden="true" />}
 
       {/* SLIDE-OUT NAVIGATION DRAWER */}
       {menuOpen && (
