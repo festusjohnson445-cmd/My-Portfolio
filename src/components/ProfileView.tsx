@@ -205,6 +205,8 @@ export const ENGINEERING_DEGREES_LIST = [
   'Other Engineering Course / Degree'
 ];
 
+const hiResModalCache = new Map<string, string>();
+
 const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
   const isPdfDoc =
     Boolean(doc.fileType?.toLowerCase().includes('pdf')) ||
@@ -212,7 +214,21 @@ const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
     Boolean(doc.attachmentName && /\.pdf$/i.test(doc.attachmentName)) ||
     Boolean(doc.attachmentDataUrl && /\.pdf(\?|$)/i.test(doc.attachmentDataUrl));
 
-  const getCachedThumb = () => {
+  const getPlaceholderThumb = () => {
+    if (!isPdfDoc && doc.attachmentDataUrl && !isMockDrawingPreview(doc.attachmentDataUrl)) {
+      return doc.attachmentDataUrl;
+    }
+    if (hiResModalCache.has(doc.id)) {
+      return hiResModalCache.get(doc.id)!;
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        const cachedV3 = localStorage.getItem(`fesline_profile_thumb_v3_${doc.id}`);
+        if (cachedV3 && !isMockDrawingPreview(cachedV3) && !cachedV3.endsWith('.pdf')) {
+          return cachedV3;
+        }
+      } catch {}
+    }
     if (
       doc.previewImageDataUrl &&
       !isMockDrawingPreview(doc.previewImageDataUrl) &&
@@ -220,60 +236,48 @@ const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
     ) {
       return doc.previewImageDataUrl;
     }
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = localStorage.getItem(`fesline_profile_thumb_v2_${doc.id}`);
-        if (cached && !isMockDrawingPreview(cached) && !cached.endsWith('.pdf')) {
-          return cached;
-        }
-      } catch {}
-    }
-    if (!isPdfDoc && doc.attachmentDataUrl && !isMockDrawingPreview(doc.attachmentDataUrl)) {
-      return doc.attachmentDataUrl;
-    }
     return null;
   };
 
-  const [imgSrc, setImgSrc] = useState<string | null>(getCachedThumb);
+  const [imgSrc, setImgSrc] = useState<string | null>(getPlaceholderThumb);
   const [isRendering, setIsRendering] = useState<boolean>(
-    () => !getCachedThumb() && isPdfDoc && Boolean(doc.attachmentDataUrl)
+    () => isPdfDoc && Boolean(doc.attachmentDataUrl) && !hiResModalCache.has(doc.id)
   );
   const [renderFailed, setRenderFailed] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
-    const initial = getCachedThumb();
-    if (initial) {
-      setImgSrc(initial);
-      setIsRendering(false);
-      setRenderFailed(false);
-      return;
-    }
+    const placeholder = getPlaceholderThumb();
+    setImgSrc(placeholder);
+    setRenderFailed(false);
 
     if (isPdfDoc && doc.attachmentDataUrl) {
+      const cachedHiRes = hiResModalCache.get(doc.id);
+      if (cachedHiRes) {
+        setImgSrc(cachedHiRes);
+        setIsRendering(false);
+        return;
+      }
+
       setIsRendering(true);
-      setRenderFailed(false);
-      renderPdfFirstPageToImage(doc.attachmentDataUrl, 1100)
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 2200, 'image/png', 1.0)
         .then((rendered) => {
           if (!mounted) return;
           if (rendered) {
+            hiResModalCache.set(doc.id, rendered);
             setImgSrc(rendered);
-            try {
-              localStorage.setItem(`fesline_profile_thumb_v2_${doc.id}`, rendered);
-            } catch {}
-          } else {
+          } else if (!placeholder) {
             setRenderFailed(true);
           }
           setIsRendering(false);
         })
         .catch(() => {
           if (mounted) {
-            setRenderFailed(true);
+            if (!placeholder) setRenderFailed(true);
             setIsRendering(false);
           }
         });
     } else {
-      setImgSrc(null);
       setIsRendering(false);
     }
 
@@ -286,18 +290,24 @@ const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
     return (
       <div className="w-full flex flex-col items-center gap-3">
         {imgSrc ? (
-          <div className="max-h-[68vh] max-w-full overflow-auto rounded-lg shadow-2xl bg-white border border-slate-700 p-2">
+          <div className="relative max-h-[72vh] w-full overflow-auto rounded-xl shadow-2xl bg-white border border-slate-300 p-2 sm:p-3 flex justify-center items-start">
             <img
               src={imgSrc}
               alt={doc.title}
               decoding="async"
-              className="max-h-[64vh] max-w-full object-contain mx-auto"
+              className="w-full max-w-[920px] h-auto object-contain block mx-auto"
             />
+            {isRendering && (
+              <span className="sticky top-2 right-2 ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/85 text-white text-[10px] font-mono shadow-md">
+                <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />
+                <span>Enhancing...</span>
+              </span>
+            )}
           </div>
         ) : isRendering ? (
-          <div className="w-full max-w-xl h-72 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-200">
+          <div className="w-full max-w-2xl h-80 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-200">
             <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
-            <span className="text-xs font-sans">Loading document preview...</span>
+            <span className="text-xs font-sans">Rendering high-resolution preview...</span>
           </div>
         ) : renderFailed || !doc.attachmentDataUrl ? (
           <div className="w-full max-w-xl h-56 rounded-xl bg-slate-800/60 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-300 p-6 text-center">
@@ -314,12 +324,12 @@ const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
 
   if (imgSrc) {
     return (
-      <div className="max-h-[68vh] max-w-full overflow-auto rounded-lg shadow-2xl bg-white border border-slate-700 p-2">
+      <div className="max-h-[72vh] w-full overflow-auto rounded-xl shadow-2xl bg-white border border-slate-300 p-2 sm:p-3 flex justify-center items-start">
         <img
           src={imgSrc}
           alt={doc.title}
           decoding="async"
-          className="max-h-[64vh] max-w-full object-contain mx-auto"
+          className="w-full max-w-[920px] h-auto object-contain block mx-auto"
         />
       </div>
     );
@@ -1169,7 +1179,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         setDocAttachmentDataUrl(dataUrl);
 
         try {
-          const previewImg = await renderPdfFirstPageToImage(dataUrl, 900);
+          const previewImg = await renderPdfFirstPageToImage(dataUrl, 1400, 'image/webp', 0.94);
           setDocPreviewImageDataUrl(previewImg || undefined);
         } catch (err) {
           console.warn('PDF preview render error:', err);
@@ -1246,12 +1256,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       if (isPdf) {
         try {
           const buffer = await file.arrayBuffer();
-          const resImg = await renderPdfFirstPageToImage(buffer, 900);
+          const resImg = await renderPdfFirstPageToImage(buffer, 1400, 'image/webp', 0.94);
           if (resImg) {
             const uploadedThumb = await uploadMaterialThumbnailToBucket(resImg, docId, activeSession.user.id);
             previewImg = uploadedThumb || resImg;
             try {
-              localStorage.setItem(`fesline_profile_thumb_v2_${docId}`, previewImg);
+              localStorage.setItem(`fesline_profile_thumb_v3_${docId}`, previewImg);
             } catch {}
           }
         } catch {}
@@ -1285,7 +1295,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const handleUpdateDocPreview = (docId: string, previewUrl: string) => {
     // Cache rendered preview locally without firing redundant remote writes
     try {
-      localStorage.setItem(`fesline_profile_thumb_v2_${docId}`, previewUrl);
+      localStorage.setItem(`fesline_profile_thumb_v3_${docId}`, previewUrl);
     } catch {}
   };
 
@@ -1335,7 +1345,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             if (!finalPreviewUrl || !finalPreviewUrl.startsWith('data:image/')) {
               try {
                 const buf = await docSelectedFile.arrayBuffer();
-                finalPreviewUrl = (await renderPdfFirstPageToImage(buf, 900)) || undefined;
+                finalPreviewUrl = (await renderPdfFirstPageToImage(buf, 1400, 'image/webp', 0.94)) || undefined;
               } catch {}
             }
           }
@@ -1367,7 +1377,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
     if (finalPreviewUrl && !isMockDrawingPreview(finalPreviewUrl)) {
       try {
-        localStorage.setItem(`fesline_profile_thumb_v2_${targetDocId}`, finalPreviewUrl);
+        localStorage.setItem(`fesline_profile_thumb_v3_${targetDocId}`, finalPreviewUrl);
       } catch {}
     }
 
@@ -3144,7 +3154,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
         >
           <div 
             onClick={(e) => e.stopPropagation()} 
-            className="relative max-w-4xl w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl p-4 flex flex-col items-center"
+            className="relative max-w-5xl w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl p-4 sm:p-5 flex flex-col items-center"
           >
             <div className="w-full flex items-center justify-between pb-3 border-b border-slate-800 text-white">
               <div>
@@ -3159,7 +3169,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               </button>
             </div>
 
-            <div className="w-full max-h-[75vh] flex items-center justify-center py-4 overflow-auto">
+            <div className="w-full max-h-[76vh] flex items-center justify-center py-3 overflow-auto">
               <ProfileDocModalPreview doc={selectedPreviewDoc} />
             </div>
 
@@ -3583,14 +3593,11 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       : 'Sign In'}
                   </h3>
                   {(authStep === 'mfa_enroll' ||
-                    authStep === 'mfa_verify' ||
                     authStep === 'recovery_request' ||
                     authStep === 'recovery_reset') && (
                     <p className="text-[10px] text-cyan-300/90 font-medium">
                       {authStep === 'mfa_enroll'
                         ? 'Step 2 of 2 · One-time Authenticator Enrollment'
-                        : authStep === 'mfa_verify'
-                        ? 'Step 2 of 2 · Mandatory AAL2 TOTP Challenge'
                         : 'Email Recovery (MFA Remains Mandatory)'}
                     </p>
                   )}
@@ -3843,11 +3850,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                   </div>
                 )}
 
-                <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed flex items-start gap-2">
-                  <Smartphone className="w-4 h-4 text-cyan-700 shrink-0 mt-0.5" />
-                  <span>
-                    Open <strong>Duo Mobile</strong> or your registered TOTP authenticator app and enter the current 6-digit passcode to elevate your session to <strong>AAL2</strong>.
-                  </span>
+                <div className="p-3 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 text-xs leading-relaxed flex items-center gap-2 font-semibold">
+                  <Smartphone className="w-4 h-4 text-cyan-700 shrink-0" />
+                  <span>Chief Admin Access</span>
                 </div>
 
                 {totpFactors.length > 1 && (
@@ -3871,7 +3876,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5 text-center">
-                    6-Digit Authenticator Code
+                    6-Digit Passcode
                   </label>
                   <input
                     type="text"
@@ -3892,7 +3897,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       onClick={() => setShowRecoveryGuide((v) => !v)}
                       className="font-semibold text-cyan-800 hover:underline cursor-pointer"
                     >
-                      Lost authenticator device?
+                      LAuD
                     </button>
                   </div>
                 </div>
@@ -3939,7 +3944,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     ) : (
                       <>
                         <ShieldCheck className="w-3.5 h-3.5 text-cyan-200" />
-                        <span>Verify &amp; Unlock Admin</span>
+                        <span>Verify</span>
                       </>
                     )}
                   </button>

@@ -40,11 +40,14 @@ const pdfFirstPageCache = new Map<string, string>();
  */
 export async function renderPdfFirstPageToImage(
   pdfDataUrlOrBuffer: string | ArrayBuffer,
-  targetWidth = 600
+  targetWidth = 1400,
+  outputMime: 'image/png' | 'image/jpeg' | 'image/webp' = 'image/jpeg',
+  quality = 0.95
 ): Promise<string | null> {
-  const cacheKey = typeof pdfDataUrlOrBuffer === 'string'
+  const baseKey = typeof pdfDataUrlOrBuffer === 'string'
     ? (pdfDataUrlOrBuffer.length > 200 ? pdfDataUrlOrBuffer.slice(0, 100) + '_' + pdfDataUrlOrBuffer.length : pdfDataUrlOrBuffer)
     : null;
+  const cacheKey = baseKey ? `${baseKey}__w${targetWidth}_${outputMime}` : null;
 
   if (cacheKey && pdfFirstPageCache.has(cacheKey)) {
     return pdfFirstPageCache.get(cacheKey)!;
@@ -65,7 +68,6 @@ export async function renderPdfFirstPageToImage(
       } else {
         loadingTask = pdfjsLib.getDocument({
           url: pdfDataUrlOrBuffer,
-          disableAutoFetch: true,
           rangeChunkSize: 65536,
         });
       }
@@ -77,18 +79,22 @@ export async function renderPdfFirstPageToImage(
     const page = await pdfDoc.getPage(1);
 
     const unscaledViewport = page.getViewport({ scale: 1.0 });
-    const scale = Math.max(1.0, targetWidth / unscaledViewport.width);
+    const dprBoost = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+    const desiredPixels = Math.max(targetWidth, Math.round(targetWidth * (dprBoost > 1 ? 1.15 : 1)));
+    const scale = Math.max(1.5, Math.min(4.5, desiredPixels / unscaledViewport.width));
     const viewport = page.getViewport({ scale });
 
     const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
 
     if (!ctx) {
       return null;
     }
 
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -99,11 +105,18 @@ export async function renderPdfFirstPageToImage(
     };
 
     await page.render(renderContext).promise;
-    return canvas.toDataURL('image/jpeg', 0.9);
+    if (outputMime === 'image/png') {
+      return canvas.toDataURL('image/png');
+    }
+    const encoded = canvas.toDataURL(outputMime, quality);
+    if (outputMime === 'image/webp' && !encoded.startsWith('data:image/webp')) {
+      return canvas.toDataURL('image/jpeg', quality);
+    }
+    return encoded;
   };
 
   const timeoutTask = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), 4000)
+    setTimeout(() => resolve(null), 12000)
   );
 
   try {

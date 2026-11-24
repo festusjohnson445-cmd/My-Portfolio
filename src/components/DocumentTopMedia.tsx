@@ -3,7 +3,7 @@ import { Eye, FileCode, Layers, Upload, Download, Check, Loader2, BookOpen, File
 import { DocumentItem } from '../utils/profileState';
 import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
 
-const PROFILE_THUMB_CACHE_PREFIX = 'fesline_profile_thumb_v2_';
+const PROFILE_THUMB_CACHE_PREFIX = 'fesline_profile_thumb_v3_';
 const profileInMemoryThumbCache = new Map<string, string>();
 
 function getProfileCachedThumb(docId: string): string | null {
@@ -49,18 +49,21 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
   onDirectAttachFile,
 }) => {
   const initialPreview =
-    (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) ? doc.previewImageDataUrl : null) ||
-    getProfileCachedThumb(doc.id);
+    getProfileCachedThumb(doc.id) ||
+    (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) ? doc.previewImageDataUrl : null);
   const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(initialPreview);
   const [isRenderingPdf, setIsRenderingPdf] = useState(false);
   const [isNearViewport, setIsNearViewport] = useState(Boolean(initialPreview));
+  const [needsHiResUpgrade, setNeedsHiResUpgrade] = useState(false);
+  const upgradedDocsRef = useRef<Set<string>>(new Set());
   const pdfCardRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf =
     Boolean(doc.fileType?.toLowerCase().includes('pdf')) ||
     Boolean(doc.attachmentDataUrl?.startsWith('data:application/pdf')) ||
-    Boolean(doc.attachmentName && /\.pdf$/i.test(doc.attachmentName));
+    Boolean(doc.attachmentName && /\.pdf$/i.test(doc.attachmentName)) ||
+    Boolean(doc.attachmentDataUrl && /\.pdf(\?|$)/i.test(doc.attachmentDataUrl));
 
   const isImage =
     Boolean(doc.previewImageDataUrl && !isPdf && !isMockDrawingPreview(doc.previewImageDataUrl)) ||
@@ -89,17 +92,16 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     return () => observer.disconnect();
   }, [isNearViewport]);
 
-  // If PDF has attachmentDataUrl but no previewImageDataUrl yet, render page 1 quickly when visible
+  // Render high-resolution Page 1 for PDF cards (and upgrade any legacy low-res thumbnail < 1100px)
   useEffect(() => {
-    if (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl)) {
-      setRenderedPdfImage(doc.previewImageDataUrl);
-      setProfileCachedThumb(doc.id, doc.previewImageDataUrl);
+    const cachedV3 = getProfileCachedThumb(doc.id);
+    if (cachedV3) {
+      setRenderedPdfImage(cachedV3);
       return;
     }
 
-    const cached = getProfileCachedThumb(doc.id);
-    if (cached) {
-      setRenderedPdfImage(cached);
+    if (doc.previewImageDataUrl && !isMockDrawingPreview(doc.previewImageDataUrl) && !needsHiResUpgrade) {
+      setRenderedPdfImage(doc.previewImageDataUrl);
       return;
     }
 
@@ -107,17 +109,16 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       let isMounted = true;
       setIsRenderingPdf(true);
 
-      renderPdfFirstPageToImage(doc.attachmentDataUrl, 600)
+      renderPdfFirstPageToImage(doc.attachmentDataUrl, 1400, 'image/webp', 0.94)
         .then((imgDataUrl) => {
           if (isMounted) {
             if (imgDataUrl) {
+              upgradedDocsRef.current.add(doc.id);
               setRenderedPdfImage(imgDataUrl);
               setProfileCachedThumb(doc.id, imgDataUrl);
               if (onUpdatePreviewUrl) {
                 onUpdatePreviewUrl(doc.id, imgDataUrl);
               }
-            } else {
-              setRenderedPdfImage(null);
             }
             setIsRenderingPdf(false);
           }
@@ -126,7 +127,6 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
           console.warn('PDF rendering note:', err);
           if (isMounted) {
             setIsRenderingPdf(false);
-            setRenderedPdfImage(null);
           }
         });
 
@@ -137,7 +137,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       setRenderedPdfImage(null);
       setIsRenderingPdf(false);
     }
-  }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, isNearViewport, onUpdatePreviewUrl]);
+  }, [doc.id, doc.attachmentDataUrl, doc.previewImageDataUrl, isPdf, isNearViewport, needsHiResUpgrade, onUpdatePreviewUrl]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -156,13 +156,13 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     fileInputRef.current?.click();
   };
 
-  // 1. RENDER PDF CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fit, uniform card height, zero extra text)
+  // 1. RENDER PDF CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fill on desktop & mobile, crisp high-res)
   if (isPdf && (renderedPdfImage || doc.attachmentDataUrl)) {
     return (
       <div
         ref={pdfCardRef}
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-56 sm:h-60 bg-[#f8fafc] border-b border-slate-200 p-1 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
+        className="w-full h-56 sm:h-64 md:h-72 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Preview document"
       >
         {renderedPdfImage ? (
@@ -171,7 +171,19 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             alt={doc.title}
             loading="lazy"
             decoding="async"
-            className="w-full h-full object-contain block rounded-md transition-transform duration-300 group-hover/pdf:scale-[1.01]"
+            onLoad={(e) => {
+              if (
+                e.currentTarget.naturalWidth > 0 &&
+                e.currentTarget.naturalWidth < 1100 &&
+                doc.attachmentDataUrl &&
+                !upgradedDocsRef.current.has(doc.id) &&
+                !getProfileCachedThumb(doc.id)
+              ) {
+                upgradedDocsRef.current.add(doc.id);
+                setNeedsHiResUpgrade(true);
+              }
+            }}
+            className="w-full h-full object-cover object-top bg-white block transition-transform duration-300 group-hover/pdf:scale-[1.015]"
           />
         ) : (
           <div className="flex flex-col items-center justify-center text-center p-4 z-10 animate-fade-in">
@@ -190,15 +202,15 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
     );
   }
 
-  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED TOP (Full fit inside uniform height frame)
+  // 2. RENDER IMAGE CONTENT ON LIGHT-COLORED TOP (Full edge-to-edge fill on desktop & mobile)
   if (isImage && (doc.attachmentDataUrl || doc.previewImageDataUrl)) {
-    const rawSrc = doc.previewImageDataUrl || doc.attachmentDataUrl;
+    const rawSrc = doc.attachmentDataUrl || doc.previewImageDataUrl;
     const imgSrc = rawSrc && !isMockDrawingPreview(rawSrc) ? rawSrc : null;
     if (imgSrc) {
       return (
         <div
           onClick={() => onOpenPreview(doc)}
-          className="w-full h-56 sm:h-60 bg-[#f8fafc] border-b border-slate-200 p-1 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          className="w-full h-56 sm:h-64 md:h-72 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
           title="Preview image"
         >
           <img
@@ -206,7 +218,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
             alt={doc.title}
             loading="lazy"
             decoding="async"
-            className="w-full h-full object-contain block rounded-md transition-transform duration-300 group-hover/img:scale-[1.01]"
+            className="w-full h-full object-cover object-top bg-white block transition-transform duration-300 group-hover/img:scale-[1.015]"
           />
         </div>
       );
