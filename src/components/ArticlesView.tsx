@@ -668,7 +668,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
     try {
       await deleteArticleFromSupabase(art.id);
       setArticles((prev) => prev.filter((a) => a.id !== art.id));
-      if (selectedArticle?.id === art.id) setSelectedArticle(null);
+      if (selectedArticle?.id === art.id) closeArticleDetail();
     } catch (err) {
       console.error(err);
     }
@@ -770,7 +770,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
                   onClick={() => {
                     setEditingArticle(selectedArticle);
                     setIsPostOpen(true);
-                    setSelectedArticle(null);
+                    closeArticleDetail();
                   }}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
                 >

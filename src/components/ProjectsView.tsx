@@ -178,7 +178,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     try {
       await deleteProjectFromSupabase(proj.id);
       setProjects((prev) => prev.filter((p) => p.id !== proj.id));
-      if (selectedProject?.id === proj.id) setSelectedProject(null);
+      if (selectedProject?.id === proj.id) closeProjectDetail();
     } catch (err) {
       console.error(err);
     }
@@ -308,7 +308,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   onClick={() => {
                     setEditingProject(selectedProject);
                     setIsFormOpen(true);
-                    setSelectedProject(null);
+                    closeProjectDetail();
                   }}
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
                 >
