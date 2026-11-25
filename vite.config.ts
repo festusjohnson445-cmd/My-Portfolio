@@ -3,9 +3,29 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
 
+function buildOriginHtmlPlugin() {
+  const DEFAULT_BUILD_ORIGIN =
+    'https://ais-pre-fdpin4htltbxhzclxg3rsw-114689153952.europe-west2.run.app';
+  const rawEnvOrigin =
+    process.env.APP_URL ||
+    process.env.SITE_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : '') ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+  const resolvedOrigin = rawEnvOrigin.trim().replace(/\/+$/, '');
+  return {
+    name: 'fesline-build-origin-seo',
+    transformIndexHtml(html: string) {
+      if (!resolvedOrigin) return html;
+      return html.split(DEFAULT_BUILD_ORIGIN).join(resolvedOrigin);
+    },
+  };
+}
+
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), buildOriginHtmlPlugin()],
     optimizeDeps: {
       exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@ffmpeg/core'],
     },

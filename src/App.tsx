@@ -33,43 +33,37 @@ import {
   BUILT_IN_THEMES,
 } from './utils/portfolioSupabase';
 import { useUserColorMode, resolveEffectiveTheme } from './utils/userThemeMode';
-
-function resolveInitialPartFromHash(): PortfolioPart {
-  if (typeof window === 'undefined') return 'home';
-  const hash = window.location.hash.replace('#', '');
-  if (
-    hash === 'profile' ||
-    hash === 'profile-bio' ||
-    hash === 'profile-experience' ||
-    hash === 'profile-publications' ||
-    hash === 'profile-achievements'
-  ) {
-    return 'profile';
-  }
-  if (hash === 'overview' || hash === 'hub') return 'overview';
-  if (hash === 'projects') return 'projects';
-  if (hash === 'articles' || hash === 'blog') return 'articles';
-  if (hash === 'documents' || hash === 'doc-studio') return 'documents';
-  if (hash === 'admin') return 'admin';
-  if (
-    hash === 'metrology' ||
-    hash === 'cad-comparison' ||
-    hash === 'gdt-drawings' ||
-    hash === 'messaging' ||
-    hash === 'toolbox' ||
-    hash === 'chat' ||
-    hash === 'credentials' ||
-    hash === 'contact'
-  ) {
-    return 'messaging';
-  }
-  return 'home';
-}
+import {
+  getCanonicalPathForPart,
+  getPageSeoMetadata,
+  resolveRouteFromParts,
+} from './seo/metadata';
+import { applyClientSeoMetadata } from './seo/clientMeta';
 
 export default function App() {
-  const [activePart, setActivePart] = useState<PortfolioPart>(() => resolveInitialPartFromHash());
+  const initialRoute = React.useMemo(() => {
+    if (typeof window === 'undefined') {
+      return { part: 'home' as PortfolioPart, canonicalPath: '/' };
+    }
+    return resolveRouteFromParts(
+      window.location.pathname,
+      window.location.hash,
+      window.location.search
+    );
+  }, []);
+
+  const [activePart, setActivePart] = useState<PortfolioPart>(initialRoute.part);
+  const [activeProfileSection, setActiveProfileSection] = useState<string | undefined>(
+    initialRoute.sectionId
+  );
+  const [selectedProjectSlug, setSelectedProjectSlug] = useState<string | undefined>(
+    initialRoute.projectSlugOrId
+  );
+  const [selectedArticleSlug, setSelectedArticleSlug] = useState<string | undefined>(
+    initialRoute.articleSlugOrId
+  );
   const [visitedParts, setVisitedParts] = useState<Set<PortfolioPart>>(
-    () => new Set([resolveInitialPartFromHash()])
+    () => new Set([initialRoute.part])
   );
   const [isResumeOpen, setIsResumeOpen] = useState(false);
   const [resumeDownloadCount, setResumeDownloadCount] = useState(148);
@@ -252,29 +246,64 @@ export default function App() {
     }
   };
 
-  // Synchronize initial URL hash scroll target
+  // Sync initial URL, browser history popstate/hashchange, and subsection scrolling
   useEffect(() => {
     syncGlobalProfileWithServer().catch(() => {});
-    const hash = window.location.hash.replace('#', '');
-    const initialPart = resolveInitialPartFromHash();
-    setActivePart(initialPart);
-    setVisitedParts((prev) => {
-      if (prev.has(initialPart)) return prev;
-      const next = new Set(prev);
-      next.add(initialPart);
-      return next;
-    });
-    if (
-      hash === 'profile-bio' ||
-      hash === 'profile-experience' ||
-      hash === 'profile-publications' ||
-      hash === 'profile-achievements'
-    ) {
+
+    const syncFromWindowLocation = (scrollSub = true) => {
+      const parsed = resolveRouteFromParts(
+        window.location.pathname,
+        window.location.hash,
+        window.location.search
+      );
+      setActivePart(parsed.part);
+      setActiveProfileSection(parsed.sectionId);
+      setSelectedProjectSlug(parsed.projectSlugOrId);
+      setSelectedArticleSlug(parsed.articleSlugOrId);
+      setVisitedParts((prev) => {
+        if (prev.has(parsed.part)) return prev;
+        const next = new Set(prev);
+        next.add(parsed.part);
+        return next;
+      });
+      if (scrollSub && parsed.sectionId) {
+        setTimeout(() => {
+          document.getElementById(parsed.sectionId!)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 120);
+      }
+    };
+
+    if (initialRoute.sectionId) {
       setTimeout(() => {
-        document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        document.getElementById(initialRoute.sectionId!)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 120);
     }
-  }, []);
+
+    const onPopOrHash = () => syncFromWindowLocation(true);
+    window.addEventListener('popstate', onPopOrHash);
+    window.addEventListener('hashchange', onPopOrHash);
+    return () => {
+      window.removeEventListener('popstate', onPopOrHash);
+      window.removeEventListener('hashchange', onPopOrHash);
+    };
+  }, [initialRoute.sectionId]);
+
+  // Keep page-level SEO / Open Graph metadata synced when not inside an individual project/article detail view
+  useEffect(() => {
+    if (activePart === 'projects' && selectedProjectSlug) return;
+    if (activePart === 'articles' && selectedArticleSlug) return;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const canonicalPath = getCanonicalPathForPart(activePart, activeProfileSection);
+    const meta = getPageSeoMetadata(
+      {
+        part: activePart,
+        sectionId: activeProfileSection as any,
+        canonicalPath,
+      },
+      origin
+    );
+    applyClientSeoMetadata(meta);
+  }, [activePart, activeProfileSection, selectedProjectSlug, selectedArticleSlug]);
 
   const handleSelectPart = (part: PortfolioPart, sectionId?: string) => {
     setVisitedParts((prev) => {
@@ -284,7 +313,26 @@ export default function App() {
       return next;
     });
     setActivePart(part);
-    window.history.replaceState(null, '', `#${sectionId || part}`);
+    setActiveProfileSection(sectionId);
+    if (part !== 'projects') {
+      setSelectedProjectSlug(undefined);
+    } else if (!sectionId) {
+      setSelectedProjectSlug(undefined);
+    }
+    if (part !== 'articles') {
+      setSelectedArticleSlug(undefined);
+    } else if (!sectionId) {
+      setSelectedArticleSlug(undefined);
+    }
+
+    const targetPath = getCanonicalPathForPart(part, sectionId);
+    if (
+      typeof window !== 'undefined' &&
+      (window.location.pathname !== targetPath || window.location.hash || window.location.search)
+    ) {
+      window.history.pushState(null, '', targetPath);
+    }
+
     if (sectionId) {
       setTimeout(() => {
         const el = document.getElementById(sectionId);
@@ -429,7 +477,13 @@ export default function App() {
             activePart === 'projects' ? 'flex' : 'hidden'
           }`}
         >
-          {visitedParts.has('projects') && <ProjectsView />}
+          {visitedParts.has('projects') && (
+            <ProjectsView
+              isActive={activePart === 'projects'}
+              initialSlugOrId={selectedProjectSlug}
+              onActiveSlugChange={(slug) => setSelectedProjectSlug(slug)}
+            />
+          )}
         </section>
 
         {/* BLOG / ARTICLES (ENGINEERING ARTICLES) */}
@@ -439,7 +493,13 @@ export default function App() {
             activePart === 'articles' ? 'flex' : 'hidden'
           }`}
         >
-          {visitedParts.has('articles') && <ArticlesView />}
+          {visitedParts.has('articles') && (
+            <ArticlesView
+              isActive={activePart === 'articles'}
+              initialSlugOrId={selectedArticleSlug}
+              onActiveSlugChange={(slug) => setSelectedArticleSlug(slug)}
+            />
+          )}
         </section>
 
         {/* DOCUMENT-GENERATION WORKSPACE */}

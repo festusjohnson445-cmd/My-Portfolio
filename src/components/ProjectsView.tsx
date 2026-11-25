@@ -17,6 +17,7 @@ import {
   Check,
   X,
   Eye,
+  Share2,
 } from 'lucide-react';
 import {
   fetchProjectsFromSupabase,
@@ -40,8 +41,23 @@ import {
   getImageFitClass,
   getMediaImgStyle,
 } from '../utils/mediaCardStyle';
+import {
+  buildProjectSeoMetadata,
+  getPageSeoMetadata,
+} from '../seo/metadata';
+import { applyClientSeoMetadata } from '../seo/clientMeta';
 
-export const ProjectsView: React.FC = () => {
+interface ProjectsViewProps {
+  isActive?: boolean;
+  initialSlugOrId?: string;
+  onActiveSlugChange?: (slug: string | undefined) => void;
+}
+
+export const ProjectsView: React.FC<ProjectsViewProps> = ({
+  isActive = true,
+  initialSlugOrId,
+  onActiveSlugChange,
+}) => {
   const { isOwner } = useProfileSync();
   const websiteSettings = useWebsiteSettingsSync();
   const { projectsArticlesConfig, cardAnimationEnabled } = websiteSettings.appearanceConfig;
@@ -63,6 +79,7 @@ export const ProjectsView: React.FC = () => {
   const [projects, setProjects] = useState<PortfolioProject[]>(() => getCachedProjects(isOwner));
   const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(isOwner).length === 0);
   const [selectedProject, setSelectedProject] = useState<PortfolioProject | null>(null);
+  const [copiedShare, setCopiedShare] = useState(false);
 
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<PortfolioProject | null>(null);
@@ -167,11 +184,50 @@ export const ProjectsView: React.FC = () => {
     }
   };
 
+  // Sync deep-linked project slug/id from URL when active
+  useEffect(() => {
+    if (!initialSlugOrId) {
+      setSelectedProject(null);
+      return;
+    }
+    const target = initialSlugOrId.trim().toLowerCase();
+    const match = projects.find(
+      (p) =>
+        (isOwner || p.status === 'published') &&
+        ((p.slug && p.slug.toLowerCase() === target) || p.id.toLowerCase() === target)
+    );
+    if (match) {
+      setSelectedProject((prev) => (prev?.id === match.id ? prev : match));
+    }
+  }, [initialSlugOrId, projects, isOwner]);
+
+  // Sync dynamic client-side Open Graph / SEO tags for selected project
+  useEffect(() => {
+    if (!isActive) return;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    if (selectedProject) {
+      applyClientSeoMetadata(buildProjectSeoMetadata(selectedProject, origin));
+    } else {
+      applyClientSeoMetadata(
+        getPageSeoMetadata({ part: 'projects', canonicalPath: '/projects' }, origin)
+      );
+    }
+  }, [isActive, selectedProject]);
+
   const openProjectDetail = (proj: PortfolioProject) => {
     setIsFormOpen(false);
     setEditingProject(null);
     setEditingInscription(false);
+    setCopiedShare(false);
     setInscriptionDraft(proj.heroInscription || '');
+    const slugOrId = proj.slug || proj.id;
+    onActiveSlugChange?.(slugOrId);
+    if (typeof window !== 'undefined') {
+      const targetUrl = `/projects/${encodeURIComponent(slugOrId)}`;
+      if (window.location.pathname !== targetUrl) {
+        window.history.pushState(null, '', targetUrl);
+      }
+    }
     const optimisticViews = (proj.viewsCount || 0) + 1;
     setSelectedProject({ ...proj, viewsCount: optimisticViews });
     setProjects((prev) =>
@@ -184,6 +240,14 @@ export const ProjectsView: React.FC = () => {
     });
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  };
+
+  const closeProjectDetail = () => {
+    setSelectedProject(null);
+    onActiveSlugChange?.(undefined);
+    if (typeof window !== 'undefined' && window.location.pathname !== '/projects') {
+      window.history.pushState(null, '', '/projects');
     }
   };
 
@@ -212,37 +276,56 @@ export const ProjectsView: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3 py-2 shadow-2xs">
           <button
             type="button"
-            onClick={() => setSelectedProject(null)}
+            onClick={closeProjectDetail}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back</span>
           </button>
 
-          {isOwner && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingProject(selectedProject);
-                  setIsFormOpen(true);
-                  setSelectedProject(null);
-                }}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
-              >
-                <Edit3 className="w-3 h-3 text-cyan-800" />
-                <span>Edit</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDelete(selectedProject)}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
-              >
-                <Trash2 className="w-3 h-3" />
-                <span>Delete</span>
-              </button>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window === 'undefined') return;
+                const shareUrl = `${window.location.origin}/projects/${encodeURIComponent(
+                  selectedProject.slug || selectedProject.id
+                )}`;
+                navigator.clipboard?.writeText(shareUrl).catch(() => {});
+                setCopiedShare(true);
+                setTimeout(() => setCopiedShare(false), 2000);
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+            >
+              {copiedShare ? <Check className="w-3 h-3 text-emerald-700" /> : <Share2 className="w-3 h-3" />}
+              <span>{copiedShare ? 'Copied' : 'Share'}</span>
+            </button>
+
+            {isOwner && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingProject(selectedProject);
+                    setIsFormOpen(true);
+                    setSelectedProject(null);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+                >
+                  <Edit3 className="w-3 h-3 text-cyan-800" />
+                  <span>Edit</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(selectedProject)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Delete</span>
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Project Detail Header */}

@@ -1,0 +1,25 @@
+{
+  "name": "Fesline — Festus Johnson Engineering Portfolio",
+  "short_name": "Fesline",
+  "description": "Mechanical Engineering, CAD Design, FEA Analysis, Technical Publications, and Web Engineering by Festus, Olorunsogo Johnson.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#d9dee5",
+  "theme_color": "#061938",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

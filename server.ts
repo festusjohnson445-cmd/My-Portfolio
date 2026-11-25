@@ -28,6 +28,12 @@ import {
   updateMessageInDb,
   getDeletedConversationIdsFromDb,
 } from './src/db/storage.ts';
+import {
+  fetchAllPublishedSlugsForSitemap,
+  injectSeoMetaIntoHtml,
+  resolveRequestOrigin,
+  resolveRequestSeoMetadata,
+} from './src/seo/serverMeta.ts';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -2523,46 +2529,177 @@ app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: 
   });
 });
 
-async function startServer() {
-  // Serve public assets with browser caching and ETag support
-  app.use(express.static(path.resolve('public'), {
-    maxAge: '1d',
+// Dynamic SEO Sitemap including live published projects & articles from Supabase
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const origin = resolveRequestOrigin(req);
+    const staticPaths = [
+      '/',
+      '/profile',
+      '/profile/bio',
+      '/profile/experience',
+      '/profile/publications',
+      '/profile/achievements',
+      '/hub',
+      '/projects',
+      '/articles',
+      '/messaging',
+      '/career-studio',
+    ];
+    const { projects, articles } = await fetchAllPublishedSlugsForSitemap();
+    const urlsXml: string[] = [];
+
+    for (const p of staticPaths) {
+      urlsXml.push(
+        `  <url>\n    <loc>${origin}${p}</loc>\n    <changefreq>${p === '/' ? 'weekly' : 'monthly'}</changefreq>\n    <priority>${p === '/' ? '1.0' : '0.8'}</priority>\n  </url>`
+      );
+    }
+    for (const proj of projects) {
+      const lastmod = proj.updatedAt ? `\n    <lastmod>${new Date(proj.updatedAt).toISOString()}</lastmod>` : '';
+      urlsXml.push(
+        `  <url>\n    <loc>${origin}/projects/${encodeURIComponent(proj.slug)}</loc>${lastmod}\n    <changefreq>monthly</changefreq>\n    <priority>0.85</priority>\n  </url>`
+      );
+    }
+    for (const art of articles) {
+      const lastmod = art.updatedAt ? `\n    <lastmod>${new Date(art.updatedAt).toISOString()}</lastmod>` : '';
+      urlsXml.push(
+        `  <url>\n    <loc>${origin}/articles/${encodeURIComponent(art.slug)}</loc>${lastmod}\n    <changefreq>weekly</changefreq>\n    <priority>0.85</priority>\n  </url>`
+      );
+    }
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urlsXml.join('\n')}\n</urlset>\n`;
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.status(200).send(xml);
+  } catch (err) {
+    console.error('[Sitemap Error]:', err);
+    res.status(500).send('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>');
+  }
+});
+
+// Helper to resolve static HTML template safely across dev, production, and Vercel serverless bundles
+function readBuiltHtmlTemplate(): string {
+  const candidates = [
+    path.resolve('dist/index.html'),
+    path.resolve(process.cwd(), 'dist/index.html'),
+    path.resolve('index.html'),
+    path.resolve(process.cwd(), 'index.html'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return fs.readFileSync(candidate, 'utf8');
+      }
+    } catch {}
+  }
+  return '<!doctype html><html lang="en"><head><meta charset="UTF-8" /></head><body><div id="root"></div></body></html>';
+}
+
+function setStaticAssetHeaders(res: express.Response, filePath: string) {
+  if (filePath.endsWith('.webmanifest')) {
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+  } else if (filePath.endsWith('.ico')) {
+    res.setHeader('Content-Type', 'image/x-icon');
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+  } else if (filePath.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-cache');
+  } else if (filePath.includes(`${path.sep}dist${path.sep}assets${path.sep}`)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+  }
+}
+
+async function sendSeoInjectedHtml(
+  req: express.Request,
+  res: express.Response,
+  rawTemplate: string
+) {
+  const { meta, origin } = await resolveRequestSeoMetadata(req);
+  const html = injectSeoMetaIntoHtml(rawTemplate, meta, origin);
+  res.status(200);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=60, stale-while-revalidate=300');
+  res.send(html);
+}
+
+// Serve public static assets cleanly (index: false so "/" always passes through SEO metadata injection)
+app.use(express.static(path.resolve('public'), {
+  index: false,
+  maxAge: '1d',
+  etag: true,
+  lastModified: true,
+  setHeaders: setStaticAssetHeaders,
+}));
+
+// Register Vercel serverless fallback handler when running inside Vercel Functions
+if (process.env.VERCEL === '1') {
+  app.use(express.static(path.resolve('dist'), {
+    index: false,
+    maxAge: '1y',
+    immutable: true,
     etag: true,
     lastModified: true,
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-cache');
-      } else {
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-      }
-    }
+    setHeaders: setStaticAssetHeaders,
   }));
 
+  app.get('*', async (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    if (/\.[a-z0-9]{1,8}$/i.test(req.path) && !req.path.endsWith('.html')) {
+      return res.status(404).end();
+    }
+    try {
+      await sendSeoInjectedHtml(req, res, readBuiltHtmlTemplate());
+    } catch (err) {
+      next(err);
+    }
+  });
+}
+
+async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve('dist'), {
+      index: false,
       maxAge: '1y',
       immutable: true,
       etag: true,
       lastModified: true,
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html')) {
-          res.setHeader('Cache-Control', 'no-cache');
-        } else {
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        }
-      }
+      setHeaders: setStaticAssetHeaders,
     }));
-    app.get('*', (_req, res) => {
-      res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(path.resolve('dist/index.html'));
+
+    app.get('*', async (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      if (/\.[a-z0-9]{1,8}$/i.test(req.path) && !req.path.endsWith('.html')) {
+        return res.status(404).end();
+      }
+      try {
+        await sendSeoInjectedHtml(req, res, readBuiltHtmlTemplate());
+      } catch (err) {
+        next(err);
+      }
     });
   } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false, watch: null },
-      appType: 'spa',
+      appType: 'custom',
     });
     app.use(vite.middlewares);
+
+    app.get('*', async (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      if (/\.[a-z0-9]{1,8}$/i.test(req.path) && !req.path.endsWith('.html')) {
+        return next();
+      }
+      try {
+        const rawHtml = fs.readFileSync(path.resolve('index.html'), 'utf8');
+        const transformed = await vite.transformIndexHtml(req.originalUrl || '/', rawHtml);
+        await sendSeoInjectedHtml(req, res, transformed);
+      } catch (err) {
+        next(err);
+      }
+    });
   }
 
   // Only start listening if not running under Vercel serverless runtime

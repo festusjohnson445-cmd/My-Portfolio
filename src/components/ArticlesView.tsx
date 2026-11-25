@@ -56,6 +56,11 @@ import {
   getImageFitClass,
   getMediaImgStyle,
 } from '../utils/mediaCardStyle';
+import {
+  buildArticleSeoMetadata,
+  getPageSeoMetadata,
+} from '../seo/metadata';
+import { applyClientSeoMetadata } from '../seo/clientMeta';
 
 function slugHeadingId(heading: string, idx: number): string {
   const clean = heading
@@ -323,7 +328,17 @@ const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => 
   );
 };
 
-export const ArticlesView: React.FC = () => {
+interface ArticlesViewProps {
+  isActive?: boolean;
+  initialSlugOrId?: string;
+  onActiveSlugChange?: (slug: string | undefined) => void;
+}
+
+export const ArticlesView: React.FC<ArticlesViewProps> = ({
+  isActive = true,
+  initialSlugOrId,
+  onActiveSlugChange,
+}) => {
   const { isOwner } = useProfileSync();
   const websiteSettings = useWebsiteSettingsSync();
   const { projectsArticlesConfig, cardAnimationEnabled, commentStyleConfig } =
@@ -408,6 +423,36 @@ export const ArticlesView: React.FC = () => {
     };
   }, [isOwner]);
 
+  // Sync deep-linked article slug/id from URL when active
+  useEffect(() => {
+    if (!initialSlugOrId) {
+      setSelectedArticle(null);
+      return;
+    }
+    const target = initialSlugOrId.trim().toLowerCase();
+    const match = articles.find(
+      (a) =>
+        (isOwner || a.status === 'published') &&
+        ((a.slug && a.slug.toLowerCase() === target) || a.id.toLowerCase() === target)
+    );
+    if (match) {
+      setSelectedArticle((prev) => (prev?.id === match.id ? prev : match));
+    }
+  }, [initialSlugOrId, articles, isOwner]);
+
+  // Sync dynamic client-side Open Graph / SEO tags for selected article
+  useEffect(() => {
+    if (!isActive) return;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    if (selectedArticle) {
+      applyClientSeoMetadata(buildArticleSeoMetadata(selectedArticle, origin));
+    } else {
+      applyClientSeoMetadata(
+        getPageSeoMetadata({ part: 'articles', canonicalPath: '/articles' }, origin)
+      );
+    }
+  }, [isActive, selectedArticle]);
+
   const openArticleDetail = (art: PortfolioArticle) => {
     setIsPostOpen(false);
     setEditingArticle(null);
@@ -418,6 +463,14 @@ export const ArticlesView: React.FC = () => {
     setInscriptionDraft(
       art.heroInscription || art.heroMedia?.inscription || art.heroMedia?.caption || ''
     );
+    const slugOrId = art.slug || art.id;
+    onActiveSlugChange?.(slugOrId);
+    if (typeof window !== 'undefined') {
+      const targetUrl = `/articles/${encodeURIComponent(slugOrId)}`;
+      if (window.location.pathname !== targetUrl) {
+        window.history.pushState(null, '', targetUrl);
+      }
+    }
     // Instantly hydrate cached comments synchronously for immediate display
     setComments(getCachedCommentsForArticle(art.id, isOwner));
     const optimisticViews = (art.viewsCount || 0) + 1;
@@ -432,6 +485,14 @@ export const ArticlesView: React.FC = () => {
     });
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  };
+
+  const closeArticleDetail = () => {
+    setSelectedArticle(null);
+    onActiveSlugChange?.(undefined);
+    if (typeof window !== 'undefined' && window.location.pathname !== '/articles') {
+      window.history.pushState(null, '', '/articles');
     }
   };
 
@@ -617,7 +678,12 @@ export const ArticlesView: React.FC = () => {
   // FULL ARTICLE DETAIL READING VIEW
   // =========================================================================
   if (selectedArticle) {
-    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    const shareUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}/articles/${encodeURIComponent(
+            selectedArticle.slug || selectedArticle.id
+          )}`
+        : '';
     const shareTitle = encodeURIComponent(selectedArticle.title);
     const shareHref = encodeURIComponent(shareUrl);
 
@@ -640,7 +706,7 @@ export const ArticlesView: React.FC = () => {
         <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3 py-2 shadow-2xs">
           <button
             type="button"
-            onClick={() => setSelectedArticle(null)}
+            onClick={closeArticleDetail}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />

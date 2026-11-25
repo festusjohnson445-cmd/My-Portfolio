@@ -2,10 +2,21 @@ import app from '../server';
 
 export default async function handler(req: any, res: any) {
   try {
-    // If Vercel rewrote the URL to /api/index, restore the original incoming path
-    const matchedPath = req.headers['x-matched-path'] || req.headers['x-vercel-matched-path'];
-    if (matchedPath && typeof matchedPath === 'string') {
-      req.url = matchedPath;
+    // Restore original incoming path when Vercel rewrites non-API or /api/* requests to /api/index
+    const forwardedUri =
+      req.headers['x-vercel-original-url'] ||
+      req.headers['x-forwarded-uri'] ||
+      req.headers['x-rewrite-url'] ||
+      req.headers['x-matched-path'] ||
+      req.headers['x-vercel-matched-path'];
+
+    if (
+      forwardedUri &&
+      typeof forwardedUri === 'string' &&
+      !forwardedUri.startsWith('/api/index') &&
+      !forwardedUri.startsWith('/api/[...all]')
+    ) {
+      req.url = forwardedUri;
     }
 
     return (app as any)(req, res);
