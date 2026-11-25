@@ -93,7 +93,6 @@ import {
   EVENT_PROJECTS_UPDATED,
   EVENT_ARTICLES_UPDATED,
   BUILT_IN_THEMES,
-  DEFAULT_WEBSITE_SETTINGS,
   DEFAULT_HOMEPAGE_CONFIG,
   DEFAULT_HERO_LAYOUT_CONFIG,
   normalizeHeroElementOrder,
@@ -224,7 +223,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   useEffect(() => {
     siteSettingsRef.current = siteSettings;
   }, [siteSettings]);
-  const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(true).length === 0);
 
   // Forms open state
   const [projectFormOpen, setProjectFormOpen] = useState(false);
@@ -430,9 +428,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
   };
 
   const loadAllAdminData = async () => {
-    if (!hasProjectsCacheHydrated() && projects.length === 0) {
-      setLoading(true);
-    }
     void prewarmMediaLibraryCaches();
     try {
       const [projs, arts, cmts, exps, pubs, achs, settings, csDocs] = await Promise.all([
@@ -453,9 +448,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       setAchievements(achs.length > 0 ? achs : (bio.achievements as ProfileAchievement[]) || []);
       setSiteSettings(settings);
       setCareerStudioDocs(csDocs);
-    } finally {
-      setLoading(false);
-    }
+    } catch {}
   };
 
   const refreshMfaSecurityPanel = async () => {
@@ -943,10 +936,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
 
         {/* Main Content Workspace */}
         <div className="flex-1 w-full min-w-0 bg-white border border-[#b8c6d4] rounded-xl p-4 sm:p-5 shadow-2xs space-y-4">
-          {loading ? (
-            <div className="p-8 text-center text-xs text-slate-500">Loading dashboard data...</div>
-          ) : (
-            <>
               {/* TAB: OVERVIEW ANALYTICS */}
               {activeTab === 'overview' && (
                 <div className="space-y-4">
@@ -2291,7 +2280,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                         <div className="flex items-center gap-2 min-w-0">
                           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
                           <span className="truncate">
-                            {`Uploading..... ${Math.round(mediaUploadProgress)}%`}
+                            {mediaUploadStage ? `${mediaUploadStage} · ${Math.round(mediaUploadProgress)}%` : `Uploading... ${Math.round(mediaUploadProgress)}%`}
                           </span>
                         </div>
                         <button
@@ -5317,8 +5306,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
                   )}
                 </div>
               )}
-            </>
-          )}
         </div>
       </div>
 

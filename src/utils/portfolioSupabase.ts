@@ -108,6 +108,7 @@ export interface PortfolioProject {
   title: string;
   category: string;
   description: string;
+  mainContent?: string;
   overview: string;
   objectives: string;
   methodology: string;
@@ -669,16 +670,16 @@ export const DEFAULT_APPEARANCE_CONFIG: WebsiteAppearanceConfig = {
     innerLayout: {
       gridColumns: 3,
       cardSpacing: 'normal',
-      cardTextAlign: 'justify',
+      cardTextAlign: 'left',
     },
     videoCardControls: {
       aspectRatio: '16/9',
-      objectFit: 'contain',
+      objectFit: 'cover',
       zoomLevel: 1,
     },
     imageCardControls: {
       aspectRatio: '4/3',
-      objectFit: 'contain',
+      objectFit: 'cover',
       zoomLevel: 1,
     },
   },
@@ -2148,7 +2149,10 @@ export async function uploadFileToBucket(
 function mapDbRowToProject(row: any): PortfolioProject {
   const rawSpecs = Array.isArray(row.specifications) ? row.specifications : [];
   const hiddenInscr = rawSpecs.find((s: any) => s?.label === '__hero_inscription__');
-  const cleanSpecs = rawSpecs.filter((s: any) => s?.label !== '__hero_inscription__');
+  const hiddenMainContains = rawSpecs.find((s: any) => s?.label === '__main_contains__');
+  const cleanSpecs = rawSpecs.filter(
+    (s: any) => s?.label !== '__hero_inscription__' && s?.label !== '__main_contains__'
+  );
 
   return {
     id: row.id,
@@ -2157,6 +2161,7 @@ function mapDbRowToProject(row: any): PortfolioProject {
     title: row.title || '',
     category: row.category || 'Mechanical Design',
     description: row.description || '',
+    mainContent: typeof hiddenMainContains?.value === 'string' ? hiddenMainContains.value : '',
     overview: row.overview || '',
     objectives: row.objectives || '',
     methodology: row.methodology || '',
@@ -2208,7 +2213,12 @@ export function getCachedProjects(includeAllForOwner = false): PortfolioProject[
 }
 
 export function hasProjectsCacheHydrated(): boolean {
-  return hasFetchedProjectsOnce || (memoryProjectsCache !== null && memoryProjectsCache.length > 0);
+  if (hasFetchedProjectsOnce || memoryProjectsCache !== null) return true;
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function setCachedProjects(list: PortfolioProject[]) {
@@ -2292,8 +2302,14 @@ export async function upsertProjectToSupabase(
   const id = project.id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const slug = project.slug || slugifyText(project.title);
 
-  const cleanSpecs = (project.specifications || []).filter((s) => s.label !== '__hero_inscription__');
+  const cleanSpecs = (project.specifications || []).filter(
+    (s) => s.label !== '__hero_inscription__' && s.label !== '__main_contains__'
+  );
   const trimmedInscription = (project.heroInscription || '').trim();
+  const mainContentVal = (project.mainContent || '').trim();
+  const persistedSpecs = mainContentVal
+    ? [...cleanSpecs, { label: '__main_contains__', value: project.mainContent || '' }]
+    : cleanSpecs;
 
   const dbPayload: Record<string, any> = {
     id,
@@ -2305,7 +2321,7 @@ export async function upsertProjectToSupabase(
     overview: project.overview.trim(),
     objectives: project.objectives.trim(),
     methodology: project.methodology.trim(),
-    specifications: cleanSpecs,
+    specifications: persistedSpecs,
     cad_drawings: project.cadDrawings || [],
     is_cad_project: Boolean(project.isCadProject),
     cad_model_type: project.cadModelType || '',
@@ -2332,8 +2348,8 @@ export async function upsertProjectToSupabase(
   if (error && /hero_inscription/i.test(error.message || '')) {
     const { hero_inscription: _drop, ...fallbackPayload } = dbPayload;
     fallbackPayload.specifications = trimmedInscription
-      ? [...cleanSpecs, { label: '__hero_inscription__', value: trimmedInscription }]
-      : cleanSpecs;
+      ? [...persistedSpecs, { label: '__hero_inscription__', value: trimmedInscription }]
+      : persistedSpecs;
     const retry = await supabase
       .from('projects')
       .upsert(fallbackPayload, { onConflict: 'id' })
@@ -2497,7 +2513,12 @@ export function getCachedArticles(includeAllForOwner = false): PortfolioArticle[
 }
 
 export function hasArticlesCacheHydrated(): boolean {
-  return hasFetchedArticlesOnce || (memoryArticlesCache !== null && memoryArticlesCache.length > 0);
+  if (hasFetchedArticlesOnce || memoryArticlesCache !== null) return true;
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_ARTICLES_CACHE) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function setCachedArticles(list: PortfolioArticle[]) {

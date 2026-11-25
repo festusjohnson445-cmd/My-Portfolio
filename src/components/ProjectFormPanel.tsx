@@ -17,6 +17,8 @@ import {
 import { cleanDisplayFileName, runWithConcurrency } from '../utils/mediaMetadata';
 import { MediaLibraryModal, type MediaLibraryFilter } from './MediaLibraryModal';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
+import { RichTextEditor } from './RichTextEditor';
+import { isRichHtmlContent, sanitizeArticleHtml } from '../utils/htmlSanitizer';
 
 interface ProjectFormPanelProps {
   initialProject?: PortfolioProject | null;
@@ -39,6 +41,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
   const [title, setTitle] = useState(initialProject?.title || '');
   const [category, setCategory] = useState(initialProject?.category || '');
   const [description, setDescription] = useState(initialProject?.description || '');
+  const [mainContent, setMainContent] = useState(initialProject?.mainContent || '');
   const [overview, setOverview] = useState(initialProject?.overview || '');
   const [objectives, setObjectives] = useState(initialProject?.objectives || '');
   const [methodology, setMethodology] = useState(initialProject?.methodology || '');
@@ -272,12 +275,19 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
     setSaving(true);
     setErrorMsg(null);
     try {
+      const cleanedMainContent = mainContent.trim()
+        ? isRichHtmlContent(mainContent)
+          ? sanitizeArticleHtml(mainContent.trim())
+          : mainContent.trim()
+        : '';
+
       const saved = await upsertProjectToSupabase({
         id: initialProject?.id,
         slug: initialProject?.slug,
         title: title.trim(),
         category: category.trim(),
         description: description.trim(),
+        mainContent: cleanedMainContent,
         overview: overview.trim(),
         objectives: objectives.trim(),
         methodology: methodology.trim(),
@@ -331,7 +341,7 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               <span className="truncate">
-                {`Uploading..... ${Math.round(uploadProgress)}%`}
+                {uploadStage ? `${uploadStage} · ${Math.round(uploadProgress)}%` : `Uploading... ${Math.round(uploadProgress)}%`}
               </span>
             </div>
             <button
@@ -520,6 +530,15 @@ export const ProjectFormPanel: React.FC<ProjectFormPanelProps> = ({
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Concise summary displayed on the project card"
           className="w-full min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 focus:outline-none focus:ring-1 focus:ring-cyan-700"
+        />
+      </div>
+
+      <div className="text-xs min-w-0 space-y-1">
+        <label className="block font-bold text-slate-700">Main Contains</label>
+        <RichTextEditor
+          value={mainContent}
+          onChange={setMainContent}
+          placeholder="Write your main project contents here... Use the toolbar for font families, lists, alignment, custom margins, and spacing"
         />
       </div>
 

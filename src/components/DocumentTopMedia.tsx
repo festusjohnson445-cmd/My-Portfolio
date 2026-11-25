@@ -162,7 +162,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       <div
         ref={pdfCardRef}
         onClick={() => onOpenPreview(doc)}
-        className="w-full h-56 sm:h-64 md:h-72 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
+        className="w-full h-52 sm:h-56 md:h-60 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/pdf select-none"
         title="Preview document"
       >
         {renderedPdfImage ? (
@@ -210,7 +210,7 @@ export const DocumentTopMedia: React.FC<DocumentTopMediaProps> = ({
       return (
         <div
           onClick={() => onOpenPreview(doc)}
-          className="w-full h-56 sm:h-64 md:h-72 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
+          className="w-full h-52 sm:h-56 md:h-60 bg-white border-b border-slate-200 p-0 relative overflow-hidden flex items-center justify-center cursor-pointer group/img select-none"
           title="Preview image"
         >
           <img

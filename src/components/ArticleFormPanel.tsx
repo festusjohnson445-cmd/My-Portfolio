@@ -333,7 +333,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
     e.preventDefault();
     const plainContent = stripHtmlToPlainText(content);
     if (!title.trim() || !summary.trim() || !plainContent || !category.trim() || !authorName.trim()) {
-      setErrorMsg('Title, Author, Category, Summary, and Article Contents are required.');
+      setErrorMsg('Title, Author, Category, Summary, and Main Contains are required.');
       return;
     }
 
@@ -432,7 +432,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               <span className="truncate">
-                {`Uploading..... ${Math.round(uploadProgress)}%`}
+                {uploadStage ? `${uploadStage} · ${Math.round(uploadProgress)}%` : `Uploading... ${Math.round(uploadProgress)}%`}
               </span>
             </div>
             <button
@@ -813,15 +813,15 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
         </div>
       </div>
 
-      {/* Article Contents (Rich Formatting Editor) */}
+      {/* Main Contains (Rich Formatting Editor) */}
       <div className="text-xs min-w-0 space-y-1">
         <label className="block font-bold text-slate-700">
-          Article Contents * <span className="font-normal text-slate-500">(Bold, Italic, Color, Alignment, Justify, Spacing &amp; Margins)</span>
+          Main Contains *
         </label>
         <RichTextEditor
           value={content}
           onChange={setContent}
-          placeholder="Add your Article here... Use the toolbar for bold, italic, text color, alignment, justification, spacing, and margins"
+          placeholder="Write your main contents here... Use the toolbar for font families, lists, alignment, custom margins, and spacing"
         />
       </div>
 

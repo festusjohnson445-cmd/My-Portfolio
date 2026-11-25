@@ -16,14 +16,10 @@ import {
   Sliders,
   Star,
   Trash2,
-  ShieldCheck,
   RotateCcw,
-  Clock,
-  UserCheck,
   Download,
   Eye,
   Mic,
-  MicOff,
   User,
   History,
   Copy,
@@ -43,7 +39,6 @@ import {
 import {
   subscribeToSupabaseRealtimeChat,
   broadcastSupabaseChatMessage,
-  saveConversationToSupabaseTable,
   saveMessageAndConversationToSupabase,
   fetchConversationsJoinedFromSupabase,
   fetchVisitorProfileFromSupabase,
@@ -63,7 +58,7 @@ import {
 } from '../utils/supabase';
 import { VoiceNotePlayer, VoiceNoteData } from './VoiceNotePlayer';
 import { VisitorProfileModal, VisitorMessagingProfile } from './VisitorProfileModal';
-import { formatDuration, parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload, safeDataUrlToBlobUrl, UniversalAudioRecorder } from '../utils/audioUtils';
+import { formatDuration, serializeMessagePayload, parseMessagePayload, safeDataUrlToBlobUrl, UniversalAudioRecorder } from '../utils/audioUtils';
 
 export interface ChatAttachment {
   id: string;
@@ -262,19 +257,6 @@ async function fetchChatsFromServerHelper(deletedSet?: Set<string>): Promise<Con
   return Array.from(map.values());
 }
 
-// Helper to push chats to server
-async function pushChatsToServer(conversations: Conversation[], overwrite = false) {
-  try {
-    await fetch('/api/chats', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversations, overwrite }),
-    });
-  } catch (err) {
-    console.warn('Failed to push chats to server:', err);
-  }
-}
-
 // Helper to get stored visitor_id from localStorage (lazy creation - never generates on page load)
 const getStoredVisitorId = (): string => {
   try {
@@ -355,16 +337,6 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
 
   // Login tooltip on send button when unauthenticated visitor tries to send
   const [loginTooltipVisible, setLoginTooltipVisible] = useState(false);
-  const tooltipTimeoutRef = useRef<any>(null);
-
-  // Trigger visual tooltip alert directly from the Send button
-  const triggerLoginPrompt = () => {
-    setLoginTooltipVisible(true);
-    if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
-    tooltipTimeoutRef.current = setTimeout(() => {
-      setLoginTooltipVisible(false);
-    }, 4500);
-  };
 
   // Check whether current visitor has logged in / set up profile via InChat
   const isVisitorLoggedIn = Boolean(
@@ -541,11 +513,8 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const universalRecorderRef = useRef<UniversalAudioRecorder | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<any>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
-  const recordingStartTimeRef = useRef<number>(0);
 
   // For owner: active selected conversation in the sidebar
   const [activeOwnerConvId, setActiveOwnerConvId] = useState<string>(() => {

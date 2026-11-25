@@ -12,8 +12,6 @@ import {
   getDocFromServer,
   disableNetwork,
   enableNetwork,
-  query,
-  orderBy,
   increment,
 } from 'firebase/firestore';
 import {
@@ -28,7 +26,7 @@ import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
 import type { ProfileBioData, DocumentItem } from './profileState';
 import type { PublicEngineeringDocument } from '../components/EngineeringDocumentHub';
-import type { Conversation, ChatMessage } from '../components/MessagingSection';
+import type { Conversation } from '../components/MessagingSection';
 
 // ============================================================================
 // 1. CENTRALIZED FIREBASE SINGLETON INITIALIZATION
@@ -165,10 +163,11 @@ export async function testFirestoreConnection(force = false): Promise<boolean> {
 }
 
 if (typeof window !== 'undefined') {
-  void testFirestoreConnection();
   window.addEventListener('online', () => {
-    firestoreReachable = null;
-    void testFirestoreConnection(true);
+    if (firestoreReachable === false) {
+      firestoreReachable = null;
+      void testFirestoreConnection(true);
+    }
   });
 }
 

@@ -285,6 +285,11 @@ export async function saveGlobalProfileToDb(profileData: any) {
   const resolvedInstagramUrl = incomingBio.instagramUrl !== undefined ? incomingBio.instagramUrl : (profileData.instagramUrl !== undefined ? profileData.instagramUrl : (existing?.instagramUrl || ''));
   const resolvedEmailUrl = incomingBio.emailUrl !== undefined ? incomingBio.emailUrl : (profileData.emailUrl !== undefined ? profileData.emailUrl : ((existing as any)?.emailUrl || (resolvedEmail ? `mailto:${resolvedEmail}` : '')));
 
+  mergedCustom.availabilityStatus = resolvedAvailabilityStatus;
+  mergedCustom.targetLocations = resolvedTargetLocations;
+  mergedCustom.tiktokUrl = resolvedTiktokUrl;
+  mergedCustom.emailUrl = resolvedEmailUrl;
+
   const record = {
     id: 'global',
     fullName: resolvedFullName,

@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { X, Download, Printer, Copy, Check } from 'lucide-react';
-import { generateAndDownloadResume, categorizeSkills } from '../utils/generateResumePdf';
-import { resolveSkillStatus, formatSkillStatusLabel } from '../data/skillsData';
+import { categorizeSkills, resolveSkillStatus, formatSkillStatusLabel, type SkillCategoryName } from '../data/skillsData';
 import { getStoredBio, getStoredDocuments } from '../utils/profileState';
 import {
   fetchExperiencesFromSupabase,
@@ -28,7 +27,13 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
 
   const bio = useMemo(() => getStoredBio(), [isOpen]);
   const docs = useMemo(() => getStoredDocuments(), [isOpen]);
-  const categorizedSkills = useMemo(() => categorizeSkills(bio.skills), [bio.skills]);
+  const categorizedSkills = useMemo(() => {
+    const grouped = categorizeSkills(bio.skills);
+    const order: SkillCategoryName[] = ['Core Engineering Skills', 'Handful Skills', 'IT Skills'];
+    return order
+      .filter((category) => Array.isArray(grouped[category]) && grouped[category].length > 0)
+      .map((category) => ({ category, skills: grouped[category] }));
+  }, [bio.skills]);
 
   const [experiences, setExperiences] = useState<ProfileExperience[]>(() =>
     Array.isArray(bio.experiences) ? bio.experiences : []
@@ -69,16 +74,15 @@ export const ResumeDownloadModal: React.FC<ResumeModalProps> = ({
 
   if (!isOpen) return null;
 
-  const certifiedSet = new Set((bio.certifiedSkills || []).map((s) => s.toLowerCase()));
-
   const handlePrint = () => {
     onDownloaded();
     window.print();
   };
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     setDownloading(true);
     try {
+      const { generateAndDownloadResume } = await import('../utils/generateResumePdf');
       generateAndDownloadResume({
         fullName: bio.fullName || 'Festus, Olorunsogo Johnson',
         header:

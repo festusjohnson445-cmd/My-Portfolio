@@ -42,18 +42,26 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks: (id) => {
-            // Lazy chunk heavy libraries to keep initial page load weight well under 1.5 MB
+            if (id.includes('node_modules/firebase') || id.includes('node_modules/@firebase')) {
+              return 'vendor-firebase';
+            }
             if (id.includes('node_modules/three')) {
               return 'vendor-three';
             }
             if (id.includes('node_modules/jspdf')) {
               return 'vendor-jspdf';
             }
+            if (id.includes('node_modules/html2canvas')) {
+              return 'vendor-html2canvas';
+            }
             if (id.includes('node_modules/pdfjs-dist')) {
               return 'vendor-pdfjs';
             }
-            if (id.includes('node_modules/mammoth')) {
-              return 'vendor-mammoth';
+            if (id.includes('node_modules/mammoth') || id.includes('node_modules/jszip')) {
+              return 'vendor-docs';
+            }
+            if (id.includes('node_modules/xlsx')) {
+              return 'vendor-xlsx';
             }
             if (id.includes('node_modules/@supabase')) {
               return 'vendor-supabase';

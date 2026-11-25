@@ -78,7 +78,7 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
     }
 
     const { data: userData, error: userErr } = await supabase.auth.getUser();
-    const liveUser = userData?.user || session.user || null;
+    const liveUser = userData?.user || null;
     if (userErr || !liveUser) {
       return {
         ok: false,
@@ -88,7 +88,7 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
         nextLevel: null,
         verifiedFactorsCount: 0,
         expiresAt: null,
-        reason: 'Unable to validate Supabase user.',
+        reason: userErr?.message || 'Unable to validate Supabase user.',
       };
     }
 
@@ -132,27 +132,32 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
     }
 
     const jwtAal = getSessionAalClaim(session);
-    const { data: aalData, error: aalErr } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    const currentLevel = (aalData?.currentLevel as 'aal1' | 'aal2' | null) || jwtAal || null;
-    const nextLevel = (aalData?.nextLevel as 'aal1' | 'aal2' | null) || null;
+    let rawFactors = Array.isArray((liveUser as any).factors) ? (liveUser as any).factors : null;
+    if (!rawFactors) {
+      const { data: factorsData, error: factorsErr } = await supabase.auth.mfa.listFactors();
+      if (factorsErr) {
+        return {
+          ok: false,
+          user: liveUser,
+          session,
+          currentLevel: jwtAal,
+          nextLevel: null,
+          verifiedFactorsCount: 0,
+          expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
+          reason: factorsErr.message || 'Unable to verify MFA factors.',
+        };
+      }
+      rawFactors = factorsData?.all || factorsData?.totp || [];
+    }
 
-    const { data: factorsData, error: factorsErr } = await supabase.auth.mfa.listFactors();
-    const verifiedTotp = (factorsData?.totp || []).filter((f) => f.status === 'verified');
+    const verifiedTotp = rawFactors.filter(
+      (f: any) => f.status === 'verified' && (!f.factor_type || f.factor_type === 'totp')
+    );
+    const currentLevel = jwtAal;
+    const nextLevel: 'aal1' | 'aal2' | null =
+      verifiedTotp.length > 0 ? 'aal2' : currentLevel;
 
     const expiresAt = session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null;
-
-    if (aalErr || factorsErr) {
-      return {
-        ok: false,
-        user: liveUser,
-        session,
-        currentLevel,
-        nextLevel,
-        verifiedFactorsCount: verifiedTotp.length,
-        expiresAt,
-        reason: aalErr?.message || factorsErr?.message || 'Unable to verify MFA assurance level.',
-      };
-    }
 
     if (verifiedTotp.length === 0) {
       return {
@@ -167,7 +172,7 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
       };
     }
 
-    if (currentLevel !== 'aal2' || jwtAal !== 'aal2') {
+    if (currentLevel !== 'aal2') {
       return {
         ok: false,
         user: liveUser,
@@ -204,7 +209,9 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
 }
 
 /**
- * Lists all enrolled TOTP authenticator factors for the active administrator.
+ * Lists all enrolled TOTP authenticator factors (both verified and unverified)
+ * for the active administrator. Reads `data.all` because Supabase Auth JS
+ * filters `data.totp` to verified-only factors.
  */
 export async function listAdminTotpFactors(): Promise<{
   verified: AdminTotpFactorInfo[];
@@ -214,7 +221,12 @@ export async function listAdminTotpFactors(): Promise<{
   if (error) {
     throw new Error(error.message || 'Failed to load enrolled MFA devices.');
   }
-  const allTotp: AdminTotpFactorInfo[] = (data?.totp || []).map((f) => ({
+  const sourceList =
+    Array.isArray(data?.all) && data.all.length > 0
+      ? data.all.filter((f) => !f.factor_type || f.factor_type === 'totp')
+      : data?.totp || [];
+
+  const allTotp: AdminTotpFactorInfo[] = sourceList.map((f) => ({
     id: f.id,
     friendlyName: (f.friendly_name || 'Authenticator App').trim(),
     status: f.status === 'verified' ? 'verified' : 'unverified',
@@ -267,11 +279,24 @@ export async function startAdminTotpEnrollment(
   }
 
   const rawQr = String(data.totp.qr_code || '').trim();
-  const formattedQr = rawQr.startsWith('data:image/')
-    ? rawQr
-    : rawQr
-    ? `data:image/svg+xml;utf8,${encodeURIComponent(rawQr)}`
-    : '';
+  let formattedQr = '';
+  if (rawQr.startsWith('data:image/svg+xml')) {
+    const commaIdx = rawQr.indexOf(',');
+    if (commaIdx !== -1) {
+      const prefix = rawQr.slice(0, commaIdx);
+      const body = rawQr.slice(commaIdx + 1);
+      formattedQr =
+        !prefix.includes(';base64') && body.includes('<svg')
+          ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(body)}`
+          : rawQr;
+    } else {
+      formattedQr = rawQr;
+    }
+  } else if (rawQr.startsWith('data:image/')) {
+    formattedQr = rawQr;
+  } else if (rawQr) {
+    formattedQr = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(rawQr)}`;
+  }
 
   return {
     factorId: data.id,
@@ -307,7 +332,7 @@ export async function verifyAdminTotpChallenge(
     return { ok: false, message: 'Enter a valid 6-digit passcode from your authenticator app.' };
   }
 
-  const { error: challengeErr } = await supabase.auth.mfa.challengeAndVerify({
+  const { data: challengeData, error: challengeErr } = await supabase.auth.mfa.challengeAndVerify({
     factorId,
     code,
   });
@@ -319,9 +344,14 @@ export async function verifyAdminTotpChallenge(
     };
   }
 
-  // Refresh/verify live AAL2 state immediately after TOTP verification
+  // Only refresh session if the saved session does not yet carry AAL2 claim
   try {
-    await supabase.auth.refreshSession();
+    const returnedToken = (challengeData as any)?.access_token;
+    const { data: curSess } = await supabase.auth.getSession();
+    const activeAal = getSessionAalClaim(curSess?.session);
+    if (activeAal !== 'aal2' && (!returnedToken || getSessionAalClaim({ access_token: returnedToken } as any) !== 'aal2')) {
+      await supabase.auth.refreshSession();
+    }
   } catch {}
 
   const live = await verifyLiveAdminAal2();

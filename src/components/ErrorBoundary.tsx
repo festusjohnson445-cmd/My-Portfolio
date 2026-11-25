@@ -1,5 +1,5 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertTriangle, RefreshCw, Home, Database, CheckCircle2, ShieldCheck, Cpu } from 'lucide-react';
+import { Component, ErrorInfo, ReactNode } from 'react';
+import { AlertTriangle, RefreshCw, Home, Database, ShieldCheck } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -67,8 +67,7 @@ export class ErrorBoundary extends Component<Props, State> {
       this.setState({ repairStatus: 'Restoring verified application cache...' });
 
       setTimeout(() => {
-        window.location.href = '/#home';
-        window.location.reload();
+        window.location.href = '/';
       }, 700);
     } catch {
       window.location.reload();
@@ -77,7 +76,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   private handleReturnHome = () => {
     this.setState({ hasError: false, error: null, errorInfo: null });
-    window.location.href = '/#home';
+    window.location.href = '/';
   };
 
   public render() {
@@ -144,7 +143,7 @@ export class ErrorBoundary extends Component<Props, State> {
             <div className="pt-2 flex items-center justify-between border-t border-slate-800 text-[11px] text-slate-400">
               <span className="flex items-center gap-1.5">
                 <Database className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Database Sync: CloudSQL &amp; Firestore Connected</span>
+                <span>Persistent Storage Protected</span>
               </span>
               <button
                 type="button"

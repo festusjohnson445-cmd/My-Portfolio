@@ -1,35 +1,23 @@
 import { useEffect, useState, useCallback } from 'react';
-import { 
-  saveDocumentsPersistently, 
-  getDeletedDocIds, 
-  recordDeletedDocId,
+import {
+  saveDocumentsPersistently,
+  getDeletedDocIds,
   recordDeletedDocIds,
-  sortDocumentsDescending 
+  sortDocumentsDescending,
 } from './documentStorage';
 import {
   saveAvatarToIndexedDB,
-  loadAvatarFromIndexedDB,
   clearAvatarFromIndexedDB,
 } from './avatarStorage';
-import { 
-  saveProfileToFirestore, 
-  fetchProfileFromFirestore, 
-  subscribeToProfile, 
-  type PersistentProfileRecord
-} from './firebase';
+import type { PersistentProfileRecord } from './firebase';
 import {
   uploadAvatarToSupabaseBucket,
-  deleteAvatarFromSupabaseBucket,
   saveProfileToSupabaseTable,
   fetchProfileFromSupabaseTable,
   resolveSupabaseProfileDocuments,
   subscribeToSupabaseProfileChanges,
   getAuthenticatedOwnerUid,
   getValidatedSession,
-  supabaseSignInOwner,
-  supabaseSignOutOwner,
-  getSupabaseCurrentUser,
-  hasActiveOwnerSession,
   getAuthenticatedBearerHeaders,
 } from './supabase';
 
@@ -241,7 +229,6 @@ let memoryAvatar: string = '';
 let memoryBio: ProfileBioData | null = null;
 let memoryDocuments: DocumentItem[] | null = null;
 let memoryUpdatedAt: string = '';
-let isSyncingWithServer = false;
 let isRealtimeListenerAttached = false;
 let isProfileHydrated = false;
 let hasAuthoritativeSupabaseProfile = false;
@@ -281,7 +268,6 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
   if (!force && isProfileHydrated) return;
   if (syncInFlightPromise && !force) return syncInFlightPromise;
 
-  isSyncingWithServer = true;
   const runSync = async () => {
     try {
       let gotSupabaseProfile = false;
@@ -314,7 +300,8 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
 
       // Only fall back to Firestore / backup server API if Supabase returned nothing
       if (!gotSupabaseProfile) {
-        const firestoreTask = fetchProfileFromFirestore()
+        const firestoreTask = import('./firebase')
+          .then(({ fetchProfileFromFirestore }) => fetchProfileFromFirestore())
           .then((dbProfile) => {
             if (
               dbProfile &&
@@ -362,27 +349,37 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
           serverPayload &&
           ((serverPayload as any).avatar || (serverPayload as any).bio)
         ) {
-          saveProfileToFirestore({
-            avatar: (serverPayload as any).avatar || undefined,
-            bio: (serverPayload as any).bio || DEFAULT_BIO_DATA,
-            documents: (serverPayload as any).documents || [],
-          }).catch(() => {});
+          import('./firebase')
+            .then(({ saveProfileToFirestore }) =>
+              saveProfileToFirestore({
+                avatar: (serverPayload as any).avatar || undefined,
+                bio: (serverPayload as any).bio || DEFAULT_BIO_DATA,
+                documents: (serverPayload as any).documents || [],
+              })
+            )
+            .catch(() => {});
         }
       }
 
       isProfileHydrated = true;
 
-      // Attach real-time listeners once
+      // Attach real-time listeners once (Supabase primary; Firestore secondary only when needed)
       if (!isRealtimeListenerAttached && typeof window !== 'undefined') {
         isRealtimeListenerAttached = true;
-        subscribeToProfile(
-          (updatedRecord) => {
-            if (updatedRecord) {
-              applyPersistentProfile(updatedRecord, true, false);
-            }
-          },
-          (err) => console.warn('Realtime subscription notice:', err)
-        );
+        if (!gotSupabaseProfile) {
+          import('./firebase')
+            .then(({ subscribeToProfile }) => {
+              subscribeToProfile(
+                (updatedRecord) => {
+                  if (updatedRecord) {
+                    applyPersistentProfile(updatedRecord, true, false);
+                  }
+                },
+                (err) => console.warn('Realtime subscription notice:', err)
+              );
+            })
+            .catch(() => {});
+        }
 
         subscribeToSupabaseProfileChanges((supaPayload) => {
           if (supaPayload) {
@@ -428,7 +425,6 @@ export async function syncGlobalProfileWithServer(force = false): Promise<void> 
     } catch (err) {
       console.warn('Could not sync global profile from persistent storage:', err);
     } finally {
-      isSyncingWithServer = false;
       syncInFlightPromise = null;
     }
   };
@@ -708,6 +704,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
     notifyProfileUpdated();
 
     try {
+      const { saveProfileToFirestore } = await import('./firebase');
       await saveProfileToFirestore({ avatar: finalUrl });
       pushProfileToServer({ avatar: finalUrl }).catch(() => {});
     } catch {}
@@ -771,6 +768,7 @@ export async function saveStoredAvatar(avatarUrlOrFile: string | File | Blob): P
 
   // 7. Save URL reference to Firestore & Cloud SQL profile record
   try {
+    const { saveProfileToFirestore } = await import('./firebase');
     await saveProfileToFirestore({ avatar: finalUrl });
     pushProfileToServer({ avatar: finalUrl }).catch(() => {});
   } catch (dbErr) {
@@ -794,6 +792,7 @@ export async function resetStoredAvatar(): Promise<string> {
     await clearAvatarFromIndexedDB();
     const authHeaders = await getAuthenticatedBearerHeaders();
     await fetch('/api/profile/picture', { method: 'DELETE', headers: authHeaders });
+    const { saveProfileToFirestore } = await import('./firebase');
     await saveProfileToFirestore({ avatar: '' });
     pushProfileToServer({ avatar: '' }).catch(() => {});
     await saveProfileToSupabaseTable({ avatarUrl: '' }, ownerUid).catch(() => {});
@@ -907,6 +906,7 @@ export async function saveStoredBio(bio: ProfileBioData, avatar?: string): Promi
       payload.documents = currentDocs;
     }
 
+    const { saveProfileToFirestore } = await import('./firebase');
     await Promise.allSettled([
       saveProfileToFirestore(payload),
       pushProfileToServer(payload),
@@ -1005,6 +1005,7 @@ export async function saveStoredDocuments(docs: DocumentItem[], extraDeletedIds:
 
     // 3. Backup to Firestore & Server
     try {
+      const { saveProfileToFirestore } = await import('./firebase');
       await Promise.allSettled([
         saveProfileToFirestore({ bio: updatedBio, documents: cleanDocs }),
         pushProfileToServer({ bio: updatedBio, documents: cleanDocs }),

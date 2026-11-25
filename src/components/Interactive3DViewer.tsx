@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Eye, RotateCw, Maximize2, Layers, Cpu, Compass, Play, Pause, RefreshCw } from 'lucide-react';
+import { Layers, Cpu, Play, Pause, RefreshCw } from 'lucide-react';
 
 interface Interactive3DViewerProps {
   modelType?: 'harmonic_actuator' | 'gimbal_bracket' | 'planetary_gearbox' | 'chassis_suspension';

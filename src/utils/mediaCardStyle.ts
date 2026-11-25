@@ -2,8 +2,7 @@ import type { CSSProperties } from 'react';
 import type { MediaCardControlsConfig } from './portfolioSupabase';
 
 export function getImageFitClass(fit?: MediaCardControlsConfig['objectFit']): string {
-  if (fit === 'cover') return 'object-cover';
-  if (fit === 'fill') return 'object-fill';
+  if (fit === 'cover' || fit === 'fill') return 'object-cover';
   return 'object-contain';
 }
 
@@ -27,7 +26,8 @@ export function getContainerWidthClassForAspect(
 }
 
 export function getMediaImgStyle(controls?: MediaCardControlsConfig): CSSProperties {
-  const zoom = controls?.zoomLevel && controls.zoomLevel > 1 ? controls.zoomLevel : 1;
+  const rawZoom = controls?.zoomLevel && controls.zoomLevel > 1 ? controls.zoomLevel : 1;
+  const zoom = Math.min(1.08, rawZoom);
   return zoom > 1
     ? {
         transform: `scale(${zoom})`,

@@ -3,6 +3,7 @@ import {
   DocumentFormPayload,
   DocumentWorkspaceCategory,
   GeneratedDocumentRecord,
+  createEmptyFormPayload,
   extractDocumentAuthor,
   extractDocumentSummary,
   extractDocumentTitle,
@@ -89,6 +90,24 @@ let memoryPublishedDocsCache: GeneratedDocumentRecord[] | null = null;
 let publishedDocsFetchedAt = 0;
 let inFlightPublishedDocsPromise: Promise<GeneratedDocumentRecord[]> | null = null;
 
+export const hasPublishedGeneratedDocumentsHydrated = (): boolean => {
+  if (publishedDocsFetchedAt > 0 || memoryPublishedDocsCache !== null) return true;
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(LOCAL_PUBLISHED_KEY) !== null;
+  } catch {
+    return false;
+  }
+};
+
+export const getCachedPublishedGeneratedDocuments = (): GeneratedDocumentRecord[] => {
+  if (memoryPublishedDocsCache) return memoryPublishedDocsCache;
+  const local = safeReadLocal(LOCAL_PUBLISHED_KEY);
+  if (local.length > 0) {
+    memoryPublishedDocsCache = local;
+  }
+  return local;
+};
+
 export const invalidatePublishedGeneratedDocumentsCache = () => {
   publishedDocsFetchedAt = 0;
   memoryPublishedDocsCache = null;
@@ -98,7 +117,11 @@ export const fetchPublishedGeneratedDocuments = async (
   forceRefresh = false
 ): Promise<GeneratedDocumentRecord[]> => {
   const localPublished = safeReadLocal(LOCAL_PUBLISHED_KEY);
-  if (!isSupabaseConfigured()) return localPublished;
+  if (!isSupabaseConfigured()) {
+    memoryPublishedDocsCache = localPublished;
+    publishedDocsFetchedAt = Date.now();
+    return localPublished;
+  }
 
   if (
     !forceRefresh &&
@@ -147,13 +170,27 @@ export const fetchLocalDraftDocuments = (): GeneratedDocumentRecord[] => {
   return safeReadLocal(LOCAL_DRAFTS_KEY);
 };
 
+export const hasDraftModifications = (payload: DocumentFormPayload): boolean => {
+  try {
+    const empty = createEmptyFormPayload(payload.category);
+    return JSON.stringify(payload.data) !== JSON.stringify(empty.data);
+  } catch {
+    return true;
+  }
+};
+
 export const saveDraftLocally = (
   payload: DocumentFormPayload,
-  existingId?: string
+  existingId?: string,
+  options?: { skipPreview?: boolean }
 ): GeneratedDocumentRecord => {
   const now = new Date().toISOString();
-  const id = existingId || `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const previewDataUrl = renderDocumentFirstPageDataUrl(payload);
+  const id = existingId || `draft_${payload.category}`;
+  const drafts = safeReadLocal(LOCAL_DRAFTS_KEY);
+  const existing = drafts.find((d) => d.id === id);
+  const previewDataUrl = options?.skipPreview
+    ? existing?.previewImageUrl || ''
+    : renderDocumentFirstPageDataUrl(payload);
 
   const record: GeneratedDocumentRecord = {
     id,
@@ -169,11 +206,10 @@ export const saveDraftLocally = (
     status: 'draft',
     viewsCount: 0,
     downloadsCount: 0,
-    createdAt: now,
+    createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
 
-  const drafts = safeReadLocal(LOCAL_DRAFTS_KEY);
   const idx = drafts.findIndex((d) => d.id === id);
   const updated = idx >= 0 ? drafts.map((d) => (d.id === id ? record : d)) : [record, ...drafts];
   safeWriteLocal(LOCAL_DRAFTS_KEY, updated);
@@ -182,6 +218,13 @@ export const saveDraftLocally = (
 
 export const removeLocalDraft = (id: string) => {
   const drafts = safeReadLocal(LOCAL_DRAFTS_KEY).filter((d) => d.id !== id);
+  safeWriteLocal(LOCAL_DRAFTS_KEY, drafts);
+};
+
+export const removeLocalDraftsByCategory = (category: DocumentWorkspaceCategory) => {
+  const drafts = safeReadLocal(LOCAL_DRAFTS_KEY).filter(
+    (d) => d.category !== category && d.id !== `draft_${category}`
+  );
   safeWriteLocal(LOCAL_DRAFTS_KEY, drafts);
 };
 

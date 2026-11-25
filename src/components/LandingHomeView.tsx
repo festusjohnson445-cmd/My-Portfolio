@@ -134,6 +134,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
           >
             {/* Primary User CTA: My Profile */}
             <button
+              type="button"
               onClick={() => onNavigatePart('profile')}
               className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-cyan-900 hover:bg-cyan-800 text-white text-xs sm:text-sm font-serif font-bold shadow-sm hover:shadow-md transition-all cursor-pointer whitespace-nowrap group"
             >
@@ -143,6 +144,7 @@ export const LandingHomeView: React.FC<LandingHomeViewProps> = ({
 
             {/* Secondary CTA: Explore Engineering Hub */}
             <button
+              type="button"
               onClick={() => onNavigatePart('overview')}
               className="w-full min-w-0 inline-flex items-center justify-center gap-2 px-3.5 py-3 rounded-xl bg-white hover:bg-slate-50 text-slate-900 text-xs sm:text-sm font-serif font-bold border border-slate-300 shadow-2xs hover:border-slate-400 transition-all cursor-pointer whitespace-nowrap"
             >

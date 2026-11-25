@@ -38,18 +38,24 @@ const ALLOWED_STYLE_PROPS = new Set([
   'text-align',
   'line-height',
   'letter-spacing',
+  'word-spacing',
   'margin',
   'margin-top',
   'margin-bottom',
   'margin-left',
   'margin-right',
+  'padding',
+  'padding-top',
+  'padding-bottom',
   'padding-left',
   'padding-right',
+  'font-family',
   'font-size',
   'font-weight',
   'font-style',
   'text-decoration',
   'text-indent',
+  'list-style-type',
 ]);
 
 function sanitizeStyleValue(rawStyle: string): string {
@@ -79,7 +85,7 @@ function sanitizeStyleValue(rawStyle: string): string {
 
 export function isRichHtmlContent(content: string): boolean {
   if (!content) return false;
-  return /<\s*(p|div|span|h[1-6]|ul|ol|li|strong|b|em|i|u|blockquote|pre|code|br|table)\b[^>]*>/i.test(
+  return /<\s*(p|div|span|font|h[1-6]|ul|ol|li|strong|b|em|i|u|s|blockquote|pre|code|br|hr|table)\b[^>]*>/i.test(
     content
   );
 }
@@ -139,9 +145,30 @@ export function sanitizeArticleHtml(rawHtml: string): string {
       tag === 'font' ? document.createElement('span') : document.createElement(tag);
 
     if (tag === 'font') {
+      const fontStyles: string[] = [];
       const col = el.getAttribute('color');
       if (col && /^#[0-9a-f]{3,8}$|^rgb\([\d\s,.]+\)$|^[a-z]+$/i.test(col.trim())) {
-        outEl.setAttribute('style', `color: ${col.trim()}`);
+        fontStyles.push(`color: ${col.trim()}`);
+      }
+      const face = el.getAttribute('face');
+      if (face && !/[<>]/.test(face)) {
+        fontStyles.push(`font-family: ${face.trim()}`);
+      }
+      const sizeAttr = el.getAttribute('size');
+      const sizeMap: Record<string, string> = {
+        '1': '10px',
+        '2': '13px',
+        '3': '16px',
+        '4': '18px',
+        '5': '24px',
+        '6': '32px',
+        '7': '42px',
+      };
+      if (sizeAttr && sizeMap[sizeAttr.trim()]) {
+        fontStyles.push(`font-size: ${sizeMap[sizeAttr.trim()]}`);
+      }
+      if (fontStyles.length > 0) {
+        outEl.setAttribute('style', fontStyles.join('; '));
       }
     }
 

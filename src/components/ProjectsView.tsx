@@ -36,11 +36,17 @@ import { Interactive3DViewer } from './Interactive3DViewer';
 import { ProjectFormPanel } from './ProjectFormPanel';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
 import { LiveRelativeTime } from './LiveRelativeTime';
+import { CardTopMedia } from './CardTopMedia';
 import {
   getContainerWidthClassForAspect,
   getImageFitClass,
   getMediaImgStyle,
 } from '../utils/mediaCardStyle';
+import {
+  isRichHtmlContent,
+  markdownToBasicHtml,
+  sanitizeArticleHtml,
+} from '../utils/htmlSanitizer';
 import {
   buildProjectSeoMetadata,
   getPageSeoMetadata,
@@ -64,7 +70,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const { customSections, innerLayout, videoCardControls } = projectsArticlesConfig;
   const imageCardControls = projectsArticlesConfig.imageCardControls || {
     aspectRatio: '4/3' as const,
-    objectFit: 'contain' as const,
+    objectFit: 'cover' as const,
     zoomLevel: 1,
   };
   const cardAnimClass = cardAnimationEnabled ? 'card-anim-enabled' : '';
@@ -77,7 +83,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   );
 
   const [projects, setProjects] = useState<PortfolioProject[]>(() => getCachedProjects(isOwner));
-  const [loading, setLoading] = useState(() => !hasProjectsCacheHydrated() && getCachedProjects(isOwner).length === 0);
+  const [loading, setLoading] = useState(false);
   const [selectedProject, setSelectedProject] = useState<PortfolioProject | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
 
@@ -92,9 +98,6 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'title' | 'featured'>('featured');
 
   const loadProjects = async () => {
-    if (!hasProjectsCacheHydrated() && projects.length === 0) {
-      setLoading(true);
-    }
     try {
       const data = await fetchProjectsFromSupabase(isOwner);
       setProjects(data);
@@ -442,6 +445,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 )}
               </div>
             </figure>
+          )}
+
+          {selectedProject.mainContent && selectedProject.mainContent.trim() && (
+            <div className="w-full p-4 sm:p-5 rounded-xl bg-white border border-[#cbd5e1] shadow-2xs space-y-2">
+              <div
+                className="fesline-rich-project max-w-full overflow-x-hidden space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:pl-6 [&_ul]:space-y-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_ol]:space-y-1 [&_blockquote]:border-l-3 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline [&_hr]:my-3 [&_hr]:border-slate-200"
+                dangerouslySetInnerHTML={{
+                  __html: sanitizeArticleHtml(
+                    isRichHtmlContent(selectedProject.mainContent)
+                      ? selectedProject.mainContent
+                      : markdownToBasicHtml(selectedProject.mainContent)
+                  ),
+                }}
+              />
+            </div>
           )}
 
           {/* Overview, Objectives, Methodology, Results */}
@@ -819,107 +837,78 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
       {/* Featured Projects Strip (Only rendered when featured projects exist in Supabase) */}
       {featuredProjects.length > 0 && (
-        <div className="space-y-2.5">
+        <div className="space-y-3">
           <h2 className="text-xs sm:text-sm font-bold text-slate-900 text-center uppercase tracking-wider">
             Featured Projects
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {featuredProjects.slice(0, 2).map((proj) => {
-              const featImg = proj.thumbnailUrl || proj.images?.[0]?.url || '';
+              const featImg =
+                proj.thumbnailUrl ||
+                proj.images?.[0]?.jpegUrl ||
+                proj.images?.[0]?.webpUrl ||
+                proj.images?.[0]?.url ||
+                proj.cadDrawings?.[0]?.url ||
+                '';
               const featVid = !featImg
                 ? proj.videos?.[0]?.h264Urls?.['720p'] || proj.videos?.[0]?.url || ''
                 : '';
               return (
-              <div
-                key={`feat-${proj.id}`}
-                onClick={() => openProjectDetail(proj)}
-                className="rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row"
-              >
-                {featImg ? (
-                  <div className="w-full sm:w-52 h-40 sm:h-auto sm:min-h-[168px] bg-slate-100 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden flex items-center justify-center">
-                    <img
-                      src={featImg}
-                      alt={proj.title}
-                      loading="lazy"
-                      decoding="async"
-                      style={getMediaImgStyle(imageCardControls)}
-                      className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
-                    />
-                  </div>
-                ) : featVid ? (
-                  <div className="relative w-full sm:w-52 aspect-video sm:aspect-auto sm:min-h-[168px] bg-slate-950 border-b sm:border-b-0 sm:border-r border-slate-200 shrink-0 overflow-hidden">
-                    {proj.videos?.[0]?.posterUrl ? (
-                      <img
-                        src={proj.videos[0].posterUrl}
-                        alt={proj.title}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-full h-full object-cover block"
-                      />
-                    ) : (
-                      <video
-                        src={featVid}
-                        preload="none"
-                        muted
-                        playsInline
-                        className="w-full h-full object-contain pointer-events-none"
-                      />
-                    )}
-                    <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
-                      <span className="w-8 h-8 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
-                        <Play className="w-3.5 h-3.5 fill-white ml-0.5" />
-                      </span>
-                    </div>
-                  </div>
-                ) : null}
-                <div className="p-4 flex-1 flex flex-col justify-between gap-3">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2 text-[10px]">
-                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
-                        {proj.category}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 text-amber-700 font-bold shrink-0">
-                        <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
-                        <span>Featured</span>
-                      </span>
-                    </div>
-                    <h3 className="text-sm font-bold text-slate-950 text-center leading-snug line-clamp-2">
-                      {proj.title}
-                    </h3>
-                    <p className="text-[11px] text-slate-600 line-clamp-2 text-justify leading-relaxed">
-                      {proj.description}
-                    </p>
-                    {proj.toolsUsed.length > 0 && (
-                      <div className="flex flex-wrap items-center justify-center gap-1 pt-0.5">
-                        {proj.toolsUsed.slice(0, 3).map((tool, tIdx) => (
-                          <span
-                            key={tIdx}
-                            className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-medium text-slate-700 truncate max-w-[110px]"
-                          >
-                            {tool}
-                          </span>
-                        ))}
-                        {proj.toolsUsed.length > 3 && (
-                          <span className="text-[9.5px] text-slate-500 font-semibold">
-                            +{proj.toolsUsed.length - 3}
-                          </span>
-                        )}
+                <article
+                  key={`feat-${proj.id}`}
+                  onClick={() => openProjectDetail(proj)}
+                  className={`group rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col sm:flex-row ${cardAnimClass}`}
+                >
+                  <CardTopMedia
+                    title={proj.title}
+                    category={proj.category}
+                    imageUrl={featImg}
+                    videoUrl={featVid}
+                    posterUrl={proj.videos?.[0]?.posterUrl}
+                    variant="project"
+                    layout="featured"
+                    isCad={proj.isCadProject}
+                    imageControls={imageCardControls}
+                  />
+                  <div className="p-4 flex-1 flex flex-col justify-between gap-3 min-w-0">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold text-cyan-900 truncate">{proj.category}</span>
+                        <span className="inline-flex items-center gap-1 text-amber-700 font-semibold shrink-0">
+                          <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
+                          <span>Featured</span>
+                        </span>
                       </div>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px]">
-                    <div className="flex items-center gap-2.5 text-slate-500">
-                      <LiveRelativeTime date={proj.createdAt} className="text-[9.5px] text-slate-500" />
-                      <span className="text-slate-300">·</span>
-                      <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Real-time views">
-                        <Eye className="w-3 h-3 text-cyan-800" />
-                        <span className="tabular-nums">{proj.viewsCount || 0}</span>
+                      <h3 className="text-sm sm:text-[15px] font-bold text-slate-950 group-hover:text-cyan-900 transition-colors leading-snug line-clamp-2 text-left">
+                        {proj.title}
+                      </h3>
+                      {proj.description && (
+                        <p className="text-xs text-slate-600 line-clamp-2 sm:line-clamp-3 text-left leading-relaxed">
+                          {proj.description}
+                        </p>
+                      )}
+                      {proj.toolsUsed.length > 0 && (
+                        <p className="text-[11px] font-mono text-slate-500 truncate pt-0.5 text-left">
+                          {proj.toolsUsed.slice(0, 3).join(' · ')}
+                          {proj.toolsUsed.length > 3 ? ` · +${proj.toolsUsed.length - 3}` : ''}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 text-[11px]">
+                      <div className="flex items-center gap-2 text-slate-500">
+                        <LiveRelativeTime date={proj.createdAt} className="text-[11px] text-slate-500" />
+                        <span aria-hidden="true" className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1 text-slate-600 font-semibold tabular-nums" title="Real-time views">
+                          <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                          <span>{proj.viewsCount || 0}</span>
+                        </span>
+                      </div>
+                      <span className="text-cyan-900 font-bold group-hover:translate-x-0.5 transition-transform">
+                        View →
                       </span>
                     </div>
-                    <span className="text-cyan-900 font-bold">View →</span>
                   </div>
-                </div>
-              </div>
+                </article>
               );
             })}
           </div>
@@ -957,7 +946,18 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
       {/* Projects Grid — Completely empty when no rows exist in Supabase */}
       {loading ? (
-        <div className="p-8 text-center text-xs text-slate-500">Loading portfolio...</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3].map((n) => (
+            <div key={`proj-skel-${n}`} className="rounded-xl bg-white border border-[#b8c6d4] overflow-hidden animate-pulse">
+              <div className="w-full aspect-[16/10] bg-slate-200" />
+              <div className="p-4 space-y-2.5">
+                <div className="h-3 bg-slate-200 rounded w-1/3" />
+                <div className="h-4 bg-slate-200 rounded w-5/6" />
+                <div className="h-3 bg-slate-100 rounded w-full" />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : filteredProjects.length === 0 ? (
         <div className="p-8 rounded-xl bg-white/80 border border-dashed border-[#b8c6d4] text-center space-y-2">
           <p className="text-xs text-slate-600">No projects published yet.</p>
@@ -971,143 +971,105 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
         const gapClass =
           innerLayout.cardSpacing === 'compact'
-            ? 'gap-2.5'
+            ? 'gap-3'
             : innerLayout.cardSpacing === 'relaxed'
             ? 'gap-6'
-            : 'gap-4';
+            : 'gap-4 sm:gap-5';
         const padClass =
           innerLayout.cardSpacing === 'compact'
-            ? 'p-2.5'
+            ? 'p-3.5'
             : innerLayout.cardSpacing === 'relaxed'
             ? 'p-5'
-            : 'p-3.5';
-        const descAlignClass =
-          innerLayout.cardTextAlign === 'left'
-            ? 'text-left'
-            : innerLayout.cardTextAlign === 'center'
-            ? 'text-center'
-            : 'text-justify';
+            : 'p-4';
+        const textAlignClass =
+          innerLayout.cardTextAlign === 'center' ? 'text-center' : 'text-left';
 
         return (
           <div className={`grid ${gridColsClass} ${gapClass}`}>
             {filteredProjects.map((proj) => {
-              const cardImg = proj.thumbnailUrl || proj.images?.[0]?.url || '';
+              const cardImg =
+                proj.thumbnailUrl ||
+                proj.images?.[0]?.jpegUrl ||
+                proj.images?.[0]?.webpUrl ||
+                proj.images?.[0]?.url ||
+                proj.cadDrawings?.[0]?.url ||
+                '';
               const cardVid = !cardImg
                 ? proj.videos?.[0]?.h264Urls?.['720p'] || proj.videos?.[0]?.url || ''
                 : '';
               return (
-              <article
-                key={proj.id}
-                onClick={() => openProjectDetail(proj)}
-                className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
-              >
-                <div>
-                  {cardImg ? (
-                    <div
-                      className="w-full max-h-[240px] bg-slate-100 border-b border-slate-200 overflow-hidden flex items-center justify-center"
-                      style={{
-                        aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
-                      }}
-                    >
-                      <img
-                        src={cardImg}
-                        alt={proj.title}
-                        loading="lazy"
-                        decoding="async"
-                        style={getMediaImgStyle(imageCardControls)}
-                        className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
-                      />
-                    </div>
-                  ) : cardVid ? (
-                    <div className="relative w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-200">
-                      {proj.videos?.[0]?.posterUrl ? (
-                        <img
-                          src={proj.videos[0].posterUrl}
-                          alt={proj.title}
-                          loading="lazy"
-                          decoding="async"
-                          className="w-full h-full object-cover block"
-                        />
-                      ) : (
-                        <video
-                          src={cardVid}
-                          preload="none"
-                          muted
-                          playsInline
-                          className="w-full h-full object-contain pointer-events-none"
-                        />
-                      )}
-                      <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
-                        <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
-                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                <article
+                  key={proj.id}
+                  onClick={() => openProjectDetail(proj)}
+                  className={`group rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
+                >
+                  <div className="flex flex-col flex-1">
+                    <CardTopMedia
+                      title={proj.title}
+                      category={proj.category}
+                      imageUrl={cardImg}
+                      videoUrl={cardVid}
+                      posterUrl={proj.videos?.[0]?.posterUrl}
+                      variant="project"
+                      layout="grid"
+                      isCad={proj.isCadProject}
+                      imageControls={imageCardControls}
+                    />
+                    <div className={`${padClass} flex-1 flex flex-col gap-2`}>
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold text-cyan-900 truncate">
+                          {proj.category}
                         </span>
+                        <div className="flex items-center gap-1.5 shrink-0 text-[10.5px]">
+                          {proj.isFeatured && (
+                            <span className="inline-flex items-center gap-0.5 text-amber-700 font-semibold">
+                              <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
+                              <span>Featured</span>
+                            </span>
+                          )}
+                          {proj.status !== 'published' && (
+                            <span className="text-amber-800 uppercase font-bold tracking-wide">
+                              {proj.status}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
-                  <div className={`${padClass} space-y-2`}>
-                    <div className="flex items-center justify-between gap-1.5 text-[10px]">
-                      <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
-                        {proj.category}
-                      </span>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {proj.isFeatured && (
-                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 font-bold">
-                            <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
-                          </span>
-                        )}
-                        {proj.status !== 'published' && (
-                          <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
-                            {proj.status}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <h3
-                      className={`text-sm font-bold text-slate-950 leading-snug line-clamp-2 ${
-                        innerLayout.cardTextAlign === 'left' ? 'text-left' : 'text-center'
-                      }`}
-                    >
-                      {proj.title}
-                    </h3>
-                    <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${descAlignClass}`}>
-                      {proj.description}
-                    </p>
-                    {proj.toolsUsed.length > 0 && (
-                      <div
-                        className={`flex flex-wrap gap-1 pt-0.5 ${
-                          innerLayout.cardTextAlign === 'left' ? 'justify-start' : 'justify-center'
-                        }`}
+                      <h3
+                        className={`text-sm sm:text-[15px] font-bold text-slate-950 group-hover:text-cyan-900 transition-colors leading-snug line-clamp-2 ${textAlignClass}`}
                       >
-                        {proj.toolsUsed.slice(0, 2).map((tool, tIdx) => (
-                          <span
-                            key={tIdx}
-                            className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-medium text-slate-700 truncate max-w-[110px]"
-                          >
-                            {tool}
-                          </span>
-                        ))}
-                        {proj.toolsUsed.length > 2 && (
-                          <span className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-[9.5px] font-semibold text-slate-500">
-                            +{proj.toolsUsed.length - 2}
-                          </span>
-                        )}
-                      </div>
-                    )}
+                        {proj.title}
+                      </h3>
+                      {proj.description && (
+                        <p className={`text-xs text-slate-600 line-clamp-2 sm:line-clamp-3 leading-relaxed ${textAlignClass}`}>
+                          {proj.description}
+                        </p>
+                      )}
+                      {proj.toolsUsed.length > 0 && (
+                        <p
+                          className={`text-[11px] font-mono text-slate-500 truncate mt-auto pt-1 ${textAlignClass}`}
+                          title={proj.toolsUsed.join(', ')}
+                        >
+                          {proj.toolsUsed.slice(0, 3).join(' · ')}
+                          {proj.toolsUsed.length > 3 ? ` · +${proj.toolsUsed.length - 3}` : ''}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="px-3.5 pb-2.5 pt-2 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <div className="flex items-center gap-2">
-                    <LiveRelativeTime date={proj.createdAt} className="text-[9.5px] text-slate-500" />
-                    <span className="text-slate-300">·</span>
-                    <span className="inline-flex items-center gap-1 text-slate-600 font-semibold" title="Real-time views">
-                      <Eye className="w-3 h-3 text-cyan-800" />
-                      <span className="tabular-nums">{proj.viewsCount || 0}</span>
+                  <div className="px-4 py-2.5 bg-slate-50/80 border-t border-slate-100 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <LiveRelativeTime date={proj.createdAt} className="text-[11px] text-slate-500 truncate" />
+                      <span aria-hidden="true" className="text-slate-300">·</span>
+                      <span className="inline-flex items-center gap-1 text-slate-600 font-semibold tabular-nums shrink-0" title="Real-time views">
+                        <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                        <span>{proj.viewsCount || 0}</span>
+                      </span>
+                    </div>
+                    <span className="text-cyan-900 font-bold shrink-0 group-hover:translate-x-0.5 transition-transform">
+                      Explore →
                     </span>
                   </div>
-                  <span className="text-cyan-900 font-bold shrink-0">View →</span>
-                </div>
-              </article>
+                </article>
               );
             })}
           </div>

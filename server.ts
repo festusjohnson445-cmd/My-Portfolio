@@ -202,13 +202,11 @@ async function verifyAdminAal2Request(req: express.Request): Promise<
   }
 
   const supabaseUrl = (
-    (req.headers['x-supabase-url'] as string) ||
     process.env.VITE_SUPABASE_URL ||
     process.env.SUPABASE_URL ||
     MEDIA_RELAY_DEFAULT_URL
   ).replace(/\/+$/, '');
   const anonKey =
-    (req.headers['x-supabase-anon-key'] as string) ||
     process.env.VITE_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     MEDIA_RELAY_DEFAULT_ANON_KEY;
@@ -1233,18 +1231,22 @@ function runMulterSingle(
 }
 
 function resolveSupabaseHeaders(req: express.Request) {
-  const supabaseUrl = (
-    (req.headers['x-supabase-url'] as string) ||
+  const trustedUrl = (
     process.env.VITE_SUPABASE_URL ||
     process.env.SUPABASE_URL ||
     DEFAULT_SUPABASE_URL
   ).replace(/\/+$/, '');
+  const requestedUrl = String(req.headers['x-supabase-url'] || '').trim().replace(/\/+$/, '');
+  const supabaseUrl = requestedUrl === trustedUrl ? requestedUrl : trustedUrl;
 
-  const anonKey =
-    (req.headers['x-supabase-anon-key'] as string) ||
+  const trustedAnonKey =
     process.env.VITE_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     DEFAULT_SUPABASE_ANON_KEY;
+  const anonKey =
+    supabaseUrl === trustedUrl && req.headers['x-supabase-anon-key']
+      ? String(req.headers['x-supabase-anon-key'])
+      : trustedAnonKey;
 
   const incomingAuth = req.headers.authorization;
   const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();

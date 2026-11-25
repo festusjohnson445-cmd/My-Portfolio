@@ -596,7 +596,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       const urlParams = new URLSearchParams(window.location.search);
       const hash = window.location.hash;
       if (urlParams.get('admin') === 'true' || hash === '#admin' || hash === '#owner-login') {
-        setIsAuthModalOpen(true);
+        window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
       }
     }
   }, []);
@@ -610,16 +610,27 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       setMfaCode('');
       setShowRecoveryGuide(false);
 
-      // If user has an AAL1 session waiting on MFA, resume directly into TOTP challenge/enrollment
+      // If user already has an AAL2 session or an AAL1 session waiting on MFA, handle cleanly
       try {
         const { data } = await supabase.auth.getSession();
         const user = data?.session?.user;
         if (user && isRealOwnerUser(user)) {
           const live = await verifyLiveAdminAal2();
-          if (!live.ok) {
+          if (live.ok && live.user) {
+            setAuthenticatedUid(live.user.id);
+            syncSetOwner(true, live.user.id);
+            setIsOwnerAuthenticated(true);
+            showNotification('Chief Admin AAL2 session is already active.');
+            return;
+          }
+          try {
             await routeAuthenticatedUserToMfaStep(user.email || AUTHORIZED_ADMIN_EMAIL);
             setIsAuthModalOpen(true);
             return;
+          } catch (mfaRouteErr: any) {
+            setAuthError(
+              mfaRouteErr?.message || 'Unable to load 2FA verification step. Please sign in again.'
+            );
           }
         }
       } catch {}
@@ -663,9 +674,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     const cleanPassword = authPin;
 
     try {
-      if (syncIsOwner) {
-        setAuthError('An administrator AAL2 session is already active.');
+      if (!cleanEmail || !cleanPassword) {
+        setAuthError('Enter both your email and password.');
         return;
+      }
+
+      if (syncIsOwner) {
+        const live = await verifyLiveAdminAal2();
+        if (live.ok && live.user) {
+          setAuthError('An administrator AAL2 session is already active.');
+          return;
+        }
+        syncSetOwner(false);
+        setIsOwnerAuthenticated(false);
       }
 
       if (!isAuthorizedAdminEmail(cleanEmail)) {
@@ -919,12 +940,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate active session
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeSession = sessionData?.session;
-    if (!activeSession || !activeSession.user) {
-      setIsAuthModalOpen(true);
-      showNotification('Active owner session required to change profile photo. Please log in.', 'error');
+    // Validate live AAL2 session
+    const live = await verifyLiveAdminAal2();
+    if (!live.ok || !live.user) {
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+      showNotification(live.reason || 'Active AAL2 owner session required to change profile photo.', 'error');
       e.target.value = '';
       return;
     }
@@ -987,7 +1007,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   // Handle Bio Edit Save (Owner Gated via Supabase Session)
   const handleOpenEditBio = () => {
     if (!isOwnerAuthenticated) {
-      setIsAuthModalOpen(true);
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
       return;
     }
     setEditBioForm({ ...bioData });
@@ -997,11 +1017,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const handleSaveBio = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeSession = sessionData?.session;
-    if (!activeSession || !activeSession.user) {
-      setIsAuthModalOpen(true);
-      showNotification('Active owner session required to update profile. Please log in.', 'error');
+    const live = await verifyLiveAdminAal2();
+    if (!live.ok || !live.user) {
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+      showNotification(live.reason || 'Active AAL2 owner session required to update profile.', 'error');
       return;
     }
 
@@ -1221,13 +1240,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleDirectAttachFile = async (docId: string, file: File) => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeSession = sessionData?.session;
-    if (!activeSession || !activeSession.user) {
-      setIsAuthModalOpen(true);
-      showNotification('Active owner session required to attach files. Please log in.', 'error');
+    const live = await verifyLiveAdminAal2();
+    if (!live.ok || !live.user) {
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+      showNotification(live.reason || 'Active AAL2 owner session required to attach files.', 'error');
       return;
     }
+    const activeSession = { user: live.user };
 
     const formatSize = (bytes: number) => {
       if (bytes < 1024) return `${bytes} B`;
@@ -1303,13 +1322,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     e.preventDefault();
     setDocFormError(null);
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeSession = sessionData?.session;
-    if (!activeSession || !activeSession.user) {
-      setIsAuthModalOpen(true);
-      setDocFormError('Active owner session required to upload/update documents. Please sign in.');
+    const live = await verifyLiveAdminAal2();
+    if (!live.ok || !live.user) {
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+      setDocFormError(live.reason || 'Active AAL2 owner session required to upload/update documents.');
       return;
     }
+    const activeSession = { user: live.user };
 
     const cleanFileName = docSelectedFile ? docSelectedFile.name.replace(/\.[^/.]+$/, '').replace(/[_.-]/g, ' ') : '';
     const effectiveTitle = docTitle.trim() || cleanFileName || docAttachmentName || 'Uploaded Engineering Document';
@@ -1467,8 +1486,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleDeleteDocument = async (id: string, title: string) => {
-    if (!isOwnerAuthenticated) {
-      setIsAuthModalOpen(true);
+    const live = await verifyLiveAdminAal2();
+    if (!live.ok) {
+      window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
+      showNotification(live.reason || 'Active AAL2 owner session required to delete documents.', 'error');
       return;
     }
     recordDeletedDocId(id);
@@ -2708,49 +2729,72 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
               (d) => !d.credentialGroup || d.credentialGroup === 'Document'
             );
 
-            const renderDocCard = (doc: DocumentItem, isCompactSub = false) => (
-              <div
-                key={doc.id}
-                className={`rounded-xl bg-white border shadow-2xs hover:shadow-sm transition-shadow overflow-hidden flex flex-col justify-between ${
-                  isCompactSub ? 'border-cyan-200/80' : 'border-slate-200/90'
-                }`}
-              >
-                <DocumentTopMedia
-                  doc={doc}
-                  isOwnerAuthenticated={isOwnerAuthenticated}
-                  onOpenPreview={(d) => setSelectedPreviewDoc(d)}
-                  onDownloadAttachment={handleDownloadAttachment}
-                  onRequireAuth={() => setIsAuthModalOpen(true)}
-                  onUpdatePreviewUrl={handleUpdateDocPreview}
-                  onDirectAttachFile={handleDirectAttachFile}
-                />
-                <div className="p-3.5 text-xs flex-1 flex flex-col justify-between gap-2.5">
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[10.5px] text-slate-500">
-                      <span className="font-bold text-cyan-900 truncate">
-                        {doc.credentialGroup || doc.category}
-                      </span>
-                      {doc.date && <span className="shrink-0 tabular-nums">{doc.date}</span>}
-                    </div>
-                    <h3 className="text-xs font-bold text-slate-950 text-left leading-snug">{doc.title}</h3>
-                    {doc.issuer && (
-                      <div className="text-[10.5px] font-medium text-slate-600 text-left">
-                        From: {doc.issuer}
+            const specsWithCourses = specDocs.filter((spec) =>
+              courseDocs.some((c) => c.parentSpecializationId === spec.id)
+            );
+            const standaloneSpecs = specDocs.filter(
+              (spec) => !courseDocs.some((c) => c.parentSpecializationId === spec.id)
+            );
+            const standaloneCourses = courseDocs.filter(
+              (c) =>
+                !c.parentSpecializationId ||
+                !specDocs.some((s) => s.id === c.parentSpecializationId)
+            );
+
+            const renderDocCard = (doc: DocumentItem, isLinkedCourse = false) => {
+              const isParentSpec = doc.credentialGroup === 'Specialization';
+              return (
+                <article
+                  key={doc.id}
+                  className={`rounded-xl bg-white border shadow-2xs hover:shadow-md transition-all overflow-hidden flex flex-col justify-between ${
+                    isLinkedCourse
+                      ? 'border-cyan-200/90 hover:border-cyan-600'
+                      : 'border-slate-200/90 hover:border-cyan-700'
+                  }`}
+                >
+                  <div>
+                    <DocumentTopMedia
+                      doc={doc}
+                      isOwnerAuthenticated={isOwnerAuthenticated}
+                      onOpenPreview={(d) => setSelectedPreviewDoc(d)}
+                      onDownloadAttachment={handleDownloadAttachment}
+                      onRequireAuth={() => setIsAuthModalOpen(true)}
+                      onUpdatePreviewUrl={handleUpdateDocPreview}
+                      onDirectAttachFile={handleDirectAttachFile}
+                    />
+                    <div className="p-3.5 text-xs space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-100 text-[11px] text-slate-500">
+                        <span className="font-semibold text-cyan-900 truncate">
+                          {isParentSpec
+                            ? 'Specialization Certificate'
+                            : isLinkedCourse
+                            ? 'Course Certificate'
+                            : doc.credentialGroup || doc.category}
+                        </span>
+                        {doc.date && <span className="shrink-0 tabular-nums">{doc.date}</span>}
                       </div>
-                    )}
-                    {doc.description && (
-                      <p className="text-[11px] text-slate-700 leading-relaxed text-justify">
-                        {doc.description}
-                      </p>
-                    )}
+                      <h3 className="text-[13px] font-bold text-slate-950 text-left leading-snug line-clamp-2">
+                        {doc.title}
+                      </h3>
+                      {doc.issuer && (
+                        <div className="text-[11px] font-medium text-slate-600 text-left truncate">
+                          From: {doc.issuer}
+                        </div>
+                      )}
+                      {doc.description && (
+                        <p className="text-[11.5px] text-slate-700 leading-relaxed text-left line-clamp-3">
+                          {doc.description}
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
+                  <div className="px-3.5 py-2.5 bg-slate-50/70 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5 text-[10.5px]">
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => setSelectedPreviewDoc(doc)}
-                        className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-semibold cursor-pointer"
+                        className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-semibold cursor-pointer"
                       >
                         Preview
                       </button>
@@ -2767,11 +2811,20 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       )}
                     </div>
                     {isOwnerAuthenticated && (
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {isParentSpec && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAddCourseForSpecialization(doc.id)}
+                            className="px-2 py-1 rounded-md bg-cyan-50 hover:bg-cyan-100 border border-cyan-300 text-cyan-900 font-semibold cursor-pointer"
+                          >
+                            + Course
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleOpenEditDocument(doc)}
-                          className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 cursor-pointer"
+                          className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 cursor-pointer"
                         >
                           Edit
                         </button>
@@ -2785,21 +2838,28 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                       </div>
                     )}
                   </div>
-                </div>
-              </div>
-            );
+                </article>
+              );
+            };
+
+            const singleGridDocs: DocumentItem[] =
+              credentialFilterGroup === 'Courses'
+                ? courseDocs
+                : credentialFilterGroup === 'Specialization'
+                ? standaloneSpecs
+                : [...standaloneSpecs, ...standaloneCourses];
 
             return (
-              <div className="space-y-4">
-                {/* SPECIALIZATION CERTIFICATES + LINKED SUB-COURSES */}
+              <div className="space-y-5">
+                {/* 1. SPECIALIZATIONS WITH SUB-COURSE CERTIFICATIONS / DOCUMENTS (GRID PER SPECIALIZATION) */}
                 {(credentialFilterGroup === 'All' || credentialFilterGroup === 'Specialization') &&
-                  specDocs.length > 0 && (
-                    <div className="space-y-3">
+                  specsWithCourses.length > 0 && (
+                    <div className="space-y-3.5">
                       <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
-                        Specialization Certificates
+                        Specialization Certificates &amp; Linked Courses
                       </h3>
-                      <div className="space-y-3">
-                        {specDocs.map((spec) => {
+                      <div className="space-y-4">
+                        {specsWithCourses.map((spec) => {
                           const linkedCourses = courseDocs.filter(
                             (c) => c.parentSpecializationId === spec.id
                           );
@@ -2807,13 +2867,13 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                           return (
                             <div
                               key={spec.id}
-                              className="p-3.5 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-3"
+                              className="p-3.5 sm:p-4 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-3"
                             >
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <button
                                   type="button"
                                   onClick={() => toggleSpecialization(String(spec.id))}
-                                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left min-w-0"
+                                  className="inline-flex items-center gap-1.5 text-xs sm:text-[13px] font-bold text-slate-950 hover:text-cyan-900 cursor-pointer text-left min-w-0"
                                 >
                                   {isExpanded ? (
                                     <ChevronDown className="w-4 h-4 text-cyan-800 shrink-0" />
@@ -2821,8 +2881,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                     <ChevronRight className="w-4 h-4 text-cyan-800 shrink-0" />
                                   )}
                                   <span className="truncate">{spec.title}</span>
-                                  <span className="text-[10px] font-normal text-slate-500 shrink-0">
-                                    ({linkedCourses.length} Course{linkedCourses.length === 1 ? '' : 's'})
+                                  <span className="text-[11px] font-normal text-slate-500 shrink-0">
+                                    · {linkedCourses.length} Sub-Course{linkedCourses.length === 1 ? '' : 's'}
                                   </span>
                                 </button>
 
@@ -2830,15 +2890,15 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                                   <button
                                     type="button"
                                     onClick={() => toggleSpecialization(String(spec.id))}
-                                    className="px-2.5 py-1 rounded-md bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-semibold text-slate-800 cursor-pointer"
+                                    className="px-2.5 py-1 rounded-md bg-[#edf2f8] border border-[#b8c6d4] text-[10.5px] font-semibold text-slate-800 cursor-pointer"
                                   >
-                                    {isExpanded ? 'Hide Details' : 'View Certificate & Courses'}
+                                    {isExpanded ? 'Collapse' : 'Expand'}
                                   </button>
                                   {isOwnerAuthenticated && (
                                     <button
                                       type="button"
                                       onClick={() => handleOpenAddCourseForSpecialization(spec.id)}
-                                      className="px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[10px] font-semibold cursor-pointer"
+                                      className="px-2.5 py-1 rounded-md bg-cyan-900 hover:bg-cyan-800 text-white text-[10.5px] font-semibold cursor-pointer"
                                     >
                                       + Add Course
                                     </button>
@@ -2847,20 +2907,9 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                               </div>
 
                               {isExpanded && (
-                                <div className="space-y-3 pt-3 border-t border-slate-200">
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {renderDocCard(spec)}
-                                  </div>
-                                  {linkedCourses.length > 0 && (
-                                    <div className="space-y-2.5 pl-2 sm:pl-4 border-t border-slate-100 pt-3">
-                                      <h4 className="text-xs font-bold text-slate-900 text-center">
-                                        Courses Under This Specialization ({linkedCourses.length})
-                                      </h4>
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        {linkedCourses.map((course) => renderDocCard(course, true))}
-                                      </div>
-                                    </div>
-                                  )}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-3 border-t border-slate-200">
+                                  {renderDocCard(spec)}
+                                  {linkedCourses.map((course) => renderDocCard(course, true))}
                                 </div>
                               )}
                             </div>
@@ -2870,41 +2919,29 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     </div>
                   )}
 
-                {/* COURSES CERTIFICATES (Only standalone courses in All view, or all courses when Courses tab is active) */}
-                {(() => {
-                  const visibleCourseSectionDocs =
-                    credentialFilterGroup === 'Courses'
-                      ? courseDocs
-                      : courseDocs.filter(
-                          (c) =>
-                            !c.parentSpecializationId ||
-                            !specDocs.some((s) => s.id === c.parentSpecializationId)
-                        );
-                  if (
-                    (credentialFilterGroup !== 'All' && credentialFilterGroup !== 'Courses') ||
-                    visibleCourseSectionDocs.length === 0
-                  ) {
-                    return null;
-                  }
-                  return (
-                    <div className="space-y-2.5">
-                      <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
-                        Course Certificates
-                      </h3>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {visibleCourseSectionDocs.map((c) => renderDocCard(c))}
-                      </div>
+                {/* 2. SINGLE SPECIALIZED CERTIFICATIONS & COURSE CERTIFICATES (SINGLE UNIFIED GRID) */}
+                {singleGridDocs.length > 0 && (
+                  <div className="space-y-3">
+                    <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
+                      {credentialFilterGroup === 'Courses'
+                        ? 'Course Certificates'
+                        : credentialFilterGroup === 'Specialization'
+                        ? 'Single Specialized Certifications'
+                        : 'Specialized & Course Certificates'}
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                      {singleGridDocs.map((doc) => renderDocCard(doc))}
                     </div>
-                  );
-                })()}
+                  </div>
+                )}
 
-                {/* STANDALONE OTHER DOCUMENTS */}
+                {/* 3. STANDALONE TECHNICAL DOCUMENTS */}
                 {credentialFilterGroup === 'All' && otherDocs.length > 0 && (
-                  <div className="space-y-2.5">
+                  <div className="space-y-3">
                     <h3 className="text-xs sm:text-sm font-bold text-slate-950 text-center">
                       Additional Technical Documents
                     </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
                       {otherDocs.map((d) => renderDocCard(d))}
                     </div>
                   </div>

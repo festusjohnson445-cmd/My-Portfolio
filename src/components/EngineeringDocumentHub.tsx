@@ -3,10 +3,8 @@ import {
   Upload,
   Download,
   FileText,
-  FileCheck,
   FolderDown,
   Search,
-  Filter,
   Eye,
   Trash2,
   CheckCircle2,
@@ -14,31 +12,14 @@ import {
   FileSpreadsheet,
   Layers,
   Sparkles,
-  ExternalLink,
   Plus,
   RefreshCw,
-  HardDrive,
   Loader2,
-  Share2,
-  Clock,
   ShieldCheck,
-  ShieldAlert,
-  Lock,
-  Unlock,
-  KeyRound,
-  User,
-  Tag,
   BookOpen,
   X,
   FileCode,
-  FileArchive,
-  Image as ImageIcon,
-  Check,
-  ChevronRight,
-  ChevronDown,
-  ChevronUp,
   ListPlus,
-  ArrowUpDown,
   Heart,
   GraduationCap,
 } from 'lucide-react';
@@ -52,7 +33,6 @@ import {
   sortDocumentsDescending
 } from '../utils/documentStorage';
 import {
-  uploadHubDocumentToStorage,
   saveHubDocumentToFirestore,
   fetchHubDocumentsFromFirestore,
   subscribeToHubDocuments,
@@ -61,15 +41,12 @@ import {
 } from '../utils/firebase';
 import {
   useProfileSync,
-  setOwnerAuthenticated,
-  OWNER_EMAIL,
 } from '../utils/profileState';
 import {
   supabase,
   uploadMaterialToSupabaseBucket,
   uploadMaterialThumbnailToBucket,
   saveMaterialToSupabaseTable,
-  fetchMaterialsFromSupabaseTable,
   fetchMaterialsFromSupabaseTableWithStatus,
   deleteMaterialFromSupabaseBucket,
   deleteMaterialFromSupabaseTable,
@@ -464,10 +441,67 @@ function getInitialCachedDocuments(): PublicEngineeringDocument[] {
   return [];
 }
 
+function hasHubCacheHydrated(): boolean {
+  if (globalHubDocsMemoryCache !== null) return true;
+  if (typeof window === 'undefined') return false;
+  try {
+    return localStorage.getItem(HUB_CACHE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+export async function prewarmEngineeringHubDocuments(): Promise<void> {
+  if (globalHubDocsMemoryCache && Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS) {
+    return;
+  }
+  try {
+    const supaResult = await fetchMaterialsFromSupabaseTableWithStatus(false);
+    if (supaResult.ok) {
+      const deletedIds = getDeletedDocIds();
+      const mapped = sortDocumentsDescending(
+        supaResult.data
+          .filter((m: any) => m && m.id && !deletedIds.has(m.id))
+          .map((m: any) => ({
+            id: m.id,
+            title: sanitizeDocumentTitle(m.title, m.file_name),
+            fileName: m.file_name || 'document.pdf',
+            fileSize: m.file_size || 'Standard',
+            fileType: m.file_type || 'PDF',
+            category: m.category || '',
+            description: sanitizeDocumentDescription(m.description || ''),
+            author: m.author || '',
+            uploaderName: m.author || '',
+            uploaderType: m.category === 'Students Materials' && !m.owner_id ? ('visitor' as const) : ('owner' as const),
+            status: 'approved' as const,
+            uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
+            downloadCount: m.download_count ?? 0,
+            viewsCount: m.views_count ?? 0,
+            likesCount: m.likes_count ?? 0,
+            level: m.level || '',
+            department: m.department || '',
+            institution: m.institution || '',
+            tags: Array.isArray(m.tags) ? m.tags : [],
+            previewUrl: m.preview_url && !isMockDrawingPreview(m.preview_url) ? m.preview_url : undefined,
+            downloadUrl: m.download_url || m.file_url || `/api/documents/files/${m.id}`,
+            hasServerFile: true,
+            isCustomUpload: true,
+            ...(m.storage_path ? { storagePath: m.storage_path } : {}),
+          }))
+      );
+      globalHubDocsMemoryCache = mapped;
+      lastHubDocsFetchTimestamp = Date.now();
+      try {
+        localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(mapped));
+      } catch {}
+    }
+  } catch {}
+}
+
 export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ onNavigatePart }) => {
   const { isOwner } = useProfileSync();
   const [documents, setDocuments] = useState<PublicEngineeringDocument[]>(() => getInitialCachedDocuments());
-  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(() => getInitialCachedDocuments().length === 0);
+  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'newest' | 'downloads' | 'title' | 'size'>('newest');
@@ -1157,51 +1191,6 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       setUploadError(`Upload failed: ${err?.message || 'Storage error'}`);
       showToast(`Upload failed: ${err?.message || 'Storage error'}`, 'error');
     }
-  };
-
-  /**
-   * 1-Click Fast Direct Download
-   */
-  const handleDownloadDocument = (doc: PublicEngineeringDocument) => {
-    // 1. Increment download count in Firestore & storage
-    incrementHubDocumentDownload(doc.id).catch(() => {});
-    const updated = documents.map((d) => {
-      if (d.id === doc.id) {
-        return { ...d, downloadCount: (d.downloadCount || 0) + 1 };
-      }
-      return d;
-    });
-    saveDocumentsToStorage(updated);
-    try {
-      fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
-    } catch {}
-
-    // 2. Trigger browser download directly from uploaded file dataUrl or server stream
-    if (doc.dataUrl) {
-      const link = document.createElement('a');
-      link.href = doc.dataUrl;
-      link.download = doc.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast(`Downloading "${doc.fileName}"...`, 'info');
-      return;
-    }
-
-    if (doc.downloadUrl || doc.hasServerFile) {
-      const serverUrl = doc.downloadUrl || `/api/documents/files/${doc.id}`;
-      const link = document.createElement('a');
-      link.href = serverUrl;
-      link.download = doc.fileName;
-      link.target = '_blank';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast(`Downloading "${doc.fileName}"...`, 'info');
-      return;
-    }
-
-    showToast(`File content for "${doc.fileName}" is not available.`, 'error');
   };
 
   const handleDeleteDocument = async (id: string, e?: React.MouseEvent) => {

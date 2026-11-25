@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Camera, User, Trash2, CheckCircle2, Key, History, AlertCircle, Copy, Check } from 'lucide-react';
+import { X, Camera, Trash2, CheckCircle2, Key, History, AlertCircle, Copy, Check } from 'lucide-react';
 import { compressAvatarToWebP } from '../utils/profileState';
 import {
   uploadVisitorAvatarToSupabaseBucket,

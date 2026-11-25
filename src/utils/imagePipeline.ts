@@ -10,7 +10,6 @@
  * 6. Production-grade error handling for corrupted or unreadable image uploads.
  */
 
-import heic2any from 'heic2any';
 import { supabase, SUPABASE_BUCKETS } from './supabase';
 
 export interface ImageCropParameters {
@@ -63,6 +62,7 @@ export async function loadAndValidateImageFile(file: File): Promise<LoadedImageD
   // If HEIC/HEIF, convert to JPEG blob using heic2any
   if (isHeic) {
     try {
+      const { default: heic2any } = await import('heic2any');
       const conversionResult = await heic2any({
         blob: file,
         toType: 'image/jpeg',

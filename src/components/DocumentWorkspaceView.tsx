@@ -37,10 +37,13 @@ import {
   deleteGeneratedDocumentRecord,
   fetchLocalDraftDocuments,
   fetchPublishedGeneratedDocuments,
+  getCachedPublishedGeneratedDocuments,
+  hasDraftModifications,
   incrementGeneratedDocumentDownloads,
   incrementGeneratedDocumentViews,
   publishGeneratedDocument,
   removeLocalDraft,
+  removeLocalDraftsByCategory,
   saveDraftLocally,
   subscribeToGeneratedDocumentsRealtime,
 } from '../utils/documentWorkspaceSupabase';
@@ -69,19 +72,29 @@ export const DocumentWorkspaceView: React.FC = () => {
   const [selectedCategory, setSelectedCategory] =
     useState<DocumentWorkspaceCategory>('international_cv');
 
-  // Preserve per-category clean payloads during the active editing session
+  // Hydrate per-category payloads from auto-saved drafts on mount
   const [draftsByCat, setDraftsByCat] = useState<
     Record<DocumentWorkspaceCategory, DocumentFormPayload>
-  >(() => ({
-    international_cv: createEmptyFormPayload('international_cv'),
-    academic_resume: createEmptyFormPayload('academic_resume'),
-    job_resume: createEmptyFormPayload('job_resume'),
-    sop: createEmptyFormPayload('sop'),
-    personal_statement: createEmptyFormPayload('personal_statement'),
-    scholarship_letter: createEmptyFormPayload('scholarship_letter'),
-    research_proposal: createEmptyFormPayload('research_proposal'),
-    study_plan: createEmptyFormPayload('study_plan'),
-  }));
+  >(() => {
+    const initial: Record<DocumentWorkspaceCategory, DocumentFormPayload> = {
+      international_cv: createEmptyFormPayload('international_cv'),
+      academic_resume: createEmptyFormPayload('academic_resume'),
+      job_resume: createEmptyFormPayload('job_resume'),
+      sop: createEmptyFormPayload('sop'),
+      personal_statement: createEmptyFormPayload('personal_statement'),
+      scholarship_letter: createEmptyFormPayload('scholarship_letter'),
+      research_proposal: createEmptyFormPayload('research_proposal'),
+      study_plan: createEmptyFormPayload('study_plan'),
+    };
+    const saved = fetchLocalDraftDocuments();
+    for (const dr of saved) {
+      if (dr?.category && dr.formData && initial[dr.category]) {
+        // Prefer deterministic auto-draft or most recent draft per category
+        initial[dr.category] = normalizeDocumentPayload(dr.formData);
+      }
+    }
+    return initial;
+  });
 
   const currentFormPayload = draftsByCat[selectedCategory];
   const [committedPreviewPayload, setCommittedPreviewPayload] =
@@ -100,14 +113,21 @@ export const DocumentWorkspaceView: React.FC = () => {
   );
   const [isPublishing, setIsPublishing] = useState(false);
   const [isExportingDocx, setIsExportingDocx] = useState(false);
-
-  const [publishedDocs, setPublishedDocs] = useState<GeneratedDocumentRecord[]>([]);
-  const [savedDrafts, setSavedDrafts] = useState<GeneratedDocumentRecord[]>(() =>
-    fetchLocalDraftDocuments()
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved'>(() =>
+    hasDraftModifications(draftsByCat.international_cv) ? 'saved' : 'idle'
   );
-  const [loadingPublished, setLoadingPublished] = useState(true);
+
+  const [publishedDocs, setPublishedDocs] = useState<GeneratedDocumentRecord[]>(() =>
+    getCachedPublishedGeneratedDocuments()
+  );
   const [galleryCategoryFilter, setGalleryCategoryFilter] = useState<string>('All');
   const [gallerySearch, setGallerySearch] = useState('');
+
+  const pendingDraftSaveRef = useRef<{
+    payload: DocumentFormPayload;
+    recordId?: string;
+  } | null>(null);
+  const autoSaveTimerRef = useRef<number | null>(null);
 
   const [viewingDoc, setViewingDoc] = useState<GeneratedDocumentRecord | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -119,9 +139,7 @@ export const DocumentWorkspaceView: React.FC = () => {
     try {
       const list = await fetchPublishedGeneratedDocuments();
       setPublishedDocs(list);
-    } finally {
-      setLoadingPublished(false);
-    }
+    } catch {}
   };
 
   useEffect(() => {
@@ -156,6 +174,48 @@ export const DocumentWorkspaceView: React.FC = () => {
     }, 4500);
   };
 
+  const flushPendingAutoSave = () => {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    const pending = pendingDraftSaveRef.current;
+    if (!pending) return;
+    pendingDraftSaveRef.current = null;
+    if (hasDraftModifications(pending.payload)) {
+      saveDraftLocally(pending.payload, pending.recordId || `draft_${pending.payload.category}`, {
+        skipPreview: true,
+      });
+      setAutoSaveState('saved');
+    } else {
+      removeLocalDraftsByCategory(pending.payload.category);
+      setAutoSaveState('idle');
+    }
+  };
+
+  useEffect(() => {
+    const handleUnload = () => {
+      const pending = pendingDraftSaveRef.current;
+      if (!pending) return;
+      if (hasDraftModifications(pending.payload)) {
+        saveDraftLocally(pending.payload, pending.recordId || `draft_${pending.payload.category}`, {
+          skipPreview: true,
+        });
+      } else {
+        removeLocalDraftsByCategory(pending.payload.category);
+      }
+      pendingDraftSaveRef.current = null;
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+      handleUnload();
+    };
+  }, []);
+
   const handlePayloadChange = (next: DocumentFormPayload) => {
     setDraftsByCat((prev) => ({
       ...prev,
@@ -164,12 +224,26 @@ export const DocumentWorkspaceView: React.FC = () => {
     if (validationErrors.length > 0) {
       setValidationErrors([]);
     }
+
+    pendingDraftSaveRef.current = {
+      payload: next,
+      recordId: editingRecordId || `draft_${next.category}`,
+    };
+    setAutoSaveState('saving');
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      flushPendingAutoSave();
+    }, 250);
   };
 
   const handleSelectCategory = (cat: DocumentWorkspaceCategory) => {
+    flushPendingAutoSave();
     setSelectedCategory(cat);
     setEditingRecordId(undefined);
     setValidationErrors([]);
+    setAutoSaveState(hasDraftModifications(draftsByCat[cat]) ? 'saved' : 'idle');
     setCommittedPreviewPayload(draftsByCat[cat]);
   };
 
@@ -188,6 +262,12 @@ export const DocumentWorkspaceView: React.FC = () => {
   };
 
   const handleClearOrDeleteOutput = async () => {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    pendingDraftSaveRef.current = null;
+
     let deleteWarning: string | undefined;
     if (editingRecordId) {
       const existingPublished = publishedDocs.find((d) => d.id === editingRecordId);
@@ -199,14 +279,15 @@ export const DocumentWorkspaceView: React.FC = () => {
         setPublishedDocs((prev) => prev.filter((d) => d.id !== editingRecordId));
       } else {
         removeLocalDraft(editingRecordId);
-        setSavedDrafts(fetchLocalDraftDocuments());
       }
       setEditingRecordId(undefined);
     }
+    removeLocalDraftsByCategory(selectedCategory);
     const fresh = createEmptyFormPayload(selectedCategory);
     setDraftsByCat((prev) => ({ ...prev, [selectedCategory]: fresh }));
     setCommittedPreviewPayload(fresh);
     setValidationErrors([]);
+    setAutoSaveState('idle');
     if (deleteWarning) {
       showToast(`Cleared locally, but Supabase delete reported: ${deleteWarning}`, 'error');
     } else {
@@ -215,9 +296,13 @@ export const DocumentWorkspaceView: React.FC = () => {
   };
 
   const handleSaveDraft = () => {
-    const saved = saveDraftLocally(currentFormPayload, editingRecordId);
-    setEditingRecordId(saved.id);
-    setSavedDrafts(fetchLocalDraftDocuments());
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    pendingDraftSaveRef.current = null;
+    saveDraftLocally(currentFormPayload, editingRecordId || `draft_${selectedCategory}`);
+    setAutoSaveState('saved');
     showToast('Draft saved locally in your browser workspace.', 'success');
   };
 
@@ -258,12 +343,19 @@ export const DocumentWorkspaceView: React.FC = () => {
       return;
     }
 
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    pendingDraftSaveRef.current = null;
+
     setIsPublishing(true);
     try {
       const result = await publishGeneratedDocument(currentFormPayload, editingRecordId);
+      removeLocalDraftsByCategory(selectedCategory);
       setPublishedDocs((prev) => [result.record, ...prev.filter((x) => x.id !== result.record.id)]);
-      setSavedDrafts(fetchLocalDraftDocuments());
       setEditingRecordId(result.record.id);
+      setAutoSaveState('idle');
 
       if (result.syncedToSupabase) {
         showToast('Document published to Supabase & Added to Published Gallery.', 'success');
@@ -460,22 +552,6 @@ export const DocumentWorkspaceView: React.FC = () => {
               <span className="text-xs font-bold text-slate-800 uppercase tracking-wider font-serif text-center">
                 Templates
               </span>
-              {savedDrafts.length > 0 && (
-                <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px] font-serif">
-                  <span className="text-slate-500 font-semibold">Saved Drafts:</span>
-                  {savedDrafts.slice(0, 3).map((dr) => (
-                    <button
-                      key={dr.id}
-                      type="button"
-                      onClick={() => handleLoadIntoEditor(dr)}
-                      className="px-2 py-0.5 rounded bg-[#edf2f8] hover:bg-cyan-100 border border-[#b8c6d4] text-cyan-950 font-medium truncate max-w-[160px] cursor-pointer font-serif"
-                      title={`Resume draft: ${dr.title}`}
-                    >
-                      {dr.title}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
             {availableCategories.length === 0 ? (
@@ -563,9 +639,16 @@ export const DocumentWorkspaceView: React.FC = () => {
                 type="button"
                 onClick={handleSaveDraft}
                 className="flex-1 min-w-0 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-[10px] sm:text-[11px] font-semibold cursor-pointer font-serif whitespace-nowrap"
+                title="Changes auto-save automatically as you type"
               >
                 <Save className="w-3 h-3 text-slate-600 shrink-0" />
-                <span className="truncate">Save Draft</span>
+                <span className="truncate">
+                  {autoSaveState === 'saving'
+                    ? 'Saving Draft...'
+                    : autoSaveState === 'saved'
+                    ? 'Draft Auto-Saved'
+                    : 'Save Draft'}
+                </span>
               </button>
 
               <button
@@ -712,11 +795,7 @@ export const DocumentWorkspaceView: React.FC = () => {
           </div>
 
           {/* Directory Grid */}
-          {loadingPublished ? (
-            <div className="p-10 text-center text-xs text-slate-500 font-serif">
-              Loading published documents...
-            </div>
-          ) : filteredPublishedDocs.length === 0 ? (
+          {filteredPublishedDocs.length === 0 ? (
             <div className="p-10 rounded-2xl bg-white border border-dashed border-[#b8c6d4] text-center space-y-3 font-serif">
               <div className="w-12 h-12 rounded-2xl bg-[#edf2f8] border border-[#b8c6d4] flex items-center justify-center text-cyan-900 mx-auto">
                 <FileText className="w-6 h-6" />

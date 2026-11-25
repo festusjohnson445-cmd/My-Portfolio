@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
-import { parseVoiceNoteFromContent, serializeVoiceNoteContent, serializeMessagePayload, parseMessagePayload } from './audioUtils';
+import { serializeMessagePayload } from './audioUtils';
 
 // ============================================================================
 // 1. SUPABASE CLIENT INITIALIZATION & CONFIGURATION
@@ -185,20 +185,24 @@ export async function getValidatedSession(): Promise<{ session: Session; user: U
   }
 
   const { data: userData, error: userErr } = await supabase.auth.getUser();
-  const liveUser = userData?.user || data.session.user;
-  if (userErr || !isRealOwnerUser(liveUser)) {
+  const liveUser = userData?.user;
+  if (userErr || !liveUser || !isRealOwnerUser(liveUser)) {
     throw new Error('Unauthorized: Confirmed administrator email authorization is required.');
   }
 
   const jwtAal = getSessionAalClaim(data.session);
-  const { data: aalData, error: aalErr } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  const currentAal = aalData?.currentLevel || jwtAal;
-  if (aalErr || currentAal !== 'aal2' || jwtAal !== 'aal2') {
+  if (jwtAal !== 'aal2') {
     throw new Error('Two-Factor Authentication (AAL2) verification is required to perform administrative operations.');
   }
 
-  const { data: factorsData } = await supabase.auth.mfa.listFactors();
-  const verifiedTotp = (factorsData?.totp || []).filter((f) => f.status === 'verified');
+  let rawFactors = Array.isArray((liveUser as any).factors) ? (liveUser as any).factors : null;
+  if (!rawFactors) {
+    const { data: factorsData } = await supabase.auth.mfa.listFactors();
+    rawFactors = factorsData?.all || factorsData?.totp || [];
+  }
+  const verifiedTotp = rawFactors.filter(
+    (f: any) => f.status === 'verified' && (!f.factor_type || f.factor_type === 'totp')
+  );
   if (verifiedTotp.length === 0) {
     throw new Error('Mandatory TOTP authenticator enrollment is required before accessing administrative operations.');
   }

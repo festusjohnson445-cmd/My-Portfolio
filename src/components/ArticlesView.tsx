@@ -46,6 +46,7 @@ import { Interactive3DViewer } from './Interactive3DViewer';
 import { ArticleFormPanel } from './ArticleFormPanel';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
 import { LiveRelativeTime } from './LiveRelativeTime';
+import { CardTopMedia } from './CardTopMedia';
 import {
   extractHtmlHeadings,
   isRichHtmlContent,
@@ -231,7 +232,7 @@ const ArticleMarkdownRenderer: React.FC<{ content: string }> = ({ content }) => 
   if (richHtml !== null) {
     return (
       <div
-        className="fesline-rich-article max-w-full overflow-x-hidden space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:list-inside [&_ul]:space-y-1 [&_ul]:pl-2 [&_ol]:list-decimal [&_ol]:list-inside [&_ol]:space-y-1 [&_ol]:pl-2 [&_blockquote]:border-l-4 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline [&_table]:w-full [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
+        className="fesline-rich-article max-w-full overflow-x-hidden space-y-2 text-xs sm:text-sm text-slate-800 leading-relaxed font-serif break-words [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-slate-950 [&_h1]:pt-2 [&_h1]:pb-1 [&_h1]:border-b [&_h1]:border-slate-200 [&_h2]:text-base [&_h2]:font-bold [&_h2]:text-slate-950 [&_h2]:pt-2 [&_h2]:pb-1 [&_h2]:border-b [&_h2]:border-slate-200 [&_h3]:text-sm [&_h3]:font-bold [&_h3]:text-slate-950 [&_h3]:pt-1.5 [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:space-y-1 [&_ol]:pl-6 [&_blockquote]:border-l-4 [&_blockquote]:border-cyan-700 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-700 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:border [&_pre]:border-slate-200 [&_pre]:overflow-x-auto [&_pre]:font-mono [&_pre]:text-[11px] [&_a]:text-cyan-800 [&_a]:underline [&_hr]:my-3 [&_hr]:border-slate-200 [&_table]:w-full [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
         dangerouslySetInnerHTML={{ __html: richHtml }}
       />
     );
@@ -346,7 +347,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
   const { customSections, innerLayout, videoCardControls } = projectsArticlesConfig;
   const imageCardControls = projectsArticlesConfig.imageCardControls || {
     aspectRatio: '4/3' as const,
-    objectFit: 'contain' as const,
+    objectFit: 'cover' as const,
     zoomLevel: 1,
   };
   const cardAnimClass = cardAnimationEnabled ? 'card-anim-enabled' : '';
@@ -359,7 +360,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
   );
 
   const [articles, setArticles] = useState<PortfolioArticle[]>(() => getCachedArticles(isOwner));
-  const [loading, setLoading] = useState(() => !hasArticlesCacheHydrated() && getCachedArticles(isOwner).length === 0);
+  const [loading, setLoading] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<PortfolioArticle | null>(null);
 
   const [isPostOpen, setIsPostOpen] = useState(false);
@@ -393,9 +394,6 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
   });
 
   const loadArticles = async () => {
-    if (!hasArticlesCacheHydrated() && articles.length === 0) {
-      setLoading(true);
-    }
     try {
       const data = await fetchArticlesFromSupabase(isOwner);
       setArticles(data);
@@ -1603,7 +1601,18 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
 
       {/* Articles Grid — Empty by default when 0 rows exist in Supabase */}
       {loading ? (
-        <div className="p-8 text-center text-xs text-slate-500">Loading articles...</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3].map((n) => (
+            <div key={`art-skel-${n}`} className="rounded-xl bg-white border border-[#b8c6d4] overflow-hidden animate-pulse">
+              <div className="w-full aspect-[16/10] bg-slate-200" />
+              <div className="p-4 space-y-2.5">
+                <div className="h-3 bg-slate-200 rounded w-1/3" />
+                <div className="h-4 bg-slate-200 rounded w-5/6" />
+                <div className="h-3 bg-slate-100 rounded w-full" />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : filteredArticles.length === 0 ? (
         <div className="p-8 rounded-xl bg-white/80 border border-dashed border-[#b8c6d4] text-center">
           <p className="text-xs text-slate-600">No articles published yet.</p>
@@ -1617,33 +1626,34 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
             : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
         const gapClass =
           innerLayout.cardSpacing === 'compact'
-            ? 'gap-2.5'
+            ? 'gap-3'
             : innerLayout.cardSpacing === 'relaxed'
             ? 'gap-6'
-            : 'gap-4';
+            : 'gap-4 sm:gap-5';
         const padClass =
           innerLayout.cardSpacing === 'compact'
-            ? 'p-2.5'
+            ? 'p-3.5'
             : innerLayout.cardSpacing === 'relaxed'
             ? 'p-5'
-            : 'p-3.5';
-        const summaryAlignClass =
-          innerLayout.cardTextAlign === 'left'
-            ? 'text-left'
-            : innerLayout.cardTextAlign === 'center'
-            ? 'text-center'
-            : 'text-justify';
+            : 'p-4';
+        const textAlignClass =
+          innerLayout.cardTextAlign === 'center' ? 'text-center' : 'text-left';
 
         return (
           <div className={`grid ${gridColsClass} ${gapClass}`}>
             {filteredArticles.map((art) => {
               const isLiked = likedIds.has(art.id);
+              const heroImgUrl =
+                art.heroMedia?.type === 'image' || art.heroMedia?.type === 'diagram'
+                  ? art.heroMedia.jpegUrl || art.heroMedia.webpUrl || art.heroMedia.url || ''
+                  : '';
               const cardImg =
                 art.thumbnailUrl ||
-                (art.heroMedia?.type === 'image' || art.heroMedia?.type === 'diagram'
-                  ? art.heroMedia.url || ''
-                  : '') ||
+                heroImgUrl ||
+                art.images?.[0]?.jpegUrl ||
+                art.images?.[0]?.webpUrl ||
                 art.images?.[0]?.url ||
+                art.diagrams?.[0]?.url ||
                 '';
               const cardVid = !cardImg
                 ? (art.heroMedia?.type === 'video'
@@ -1655,134 +1665,95 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
                 : '';
               const cardVidPoster =
                 art.heroMedia?.type === 'video' ? art.heroMedia.posterUrl : art.videos?.[0]?.posterUrl;
+              const showAuthor = Boolean(art.authorName && !/^chief\s*admin$/i.test(art.authorName.trim()));
+
               return (
                 <article
                   key={art.id}
                   onClick={() => openArticleDetail(art)}
-                  className={`rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
+                  className={`group rounded-xl bg-white border border-[#b8c6d4] hover:border-cyan-700 shadow-xs hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col justify-between ${cardAnimClass}`}
                 >
-                  <div>
-                    {cardImg ? (
-                      <div
-                        className="w-full max-h-[240px] bg-slate-100 border-b border-slate-200 overflow-hidden flex items-center justify-center"
-                        style={{
-                          aspectRatio: (imageCardControls.aspectRatio || '4/3').replace(':', '/'),
-                        }}
-                      >
-                        <img
-                          src={cardImg}
-                          alt={art.title}
-                          loading="lazy"
-                          decoding="async"
-                          style={getMediaImgStyle(imageCardControls)}
-                          className={`w-full h-full ${getImageFitClass(imageCardControls.objectFit)} block transition-transform duration-200`}
-                        />
-                      </div>
-                    ) : cardVid ? (
-                      <div className="relative w-full aspect-video bg-slate-950 overflow-hidden border-b border-slate-200">
-                        {cardVidPoster ? (
-                          <img
-                            src={cardVidPoster}
-                            alt={art.title}
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-cover block"
-                          />
-                        ) : (
-                          <video
-                            src={cardVid}
-                            preload="none"
-                            muted
-                            playsInline
-                            className="w-full h-full object-contain pointer-events-none"
-                          />
-                        )}
-                        <div className="absolute inset-0 flex items-center justify-center bg-slate-950/20">
-                          <span className="w-9 h-9 rounded-full bg-slate-950/75 border border-white/30 flex items-center justify-center text-white shadow-sm">
-                            <Play className="w-4 h-4 fill-white ml-0.5" />
+                  <div className="flex flex-col flex-1">
+                    <CardTopMedia
+                      title={art.title}
+                      category={art.category}
+                      imageUrl={cardImg}
+                      videoUrl={cardVid}
+                      posterUrl={cardVidPoster}
+                      variant="article"
+                      layout="grid"
+                      imageControls={imageCardControls}
+                    />
+                    <div className={`${padClass} flex-1 flex flex-col gap-2`}>
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <div className="flex items-center gap-1.5 min-w-0 truncate">
+                          <span className="font-semibold text-cyan-900 truncate">
+                            {art.category}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-300 shrink-0">·</span>
+                          <span className="inline-flex items-center gap-1 text-slate-500 shrink-0">
+                            <Clock className="w-3 h-3 text-cyan-800" />
+                            <span>{art.readingTime}</span>
                           </span>
                         </div>
-                      </div>
-                    ) : null}
-                    <div className={`${padClass} space-y-2`}>
-                      <div className="flex items-center justify-between gap-1.5 flex-wrap text-[10px]">
-                        <span className="px-2 py-0.5 rounded bg-cyan-50 border border-cyan-200 text-cyan-950 font-bold truncate">
-                          {art.category}
-                        </span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {art.status !== 'published' && (
-                            <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase font-bold">
-                              {art.status}
-                            </span>
-                          )}
-                        </div>
+                        {art.status !== 'published' && (
+                          <span className="text-[10.5px] text-amber-800 uppercase font-bold tracking-wide shrink-0">
+                            {art.status}
+                          </span>
+                        )}
                       </div>
                       <h3
-                        className={`text-sm font-bold text-slate-950 leading-snug line-clamp-2 ${
-                          innerLayout.cardTextAlign === 'left' ? 'text-left' : 'text-center'
-                        }`}
+                        className={`text-sm sm:text-[15px] font-bold text-slate-950 group-hover:text-cyan-900 transition-colors leading-snug line-clamp-2 ${textAlignClass}`}
                       >
                         {art.title}
                       </h3>
-                      <p className={`text-[11px] text-slate-600 line-clamp-3 leading-relaxed ${summaryAlignClass}`}>
-                        {art.summary}
-                      </p>
+                      {(art.summary || art.tldr) && (
+                        <p className={`text-xs text-slate-600 line-clamp-2 sm:line-clamp-3 leading-relaxed ${textAlignClass}`}>
+                          {art.summary || art.tldr}
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  <div className="px-3.5 pb-2.5 pt-2 bg-slate-50/70 border-t border-slate-100 space-y-1.5 text-[10px] text-slate-500">
-                    <div className="flex items-center justify-between gap-2">
-                      {art.authorName && !/^chief\s*admin$/i.test(art.authorName.trim()) ? (
-                        <span className="truncate font-semibold text-slate-700">
-                          By: {art.authorName}
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-slate-600 font-medium">
-                          <Clock className="w-3 h-3 text-cyan-800" />
-                          <span>{art.readingTime}</span>
-                        </span>
+                  <div className="px-4 py-2.5 bg-slate-50/80 border-t border-slate-100 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {showAuthor && (
+                        <>
+                          <span className="truncate font-semibold text-slate-700 max-w-[115px]">
+                            {art.authorName}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-300 shrink-0">·</span>
+                        </>
                       )}
                       <LiveRelativeTime
                         date={art.publishedAt || art.createdAt}
-                        className="text-[9.5px] text-slate-500 shrink-0"
+                        className="text-[11px] text-slate-500 shrink-0"
                       />
-                    </div>
-                    <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-slate-200/70">
-                      <div className="flex items-center gap-2 text-slate-600 font-semibold">
-                        {art.authorName && !/^chief\s*admin$/i.test(art.authorName.trim()) && (
-                          <>
-                            <span className="inline-flex items-center gap-1 shrink-0">
-                              <Clock className="w-3 h-3 text-cyan-800" />
-                              <span>{art.readingTime}</span>
-                            </span>
-                            <span className="text-slate-300">·</span>
-                          </>
-                        )}
-                        <span
-                          className="inline-flex items-center gap-1 tabular-nums"
-                          title="Real-time views"
-                        >
-                          <Eye className="w-3 h-3 text-cyan-800" />
-                          <span>{art.viewsCount || 0}</span>
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleLike(art);
-                        }}
-                        aria-label={isLiked ? 'Unlike article' : 'Like article'}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold transition-colors cursor-pointer ${
-                          isLiked
-                            ? 'bg-rose-50 border-rose-300 text-rose-700'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
-                        }`}
+                      <span aria-hidden="true" className="text-slate-300 shrink-0">·</span>
+                      <span
+                        className="inline-flex items-center gap-1 text-slate-600 font-semibold tabular-nums shrink-0"
+                        title="Real-time views"
                       >
-                        <Heart className={`w-3 h-3 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
-                        <span className="tabular-nums">{art.likesCount || 0}</span>
-                      </button>
+                        <Eye className="w-3.5 h-3.5 text-cyan-800" />
+                        <span>{art.viewsCount || 0}</span>
+                      </span>
                     </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleLike(art);
+                      }}
+                      aria-label={isLiked ? 'Unlike article' : 'Like article'}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md border text-[11px] font-semibold transition-colors cursor-pointer shrink-0 ${
+                        isLiked
+                          ? 'bg-rose-50 border-rose-300 text-rose-700'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-rose-50/50 hover:border-rose-200'
+                      }`}
+                    >
+                      <Heart className={`w-3.5 h-3.5 ${isLiked ? 'fill-rose-600 text-rose-600' : ''}`} />
+                      <span className="tabular-nums">{art.likesCount || 0}</span>
+                    </button>
                   </div>
                 </article>
               );

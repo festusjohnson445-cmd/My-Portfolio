@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ArrowRight, ArrowUp, Lock } from 'lucide-react';
 import { Navbar, PortfolioPart } from './components/Navbar';
 import { LandingHomeView } from './components/LandingHomeView';
@@ -10,7 +10,7 @@ import { DocumentWorkspaceView } from './components/DocumentWorkspaceView';
 import { AdminDashboardView } from './components/AdminDashboardView';
 import { ResumeDownloadModal } from './components/ResumeDownloadModal';
 import { MessagingSection } from './components/MessagingSection';
-import { generateAndDownloadResume } from './utils/generateResumePdf';
+import { prewarmEngineeringHubDocuments } from './components/EngineeringDocumentHub';
 import {
   getStoredBio,
   getStoredDocuments,
@@ -31,7 +31,13 @@ import {
 import {
   useWebsiteSettingsSync,
   BUILT_IN_THEMES,
+  fetchProjectsFromSupabase,
+  fetchArticlesFromSupabase,
+  fetchExperiencesFromSupabase,
+  fetchPublicationsFromSupabase,
+  fetchAchievementsFromSupabase,
 } from './utils/portfolioSupabase';
+import { fetchPublishedGeneratedDocuments } from './utils/documentWorkspaceSupabase';
 import { useUserColorMode, resolveEffectiveTheme } from './utils/userThemeMode';
 import {
   getCanonicalPathForPart,
@@ -78,6 +84,8 @@ export default function App() {
   const activeTheme = resolveEffectiveTheme(baseTheme, userColorMode);
   const footerCfg = appearance.footerConfig;
 
+  const initialAuthHandledRef = useRef(false);
+
   // Top-level onAuthStateChange listener — strictly enforces authorized email,
   // confirmed email, and mandatory Supabase TOTP AAL2 assurance before unlocking admin state.
   useEffect(() => {
@@ -85,6 +93,11 @@ export default function App() {
 
     const syncSessionAuth = async (event: string, session: any) => {
       if (!mounted) return;
+
+      if (event === 'INITIAL_SESSION') {
+        if (initialAuthHandledRef.current) return;
+        initialAuthHandledRef.current = true;
+      }
 
       if (event === 'PASSWORD_RECOVERY') {
         setOwnerAuthenticated(false);
@@ -122,6 +135,12 @@ export default function App() {
       }
     };
 
+    const {
+      data: { subscription },
+    } = onSupabaseAuthStateChange((event, session) => {
+      void syncSessionAuth(event, session);
+    });
+
     supabase.auth
       .getSession()
       .then(({ data: { session }, error }) => {
@@ -133,12 +152,6 @@ export default function App() {
       .catch(() => {
         if (mounted) setOwnerAuthenticated(false);
       });
-
-    const {
-      data: { subscription },
-    } = onSupabaseAuthStateChange((event, session) => {
-      void syncSessionAuth(event, session);
-    });
 
     return () => {
       mounted = false;
@@ -197,9 +210,10 @@ export default function App() {
     }
   }, [activePart]);
 
-  const handleOneClickResumeDownload = () => {
+  const handleOneClickResumeDownload = async () => {
     setResumeDownloadCount((c) => c + 1);
     try {
+      const { generateAndDownloadResume } = await import('./utils/generateResumePdf');
       const bio = getStoredBio();
       const docs = getStoredDocuments();
 
@@ -246,9 +260,18 @@ export default function App() {
     }
   };
 
-  // Sync initial URL, browser history popstate/hashchange, and subsection scrolling
+  // Sync initial URL, prewarm page caches on boot, browser history popstate/hashchange, and subsection scrolling
   useEffect(() => {
     syncGlobalProfileWithServer().catch(() => {});
+    Promise.allSettled([
+      fetchProjectsFromSupabase(isOwner),
+      fetchArticlesFromSupabase(isOwner),
+      fetchExperiencesFromSupabase(),
+      fetchPublicationsFromSupabase(),
+      fetchAchievementsFromSupabase(),
+      fetchPublishedGeneratedDocuments(),
+      prewarmEngineeringHubDocuments(),
+    ]).catch(() => {});
 
     const syncFromWindowLocation = (scrollSub = true) => {
       const parsed = resolveRouteFromParts(
@@ -509,7 +532,9 @@ export default function App() {
             activePart === 'documents' ? 'flex' : 'hidden'
           }`}
         >
-          {visitedParts.has('documents') && <DocumentWorkspaceView />}
+          {visitedParts.has('documents') && (
+            <DocumentWorkspaceView />
+          )}
         </section>
 
         {/* ADMIN DASHBOARD (OWNER SINGLE-PAGE CONTROL CENTER — AAL2 ENFORCED) */}
@@ -643,11 +668,13 @@ export default function App() {
         );
       })()}
 
-      <ResumeDownloadModal
-        isOpen={isResumeOpen}
-        onClose={() => setIsResumeOpen(false)}
-        onDownloaded={handleResumeDownload}
-      />
+      {isResumeOpen && (
+        <ResumeDownloadModal
+          isOpen={isResumeOpen}
+          onClose={() => setIsResumeOpen(false)}
+          onDownloaded={handleResumeDownload}
+        />
+      )}
 
       {/* Floating Scroll to Top Quick Action */}
       {showScrollTop && (
