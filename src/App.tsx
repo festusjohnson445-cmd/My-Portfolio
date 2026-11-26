@@ -152,8 +152,11 @@ export default function App() {
       .then(({ data: { session }, error }) => {
         if (error) {
           console.warn('[Supabase Initial Session Check]:', error.message);
+          if (/refresh[_ ]token|invalid|expired|not found/i.test(error.message || '')) {
+            supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          }
         }
-        void syncSessionAuth('INITIAL_SESSION', session);
+        void syncSessionAuth('INITIAL_SESSION', error ? null : session);
       })
       .catch(() => {
         if (mounted) setOwnerAuthenticated(false);
@@ -584,7 +587,7 @@ export default function App() {
                       handleSelectPart('profile');
                       window.setTimeout(() => {
                         window.dispatchEvent(new CustomEvent('open-owner-auth-modal'));
-                      }, 80);
+                      }, 150);
                     }}
                     className="px-3.5 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-xs font-semibold cursor-pointer"
                   >

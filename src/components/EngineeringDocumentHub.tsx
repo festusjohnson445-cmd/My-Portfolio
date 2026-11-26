@@ -444,6 +444,7 @@ const HUB_CACHE_KEY = 'fesline_hub_docs_cache_v2';
 
 // In-memory hub documents cache to prevent high internet data consumption on page navigation
 let globalHubDocsMemoryCache: PublicEngineeringDocument[] | null = null;
+let globalHubDocsAuthoritative = false;
 let lastHubDocsFetchTimestamp = 0;
 const HUB_CACHE_WINDOW_MS = 3 * 60 * 1000; // 3 minutes cache window
 
@@ -468,17 +469,26 @@ function getInitialCachedDocuments(): PublicEngineeringDocument[] {
 }
 
 function hasHubCacheHydrated(): boolean {
-  if (globalHubDocsMemoryCache !== null) return true;
+  if (globalHubDocsAuthoritative) return true;
+  if (globalHubDocsMemoryCache && globalHubDocsMemoryCache.length > 0) return true;
   if (typeof window === 'undefined') return false;
   try {
-    return localStorage.getItem(HUB_CACHE_KEY) !== null;
+    const raw = localStorage.getItem(HUB_CACHE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0;
   } catch {
     return false;
   }
 }
 
 export async function prewarmEngineeringHubDocuments(): Promise<void> {
-  if (globalHubDocsMemoryCache && Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS) {
+  if (
+    globalHubDocsMemoryCache &&
+    globalHubDocsMemoryCache.length > 0 &&
+    globalHubDocsAuthoritative &&
+    Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS
+  ) {
     return;
   }
   try {
@@ -501,6 +511,7 @@ export async function prewarmEngineeringHubDocuments(): Promise<void> {
             uploaderType: m.category === 'Students Materials' && !m.owner_id ? ('visitor' as const) : ('owner' as const),
             status: 'approved' as const,
             uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
+            uploadTimestamp: m.created_at ? new Date(m.created_at).getTime() : undefined,
             downloadCount: m.download_count ?? 0,
             viewsCount: m.views_count ?? 0,
             likesCount: m.likes_count ?? 0,
@@ -516,7 +527,9 @@ export async function prewarmEngineeringHubDocuments(): Promise<void> {
           }))
       );
       globalHubDocsMemoryCache = mapped;
+      globalHubDocsAuthoritative = true;
       lastHubDocsFetchTimestamp = Date.now();
+      saveHubDocumentsPersistently(mapped).catch(() => {});
       try {
         localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(mapped));
       } catch {}
@@ -566,7 +579,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   const modalFileInputRef = useRef<HTMLInputElement>(null);
   const addMoreInputRef = useRef<HTMLInputElement>(null);
   const isSyncingRef = useRef(false);
-  const hasAuthoritativeSupabaseRef = useRef(false);
+  const pendingForceRef = useRef(false);
+  const hasAuthoritativeSupabaseRef = useRef(globalHubDocsAuthoritative);
 
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMsg({ text, type });
@@ -578,14 +592,27 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   // Load documents with Supabase "materials" as single authoritative source of truth
   // so cards deleted on one browser/device never resurrect from stale Firestore/SQL/local caches.
   const loadDocuments = useCallback(async (force = false) => {
-    if (isSyncingRef.current) return;
-    if (!force && globalHubDocsMemoryCache && Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS) {
+    if (isSyncingRef.current) {
+      if (force) pendingForceRef.current = true;
+      return;
+    }
+    if (
+      !force &&
+      globalHubDocsMemoryCache &&
+      globalHubDocsMemoryCache.length > 0 &&
+      globalHubDocsAuthoritative &&
+      Date.now() - lastHubDocsFetchTimestamp < HUB_CACHE_WINDOW_MS
+    ) {
+      hasAuthoritativeSupabaseRef.current = true;
       const deleted = getDeletedDocIds();
       setDocuments(globalHubDocsMemoryCache.filter((d) => d && d.id && !deleted.has(d.id)));
       setIsLoadingDocs(false);
       return;
     }
     isSyncingRef.current = true;
+    if (!hasHubCacheHydrated()) {
+      setIsLoadingDocs(true);
+    }
 
     try {
       const deletedIds = getDeletedDocIds();
@@ -608,6 +635,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       if (supaResult.ok) {
         hasAuthoritativeSupabaseRef.current = true;
+        globalHubDocsAuthoritative = true;
         const supaDocsMap = new Map<string, PublicEngineeringDocument>();
         const activeSupaIds = new Set<string>();
 
@@ -641,6 +669,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               uploaderType: m.category === 'Students Materials' && !m.owner_id ? 'visitor' : 'owner',
               status: 'approved',
               uploadDate: (m.created_at || '').split('T')[0] || new Date().toISOString().split('T')[0],
+              uploadTimestamp: m.created_at ? new Date(m.created_at).getTime() : existing?.uploadTimestamp,
               downloadCount: m.download_count ?? existing?.downloadCount ?? 0,
               viewsCount: m.views_count ?? existing?.viewsCount ?? 0,
               likesCount: m.likes_count ?? existing?.likesCount ?? 0,
@@ -659,7 +688,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         });
 
         // Clean up stale orphaned cards in Firestore in background when owner is signed in
-        if (isOwner) {
+        if (isOwner && activeSupaIds.size > 0) {
           fetchHubDocumentsFromFirestore()
             .then((firestoreDocs) => {
               if (!Array.isArray(firestoreDocs)) return;
@@ -745,18 +774,26 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       const activeDeleted = getDeletedDocIds();
       const combined = Array.from(docsMap.values()).filter((d) => d && d.id && !activeDeleted.has(d.id));
       const sorted = sortDocumentsDescending(combined);
-      globalHubDocsMemoryCache = sorted;
-      lastHubDocsFetchTimestamp = Date.now();
-      setDocuments(sorted);
-      saveHubDocumentsPersistently(sorted).catch(() => {});
-      try {
-        localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(sorted));
-      } catch {}
+      if (sorted.length > 0) {
+        globalHubDocsMemoryCache = sorted;
+        lastHubDocsFetchTimestamp = Date.now();
+        setDocuments(sorted);
+        saveHubDocumentsPersistently(sorted).catch(() => {});
+        try {
+          localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(sorted));
+        } catch {}
+      } else if (cleanCached.length > 0) {
+        setDocuments(cleanCached);
+      }
     } catch (e) {
       console.warn('Storage sync note:', e);
     } finally {
       isSyncingRef.current = false;
       setIsLoadingDocs(false);
+      if (pendingForceRef.current) {
+        pendingForceRef.current = false;
+        void loadDocuments(true);
+      }
     }
   }, [isOwner]);
 
@@ -769,7 +806,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         if (Array.isArray(firestoreDocs)) {
           const currentDeleted = getDeletedDocIds();
           setDocuments((prev) => {
-            if (hasAuthoritativeSupabaseRef.current) {
+            if (hasAuthoritativeSupabaseRef.current || globalHubDocsAuthoritative) {
               // Only update metadata (like downloadCount) for documents that are currently live
               const fMap = new Map<string, PublicEngineeringDocument>();
               firestoreDocs.forEach((fDoc) => {
@@ -787,17 +824,28 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     downloadCount: Math.max(existing.downloadCount || 0, fDoc.downloadCount || 0),
                   };
                 });
-              globalHubDocsMemoryCache = updated;
-              try {
-                localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(updated));
-              } catch {}
+              if (updated.length > 0 || prev.length === 0) {
+                globalHubDocsMemoryCache = updated;
+                try {
+                  localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(updated));
+                } catch {}
+              }
               return updated;
             }
 
+            if (firestoreDocs.length === 0) {
+              return prev;
+            }
+
             const map = new Map<string, PublicEngineeringDocument>();
+            prev.forEach((p) => {
+              if (p && p.id && !currentDeleted.has(p.id)) {
+                map.set(p.id, p);
+              }
+            });
             firestoreDocs.forEach((fDoc) => {
               if (fDoc && fDoc.id && !currentDeleted.has(fDoc.id)) {
-                const existing = prev.find((p) => p.id === fDoc.id);
+                const existing = map.get(fDoc.id);
                 const validPreview = (fDoc.previewUrl && !isMockDrawingPreview(fDoc.previewUrl))
                   ? fDoc.previewUrl
                   : (existing?.previewUrl && !isMockDrawingPreview(existing?.previewUrl))
@@ -1171,13 +1219,20 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
 
       setUploadProgress({ current: 1, total, percent: 85, currentFileName: 'Publishing...' });
 
-      const updatedAll = sortDocumentsDescending([
-        ...newDocs,
-        ...documents.filter((d) => !newDocs.some((p) => p.id === d.id)),
-      ]);
-
-      setDocuments(updatedAll);
-      saveDocumentsToStorage(updatedAll);
+      setDocuments((prev) => {
+        const updatedAll = sortDocumentsDescending([
+          ...newDocs,
+          ...prev.filter((d) => !newDocs.some((p) => p.id === d.id)),
+        ]);
+        globalHubDocsMemoryCache = updatedAll;
+        globalHubDocsAuthoritative = true;
+        lastHubDocsFetchTimestamp = Date.now();
+        try {
+          localStorage.setItem(HUB_CACHE_KEY, JSON.stringify(updatedAll));
+        } catch {}
+        saveHubDocumentsPersistently(updatedAll).catch(() => {});
+        return updatedAll;
+      });
 
       const isLocalHost =
         typeof window !== 'undefined' &&
@@ -1312,9 +1367,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
     return Array.from(set);
   }, [approvedDocs]);
 
+  useEffect(() => {
+    if (selectedCategory !== 'All' && !categories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [categories, selectedCategory]);
+
   const filteredDocs = useMemo(() => {
     let result = approvedDocs.filter((doc) => {
-      const matchesCategory = selectedCategory === 'All' || doc.category === selectedCategory;
+      const normalizedCat = (doc.category || '').trim();
+      const matchesCategory = selectedCategory === 'All' || normalizedCat === selectedCategory;
       const matchesSearch =
         searchQuery.trim() === '' ||
         doc.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -1528,7 +1590,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
               const count =
                 cat === 'All'
                   ? approvedDocs.length
-                  : approvedDocs.filter((d) => d.category === cat).length;
+                  : approvedDocs.filter((d) => (d.category || '').trim() === cat).length;
               return (
                 <button
                   key={`tab-${cat}`}

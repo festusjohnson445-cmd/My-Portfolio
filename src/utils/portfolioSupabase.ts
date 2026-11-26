@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   supabase,
+  publicAnonSupabase,
+  executePublicSupabaseRead,
   getResolvedSupabaseConfig,
   getValidatedSession,
   isRealOwnerUser,
@@ -2258,17 +2260,24 @@ export async function fetchProjectsFromSupabase(
 
   const runFetch = (async () => {
     try {
-      let query = supabase
-        .from('projects')
-        .select('*')
-        .order('is_featured', { ascending: false })
-        .order('created_at', { ascending: false });
+      const buildProjectsQuery = (client: typeof supabase) => {
+        let query = client
+          .from('projects')
+          .select('*')
+          .order('is_featured', { ascending: false })
+          .order('created_at', { ascending: false });
+        if (!includeAllForOwner) {
+          query = query.eq('status', 'published');
+        }
+        return query;
+      };
 
-      if (!includeAllForOwner) {
-        query = query.eq('status', 'published');
-      }
-
-      const { data, error } = await query;
+      const { data, error } = includeAllForOwner
+        ? await buildProjectsQuery(supabase)
+        : await executePublicSupabaseRead(
+            () => buildProjectsQuery(supabase),
+            () => buildProjectsQuery(publicAnonSupabase)
+          );
       if (error || !Array.isArray(data)) {
         return getCachedProjects(includeAllForOwner);
       }
@@ -2557,16 +2566,23 @@ export async function fetchArticlesFromSupabase(
 
   const runFetch = (async () => {
     try {
-      let query = supabase
-        .from('articles')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const buildArticlesQuery = (client: typeof supabase) => {
+        let query = client
+          .from('articles')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (!includeAllForOwner) {
+          query = query.eq('status', 'published');
+        }
+        return query;
+      };
 
-      if (!includeAllForOwner) {
-        query = query.eq('status', 'published');
-      }
-
-      const { data, error } = await query;
+      const { data, error } = includeAllForOwner
+        ? await buildArticlesQuery(supabase)
+        : await executePublicSupabaseRead(
+            () => buildArticlesQuery(supabase),
+            () => buildArticlesQuery(publicAnonSupabase)
+          );
       if (error || !Array.isArray(data)) {
         return getCachedArticles(includeAllForOwner);
       }
@@ -2915,15 +2931,24 @@ function mapDbRowToComment(row: any): ArticleComment {
 export async function fetchCommentsForArticle(articleId: string, includeAll = false): Promise<ArticleComment[]> {
   hydrateCommentsByArticleStorage();
   try {
-    let query = supabase
-      .from('article_comments')
-      .select('*')
-      .eq('article_id', articleId)
-      .order('created_at', { ascending: false });
-    if (!includeAll) {
-      query = query.eq('status', 'approved');
-    }
-    const { data, error } = await query;
+    const buildCommentsQuery = (client: typeof supabase) => {
+      let query = client
+        .from('article_comments')
+        .select('*')
+        .eq('article_id', articleId)
+        .order('created_at', { ascending: false });
+      if (!includeAll) {
+        query = query.eq('status', 'approved');
+      }
+      return query;
+    };
+
+    const { data, error } = includeAll
+      ? await buildCommentsQuery(supabase)
+      : await executePublicSupabaseRead(
+          () => buildCommentsQuery(supabase),
+          () => buildCommentsQuery(publicAnonSupabase)
+        );
     if (error || !Array.isArray(data)) {
       return getCachedCommentsForArticle(articleId, includeAll);
     }
@@ -3111,11 +3136,20 @@ export async function fetchExperiencesFromSupabase(forceRefresh = false): Promis
 
   const runFetch = (async () => {
     try {
-      const { data, error } = await supabase
-        .from('profile_experiences')
-        .select('*')
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: false });
+      const { data, error } = await executePublicSupabaseRead(
+        () =>
+          supabase
+            .from('profile_experiences')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false }),
+        () =>
+          publicAnonSupabase
+            .from('profile_experiences')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false })
+      );
       if (error || !Array.isArray(data)) return getCachedExperiences();
       const mapped = data.map((r: any) => ({
         id: r.id,
@@ -3197,11 +3231,20 @@ export async function fetchPublicationsFromSupabase(forceRefresh = false): Promi
 
   const runFetch = (async () => {
     try {
-      const { data, error } = await supabase
-        .from('profile_publications')
-        .select('*')
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: false });
+      const { data, error } = await executePublicSupabaseRead(
+        () =>
+          supabase
+            .from('profile_publications')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false }),
+        () =>
+          publicAnonSupabase
+            .from('profile_publications')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false })
+      );
       if (error || !Array.isArray(data)) return getCachedPublications();
       const mapped = data.map((r: any) => ({
         id: r.id,
@@ -3283,11 +3326,20 @@ export async function fetchAchievementsFromSupabase(forceRefresh = false): Promi
 
   const runFetch = (async () => {
     try {
-      const { data, error } = await supabase
-        .from('profile_achievements')
-        .select('*')
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: false });
+      const { data, error } = await executePublicSupabaseRead(
+        () =>
+          supabase
+            .from('profile_achievements')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false }),
+        () =>
+          publicAnonSupabase
+            .from('profile_achievements')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false })
+      );
       if (error || !Array.isArray(data)) return getCachedAchievements();
       const mapped = data.map((r: any) => ({
         id: r.id,
@@ -3339,6 +3391,7 @@ export async function upsertAchievementToSupabase(item: ProfileAchievement): Pro
   memoryAchievementsCache = base.some((x) => x.id === id)
     ? base.map((x) => (x.id === id ? saved : x))
     : [saved, ...base];
+  achievementsFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, memoryAchievementsCache);
   return saved;
 }
@@ -3349,6 +3402,7 @@ export async function deleteAchievementFromSupabase(id: string): Promise<void> {
   const { error } = await supabase.from('profile_achievements').delete().eq('id', id);
   if (error) throw new Error(error.message);
   memoryAchievementsCache = getCachedAchievements().filter((x) => x.id !== id);
+  achievementsFetchedAt = Date.now();
   writeJsonCache(STORAGE_KEY_ACHIEVEMENTS_CACHE, memoryAchievementsCache);
 }
 
@@ -3583,11 +3637,20 @@ export async function fetchWebsiteSettingsFromSupabase(forceRefresh = false): Pr
 
   const runFetch = (async () => {
     try {
-      const { data, error } = await supabase
-        .from('website_settings')
-        .select('*')
-        .eq('id', 'default')
-        .maybeSingle();
+      const { data, error } = await executePublicSupabaseRead<any>(
+        () =>
+          supabase
+            .from('website_settings')
+            .select('*')
+            .eq('id', 'default')
+            .maybeSingle(),
+        () =>
+          publicAnonSupabase
+            .from('website_settings')
+            .select('*')
+            .eq('id', 'default')
+            .maybeSingle()
+      );
       if (error || !data) return getCachedWebsiteSettings();
       const resolved: WebsiteSettings = {
         id: data.id || 'default',

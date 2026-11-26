@@ -1,4 +1,10 @@
-import { supabase, isSupabaseConfigured, hasActiveOwnerSession } from './supabase';
+import {
+  supabase,
+  publicAnonSupabase,
+  executePublicSupabaseRead,
+  isSupabaseConfigured,
+  hasActiveOwnerSession,
+} from './supabase';
 import {
   DocumentFormPayload,
   DocumentWorkspaceCategory,
@@ -137,14 +143,23 @@ export const fetchPublishedGeneratedDocuments = async (
 
   const runFetch = (async () => {
     try {
-      const { data, error } = await supabase
-        .from('generated_documents')
-        .select('*')
-        .eq('status', 'published')
-        .order('created_at', { ascending: false });
+      const { data, error } = await executePublicSupabaseRead(
+        () =>
+          supabase
+            .from('generated_documents')
+            .select('*')
+            .eq('status', 'published')
+            .order('created_at', { ascending: false }),
+        () =>
+          publicAnonSupabase
+            .from('generated_documents')
+            .select('*')
+            .eq('status', 'published')
+            .order('created_at', { ascending: false })
+      );
 
-      if (error) {
-        console.warn('[DocWorkspace fetchPublished]:', error.message);
+      if (error || !Array.isArray(data)) {
+        if (error) console.warn('[DocWorkspace fetchPublished]:', error.message);
         return localPublished;
       }
 

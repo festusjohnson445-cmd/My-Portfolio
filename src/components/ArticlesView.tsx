@@ -535,6 +535,12 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
     return ['All', ...Array.from(set)];
   }, [articles, isOwner]);
 
+  useEffect(() => {
+    if (selectedCategory !== 'All' && !categories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [categories, selectedCategory]);
+
   const activeUploadCategories = useMemo(() => {
     const set = new Set<string>();
     articles.forEach((a) => {
@@ -565,7 +571,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
     const q = searchQuery.trim().toLowerCase();
     return articles.filter((a) => {
       if (!isOwner && a.status !== 'published') return false;
-      if (selectedCategory !== 'All' && a.category !== selectedCategory) return false;
+      if (selectedCategory !== 'All' && (a.category || '').trim() !== selectedCategory) return false;
       if (!q) return true;
       return (
         a.title.toLowerCase().includes(q) ||

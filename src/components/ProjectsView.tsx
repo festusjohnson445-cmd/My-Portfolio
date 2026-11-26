@@ -132,10 +132,16 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const categories = useMemo(() => {
     const set = new Set<string>();
     projects.forEach((p) => {
-      if ((isOwner || p.status === 'published') && p.category) set.add(p.category);
+      if ((isOwner || p.status === 'published') && p.category?.trim()) set.add(p.category.trim());
     });
     return ['All', ...Array.from(set)];
   }, [projects, isOwner]);
+
+  useEffect(() => {
+    if (selectedCategory !== 'All' && !categories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [categories, selectedCategory]);
 
   const activeUploadCategories = useMemo(() => {
     const set = new Set<string>();
@@ -151,7 +157,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     const q = searchQuery.trim().toLowerCase();
     const list = projects.filter((p) => {
       if (!isOwner && p.status !== 'published') return false;
-      if (selectedCategory !== 'All' && p.category !== selectedCategory) return false;
+      if (selectedCategory !== 'All' && (p.category || '').trim() !== selectedCategory) return false;
       if (!q) return true;
       return (
         p.title.toLowerCase().includes(q) ||

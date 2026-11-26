@@ -153,11 +153,15 @@ CREATE TABLE IF NOT EXISTS public.materials (
 );
 
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS owner_id UUID;
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS file_size TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS file_type TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS category TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS author TEXT;
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS level TEXT DEFAULT '';
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS department TEXT DEFAULT '';
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS institution TEXT DEFAULT '';
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS preview_url TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS download_url TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS file_url TEXT;
@@ -165,6 +169,8 @@ ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS storage_path TEXT;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT ARRAY[]::TEXT[];
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT true;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS download_count INTEGER DEFAULT 0;
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS views_count INTEGER DEFAULT 0;
+ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0;
 ALTER TABLE public.materials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 CREATE INDEX IF NOT EXISTS idx_materials_created_at ON public.materials (created_at DESC);

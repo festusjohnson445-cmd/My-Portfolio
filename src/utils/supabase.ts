@@ -67,6 +67,70 @@ export const supabase: SupabaseClient = createClient(initialConfig.url, initialC
   },
 });
 
+// Dedicated anon-only client that never sends stale/expired user JWTs from localStorage on public SELECTs
+export const publicAnonSupabase: SupabaseClient = createClient(initialConfig.url, initialConfig.anonKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
+
+export function isSupabaseAuthOrJwtError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error.code || '').toUpperCase();
+  const status = Number(error.status || error.statusCode || 0);
+  const msg = String(error.message || error.details || '').toLowerCase();
+  return (
+    status === 401 ||
+    status === 403 ||
+    code === 'PGRST301' ||
+    code === 'PGRST302' ||
+    msg.includes('jwt') ||
+    msg.includes('expired') ||
+    msg.includes('invalid token') ||
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh_token_not_found')
+  );
+}
+
+let lastCorruptSessionClearAt = 0;
+export async function executePublicSupabaseRead<T = any>(
+  runPrimary: () => PromiseLike<{ data: T | null; error: any }>,
+  runAnonFallback: () => PromiseLike<{ data: T | null; error: any }>
+): Promise<{ data: T | null; error: any }> {
+  try {
+    const primaryRes = await runPrimary();
+    if (!primaryRes.error) {
+      return primaryRes;
+    }
+
+    if (isSupabaseAuthOrJwtError(primaryRes.error) && Date.now() - lastCorruptSessionClearAt > 15_000) {
+      lastCorruptSessionClearAt = Date.now();
+      supabase.auth.getSession().then(({ data }) => {
+        const expMs = data?.session?.expires_at ? data.session.expires_at * 1000 : 0;
+        if (expMs > 0 && expMs < Date.now() - 60_000) {
+          supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+
+    const anonRes = await runAnonFallback();
+    if (!anonRes.error) {
+      return anonRes;
+    }
+    return primaryRes;
+  } catch (err) {
+    try {
+      const anonRes = await runAnonFallback();
+      if (!anonRes.error) {
+        return anonRes;
+      }
+    } catch {}
+    return { data: null, error: err };
+  }
+}
+
 export function isSupabaseConfigured(): boolean {
   return getResolvedSupabaseConfig().isRealConfig;
 }
@@ -983,14 +1047,27 @@ export async function fetchProfileFromSupabaseTable(force = false): Promise<any 
   }
 
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data, error } = await executePublicSupabaseRead<any>(
+      () =>
+        supabase
+          .from('profiles')
+          .select('*')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      () =>
+        publicAnonSupabase
+          .from('profiles')
+          .select('*')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+    );
 
-    if (error || !data) {
+    if (error) {
+      return cachedProfileData || null;
+    }
+    if (!data) {
       return null;
     }
 
@@ -1174,17 +1251,30 @@ const MATERIALS_CACHE_TTL_MS = 3 * 60 * 1000;
 export async function fetchMaterialsFromSupabaseTableWithStatus(
   force = false
 ): Promise<{ data: any[]; ok: boolean }> {
-  if (!force && cachedMaterialsData && Date.now() - lastMaterialsFetchTime < MATERIALS_CACHE_TTL_MS) {
+  if (
+    !force &&
+    cachedMaterialsData &&
+    cachedMaterialsData.length > 0 &&
+    Date.now() - lastMaterialsFetchTime < MATERIALS_CACHE_TTL_MS
+  ) {
     return { data: cachedMaterialsData, ok: true };
   }
 
   try {
-    const { data, error } = await supabase
-      .from('materials')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const { data, error } = await executePublicSupabaseRead(
+      () =>
+        supabase
+          .from('materials')
+          .select('*')
+          .order('created_at', { ascending: false }),
+      () =>
+        publicAnonSupabase
+          .from('materials')
+          .select('*')
+          .order('created_at', { ascending: false })
+    );
 
-    if (error || !data) {
+    if (error || !Array.isArray(data)) {
       return { data: cachedMaterialsData || [], ok: false };
     }
     cachedMaterialsData = data;
@@ -3049,6 +3139,7 @@ CREATE TABLE IF NOT EXISTS public.materials (
 
 ALTER TABLE public.materials
   ADD COLUMN IF NOT EXISTS owner_id UUID,
+  ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS level TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS department TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS institution TEXT DEFAULT '',
