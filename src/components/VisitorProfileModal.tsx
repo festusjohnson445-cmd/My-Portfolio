@@ -22,6 +22,7 @@ interface VisitorProfileModalProps {
   onRestoreSession?: (targetId: string) => Promise<boolean>;
   visitorId?: string;
   isMandatory?: boolean;
+  isLoggedIn?: boolean;
 }
 
 const PRESET_COLORS = [
@@ -42,6 +43,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
   onRestoreSession,
   visitorId,
   isMandatory = false,
+  isLoggedIn = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'create' | 'restore'>('create');
   
@@ -119,17 +121,14 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
     setRestoreError(null);
 
     try {
-      // 1. Generate or use persistent visitor_id (visitor_ + crypto.randomUUID())
-      // 2. Strict Session Reset & Id Generation:
-      // When a user submits the "InChat" profile setup form to register a new identity,
-      // DO NOT update or mutate the existing visitor profile row.
-      // Generate a brand-new visitor_id ('visitor_' + crypto.randomUUID()) and matching conversation_id ('conv_' + new visitor_id)
+      // Reuse existing visitorId when an already-logged-in user edits their Name & Photo;
+      // otherwise generate a fresh isolated visitor_id + conv_id on first InChat login.
       const uuid = typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
         : `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      const accessKey = `visitor_${uuid}`;
+      const accessKey = isLoggedIn && activeVisitorId ? activeVisitorId : `visitor_${uuid}`;
 
-      // 2. Ensure single-thread conversation_id ('conv_' + visitor_id) is persisted directly in localStorage
+      // Ensure single-thread conversation_id ('conv_' + visitor_id) is persisted directly in localStorage
       const convId = `conv_${accessKey}`;
       localStorage.setItem('conversation_id', convId);
       localStorage.setItem('fesline_current_conversation_id', convId);

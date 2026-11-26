@@ -34,6 +34,42 @@ export interface LiveAdminAal2Status {
   verifiedFactorsCount: number;
   expiresAt: string | null;
   reason?: string;
+  transientError?: boolean;
+}
+
+function isTransientAuthNetworkError(errOrMsg?: unknown): boolean {
+  const msg = String(
+    typeof errOrMsg === 'string' ? errOrMsg : (errOrMsg as any)?.message || errOrMsg || ''
+  ).toLowerCase();
+  const status = Number((errOrMsg as any)?.status || (errOrMsg as any)?.statusCode || 0);
+  if (status === 401 || status === 403 || status === 400) return false;
+  if (
+    msg.includes('invalid jwt') ||
+    msg.includes('jwt expired') ||
+    msg.includes('session_not_found') ||
+    msg.includes('user_not_found') ||
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh_token_not_found') ||
+    msg.includes('invalid claim') ||
+    msg.includes('bad_jwt')
+  ) {
+    return false;
+  }
+  if (status >= 500 && status < 600) return true;
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('aborted') ||
+    msg.includes('econnreset') ||
+    msg.includes('service unavailable') ||
+    msg.includes('502') ||
+    msg.includes('503') ||
+    msg.includes('504')
+  );
 }
 
 export interface TotpEnrollmentPayload {
@@ -59,12 +95,27 @@ export function isAuthorizedAdminIdentity(user?: User | null): boolean {
 /**
  * Verifies live Supabase session + email confirmation + authorized admin email +
  * authenticator assurance level AAL2 + at least one verified TOTP factor.
+ * Proactively refreshes near-expiry tokens and marks transient network errors so
+ * brief offline/sleep events do not falsely invalidate an active admin session.
  */
 export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
   try {
     const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-    const session = sessionData?.session || null;
-    if (sessionErr || !session) {
+    let session = sessionData?.session || null;
+    if (sessionErr) {
+      return {
+        ok: false,
+        user: null,
+        session: null,
+        currentLevel: null,
+        nextLevel: null,
+        verifiedFactorsCount: 0,
+        expiresAt: null,
+        reason: sessionErr.message || 'Unable to read Supabase session.',
+        transientError: isTransientAuthNetworkError(sessionErr),
+      };
+    }
+    if (!session) {
       return {
         ok: false,
         user: null,
@@ -77,18 +128,57 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
       };
     }
 
+    // Proactively refresh if token is expired or within 45 seconds of expiry
+    const expiresMs = session.expires_at ? session.expires_at * 1000 : 0;
+    if (expiresMs > 0 && expiresMs <= Date.now() + 45_000) {
+      try {
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (refreshed?.session) {
+          session = refreshed.session;
+        } else if (refreshErr && isTransientAuthNetworkError(refreshErr)) {
+          return {
+            ok: false,
+            user: session.user || null,
+            session,
+            currentLevel: getSessionAalClaim(session),
+            nextLevel: null,
+            verifiedFactorsCount: 0,
+            expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
+            reason: refreshErr.message || 'Temporary network issue refreshing session.',
+            transientError: true,
+          };
+        }
+      } catch (refreshCatch) {
+        if (isTransientAuthNetworkError(refreshCatch)) {
+          return {
+            ok: false,
+            user: session.user || null,
+            session,
+            currentLevel: getSessionAalClaim(session),
+            nextLevel: null,
+            verifiedFactorsCount: 0,
+            expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
+            reason: 'Temporary network issue refreshing session.',
+            transientError: true,
+          };
+        }
+      }
+    }
+
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     const liveUser = userData?.user || null;
     if (userErr || !liveUser) {
+      const transient = isTransientAuthNetworkError(userErr);
       return {
         ok: false,
-        user: null,
-        session: null,
-        currentLevel: null,
+        user: transient ? session.user || null : null,
+        session: transient ? session : null,
+        currentLevel: transient ? getSessionAalClaim(session) : null,
         nextLevel: null,
         verifiedFactorsCount: 0,
-        expiresAt: null,
+        expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
         reason: userErr?.message || 'Unable to validate Supabase user.',
+        transientError: transient,
       };
     }
 
@@ -145,6 +235,7 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
           verifiedFactorsCount: 0,
           expiresAt: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : null,
           reason: factorsErr.message || 'Unable to verify MFA factors.',
+          transientError: isTransientAuthNetworkError(factorsErr),
         };
       }
       rawFactors = factorsData?.all || factorsData?.totp || [];
@@ -185,6 +276,13 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
       };
     }
 
+    try {
+      localStorage.setItem('fesline_owner_supabase_uid', liveUser.id);
+      if (liveUser.email) {
+        localStorage.setItem('fesline_owner_supabase_email', liveUser.email);
+      }
+    } catch {}
+
     return {
       ok: true,
       user: liveUser,
@@ -204,6 +302,7 @@ export async function verifyLiveAdminAal2(): Promise<LiveAdminAal2Status> {
       verifiedFactorsCount: 0,
       expiresAt: null,
       reason: err?.message || 'Security verification error.',
+      transientError: isTransientAuthNetworkError(err),
     };
   }
 }

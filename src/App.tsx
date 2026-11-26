@@ -21,12 +21,12 @@ import {
 import {
   supabase,
   onSupabaseAuthStateChange,
+  getSessionAalClaim,
 } from './utils/supabase';
 import {
   verifyLiveAdminAal2,
   isAuthorizedAdminEmail,
   isEmailConfirmedUser,
-  signOutAdminSession,
 } from './utils/adminMfaAuth';
 import {
   useWebsiteSettingsSync,
@@ -129,8 +129,15 @@ export default function App() {
       if (!mounted) return;
       if (live.ok && live.user) {
         setOwnerAuthenticated(true, live.user.id);
+      } else if (
+        live.transientError &&
+        getSessionAalClaim(session) === 'aal2' &&
+        (!session?.expires_at || session.expires_at * 1000 > Date.now() - 60_000)
+      ) {
+        setOwnerAuthenticated(true, user.id);
       } else {
         setOwnerAuthenticated(false);
+        setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
       }
     };
 
@@ -164,7 +171,7 @@ export default function App() {
 
     const checkSessionValidity = async () => {
       const live = await verifyLiveAdminAal2();
-      if (!live.ok) {
+      if (!live.ok && !live.transientError) {
         setOwnerAuthenticated(false);
         setActivePart((cur) => (cur === 'admin' ? 'home' : cur));
       }
@@ -186,6 +193,15 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [isOwner, ownerUid]);
+
+  // Refresh owner-only drafts when admin status turns active
+  useEffect(() => {
+    if (!isOwner) return;
+    Promise.allSettled([
+      fetchProjectsFromSupabase(true),
+      fetchArticlesFromSupabase(true),
+    ]).catch(() => {});
+  }, [isOwner]);
 
   useEffect(() => {
     const handleScroll = () => {

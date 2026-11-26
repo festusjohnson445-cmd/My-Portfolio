@@ -457,7 +457,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       const live = await verifyLiveAdminAal2();
       setLiveAal2Status(live);
       if (!live.ok) {
-        setOwnerAuthenticated(false);
+        if (!live.transientError) {
+          setOwnerAuthenticated(false);
+        }
         return;
       }
       const factors = await listAdminTotpFactors();
@@ -474,14 +476,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({ onNaviga
       const live = await verifyLiveAdminAal2();
       if (!active) return;
       setLiveAal2Status(live);
-      if (!live.ok) {
+      if (!live.ok && !live.transientError) {
         setOwnerAuthenticated(false);
       }
     };
     void enforceLiveAal2();
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        if (active) setOwnerAuthenticated(false);
+        return;
+      }
       void enforceLiveAal2();
     });
     return () => {

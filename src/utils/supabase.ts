@@ -167,7 +167,12 @@ export function getSessionAalClaim(session?: Session | null): 'aal1' | 'aal2' | 
 export async function getAuthenticatedBearerHeaders(): Promise<Record<string, string>> {
   try {
     const { data } = await supabase.auth.getSession();
-    const token = data?.session?.access_token;
+    let session = data?.session || null;
+    if (session?.expires_at && session.expires_at * 1000 <= Date.now() + 30_000) {
+      const { data: refreshed } = await supabase.auth.refreshSession().catch(() => ({ data: null as any }));
+      if (refreshed?.session) session = refreshed.session;
+    }
+    const token = session?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
   } catch {
     return {};
@@ -183,6 +188,14 @@ export async function getValidatedSession(): Promise<{ session: Session; user: U
   if (error || !data?.session?.user) {
     throw new Error(error?.message || 'Authentication required: Active Supabase session is required to perform this action.');
   }
+  let session: Session = data.session;
+
+  if (session.expires_at && session.expires_at * 1000 <= Date.now() + 45_000) {
+    const { data: refreshed } = await supabase.auth.refreshSession().catch(() => ({ data: null as any }));
+    if (refreshed?.session) {
+      session = refreshed.session;
+    }
+  }
 
   const { data: userData, error: userErr } = await supabase.auth.getUser();
   const liveUser = userData?.user;
@@ -190,7 +203,7 @@ export async function getValidatedSession(): Promise<{ session: Session; user: U
     throw new Error('Unauthorized: Confirmed administrator email authorization is required.');
   }
 
-  const jwtAal = getSessionAalClaim(data.session);
+  const jwtAal = getSessionAalClaim(session);
   if (jwtAal !== 'aal2') {
     throw new Error('Two-Factor Authentication (AAL2) verification is required to perform administrative operations.');
   }
@@ -208,7 +221,7 @@ export async function getValidatedSession(): Promise<{ session: Session; user: U
   }
 
   cachedOwnerUid = liveUser.id;
-  return { session: data.session, user: liveUser };
+  return { session, user: liveUser };
 }
 
 /**
@@ -232,11 +245,13 @@ export async function supabaseSignInOwner(email: string, password: string): Prom
     }
 
     if (data?.session && data.user) {
-      cachedOwnerUid = data.user.id;
-      try {
-        localStorage.setItem('fesline_owner_supabase_uid', data.user.id);
-        localStorage.setItem('fesline_owner_supabase_email', data.user.email || email);
-      } catch {}
+      if (isRealOwnerUser(data.user)) {
+        cachedOwnerUid = data.user.id;
+        try {
+          localStorage.setItem('fesline_owner_supabase_uid', data.user.id);
+          localStorage.setItem('fesline_owner_supabase_email', data.user.email || email);
+        } catch {}
+      }
       return { user: data.user, session: data.session, error: null };
     }
 
@@ -252,13 +267,13 @@ export async function supabaseSignInOwner(email: string, password: string): Prom
  */
 export function onSupabaseAuthStateChange(callback: (event: string, session: Session | null) => void) {
   return supabase.auth.onAuthStateChange((event, session) => {
-    if (session?.user) {
+    if (session?.user && isRealOwnerUser(session.user)) {
       cachedOwnerUid = session.user.id;
       try {
         localStorage.setItem('fesline_owner_supabase_uid', session.user.id);
         localStorage.setItem('fesline_owner_supabase_email', session.user.email || '');
       } catch {}
-    } else {
+    } else if (!session?.user || event === 'SIGNED_OUT') {
       cachedOwnerUid = null;
       try {
         localStorage.removeItem('fesline_owner_supabase_uid');

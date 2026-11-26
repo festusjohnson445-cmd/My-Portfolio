@@ -570,6 +570,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setTotpFactors([]);
     setSelectedFactorId('');
     setShowRecoveryGuide(false);
+    setRateLimitSeconds(0);
     setAuthStep('credentials');
 
     if (pendingFactorId) {
@@ -642,6 +643,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               mfaRouteErr?.message || 'Unable to load 2FA verification step. Please sign in again.'
             );
           }
+        }
+      } catch {}
+
+      try {
+        const rememberedEmail = localStorage.getItem('fesline_owner_supabase_email') || '';
+        if (rememberedEmail && isAuthorizedAdminEmail(rememberedEmail)) {
+          setAuthEmail((prev) => prev || rememberedEmail);
         }
       } catch {}
 
@@ -3687,6 +3695,7 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <input
                       type="email"
                       required
+                      autoFocus={!authEmail}
                       autoComplete="username"
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
@@ -3698,14 +3707,27 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Password
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthError(null);
+                        setRecoveryNotice(null);
+                        setAuthStep('recovery_request');
+                      }}
+                      className="text-[11px] font-semibold text-cyan-800 hover:underline cursor-pointer"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <div className="relative">
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required
-                      autoFocus
+                      autoFocus={Boolean(authEmail)}
                       autoComplete="current-password"
                       value={authPin}
                       onChange={(e) => setAuthPin(e.target.value)}
@@ -3942,6 +3964,8 @@ ${documents.map((d) => `- ${d.title} (${d.category} / ${d.issuer} / ID: ${d.cred
                     <button
                       type="button"
                       onClick={() => setShowRecoveryGuide((v) => !v)}
+                      title="Lost Authenticator Device? View recovery steps"
+                      aria-label="Lost Authenticator Device recovery guide"
                       className="font-semibold text-cyan-800 hover:underline cursor-pointer"
                     >
                       LAuD

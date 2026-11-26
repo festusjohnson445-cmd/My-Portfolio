@@ -2014,9 +2014,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
 
   // Visitor updates their messaging profile (photo and name)
   const handleSaveVisitorProfile = async (updated: VisitorMessagingProfile, accessKey: string) => {
-    // 2. State & LocalStorage Flush:
-    // Immediately wipe the active React chat state (setMessages([]))
-    setMessages([]);
+    const isSameLoggedInSession = isVisitorLoggedIn && accessKey === visitorId;
+    if (!isSameLoggedInSession) {
+      setMessages([]);
+    }
     setVisitorProfile(updated);
     setVisitorId(accessKey);
     const targetConvId = `conv_${accessKey}`;
@@ -2024,7 +2025,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     setHasInChatAuth(true);
     setLoginTooltipVisible(false);
 
-    // Overwrite localStorage with the new visitor keys
+    // Overwrite localStorage with the visitor keys
     try {
       localStorage.setItem('visitor_id', accessKey);
       localStorage.setItem('conversation_id', targetConvId);
@@ -2037,7 +2038,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       localStorage.setItem('fesline_visitor_access_key', accessKey);
       localStorage.setItem('fesline_current_visitor_id', accessKey);
       localStorage.setItem('fesline_current_conversation_id', targetConvId);
-      localStorage.removeItem(`fesline_visitor_chat_${accessKey}`);
+      if (!isSameLoggedInSession) {
+        localStorage.removeItem(`fesline_visitor_chat_${accessKey}`);
+      }
     } catch {}
 
     const updatedConvMetadata = {
@@ -2049,22 +2052,27 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       avatarColor: updated.avatarColor || 'bg-slate-700',
     };
 
-    // Clean, empty fresh chat environment for the visitor
-    const freshConv: Conversation = {
-      id: targetConvId,
-      visitorId: accessKey,
-      ...updatedConvMetadata,
-      unread: false,
-      important: false,
-      messages: [],
-      lastMessage: '',
-      lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
+    if (!isSameLoggedInSession) {
+      const freshConv: Conversation = {
+        id: targetConvId,
+        visitorId: accessKey,
+        ...updatedConvMetadata,
+        unread: false,
+        important: false,
+        messages: [],
+        lastMessage: '',
+        lastTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
 
-    setConversations([freshConv]);
-    try {
-      localStorage.setItem(`fesline_visitor_chat_${accessKey}`, JSON.stringify([freshConv]));
-    } catch {}
+      setConversations([freshConv]);
+      try {
+        localStorage.setItem(`fesline_visitor_chat_${accessKey}`, JSON.stringify([freshConv]));
+      } catch {}
+    } else {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === targetConvId || c.visitorId === accessKey ? { ...c, ...updatedConvMetadata } : c))
+      );
+    }
 
     // Create a new row in public.conversations for the Owner Panel
     try {
@@ -4184,6 +4192,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
           onRestoreSession={handleRestoreSessionById}
           visitorId={visitorId}
           isMandatory={!isOwner && !visitorId}
+          isLoggedIn={isVisitorLoggedIn}
         />
 
         {/* ======================================================== */}

@@ -1114,7 +1114,7 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
   };
 
   const handleReaderSignOut = async () => {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: 'local' });
     setAuthUser(null);
     setBookmarks([]);
     setHighlights([]);

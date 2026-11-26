@@ -235,6 +235,9 @@ async function verifyAdminAal2Request(req: express.Request): Promise<
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) {
+      if (resp.status >= 500) {
+        return { ok: false, status: 503, message: 'Supabase authentication service temporarily unavailable.' };
+      }
       return { ok: false, status: 401, message: 'Unable to validate Supabase administrator session.' };
     }
     const user: any = await resp.json().catch(() => null);
@@ -991,7 +994,7 @@ app.get('/api/documents/proxy', async (req, res) => {
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid document URL.' });
     }
-    if (parsed.protocol !== 'https:') {
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
       return res.status(400).json({ success: false, message: 'Only HTTPS document URLs are permitted.' });
     }
 
@@ -1015,6 +1018,7 @@ app.get('/api/documents/proxy', async (req, res) => {
     }
 
     const upstream = await fetch(parsed.toString(), {
+      redirect: 'error',
       signal: AbortSignal.timeout(20000),
     });
     if (!upstream.ok) {
