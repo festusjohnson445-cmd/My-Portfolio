@@ -290,24 +290,34 @@ const ProfileDocModalPreview: React.FC<{ doc: DocumentItem }> = ({ doc }) => {
     return (
       <div className="w-full flex flex-col items-center gap-3">
         {imgSrc ? (
-          <div className="relative max-h-[72vh] w-full overflow-auto rounded-xl shadow-2xl bg-white border border-slate-300 p-2 sm:p-3 flex justify-center items-start">
-            <img
-              src={imgSrc}
-              alt={doc.title}
-              decoding="async"
-              className="w-full max-w-[920px] h-auto object-contain block mx-auto"
-            />
+          <div className="relative max-h-[72vh] w-full overflow-hidden rounded-xl shadow-2xl bg-white border border-slate-300">
+            <div className="max-h-[72vh] w-full overflow-auto p-2 sm:p-3 flex justify-center items-start">
+              <img
+                src={imgSrc}
+                alt={doc.title}
+                decoding="async"
+                className="w-full max-w-[920px] h-auto object-contain block mx-auto"
+              />
+            </div>
             {isRendering && (
-              <span className="sticky top-2 right-2 ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/85 text-white text-[10px] font-mono shadow-md">
-                <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />
-                <span>Enhancing...</span>
-              </span>
+              <div
+                role="status"
+                aria-label="Loading preview"
+                className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/30 backdrop-blur-[1px]"
+              >
+                <div className="w-10 h-10 rounded-full bg-white/95 border border-slate-200 shadow-lg flex items-center justify-center">
+                  <Loader2 className="w-5 h-5 animate-spin text-cyan-800" />
+                </div>
+              </div>
             )}
           </div>
         ) : isRendering ? (
-          <div className="w-full max-w-2xl h-80 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-200">
-            <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
-            <span className="text-xs font-sans">Rendering high-resolution preview...</span>
+          <div
+            role="status"
+            aria-label="Loading preview"
+            className="w-full max-w-2xl h-80 rounded-xl bg-slate-800/70 border border-slate-700 flex items-center justify-center"
+          >
+            <Loader2 className="w-7 h-7 animate-spin text-cyan-400" />
           </div>
         ) : renderFailed || !doc.attachmentDataUrl ? (
           <div className="w-full max-w-xl h-56 rounded-xl bg-slate-800/60 border border-slate-700 flex flex-col items-center justify-center gap-2 text-slate-300 p-6 text-center">

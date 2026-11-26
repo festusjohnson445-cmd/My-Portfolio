@@ -100,9 +100,23 @@ function getMimeTypeByExt(ext: string): string {
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     webp: 'image/webp',
+    svg: 'image/svg+xml',
     txt: 'text/plain',
+    md: 'text/markdown',
+    json: 'application/json',
+    xml: 'application/xml',
+    csv: 'text/csv',
+    tsv: 'text/tab-separated-values',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     doc: 'application/msword',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ppt: 'application/vnd.ms-powerpoint',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    ods: 'application/vnd.oasis.opendocument.spreadsheet',
+    odt: 'application/vnd.oasis.opendocument.text',
+    epub: 'application/epub+zip',
+    rtf: 'application/rtf',
   };
   return map[ext.toLowerCase()] || 'application/octet-stream';
 }
@@ -963,6 +977,271 @@ app.post('/api/documents/:id/download', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to increment download count' });
   }
 });
+
+// SSRF-safe allowlisted document proxy for CORS-clean reader loading
+app.get('/api/documents/proxy', async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || '').trim();
+    if (!rawUrl) {
+      return res.status(400).json({ success: false, message: 'Missing document URL.' });
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid document URL.' });
+    }
+    if (parsed.protocol !== 'https:') {
+      return res.status(400).json({ success: false, message: 'Only HTTPS document URLs are permitted.' });
+    }
+
+    const configuredSupaUrl = (
+      process.env.VITE_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      MEDIA_RELAY_DEFAULT_URL
+    ).replace(/\/+$/, '');
+    const allowedHosts = new Set<string>([
+      'teszyojnwaedjvqaqake.supabase.co',
+      'firebasestorage.googleapis.com',
+      'storage.googleapis.com',
+    ]);
+    try {
+      allowedHosts.add(new URL(configuredSupaUrl).hostname.toLowerCase());
+    } catch {}
+
+    const host = parsed.hostname.toLowerCase();
+    if (!allowedHosts.has(host)) {
+      return res.status(403).json({ success: false, message: 'Document host is not allowlisted.' });
+    }
+
+    const upstream = await fetch(parsed.toString(), {
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ success: false, message: 'Upstream document fetch failed.' });
+    }
+    const contentLen = Number(upstream.headers.get('content-length') || 0);
+    if (contentLen > 50 * 1024 * 1024) {
+      return res.status(413).json({ success: false, message: 'Document exceeds proxy size limit.' });
+    }
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    const ct = upstream.headers.get('content-type') || 'application/octet-stream';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(buf);
+  } catch (err: any) {
+    console.error('[Document Proxy Error]:', err?.message || err);
+    return res.status(502).json({ success: false, message: 'Failed to load remote document.' });
+  }
+});
+
+// Server-side legacy binary document converter (.doc / .ppt -> structured pages)
+function extractReadableTextFromBinaryDoc(buf: Buffer): string[] {
+  const chunks: string[] = [];
+  // Extract printable ASCII runs >= 6 chars
+  const asciiMatches = buf.toString('latin1').match(/[\x20-\x7e\r\n\t]{8,}/g) || [];
+  // Extract UTF-16LE runs >= 6 chars
+  const utf16Matches = buf.toString('utf16le').match(/[\x20-\x7e\r\n\t]{8,}/g) || [];
+
+  const seen = new Set<string>();
+  const noiseRegex = /^(Microsoft|Root Entry|WordDocument|SummaryInformation|DocumentSummaryInformation|1Table|0Table|Current User|PowerPoint Document|Pictures|CompObj|ObjInfo|Macros|VBA|__SRP_|Times New Roman|Calibri|Arial|Cambria|Normal|Default Paragraph Font|Table Normal|No List|Hyperlink|bjbj|@Font)/i;
+
+  for (const raw of [...utf16Matches, ...asciiMatches]) {
+    const cleaned = raw
+      .replace(/[\r\t]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (
+      cleaned.length >= 12 &&
+      /[a-zA-Z]{3,}/.test(cleaned) &&
+      !noiseRegex.test(cleaned) &&
+      !seen.has(cleaned)
+    ) {
+      seen.add(cleaned);
+      chunks.push(cleaned);
+    }
+  }
+  return chunks;
+}
+
+app.post('/api/documents/convert', async (req, res) => {
+  try {
+    const base64 = String(req.body?.base64 || '');
+    const ext = String(req.body?.ext || '').toLowerCase();
+    const fileName = String(req.body?.fileName || 'Document');
+    if (!base64 || base64.length > 35 * 1024 * 1024) {
+      return res.status(400).json({ success: false, message: 'Invalid or oversized document payload.' });
+    }
+    const buf = Buffer.from(base64, 'base64');
+    const lines = extractReadableTextFromBinaryDoc(buf);
+    if (lines.length === 0) {
+      return res.json({
+        success: true,
+        pages: [
+          {
+            pageNumber: 1,
+            kind: ext === 'ppt' ? 'slide' : 'document',
+            title: fileName,
+            blocks: [
+              {
+                type: 'paragraph',
+                text: 'No extractable text runs found in this legacy binary document.',
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    const linesPerPage = ext === 'ppt' ? 8 : 16;
+    const pages: any[] = [];
+    for (let i = 0; i < lines.length; i += linesPerPage) {
+      const slice = lines.slice(i, i + linesPerPage);
+      pages.push({
+        pageNumber: pages.length + 1,
+        kind: ext === 'ppt' ? 'slide' : 'document',
+        title: ext === 'ppt' ? `Slide ${pages.length + 1}` : fileName,
+        blocks: slice.map((text) => ({ type: 'paragraph', text })),
+      });
+    }
+    return res.json({ success: true, pages });
+  } catch (err: any) {
+    console.error('[Document Convert Error]:', err?.message || err);
+    return res.status(500).json({ success: false, message: 'Document conversion failed.' });
+  }
+});
+
+// =================================================================
+// 4b. PRIVATE PER-USER READER STATE (JWT-VERIFIED USER ISOLATION)
+// =================================================================
+const READER_STATES_DIR = path.resolve(DATA_DIR, 'reader_states');
+const memoryReaderStates = new Map<string, any>();
+try {
+  if (!fs.existsSync(READER_STATES_DIR)) {
+    fs.mkdirSync(READER_STATES_DIR, { recursive: true });
+  }
+} catch {}
+
+async function verifyAuthenticatedSupabaseUser(req: express.Request): Promise<
+  | { ok: true; uid: string; email: string }
+  | { ok: false; status: number; message: string }
+> {
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (!authHeader.startsWith('Bearer ')) {
+    return { ok: false, status: 401, message: 'Authentication required.' };
+  }
+  const rawToken = authHeader.slice(7).trim();
+  const jwtPayload = decodeJwtPayload(rawToken);
+  if (!jwtPayload || (jwtPayload.exp && Number(jwtPayload.exp) * 1000 <= Date.now())) {
+    return { ok: false, status: 401, message: 'Invalid or expired session token.' };
+  }
+
+  const supabaseUrl = (
+    process.env.VITE_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    MEDIA_RELAY_DEFAULT_URL
+  ).replace(/\/+$/, '');
+  const anonKey =
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    MEDIA_RELAY_DEFAULT_ANON_KEY;
+
+  try {
+    const resp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: {
+        apikey: anonKey,
+        Authorization: `Bearer ${rawToken}`,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) {
+      return { ok: false, status: 401, message: 'Unable to validate user session.' };
+    }
+    const user: any = await resp.json().catch(() => null);
+    if (!user || !user.id || user.is_anonymous) {
+      return { ok: false, status: 403, message: 'Authenticated non-anonymous account required.' };
+    }
+    return { ok: true, uid: String(user.id), email: String(user.email || '') };
+  } catch {
+    return { ok: false, status: 401, message: 'User verification timed out.' };
+  }
+}
+
+function resolveReaderStatePath(uid: string, docId: string): string | null {
+  const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeDoc = docId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (!safeUid || !safeDoc) return null;
+  const resolved = path.resolve(READER_STATES_DIR, `${safeUid}__${safeDoc}.json`);
+  if (!resolved.startsWith(READER_STATES_DIR + path.sep)) return null;
+  return resolved;
+}
+
+app.get('/api/reader/state/:documentId', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  const auth = await verifyAuthenticatedSupabaseUser(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ success: false, message: auth.message });
+  }
+  const documentId = String(req.params.documentId || '').trim();
+  const key = `${auth.uid}__${documentId}`;
+  if (memoryReaderStates.has(key)) {
+    return res.json({ success: true, state: memoryReaderStates.get(key) });
+  }
+  const filePath = resolveReaderStatePath(auth.uid, documentId);
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (parsed && parsed.userId === auth.uid) {
+        memoryReaderStates.set(key, parsed);
+        return res.json({ success: true, state: parsed });
+      }
+    } catch {}
+  }
+  return res.json({ success: true, state: null });
+});
+
+app.put('/api/reader/state/:documentId', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  const auth = await verifyAuthenticatedSupabaseUser(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ success: false, message: auth.message });
+  }
+  const documentId = String(req.params.documentId || '').trim();
+  if (!documentId || documentId.length > 200) {
+    return res.status(400).json({ success: false, message: 'Invalid document identifier.' });
+  }
+
+  const body = req.body || {};
+  const sanitizedState = {
+    userId: auth.uid,
+    documentId,
+    lastPage: Math.max(1, Math.round(Number(body.lastPage) || 1)),
+    totalPages: Math.max(1, Math.round(Number(body.totalPages) || 1)),
+    scrollRatio: Math.max(0, Math.min(1, Number(body.scrollRatio) || 0)),
+    scrollY: Math.max(0, Number(body.scrollY) || 0),
+    zoom: Math.max(0.5, Math.min(2.5, Number(body.zoom) || 1)),
+    viewMode: body.viewMode === 'continuous' ? 'continuous' : 'paginated',
+    bookmarks: Array.isArray(body.bookmarks) ? body.bookmarks.slice(0, 500) : [],
+    highlights: Array.isArray(body.highlights) ? body.highlights.slice(0, 1000) : [],
+    annotations: Array.isArray(body.annotations) ? body.annotations.slice(0, 1000) : [],
+    personalNotes: typeof body.personalNotes === 'string' ? body.personalNotes.slice(0, 50000) : '',
+    updatedAt: new Date().toISOString(),
+  };
+
+  const key = `${auth.uid}__${documentId}`;
+  memoryReaderStates.set(key, sanitizedState);
+
+  const filePath = resolveReaderStatePath(auth.uid, documentId);
+  if (filePath) {
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(sanitizedState), 'utf8');
+    } catch {}
+  }
+  return res.json({ success: true, state: sanitizedState });
+});
+
 
 
 

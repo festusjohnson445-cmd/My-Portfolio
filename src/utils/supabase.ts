@@ -489,12 +489,28 @@ export async function uploadMaterialToSupabaseBucket(
 
   let contentType = fileOrBlob.type || 'application/octet-stream';
   if (!contentType || contentType === 'application/octet-stream') {
-    if (fileName.endsWith('.pdf')) contentType = 'application/pdf';
-    else if (fileName.endsWith('.png')) contentType = 'image/png';
-    else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) contentType = 'image/jpeg';
-    else if (fileName.endsWith('.webp')) contentType = 'image/webp';
-    else if (fileName.endsWith('.step') || fileName.endsWith('.stp')) contentType = 'model/step';
-    else if (fileName.endsWith('.iges') || fileName.endsWith('.igs')) contentType = 'model/iges';
+    const lowerName = fileName.toLowerCase();
+    if (lowerName.endsWith('.pdf')) contentType = 'application/pdf';
+    else if (lowerName.endsWith('.docx')) contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    else if (lowerName.endsWith('.doc')) contentType = 'application/msword';
+    else if (lowerName.endsWith('.pptx')) contentType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    else if (lowerName.endsWith('.ppt')) contentType = 'application/vnd.ms-powerpoint';
+    else if (lowerName.endsWith('.xlsx')) contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    else if (lowerName.endsWith('.xls')) contentType = 'application/vnd.ms-excel';
+    else if (lowerName.endsWith('.csv')) contentType = 'text/csv';
+    else if (lowerName.endsWith('.odt')) contentType = 'application/vnd.oasis.opendocument.text';
+    else if (lowerName.endsWith('.epub')) contentType = 'application/epub+zip';
+    else if (lowerName.endsWith('.rtf')) contentType = 'application/rtf';
+    else if (lowerName.endsWith('.md') || lowerName.endsWith('.markdown')) contentType = 'text/markdown';
+    else if (lowerName.endsWith('.txt') || lowerName.endsWith('.log')) contentType = 'text/plain';
+    else if (lowerName.endsWith('.json')) contentType = 'application/json';
+    else if (lowerName.endsWith('.xml')) contentType = 'application/xml';
+    else if (lowerName.endsWith('.png')) contentType = 'image/png';
+    else if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) contentType = 'image/jpeg';
+    else if (lowerName.endsWith('.webp')) contentType = 'image/webp';
+    else if (lowerName.endsWith('.svg')) contentType = 'image/svg+xml';
+    else if (lowerName.endsWith('.step') || lowerName.endsWith('.stp')) contentType = 'model/step';
+    else if (lowerName.endsWith('.iges') || lowerName.endsWith('.igs')) contentType = 'model/iges';
   }
 
   // 2. Upload strictly with { contentType, upsert: true, cacheControl: '3600' } and await completion
@@ -2550,6 +2566,225 @@ export async function testSupabaseConnection(): Promise<{
 }
 
 // ============================================================================
+// 6b. PRIVATE PER-USER READING WORKSPACE STATE (BOOKMARKS, HIGHLIGHTS, NOTES)
+// ============================================================================
+
+export type ReaderHighlightColor = 'amber' | 'cyan' | 'emerald' | 'rose';
+
+export interface ReaderBookmark {
+  id: string;
+  page: number;
+  label?: string;
+  excerpt?: string;
+  createdAt: string;
+}
+
+export interface ReaderHighlightRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ReaderHighlight {
+  id: string;
+  page: number;
+  text: string;
+  color: ReaderHighlightColor;
+  rects?: ReaderHighlightRect[];
+  note?: string;
+  createdAt: string;
+}
+
+export interface ReaderAnnotation {
+  id: string;
+  page: number;
+  xPct?: number;
+  yPct?: number;
+  quote?: string;
+  comment: string;
+  color?: ReaderHighlightColor;
+  createdAt: string;
+}
+
+export interface UserReadingState {
+  userId: string;
+  documentId: string;
+  lastPage: number;
+  totalPages: number;
+  scrollRatio: number;
+  scrollY: number;
+  zoom: number;
+  viewMode: 'paginated' | 'continuous';
+  bookmarks: ReaderBookmark[];
+  highlights: ReaderHighlight[];
+  annotations: ReaderAnnotation[];
+  personalNotes: string;
+  updatedAt: string;
+}
+
+const READER_LOCAL_KEY_PREFIX = 'fesline_reader_state_v1_';
+
+function readScopedLocalReadingState(userId: string, documentId: string): UserReadingState | null {
+  if (typeof window === 'undefined' || !userId || !documentId) return null;
+  try {
+    const raw = localStorage.getItem(`${READER_LOCAL_KEY_PREFIX}${userId}_${documentId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.userId === userId && parsed.documentId === documentId) {
+      return parsed as UserReadingState;
+    }
+  } catch {}
+  return null;
+}
+
+function writeScopedLocalReadingState(state: UserReadingState): void {
+  if (typeof window === 'undefined' || !state.userId || !state.documentId) return;
+  try {
+    localStorage.setItem(
+      `${READER_LOCAL_KEY_PREFIX}${state.userId}_${state.documentId}`,
+      JSON.stringify(state)
+    );
+  } catch {}
+}
+
+export async function fetchUserDocumentReadingState(
+  documentId: string
+): Promise<{ user: User | null; state: UserReadingState | null }> {
+  try {
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user || null;
+    if (!user || (user as any).is_anonymous) {
+      return { user: null, state: null };
+    }
+
+    const localCached = readScopedLocalReadingState(user.id, documentId);
+
+    const { data, error } = await supabase
+      .from('document_reading_states')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('document_id', documentId)
+      .maybeSingle();
+
+    if (!error && data) {
+      const normalized: UserReadingState = {
+        userId: user.id,
+        documentId,
+        lastPage: Math.max(1, Number(data.last_page) || 1),
+        totalPages: Math.max(1, Number(data.total_pages) || 1),
+        scrollRatio: Math.max(0, Math.min(1, Number(data.scroll_ratio) || 0)),
+        scrollY: Math.max(0, Number(data.scroll_y) || 0),
+        zoom: Math.max(0.5, Math.min(2.5, Number(data.zoom) || 1)),
+        viewMode: data.view_mode === 'continuous' ? 'continuous' : 'paginated',
+        bookmarks: Array.isArray(data.bookmarks) ? data.bookmarks : [],
+        highlights: Array.isArray(data.highlights) ? data.highlights : [],
+        annotations: Array.isArray(data.annotations) ? data.annotations : [],
+        personalNotes: typeof data.personal_notes === 'string' ? data.personal_notes : '',
+        updatedAt: data.updated_at || new Date().toISOString(),
+      };
+      writeScopedLocalReadingState(normalized);
+      return { user, state: normalized };
+    }
+
+    // Fallback to authenticated server reader endpoint if Supabase table isn't migrated yet
+    try {
+      const authHeaders = await getAuthenticatedBearerHeaders();
+      if (authHeaders.Authorization) {
+        const res = await fetch(`/api/reader/state/${encodeURIComponent(documentId)}`, {
+          headers: authHeaders,
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.state) {
+            const s = json.state as UserReadingState;
+            writeScopedLocalReadingState(s);
+            return { user, state: s };
+          }
+        }
+      }
+    } catch {}
+
+    return { user, state: localCached };
+  } catch {
+    return { user: null, state: null };
+  }
+}
+
+export async function saveUserDocumentReadingState(
+  documentId: string,
+  state: Omit<UserReadingState, 'userId' | 'documentId' | 'updatedAt'>
+): Promise<{ savedToSupabase: boolean; savedToServer: boolean; updatedAt: string }> {
+  const updatedAt = new Date().toISOString();
+  const { data: userData } = await supabase.auth.getUser();
+  const user = userData?.user || null;
+  if (!user || (user as any).is_anonymous) {
+    throw new Error('Sign in required to save private reading state.');
+  }
+
+  const fullState: UserReadingState = {
+    userId: user.id,
+    documentId,
+    lastPage: Math.max(1, Math.round(state.lastPage || 1)),
+    totalPages: Math.max(1, Math.round(state.totalPages || 1)),
+    scrollRatio: Math.max(0, Math.min(1, Number(state.scrollRatio) || 0)),
+    scrollY: Math.max(0, Number(state.scrollY) || 0),
+    zoom: Math.max(0.5, Math.min(2.5, Number(state.zoom) || 1)),
+    viewMode: state.viewMode === 'continuous' ? 'continuous' : 'paginated',
+    bookmarks: Array.isArray(state.bookmarks) ? state.bookmarks : [],
+    highlights: Array.isArray(state.highlights) ? state.highlights : [],
+    annotations: Array.isArray(state.annotations) ? state.annotations : [],
+    personalNotes: typeof state.personalNotes === 'string' ? state.personalNotes : '',
+    updatedAt,
+  };
+
+  writeScopedLocalReadingState(fullState);
+
+  let savedToSupabase = false;
+  let savedToServer = false;
+
+  try {
+    const { error } = await supabase.from('document_reading_states').upsert(
+      {
+        user_id: user.id,
+        document_id: documentId,
+        last_page: fullState.lastPage,
+        total_pages: fullState.totalPages,
+        scroll_ratio: fullState.scrollRatio,
+        scroll_y: fullState.scrollY,
+        zoom: fullState.zoom,
+        view_mode: fullState.viewMode,
+        bookmarks: fullState.bookmarks,
+        highlights: fullState.highlights,
+        annotations: fullState.annotations,
+        personal_notes: fullState.personalNotes,
+        updated_at: updatedAt,
+      },
+      { onConflict: 'user_id,document_id' }
+    );
+    if (!error) {
+      savedToSupabase = true;
+    }
+  } catch {}
+
+  if (!savedToSupabase) {
+    try {
+      const authHeaders = await getAuthenticatedBearerHeaders();
+      if (authHeaders.Authorization) {
+        const res = await fetch(`/api/reader/state/${encodeURIComponent(documentId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify(fullState),
+        });
+        if (res.ok) savedToServer = true;
+      }
+    } catch {}
+  }
+
+  return { savedToSupabase, savedToServer, updatedAt };
+}
+
+// ============================================================================
 // 7. COMPLETE SUPABASE RLS & SCHEMA SQL BLUEPRINT
 // ============================================================================
 
@@ -3211,7 +3446,7 @@ BEGIN
   FOREACH tbl IN ARRAY ARRAY[
     'profiles', 'materials', 'projects', 'articles', 'article_comments',
     'website_settings', 'media_assets', 'visitor_profiles',
-    'conversations', 'messages', 'generated_documents'
+    'conversations', 'messages', 'generated_documents', 'document_reading_states'
   ]
   LOOP
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = tbl)

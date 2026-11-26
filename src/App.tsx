@@ -118,7 +118,6 @@ export default function App() {
       }
 
       if (!isAuthorizedAdminEmail(user.email) || !isEmailConfirmedUser(user)) {
-        await signOutAdminSession('local');
         if (mounted) {
           setOwnerAuthenticated(false);
           setActivePart((cur) => (cur === 'admin' ? 'home' : cur));

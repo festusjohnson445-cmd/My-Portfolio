@@ -144,6 +144,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       // 3. Persist visitor_id, conversation_id, display_name, avatar_url, and role_subject directly in localStorage
       localStorage.setItem('visitor_id', accessKey);
       localStorage.setItem('conversation_id', convId);
+      localStorage.setItem(`fesline_inchat_auth_${accessKey}`, '1');
       localStorage.setItem('display_name', displayName);
       localStorage.setItem('avatar_url', avatarUrl || '');
       localStorage.setItem('role_subject', roleSubject);
@@ -228,6 +229,7 @@ export const VisitorProfileModal: React.FC<VisitorProfileModalProps> = ({
       localStorage.setItem('visitor_id', keyToSearch);
       localStorage.setItem('conversation_id', restoredConvId);
       localStorage.setItem('fesline_current_conversation_id', restoredConvId);
+      localStorage.setItem(`fesline_inchat_auth_${keyToSearch}`, '1');
       localStorage.setItem('display_name', restoredProfile.name);
       localStorage.setItem('visitor_profile', JSON.stringify(restoredProfile));
       localStorage.setItem('fesline_visitor_messaging_profile', JSON.stringify(restoredProfile));

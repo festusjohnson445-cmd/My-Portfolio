@@ -335,14 +335,25 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
   const [resolvedOwnerId, setResolvedOwnerId] = useState<string>(() => ownerUid || localStorage.getItem('fesline_owner_supabase_uid') || 'a5eb7797-7da2-41ff-9547-3975af3958b7');
   const myDeterministicConvId = useMemo(() => conversationId || (visitorId ? `conv_${visitorId}` : generateDeterministicConversationId(visitorId || 'guest', resolvedOwnerId)), [conversationId, visitorId, resolvedOwnerId]);
 
+  // Explicit per-visitor InChat authentication tracking
+  const getStoredInChatAuth = (vId: string): boolean => {
+    if (!vId || typeof localStorage === 'undefined') return false;
+    try {
+      return localStorage.getItem(`fesline_inchat_auth_${vId}`) === '1';
+    } catch {
+      return false;
+    }
+  };
+  const [hasInChatAuth, setHasInChatAuth] = useState<boolean>(() => getStoredInChatAuth(getStoredVisitorId()));
+
   // Login tooltip on send button when unauthenticated visitor tries to send
   const [loginTooltipVisible, setLoginTooltipVisible] = useState(false);
 
-  // Check whether current visitor has logged in / set up profile via InChat
+  // True once the specific visitor has logged in via InChat or restored an authenticated profile
   const isVisitorLoggedIn = Boolean(
     visitorId && (
-      (visitorProfile.name && visitorProfile.name.trim() !== '' && visitorProfile.name !== 'Visitor') ||
-      (typeof localStorage !== 'undefined' && (localStorage.getItem('display_name') || localStorage.getItem('role_subject')))
+      hasInChatAuth ||
+      (visitorProfile.name && visitorProfile.name.trim() !== '' && visitorProfile.name.trim() !== 'Visitor')
     )
   );
 
@@ -374,6 +385,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       } catch {}
     }
 
+    if (getStoredInChatAuth(savedVId)) {
+      setHasInChatAuth(true);
+    }
+
     const initAndFetchVisitorSession = async () => {
       try {
         const savedCId = localStorage.getItem('conversation_id') || `conv_${savedVId}`;
@@ -395,9 +410,13 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
               avatarColor: p.avatarColor || 'bg-slate-700',
             };
             setVisitorProfile(updatedProf);
+            setHasInChatAuth(true);
             try {
+              localStorage.setItem(`fesline_inchat_auth_${savedVId}`, '1');
               localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(updatedProf));
-              localStorage.setItem('display_name', updatedProf.name);
+              if (updatedProf.name && updatedProf.name !== 'Visitor') {
+                localStorage.setItem('display_name', updatedProf.name);
+              }
             } catch {}
           }
         } catch (profileErr) {
@@ -1313,6 +1332,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       setVisitorProfile(restoredProfile);
       setVisitorId(cleanVId);
       setConversationId(restoredConvId);
+      setHasInChatAuth(true);
 
       const lastMsg = mappedMessages[mappedMessages.length - 1];
       const singleVisitorConv: Conversation = {
@@ -1341,6 +1361,7 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
         localStorage.setItem('fesline_visitor_access_key', cleanVId);
         localStorage.setItem('fesline_current_visitor_id', cleanVId);
         localStorage.setItem('fesline_current_conversation_id', restoredConvId);
+        localStorage.setItem(`fesline_inchat_auth_${cleanVId}`, '1');
         localStorage.setItem('display_name', restoredName);
         localStorage.setItem('role_subject', restoredProfile.roleOrCompany || '');
         localStorage.setItem(STORAGE_KEY_VISITOR_PROFILE, JSON.stringify(restoredProfile));
@@ -1955,9 +1976,10 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
   // Visitor clears their chat screen
   const handleVisitorClearChat = () => {
     const oldVisitorId = visitorId;
+    const wasLoggedIn = isVisitorLoggedIn;
     const uuid = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const freshVisitorId = `visitor_${uuid}`;
-    const freshConvId = `conv_${uuid}`;
+    const freshConvId = `conv_${freshVisitorId}`;
 
     // 4. Strict Session & Identity Isolation:
     // Clearing sessions must completely flush the active chat state to prevent previous visitor messages from appearing
@@ -1972,6 +1994,9 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
       localStorage.setItem('conversation_id', freshConvId);
       localStorage.setItem(STORAGE_KEY_VISITOR_ID, freshVisitorId);
       localStorage.setItem('fesline_current_conversation_id', freshConvId);
+      if (wasLoggedIn) {
+        localStorage.setItem(`fesline_inchat_auth_${freshVisitorId}`, '1');
+      }
       sessionStorage.setItem(STORAGE_KEY_VISITOR_ID, freshVisitorId);
       document.cookie = `fesline_visitor_id=${encodeURIComponent(freshVisitorId)}; path=/; max-age=31536000; SameSite=Lax`;
     } catch {}
@@ -1996,12 +2021,14 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
     setVisitorId(accessKey);
     const targetConvId = `conv_${accessKey}`;
     setConversationId(targetConvId);
+    setHasInChatAuth(true);
     setLoginTooltipVisible(false);
 
     // Overwrite localStorage with the new visitor keys
     try {
       localStorage.setItem('visitor_id', accessKey);
       localStorage.setItem('conversation_id', targetConvId);
+      localStorage.setItem(`fesline_inchat_auth_${accessKey}`, '1');
       localStorage.setItem('display_name', updated.name);
       localStorage.setItem('avatar_url', updated.avatarUrl || '');
       localStorage.setItem('role_subject', updated.roleOrCompany || 'Visitor Direct Chat');
@@ -3203,18 +3230,20 @@ export const MessagingSection: React.FC<MessagingSectionProps> = ({ onBack, isAc
                     <Search className="w-3.5 h-3.5" />
                   </button>
 
-                  {/* Visitor Controls: InChat, Restore, Copy Visitor ID & Clear Chat */}
+                  {/* Visitor Controls: InChat (hidden once user logs in), Restore, Copy Visitor ID & Clear Chat */}
                   {!isOwner && (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => setIsVisitorProfileModalOpen(true)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] font-bold transition-colors cursor-pointer border border-cyan-400/50 shadow-xs shrink-0"
-                        title="Configure visitor profile or restore session (InChat)"
-                      >
-                        <User className="w-3 h-3 text-cyan-100 shrink-0" />
-                        <span>InChat</span>
-                      </button>
+                      {!isVisitorLoggedIn && (
+                        <button
+                          type="button"
+                          onClick={() => setIsVisitorProfileModalOpen(true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[10px] font-bold transition-colors cursor-pointer border border-cyan-400/50 shadow-xs shrink-0"
+                          title="Configure visitor profile or restore session (InChat)"
+                        >
+                          <User className="w-3 h-3 text-cyan-100 shrink-0" />
+                          <span>InChat</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"

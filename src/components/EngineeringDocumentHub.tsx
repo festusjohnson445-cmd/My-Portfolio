@@ -23,7 +23,12 @@ import {
   Heart,
   GraduationCap,
 } from 'lucide-react';
-import { renderPdfFirstPageToImage, isMockDrawingPreview } from '../utils/pdfRenderer';
+import { isMockDrawingPreview } from '../utils/pdfRenderer';
+import {
+  generateCrispDocumentThumbnail,
+  isReadableDocumentFormat,
+} from '../utils/documentParser';
+import { DocumentReaderModal } from './DocumentReaderModal';
 import {
   saveHubDocumentsPersistently,
   loadHubDocumentsPersistently,
@@ -136,7 +141,7 @@ export interface QueuedUploadItem {
   fileType: string;
 }
 
-const THUMB_CACHE_PREFIX = 'fesline_thumb_v2_';
+const THUMB_CACHE_PREFIX = 'fesline_thumb_v4_';
 const inMemoryThumbCache = new Map<string, string>();
 
 function getCachedThumb(docId: string): string | null {
@@ -174,25 +179,28 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
       ? doc.previewUrl
       : null;
 
-  const cachedThumb = getCachedThumb(doc.id) || initialImg;
-  const [renderedImg, setRenderedImg] = useState<string | null>(cachedThumb);
-  const [isNearViewport, setIsNearViewport] = useState(Boolean(cachedThumb));
+  const cachedThumb = getCachedThumb(doc.id);
+  const [renderedImg, setRenderedImg] = useState<string | null>(cachedThumb || initialImg);
+  const [isNearViewport, setIsNearViewport] = useState(Boolean(cachedThumb || initialImg));
+  const [needsHiResUpgrade, setNeedsHiResUpgrade] = useState(false);
+  const upgradedRef = useRef<Set<string>>(new Set());
   const thumbRef = useRef<HTMLDivElement | null>(null);
 
-  const pdfSource =
+  const docSource =
     doc.dataUrl ||
     doc.downloadUrl ||
     (doc as any).fileUrl ||
     (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
 
-  const isRemoteLargePdf =
-    Boolean(pdfSource && /^https?:\/\//i.test(String(pdfSource))) &&
-    parseApproxFileSizeBytes(doc.fileSize) > 2_500_000;
+  const canRenderFirstPage = isReadableDocumentFormat(doc.fileName, doc.fileType);
+  const isTooLargeRemote =
+    Boolean(docSource && /^https?:\/\//i.test(String(docSource))) &&
+    parseApproxFileSizeBytes(doc.fileSize) > 20_000_000;
 
   const [isRendering, setIsRendering] = useState(false);
 
   useEffect(() => {
-    if (cachedThumb || isNearViewport) return;
+    if (cachedThumb || initialImg || isNearViewport) return;
     if (typeof IntersectionObserver === 'undefined') {
       setIsNearViewport(true);
       return;
@@ -206,11 +214,11 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
           observer.disconnect();
         }
       },
-      { rootMargin: '120px 0px' }
+      { rootMargin: '160px 0px' }
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [cachedThumb, isNearViewport]);
+  }, [cachedThumb, initialImg, isNearViewport]);
 
   useEffect(() => {
     let isMounted = true;
@@ -221,26 +229,29 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
       return;
     }
 
-    if (doc.previewUrl && !isMockDrawingPreview(doc.previewUrl) && !doc.previewUrl.endsWith('.pdf') && !doc.previewUrl.startsWith('data:application/pdf')) {
+    if (
+      doc.previewUrl &&
+      !isMockDrawingPreview(doc.previewUrl) &&
+      !doc.previewUrl.endsWith('.pdf') &&
+      !doc.previewUrl.startsWith('data:application/pdf') &&
+      !needsHiResUpgrade
+    ) {
       setRenderedImg(doc.previewUrl);
       setIsRendering(false);
-      try {
-        localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, doc.previewUrl);
-        inMemoryThumbCache.set(doc.id, doc.previewUrl);
-      } catch {}
       return;
     }
 
-    if (!isNearViewport || !pdfSource || isRemoteLargePdf) {
+    if (!isNearViewport || !docSource || !canRenderFirstPage || isTooLargeRemote) {
       setIsRendering(false);
       return;
     }
 
     setIsRendering(true);
-    renderPdfFirstPageToImage(pdfSource, 600)
+    generateCrispDocumentThumbnail(docSource, doc.fileName, doc.fileType, 1200)
       .then((img) => {
         if (isMounted) {
           if (img) {
+            upgradedRef.current.add(doc.id);
             setRenderedImg(img);
             try {
               localStorage.setItem(`${THUMB_CACHE_PREFIX}${doc.id}`, img);
@@ -257,17 +268,35 @@ export const EngineeringHubPdfCardThumbnail: React.FC<{
     return () => {
       isMounted = false;
     };
-  }, [doc.id, doc.previewUrl, pdfSource, cachedThumb, isNearViewport, isRemoteLargePdf]);
+  }, [doc.id, doc.fileName, doc.fileType, doc.previewUrl, docSource, cachedThumb, isNearViewport, canRenderFirstPage, isTooLargeRemote, needsHiResUpgrade]);
 
   if (renderedImg) {
     return (
-      <img
-        src={renderedImg}
-        alt={doc.title}
-        loading="lazy"
-        decoding="async"
-        className="w-full h-full object-cover object-top bg-white block group-hover:scale-[1.02] transition-transform duration-300"
-      />
+      <div className="w-full h-full bg-slate-100/80 flex items-start justify-center overflow-hidden p-1.5 sm:p-2">
+        <div className="w-full h-full bg-white rounded-md border border-slate-200/90 shadow-2xs overflow-hidden">
+          <img
+            src={renderedImg}
+            alt={doc.title || doc.fileName}
+            loading="lazy"
+            decoding="async"
+            onLoad={(e) => {
+              if (
+                e.currentTarget.naturalWidth > 0 &&
+                e.currentTarget.naturalWidth < 850 &&
+                canRenderFirstPage &&
+                docSource &&
+                !isTooLargeRemote &&
+                !upgradedRef.current.has(doc.id) &&
+                !getCachedThumb(doc.id)
+              ) {
+                upgradedRef.current.add(doc.id);
+                setNeedsHiResUpgrade(true);
+              }
+            }}
+            className="w-full h-full object-cover object-top bg-white block group-hover:scale-[1.02] transition-transform duration-300"
+          />
+        </div>
+      </div>
     );
   }
 
@@ -313,20 +342,17 @@ const EngineeringHubModalPreview: React.FC<{ doc: PublicEngineeringDocument }> =
       ? doc.previewUrl
       : null) || getCachedThumb(doc.id);
 
-  const pdfSource =
+  const docSource =
     doc.dataUrl ||
     doc.downloadUrl ||
     (doc as any).fileUrl ||
     (doc.previewUrl && doc.previewUrl.includes('http') ? doc.previewUrl : null);
 
-  const isPdfDoc =
-    doc.fileType?.toUpperCase() === 'PDF' ||
-    Boolean(doc.fileName && /\.pdf$/i.test(doc.fileName)) ||
-    Boolean(pdfSource && /\.pdf(\?|$)/i.test(String(pdfSource)));
+  const canRenderFirstPage = isReadableDocumentFormat(doc.fileName, doc.fileType);
 
   const [imgSrc, setImgSrc] = useState<string | null>(initialImg);
   const [isRendering, setIsRendering] = useState<boolean>(
-    () => !initialImg && isPdfDoc && Boolean(pdfSource)
+    () => !initialImg && canRenderFirstPage && Boolean(docSource)
   );
 
   useEffect(() => {
@@ -342,9 +368,9 @@ const EngineeringHubModalPreview: React.FC<{ doc: PublicEngineeringDocument }> =
       return;
     }
 
-    if (isPdfDoc && pdfSource) {
+    if (canRenderFirstPage && docSource) {
       setIsRendering(true);
-      renderPdfFirstPageToImage(pdfSource, 1000)
+      generateCrispDocumentThumbnail(docSource, doc.fileName, doc.fileType, 1100)
         .then((img) => {
           if (!mounted) return;
           if (img) {
@@ -367,7 +393,7 @@ const EngineeringHubModalPreview: React.FC<{ doc: PublicEngineeringDocument }> =
     return () => {
       mounted = false;
     };
-  }, [doc.id, doc.previewUrl, pdfSource, isPdfDoc]);
+  }, [doc.id, doc.fileName, doc.fileType, doc.previewUrl, docSource, canRenderFirstPage]);
 
   if (imgSrc) {
     return (
@@ -507,6 +533,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
   const [sortBy, setSortBy] = useState<'newest' | 'downloads' | 'title' | 'size'>('newest');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [previewModalDoc, setPreviewModalDoc] = useState<PublicEngineeringDocument | null>(null);
+  const [readerDoc, setReaderDoc] = useState<PublicEngineeringDocument | null>(null);
   const [docToDelete, setDocToDelete] = useState<PublicEngineeringDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -856,22 +883,9 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
       const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE';
 
       let preview: string | null = null;
-
-      if (file.type.startsWith('image/')) {
-        preview = await new Promise<string | null>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve((e.target?.result as string) || null);
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(file);
-        });
-      } else if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
-        try {
-          const buffer = await file.arrayBuffer();
-          preview = await renderPdfFirstPageToImage(buffer, 540);
-        } catch {
-          preview = null;
-        }
-      } else {
+      try {
+        preview = await generateCrispDocumentThumbnail(file, file.name, ext, 900);
+      } catch {
         preview = null;
       }
 
@@ -945,6 +959,24 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
           prev.map((d) => (d.id === doc.id ? { ...d, viewsCount: serverViews } : d))
         );
         setPreviewModalDoc((cur) => (cur?.id === doc.id ? { ...cur, viewsCount: serverViews } : cur));
+      }
+    });
+  };
+
+  const openReaderModal = (doc: PublicEngineeringDocument, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const optimisticViews = (doc.viewsCount || 0) + 1;
+    const updatedDoc = { ...doc, viewsCount: optimisticViews };
+    setReaderDoc(updatedDoc);
+    setPreviewModalDoc(null);
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === doc.id ? { ...d, viewsCount: optimisticViews } : d))
+    );
+    void incrementMaterialViewsInSupabase(doc.id).then((serverViews) => {
+      if (typeof serverViews === 'number') {
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === doc.id ? { ...d, viewsCount: serverViews } : d))
+        );
       }
     });
   };
@@ -1329,7 +1361,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
         exts.add(ext);
       }
     });
-    if (exts.size === 0) return 'PDF, STEP, DWG, SLDPRT, ZIP, DOCX';
+    if (exts.size === 0) return 'PDF, DOCX, PPTX, XLSX, EPUB, STEP, DWG, ZIP';
     return Array.from(exts).join(', ');
   }, [approvedDocs]);
 
@@ -1476,14 +1508,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={() => handleOpenUploadModal(isOwner ? 'general' : 'student')}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold transition-colors cursor-pointer shrink-0 whitespace-nowrap shadow-2xs"
-          >
-            <Plus className="w-3 h-3 shrink-0" />
-            <span>{isOwner ? 'Upload' : 'Post'}</span>
-          </button>
+          {!isOwner && (
+            <button
+              type="button"
+              onClick={() => handleOpenUploadModal('student')}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white text-[11px] font-semibold transition-colors cursor-pointer shrink-0 whitespace-nowrap shadow-2xs"
+            >
+              <Plus className="w-3 h-3 shrink-0" />
+              <span>Post</span>
+            </button>
+          )}
         </div>
 
         {/* Category Quick Pills Bar (Organized Catalog Strip) */}
@@ -1713,6 +1747,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     </div>
 
                     <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => openReaderModal(doc, e)}
+                        title="Open Reader"
+                        className="h-7 px-2 rounded-lg bg-white hover:bg-cyan-50 text-cyan-950 border border-[#9eb3c7] hover:border-cyan-800 font-semibold text-[10.5px] inline-flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer shrink-0"
+                      >
+                        <BookOpen className="w-3 h-3 text-cyan-800 shrink-0" />
+                        <span>Read</span>
+                      </button>
+
                       <a
                         href={doc.downloadUrl || doc.dataUrl || `/api/documents/files/${doc.id}`}
                         download={doc.fileName}
@@ -1724,7 +1768,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                             fetch(`/api/documents/${doc.id}/download`, { method: 'POST' }).catch(() => {});
                           } catch {}
                         }}
-                        className="flex-1 h-7 px-2 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-semibold text-[10.5px] flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer text-center no-underline"
+                        className="flex-1 min-w-0 h-7 px-2 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-semibold text-[10.5px] flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer text-center no-underline"
                       >
                         <Download className="w-3 h-3 text-white shrink-0" />
                         <span className="truncate">Download {doc.fileName.split('.').pop()?.toUpperCase() || 'File'}</span>
@@ -1859,7 +1903,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     ref={modalFileInputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.csv,.json"
+                    accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.tsv,.ods,.odt,.epub,.rtf,.txt,.md,.markdown,.json,.xml,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg"
                     onChange={(e) => {
                       if (e.target.files && e.target.files.length > 0) {
                         handleFilesPicked(e.target.files);
@@ -1871,7 +1915,7 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     ref={addMoreInputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.csv,.json"
+                    accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.tsv,.ods,.odt,.epub,.rtf,.txt,.md,.markdown,.json,.xml,.step,.stp,.iges,.igs,.sldprt,.sldasm,.dwg,.dxf,.zip,.rar,.7z,.png,.jpg,.jpeg,.webp,.svg"
                     onChange={(e) => {
                       if (e.target.files && e.target.files.length > 0) {
                         handleFilesPicked(e.target.files);
@@ -1900,8 +1944,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                       </span>
                       <span className="text-[11px] text-slate-500 block max-w-full break-words">
                         {(!isOwner || uploadFormMode === 'student')
-                          ? 'Upload Student Material PDFs, Lecture Notes, Past Questions, or Guides'
-                          : 'PDF Books, Technical Drawings, STEP CAD, Word, Excel, ZIP'}
+                          ? 'PDF, DOCX, DOC, PPTX, PPT, XLSX, CSV, ODT, EPUB, RTF, TXT, MD & Study Notes'
+                          : 'PDF, DOCX, DOC, PPTX, PPT, XLSX, CSV, ODT, EPUB, RTF, TXT, Technical Drawings, CAD & ZIP'}
                       </span>
                     </div>
                   ) : (
@@ -2247,8 +2291,16 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                 <span>·</span>
                 <span>Downloads: <strong className="text-cyan-700">{previewModalDoc.downloadCount}</strong></span>
               </div>
-              {isOwner && (
-                <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openReaderModal(previewModalDoc)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-cyan-900 hover:bg-cyan-800 text-white font-semibold text-xs cursor-pointer shadow-2xs transition-all"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Read</span>
+                </button>
+                {isOwner && (
                   <button
                     onClick={() => {
                       const docToDel = previewModalDoc;
@@ -2261,8 +2313,8 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Delete</span>
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -2357,6 +2409,12 @@ export const EngineeringDocumentHub: React.FC<EngineeringDocumentHubProps> = ({ 
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
+      )}
+      {readerDoc && (
+        <DocumentReaderModal
+          doc={readerDoc}
+          onClose={() => setReaderDoc(null)}
+        />
       )}
     </div>
   );
