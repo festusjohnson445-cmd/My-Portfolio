@@ -3491,6 +3491,7 @@ CREATE TABLE IF NOT EXISTS public.generated_documents (
   summary TEXT NOT NULL DEFAULT '',
   form_data JSONB NOT NULL DEFAULT '{}'::jsonb,
   preview_image_url TEXT DEFAULT '',
+  passport_image_url TEXT DEFAULT '',
   pdf_url TEXT DEFAULT '',
   docx_url TEXT DEFAULT '',
   storage_paths TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
@@ -3503,6 +3504,7 @@ CREATE TABLE IF NOT EXISTS public.generated_documents (
 
 ALTER TABLE public.generated_documents
   ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS passport_image_url TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS storage_paths TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   ADD COLUMN IF NOT EXISTS views_count INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS downloads_count INTEGER NOT NULL DEFAULT 0;
@@ -3522,6 +3524,35 @@ CREATE POLICY "Owner Delete Generated Documents" ON public.generated_documents F
 
 CREATE INDEX IF NOT EXISTS idx_generated_docs_status_created ON public.generated_documents(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_generated_docs_category ON public.generated_documents(category);
+
+-- Career Studio Passport Photos Storage Bucket
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'career_passports',
+  'career_passports',
+  true,
+  5242880,
+  ARRAY['image/jpeg', 'image/png', 'image/webp']
+)
+ON CONFLICT (id) DO UPDATE SET
+  public = EXCLUDED.public,
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DROP POLICY IF EXISTS "Public Read Career Passports" ON storage.objects;
+CREATE POLICY "Public Read Career Passports"
+  ON storage.objects FOR SELECT TO public
+  USING (bucket_id = 'career_passports');
+
+DROP POLICY IF EXISTS "Public Upload Career Passports" ON storage.objects;
+CREATE POLICY "Public Upload Career Passports"
+  ON storage.objects FOR INSERT TO public
+  WITH CHECK (bucket_id = 'career_passports');
+
+DROP POLICY IF EXISTS "Owner Delete Career Passports" ON storage.objects;
+CREATE POLICY "Owner Delete Career Passports"
+  ON storage.objects FOR DELETE TO authenticated
+  USING (bucket_id = 'career_passports' AND public.is_portfolio_owner());
 
 CREATE OR REPLACE FUNCTION public.increment_generated_document_views(target_doc_id TEXT)
 RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$

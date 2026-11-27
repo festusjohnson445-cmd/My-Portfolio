@@ -8,6 +8,95 @@ export type DocumentWorkspaceCategory =
   | 'research_proposal'
   | 'study_plan';
 
+export type CareerStudioTemplateId =
+  | 'default'
+  | 'navy_sidebar'
+  | 'warm_editorial'
+  | 'swiss_minimal'
+  | 'slate_two_page'
+  | 'royal_passport';
+
+export interface CareerStudioTemplateMeta {
+  id: CareerStudioTemplateId;
+  name: string;
+  shortName: string;
+  tag: string;
+  description: string;
+  isSinglePage: boolean;
+  pageCount: 1 | 2;
+  supportsPassport?: boolean;
+  requiresPassport?: boolean;
+}
+
+export const CAREER_STUDIO_TEMPLATE_META: CareerStudioTemplateMeta[] = [
+  {
+    id: 'default',
+    name: 'Default Classic',
+    shortName: 'Default',
+    tag: 'Standard',
+    description: 'Retained classic executive serif A4 layout.',
+    isSinglePage: false,
+    pageCount: 1,
+  },
+  {
+    id: 'navy_sidebar',
+    name: 'Navy Geometric',
+    shortName: 'Navy Sidebar',
+    tag: '1-Page',
+    description: 'Deep navy geometric left sidebar with crisp white main column.',
+    isSinglePage: true,
+    pageCount: 1,
+  },
+  {
+    id: 'warm_editorial',
+    name: 'Warm Editorial',
+    shortName: 'Warm Editorial',
+    tag: '1-Page',
+    description: 'Warm cream frame with terracotta accents and balanced two-column grid.',
+    isSinglePage: true,
+    pageCount: 1,
+  },
+  {
+    id: 'swiss_minimal',
+    name: 'Swiss Monochrome',
+    shortName: 'Swiss Minimal',
+    tag: '1-Page',
+    description: 'Pure white crisp monochrome typography with full-width rules.',
+    isSinglePage: true,
+    pageCount: 1,
+  },
+  {
+    id: 'slate_two_page',
+    name: 'Steel Blue 2-Page',
+    shortName: '2-Page Slate',
+    tag: '2-Page',
+    description: 'Two-page steel-blue editorial split with portrait slot and continuation.',
+    isSinglePage: false,
+    pageCount: 2,
+    supportsPassport: true,
+  },
+  {
+    id: 'royal_passport',
+    name: 'Passport Executive',
+    shortName: 'Passport Blue',
+    tag: '1-Page · Photo',
+    description: 'Single-page royal navy badge layout requiring an uploaded passport photo.',
+    isSinglePage: true,
+    pageCount: 1,
+    supportsPassport: true,
+    requiresPassport: true,
+  },
+];
+
+export const isValidTemplateId = (val: unknown): val is CareerStudioTemplateId =>
+  val === 'default' ||
+  val === 'navy_sidebar' ||
+  val === 'warm_editorial' ||
+  val === 'swiss_minimal' ||
+  val === 'slate_two_page' ||
+  val === 'royal_passport';
+
+
 export interface EducationEntry {
   id: string;
   degree: string;
@@ -234,14 +323,17 @@ export interface StudyPlanData {
 }
 
 export type DocumentFormPayload =
-  | { category: 'international_cv'; data: InternationalCvData }
-  | { category: 'academic_resume'; data: AcademicResumeData }
-  | { category: 'job_resume'; data: JobResumeData }
-  | { category: 'sop'; data: SopData }
-  | { category: 'personal_statement'; data: PersonalStatementData }
-  | { category: 'scholarship_letter'; data: ScholarshipLetterData }
-  | { category: 'research_proposal'; data: ResearchProposalData }
-  | { category: 'study_plan'; data: StudyPlanData };
+  | { category: 'international_cv'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: InternationalCvData }
+  | { category: 'academic_resume'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: AcademicResumeData }
+  | { category: 'job_resume'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: JobResumeData }
+  | { category: 'sop'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: SopData }
+  | { category: 'personal_statement'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: PersonalStatementData }
+  | { category: 'scholarship_letter'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: ScholarshipLetterData }
+  | { category: 'research_proposal'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: ResearchProposalData }
+  | { category: 'study_plan'; templateId?: CareerStudioTemplateId; passportImageUrl?: string; passportStoragePath?: string; data: StudyPlanData };
+
+export const getPayloadTemplateId = (payload?: DocumentFormPayload | null): CareerStudioTemplateId =>
+  payload && isValidTemplateId(payload.templateId) ? payload.templateId : 'default';
 
 export interface GeneratedDocumentRecord {
   id: string;
@@ -653,11 +745,22 @@ export const normalizeDocumentPayload = (rawPayload: DocumentFormPayload): Docum
   }
   const base = createEmptyFormPayload(rawPayload.category);
   const rawData: any = rawPayload.data || {};
+  const templateId: CareerStudioTemplateId = isValidTemplateId(rawPayload.templateId)
+    ? rawPayload.templateId
+    : 'default';
+  const passportImageUrl =
+    typeof rawPayload.passportImageUrl === 'string' ? rawPayload.passportImageUrl : undefined;
+  const passportStoragePath =
+    typeof rawPayload.passportStoragePath === 'string' ? rawPayload.passportStoragePath : undefined;
+
   switch (rawPayload.category) {
     case 'international_cv': {
       const b = base.data as InternationalCvData;
       return {
         category: 'international_cv',
+        templateId,
+        passportImageUrl,
+        passportStoragePath,
         data: {
           ...b,
           ...rawData,
@@ -676,6 +779,9 @@ export const normalizeDocumentPayload = (rawPayload: DocumentFormPayload): Docum
       const b = base.data as AcademicResumeData;
       return {
         category: 'academic_resume',
+        templateId,
+        passportImageUrl,
+        passportStoragePath,
         data: {
           ...b,
           ...rawData,
@@ -701,6 +807,9 @@ export const normalizeDocumentPayload = (rawPayload: DocumentFormPayload): Docum
       const b = base.data as JobResumeData;
       return {
         category: 'job_resume',
+        templateId,
+        passportImageUrl,
+        passportStoragePath,
         data: {
           ...b,
           ...rawData,
@@ -719,6 +828,9 @@ export const normalizeDocumentPayload = (rawPayload: DocumentFormPayload): Docum
     default:
       return {
         category: rawPayload.category,
+        templateId,
+        passportImageUrl,
+        passportStoragePath,
         data: { ...(base.data as any), ...rawData },
       } as DocumentFormPayload;
   }
@@ -904,6 +1016,10 @@ export const validateDocumentPayload = (
       }
       break;
     }
+  }
+
+  if (getPayloadTemplateId(payload) === 'royal_passport' && !safeStr(payload.passportImageUrl)) {
+    errors.push('Passport Photo upload is required for the Passport Blue layout.');
   }
 
   return { valid: errors.length === 0, errors };

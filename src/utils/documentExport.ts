@@ -4,7 +4,15 @@ import {
   DocumentFormPayload,
   extractDocumentTitle,
   getCategoryMeta,
+  getPayloadTemplateId,
 } from '../types/documentWorkspace';
+import {
+  exportSinglePageTemplateToDocxBlob,
+  exportSinglePageTemplateToPdfBlob,
+  exportSinglePageTemplateToPdfBlobAsync,
+  renderSinglePageTemplateDataUrl,
+  renderSinglePageTemplateDataUrlAsync,
+} from './singlePageExportRenderers';
 
 export type BlueprintAlign = 'left' | 'center' | 'right' | 'justify';
 
@@ -1040,7 +1048,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       }
 
       if (t(d.academicBackground)) {
-        blocks.push({ kind: 'section-heading', title: '1. ACADEMIC BACKGROUND & READINESS' });
+        blocks.push({ kind: 'section-heading', title: 'ACADEMIC BACKGROUND & READINESS' });
         splitEssayParagraphs(d.academicBackground).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
         });
@@ -1049,7 +1057,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       if (t(d.purposeAndSpecialization)) {
         blocks.push({
           kind: 'section-heading',
-          title: '2. PURPOSE OF STUDY & SPECIALIZATION FOCUS',
+          title: 'PURPOSE OF STUDY & SPECIALIZATION FOCUS',
         });
         splitEssayParagraphs(d.purposeAndSpecialization).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
@@ -1062,7 +1070,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       if (terms.length > 0) {
         blocks.push({
           kind: 'section-heading',
-          title: '3. TERM-BY-TERM COURSEWORK & RESEARCH SCHEDULE',
+          title: 'TERM-BY-TERM COURSEWORK & RESEARCH SCHEDULE',
         });
         blocks.push({
           kind: 'table',
@@ -1079,7 +1087,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       if (t(d.languageAndTechnicalPrep)) {
         blocks.push({
           kind: 'section-heading',
-          title: '4. LANGUAGE & TECHNICAL PREPARATION',
+          title: 'LANGUAGE & TECHNICAL PREPARATION',
         });
         splitEssayParagraphs(d.languageAndTechnicalPrep).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
@@ -1089,7 +1097,7 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
       if (t(d.postStudyCareerImpact)) {
         blocks.push({
           kind: 'section-heading',
-          title: '5. POST-STUDY CAREER & IMPACT PLAN',
+          title: 'POST-STUDY CAREER & IMPACT PLAN',
         });
         splitEssayParagraphs(d.postStudyCareerImpact).forEach((para) => {
           blocks.push({ kind: 'paragraph', text: para, align: 'justify', spacingAfter: 3 });
@@ -1125,6 +1133,11 @@ export const buildDocumentBlueprint = (payload: DocumentFormPayload): DocumentBl
 // ============================================================================
 
 export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
+  const templateId = getPayloadTemplateId(payload);
+  if (templateId !== 'default') {
+    return exportSinglePageTemplateToPdfBlob(payload, templateId);
+  }
+
   const bp = buildDocumentBlueprint(payload);
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -1589,8 +1602,21 @@ export const exportDocumentToPdfBlob = (payload: DocumentFormPayload): Blob => {
   return doc.output('blob');
 };
 
-export const downloadDocumentPdf = (payload: DocumentFormPayload, customFileName?: string) => {
-  const blob = exportDocumentToPdfBlob(payload);
+export const exportDocumentToPdfBlobAsync = async (
+  payload: DocumentFormPayload
+): Promise<Blob> => {
+  const templateId = getPayloadTemplateId(payload);
+  if (templateId !== 'default') {
+    return exportSinglePageTemplateToPdfBlobAsync(payload, templateId);
+  }
+  return exportDocumentToPdfBlob(payload);
+};
+
+export const downloadDocumentPdf = async (
+  payload: DocumentFormPayload,
+  customFileName?: string
+) => {
+  const blob = await exportDocumentToPdfBlobAsync(payload);
   const safeBase =
     (customFileName || extractDocumentTitle(payload))
       .replace(/[^a-z0-9_\- ]/gi, '')
@@ -1733,6 +1759,11 @@ const xmlTable = (
 };
 
 export const exportDocumentToDocxBlob = async (payload: DocumentFormPayload): Promise<Blob> => {
+  const templateId = getPayloadTemplateId(payload);
+  if (templateId !== 'default') {
+    return exportSinglePageTemplateToDocxBlob(payload, templateId);
+  }
+
   const bp = buildDocumentBlueprint(payload);
   const docFont = 'Times New Roman';
   const isCentered =
@@ -2069,7 +2100,22 @@ export const downloadDocumentDocx = async (payload: DocumentFormPayload, customF
 // 3. PAGE-1 VISUAL PREVIEW THUMBNAIL RENDERER (A4 CANVAS -> JPEG DATA URL)
 // ============================================================================
 
+export const renderDocumentFirstPageDataUrlAsync = async (
+  payload: DocumentFormPayload
+): Promise<string> => {
+  const templateId = getPayloadTemplateId(payload);
+  if (templateId !== 'default') {
+    return renderSinglePageTemplateDataUrlAsync(payload, templateId);
+  }
+  return renderDocumentFirstPageDataUrl(payload);
+};
+
 export const renderDocumentFirstPageDataUrl = (payload: DocumentFormPayload): string => {
+  const templateId = getPayloadTemplateId(payload);
+  if (templateId !== 'default') {
+    return renderSinglePageTemplateDataUrl(payload, templateId);
+  }
+
   const bp = buildDocumentBlueprint(payload);
   const canvas = document.createElement('canvas');
   const W = 794;

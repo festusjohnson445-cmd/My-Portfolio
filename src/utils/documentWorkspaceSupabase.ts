@@ -18,13 +18,15 @@ import {
 import {
   dataUrlToBlob,
   exportDocumentToDocxBlob,
-  exportDocumentToPdfBlob,
+  exportDocumentToPdfBlobAsync,
   renderDocumentFirstPageDataUrl,
+  renderDocumentFirstPageDataUrlAsync,
 } from './documentExport';
 
 const LOCAL_PUBLISHED_KEY = 'fesline_generated_documents_published_v1';
 const LOCAL_DRAFTS_KEY = 'fesline_generated_documents_drafts_v1';
 const STORAGE_BUCKET = 'materials';
+const PASSPORT_BUCKET = 'career_passports';
 
 const safeReadLocal = (key: string): GeneratedDocumentRecord[] => {
   try {
@@ -49,23 +51,125 @@ const safeWriteLocal = (key: string, items: GeneratedDocumentRecord[]) => {
   }
 };
 
-const mapRowToRecord = (row: any): GeneratedDocumentRecord => ({
-  id: String(row.id),
-  category: (row.category || 'international_cv') as DocumentWorkspaceCategory,
-  title: String(row.title && String(row.title).trim().toLowerCase() !== 'untitled document' ? row.title : ''),
-  authorName: String(row.author_name || ''),
-  summary: String(row.summary || ''),
-  formData: normalizeDocumentPayload(row.form_data as DocumentFormPayload),
-  previewImageUrl: String(row.preview_image_url || ''),
-  pdfUrl: String(row.pdf_url || ''),
-  docxUrl: String(row.docx_url || ''),
-  storagePaths: Array.isArray(row.storage_paths) ? row.storage_paths : [],
-  status: (row.status || 'published') as 'draft' | 'published' | 'archived',
-  viewsCount: Number(row.views_count || 0),
-  downloadsCount: Number(row.downloads_count || 0),
-  createdAt: String(row.created_at || new Date().toISOString()),
-  updatedAt: String(row.updated_at || new Date().toISOString()),
-});
+const mapRowToRecord = (row: any): GeneratedDocumentRecord => {
+  const rawForm =
+    row.form_data && typeof row.form_data === 'object'
+      ? {
+          ...row.form_data,
+          passportImageUrl:
+            row.form_data.passportImageUrl || row.passport_image_url || '',
+        }
+      : row.form_data;
+
+  return {
+    id: String(row.id),
+    category: (row.category || 'international_cv') as DocumentWorkspaceCategory,
+    title: String(
+      row.title && String(row.title).trim().toLowerCase() !== 'untitled document'
+        ? row.title
+        : ''
+    ),
+    authorName: String(row.author_name || ''),
+    summary: String(row.summary || ''),
+    formData: normalizeDocumentPayload(rawForm as DocumentFormPayload),
+    previewImageUrl: String(row.preview_image_url || ''),
+    pdfUrl: String(row.pdf_url || ''),
+    docxUrl: String(row.docx_url || ''),
+    storagePaths: Array.isArray(row.storage_paths) ? row.storage_paths : [],
+    status: (row.status || 'published') as 'draft' | 'published' | 'archived',
+    viewsCount: Number(row.views_count || 0),
+    downloadsCount: Number(row.downloads_count || 0),
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: String(row.updated_at || new Date().toISOString()),
+  };
+};
+
+const resizePassportImageToJpeg = async (
+  file: File
+): Promise<{ dataUrl: string; blob: Blob }> => {
+  const rawDataUrl: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read passport photo file.'));
+    reader.readAsDataURL(file);
+  });
+
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    return { dataUrl: rawDataUrl, blob: file };
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 720;
+      const ratio = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+      const w = Math.max(1, Math.round((img.width || 400) * ratio));
+      const h = Math.max(1, Math.round((img.height || 400) * ratio));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve({ dataUrl: rawDataUrl, blob: file });
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+      resolve({ dataUrl: jpegDataUrl, blob: dataUrlToBlob(jpegDataUrl) });
+    };
+    img.onerror = () => resolve({ dataUrl: rawDataUrl, blob: file });
+    img.src = rawDataUrl;
+  });
+};
+
+export const uploadCareerStudioPassportImage = async (
+  file: File
+): Promise<{ publicUrl: string; storagePath?: string }> => {
+  const { dataUrl, blob } = await resizePassportImageToJpeg(file);
+  if (!isSupabaseConfigured()) {
+    return { publicUrl: dataUrl };
+  }
+
+  const fileName = `passports/passport_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`;
+
+  try {
+    const { error: passportErr } = await supabase.storage
+      .from(PASSPORT_BUCKET)
+      .upload(fileName, blob, { contentType: 'image/jpeg', upsert: false });
+
+    if (!passportErr) {
+      const { data } = supabase.storage.from(PASSPORT_BUCKET).getPublicUrl(fileName);
+      if (data?.publicUrl) {
+        return {
+          publicUrl: data.publicUrl,
+          storagePath: `${PASSPORT_BUCKET}:${fileName}`,
+        };
+      }
+    }
+
+    // Fallback to shared materials bucket if career_passports bucket has not been created yet
+    const fallbackPath = `career-studio-${fileName}`;
+    const { error: fallbackErr } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(fallbackPath, blob, { contentType: 'image/jpeg', upsert: false });
+
+    if (!fallbackErr) {
+      const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(fallbackPath);
+      if (data?.publicUrl) {
+        return {
+          publicUrl: data.publicUrl,
+          storagePath: fallbackPath,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[DocWorkspace Passport Upload Warning]:', err);
+  }
+
+  return { publicUrl: dataUrl };
+};
 
 const uploadGeneratedAsset = async (
   path: string,
@@ -253,11 +357,13 @@ export const publishGeneratedDocument = async (
     ? existingId
     : (!existingId ? `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` : existingId);
 
-  const previewDataUrl = renderDocumentFirstPageDataUrl(payload);
-  const pdfBlob = exportDocumentToPdfBlob(payload);
+  const previewDataUrl = await renderDocumentFirstPageDataUrlAsync(payload);
+  const pdfBlob = await exportDocumentToPdfBlobAsync(payload);
   const docxBlob = await exportDocumentToDocxBlob(payload);
 
-  const storagePaths: string[] = [];
+  const storagePaths: string[] = payload.passportStoragePath
+    ? [payload.passportStoragePath]
+    : [];
   let previewImageUrl = previewDataUrl;
   let pdfUrl = '';
   let docxUrl = '';
@@ -316,7 +422,7 @@ export const publishGeneratedDocument = async (
 
   if (isSupabaseConfigured()) {
     try {
-      const dbRow = {
+      const dbRow: Record<string, any> = {
         id: record.id,
         category: record.category,
         title: record.title,
@@ -324,6 +430,7 @@ export const publishGeneratedDocument = async (
         summary: record.summary,
         form_data: record.formData,
         preview_image_url: record.previewImageUrl,
+        passport_image_url: payload.passportImageUrl || '',
         pdf_url: record.pdfUrl,
         docx_url: record.docxUrl,
         storage_paths: record.storagePaths,
@@ -331,38 +438,49 @@ export const publishGeneratedDocument = async (
         updated_at: now,
       };
 
-      let data: any = null;
-      let error: any = null;
-
-      if (isOwnerSession) {
+      const executeWrite = async (rowToSave: Record<string, any>) => {
+        if (isOwnerSession) {
+          return supabase
+            .from('generated_documents')
+            .upsert(rowToSave, { onConflict: 'id' })
+            .select('*')
+            .single();
+        }
         const res = await supabase
           .from('generated_documents')
-          .upsert(dbRow, { onConflict: 'id' })
+          .insert(rowToSave)
           .select('*')
           .single();
-        data = res.data;
-        error = res.error;
-      } else {
-        const res = await supabase
-          .from('generated_documents')
-          .insert(dbRow)
-          .select('*')
-          .single();
-        data = res.data;
-        error = res.error;
-        if (error && (error.code === '23505' || String(error.message || '').toLowerCase().includes('duplicate'))) {
+        if (
+          res.error &&
+          (res.error.code === '23505' ||
+            String(res.error.message || '').toLowerCase().includes('duplicate'))
+        ) {
           const freshId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           const retry = await supabase
             .from('generated_documents')
-            .insert({ ...dbRow, id: freshId })
+            .insert({ ...rowToSave, id: freshId })
             .select('*')
             .single();
-          data = retry.data;
-          error = retry.error;
-          if (!error && data) {
+          if (!retry.error && retry.data) {
             record.id = freshId;
           }
+          return retry;
         }
+        return res;
+      };
+
+      let { data, error } = await executeWrite(dbRow);
+
+      // Safe fallback if the database table hasn't had passport_image_url added yet
+      if (
+        error &&
+        String(error.message || '').toLowerCase().includes('passport_image_url')
+      ) {
+        const { passport_image_url: _omit, ...legacyRow } = dbRow;
+        const fallbackRes = await executeWrite(legacyRow);
+        data = fallbackRes.data;
+        error = fallbackRes.error;
       }
 
       if (error) {
@@ -407,7 +525,18 @@ export const deleteGeneratedDocumentRecord = async (
 
   try {
     if (record.storagePaths && record.storagePaths.length > 0) {
-      await supabase.storage.from(STORAGE_BUCKET).remove(record.storagePaths).catch(() => {});
+      const passportPaths = record.storagePaths
+        .filter((p) => p.startsWith(`${PASSPORT_BUCKET}:`))
+        .map((p) => p.slice(PASSPORT_BUCKET.length + 1));
+      const materialPaths = record.storagePaths.filter(
+        (p) => !p.startsWith(`${PASSPORT_BUCKET}:`)
+      );
+      if (materialPaths.length > 0) {
+        await supabase.storage.from(STORAGE_BUCKET).remove(materialPaths).catch(() => {});
+      }
+      if (passportPaths.length > 0) {
+        await supabase.storage.from(PASSPORT_BUCKET).remove(passportPaths).catch(() => {});
+      }
     }
     const { error } = await supabase.from('generated_documents').delete().eq('id', record.id);
     if (error) {
