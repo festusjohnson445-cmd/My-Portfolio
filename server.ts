@@ -289,7 +289,17 @@ function isVisitorAllowedMediaTarget(bucket: string, targetPath: string): boolea
   const clean = String(targetPath || '').replace(/^\/+/, '');
   if (!clean || clean.includes('..')) return false;
   if (bucket === 'articles') {
-    return clean.startsWith('submissions/') || clean.startsWith('visitor-submissions/');
+    return (
+      clean.startsWith('submissions/') ||
+      clean.startsWith('visitor-submissions/') ||
+      clean.startsWith('video/') ||
+      clean.startsWith('videos/') ||
+      clean.startsWith('hero/') ||
+      clean.startsWith('images/') ||
+      clean.startsWith('thumbnail/') ||
+      clean.startsWith('diagram/') ||
+      clean.startsWith('attachment/')
+    );
   }
   if (bucket === 'materials') {
     return (
@@ -1330,6 +1340,18 @@ interface VideoUploadSession {
 
 const videoJobs = new Map<string, VideoOptimizationJob>();
 const videoSessions = new Map<string, VideoUploadSession>();
+const sessionWriteQueues = new Map<string, Promise<void>>();
+
+function enqueueSessionWrite(jobId: string, fn: () => Promise<void>): Promise<void> {
+  const prev = sessionWriteQueues.get(jobId) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  sessionWriteQueues.set(jobId, next);
+  return next.finally(() => {
+    if (sessionWriteQueues.get(jobId) === next) {
+      sessionWriteQueues.delete(jobId);
+    }
+  });
+}
 
 function getSessionMetaPath(jobId: string): string {
   const safeId = jobId.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -2034,24 +2056,35 @@ async function runUnifiedVideoJobAsync(params: {
 
       const targetMaxW = 1280;
       const targetMaxH = 720;
-      job.resolution = meta.height >= 720 || meta.width >= 1280 ? '720p' : `${meta.height || 480}p`;
+      job.resolution = meta.height >= 1080 || meta.width >= 1920 ? '1080p' : meta.height >= 720 || meta.width >= 1280 ? '720p' : `${meta.height || 480}p`;
 
+      const rawExtLower = path.extname(params.originalName || '').toLowerCase();
       const isAlreadyCompactH264 =
         meta.videoCodec === 'h264' &&
         meta.width > 0 &&
-        meta.width <= targetMaxW &&
+        meta.width <= 1920 &&
         meta.height > 0 &&
-        meta.height <= targetMaxH &&
-        inputBytes <= 14 * 1024 * 1024;
+        meta.height <= 1080 &&
+        ['.mp4', '.m4v', '.mov', ''].includes(rawExtLower) &&
+        inputBytes <= 40 * 1024 * 1024;
 
       if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
 
       await fs.promises.mkdir(MEDIA_TEMP_DIR, { recursive: true });
       activeOptimizedPath = path.join(MEDIA_TEMP_DIR, `opt_${params.jobId}.mp4`);
 
-      job.stage = isAlreadyCompactH264 ? 'Fast-optimizing MP4 container...' : 'Compressing video for fast playback...';
+      job.stage = isAlreadyCompactH264 ? 'Fast-optimizing MP4 stream...' : 'Compressing video for fast playback...';
       job.updatedAt = Date.now();
       persistVideoJob(job);
+
+      const { hasX264, hasAac } = await getFfmpegCapabilities();
+      const audioArgs = meta.hasAudio
+        ? meta.audioCodec === 'aac'
+          ? ['-c:a', 'copy']
+          : hasAac
+          ? ['-c:a', 'aac', '-b:a', '96k', '-ac', '2']
+          : ['-c:a', 'copy']
+        : ['-an'];
 
       const ffmpegArgs = isAlreadyCompactH264
         ? [
@@ -2059,11 +2092,7 @@ async function runUnifiedVideoJobAsync(params: {
             '-i', activeRawPath,
             '-map_metadata', '-1',
             '-c:v', 'copy',
-            ...(meta.hasAudio
-              ? meta.audioCodec === 'aac'
-                ? ['-c:a', 'copy']
-                : ['-c:a', 'aac', '-b:a', '96k', '-ac', '2']
-              : ['-an']),
+            ...audioArgs,
             '-movflags', '+faststart',
             activeOptimizedPath,
           ]
@@ -2072,39 +2101,53 @@ async function runUnifiedVideoJobAsync(params: {
             '-threads', '0',
             '-i', activeRawPath,
             '-vf', [
-              `scale='min(${targetMaxW},iw)':'min(${targetMaxH},ih)':force_original_aspect_ratio=decrease:flags=lanczos`,
+              `scale='min(${targetMaxW},iw)':'min(${targetMaxH},ih)':force_original_aspect_ratio=decrease:flags=bilinear`,
               'scale=trunc(iw/2)*2:trunc(ih/2)*2',
             ].join(','),
             '-map_metadata', '-1',
-            '-c:v', 'libx264',
-            '-profile:v', 'high',
-            '-level:v', '4.1',
-            '-crf', '25',
-            '-maxrate', '1000k',
-            '-bufsize', '2000k',
-            '-preset', 'superfast',
+            ...(hasX264
+              ? [
+                  '-c:v', 'libx264',
+                  '-profile:v', 'main',
+                  '-level:v', '4.0',
+                  '-crf', '25',
+                  '-maxrate', '1400k',
+                  '-bufsize', '2800k',
+                  '-preset', 'superfast',
+                ]
+              : ['-c:v', 'mpeg4', '-q:v', '5']),
             '-g', '60',
             '-pix_fmt', 'yuv420p',
-            ...(meta.hasAudio ? ['-c:a', 'aac', '-b:a', '96k', '-ac', '2'] : ['-an']),
+            ...(meta.hasAudio && hasAac ? ['-c:a', 'aac', '-b:a', '96k', '-ac', '2'] : meta.hasAudio ? ['-c:a', 'copy'] : ['-an']),
             '-movflags', '+faststart',
             activeOptimizedPath,
           ];
 
-      await runFfmpegProcess(
-        bin,
-        ffmpegArgs,
-        dur,
-        (pct) => {
-          if (!job.cancelled) {
-            job.progress = Math.min(89, Math.round(45 + (pct / 100) * 44));
-            job.updatedAt = Date.now();
-          }
-        },
-        (child) => {
-          job.activeChild = child;
-          if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
+      const heartbeatTimer = setInterval(() => {
+        if (!job.cancelled) {
+          job.updatedAt = Date.now();
         }
-      );
+      }, 2500);
+
+      try {
+        await runFfmpegProcess(
+          bin,
+          ffmpegArgs,
+          dur,
+          (pct) => {
+            if (!job.cancelled) {
+              job.progress = Math.min(89, Math.round(45 + (pct / 100) * 44));
+              job.updatedAt = Date.now();
+            }
+          },
+          (child) => {
+            job.activeChild = child;
+            if (job.cancelled) try { child.kill('SIGKILL'); } catch {}
+          }
+        );
+      } finally {
+        clearInterval(heartbeatTimer);
+      }
       job.activeChild = undefined;
 
       if (job.cancelled) throw Object.assign(new Error('Cancelled'), { isCancelled: true });
@@ -2140,20 +2183,31 @@ async function runUnifiedVideoJobAsync(params: {
     job.updatedAt = Date.now();
     persistVideoJob(job);
 
-    const optBuffer = await fs.promises.readFile(activeOptimizedPath);
-    const targetStoragePath = job.storagePath || storagePath;
-    const uploadedUrl = await uploadMediaToSupabaseStorage({
-      supabaseUrl: params.supabaseUrl,
-      anonKey: params.anonKey,
-      authHeader: params.authHeader,
-      bucket: params.bucket,
-      storagePath: targetStoragePath,
-      data: optBuffer,
-      contentType: 'video/mp4',
-      upsert: false,
-    });
+    const uploadHeartbeat = setInterval(() => {
+      if (!job.cancelled) {
+        job.updatedAt = Date.now();
+      }
+    }, 2500);
 
-    job.storagePath = targetStoragePath;
+    let uploadedUrl = '';
+    try {
+      const optBuffer = await fs.promises.readFile(activeOptimizedPath);
+      const targetStoragePath = job.storagePath || storagePath;
+      uploadedUrl = await uploadMediaToSupabaseStorage({
+        supabaseUrl: params.supabaseUrl,
+        anonKey: params.anonKey,
+        authHeader: params.authHeader,
+        bucket: params.bucket,
+        storagePath: targetStoragePath,
+        data: optBuffer,
+        contentType: 'video/mp4',
+        upsert: false,
+      });
+      job.storagePath = targetStoragePath;
+    } finally {
+      clearInterval(uploadHeartbeat);
+    }
+
     job.fileName = job.fileName || finalFileName;
     job.h264Urls = { '720p': uploadedUrl };
     job.publicUrl = uploadedUrl;
@@ -2428,7 +2482,7 @@ app.post('/api/media/video/init', async (req, res) => {
     return res.json({
       success: true,
       jobId,
-      chunkSize: 1024 * 1024,
+      chunkSize: 2 * 1024 * 1024,
     });
   } catch (err: any) {
     console.error('[Video Pipeline Init Error]:', err);
@@ -2441,7 +2495,7 @@ app.post('/api/media/video/init', async (req, res) => {
 
 app.post(
   '/api/media/video/chunk/:jobId',
-  express.raw({ type: () => true, limit: '4mb' }),
+  express.raw({ type: () => true, limit: '8mb' }),
   async (req, res) => {
     const session = loadSession(req.params.jobId);
     if (!session) {
@@ -2467,21 +2521,22 @@ app.post(
         ? String(req.body.index)
         : '';
 
-      if (Number.isFinite(offsetParam) && offsetParam >= 0) {
-        const fh = await fs.promises.open(session.rawPath, fs.existsSync(session.rawPath) ? 'r+' : 'w+');
-        try {
-          await fh.write(chunkBuf, 0, chunkBuf.length, offsetParam);
-        } finally {
-          await fh.close();
+      await enqueueSessionWrite(req.params.jobId, async () => {
+        if (Number.isFinite(offsetParam) && offsetParam >= 0) {
+          const fh = await fs.promises.open(session.rawPath, fs.existsSync(session.rawPath) ? 'r+' : 'w+');
+          try {
+            await fh.write(chunkBuf, 0, chunkBuf.length, offsetParam);
+          } finally {
+            await fh.close();
+          }
+          const key = chunkIdxParam || String(offsetParam);
+          session.chunks[key] = chunkBuf.length;
+          session.receivedBytes = Object.values(session.chunks).reduce((a, b) => a + b, 0);
+        } else {
+          await fs.promises.appendFile(session.rawPath, chunkBuf);
+          session.receivedBytes += chunkBuf.length;
         }
-        const key = chunkIdxParam || String(offsetParam);
-        session.chunks[key] = chunkBuf.length;
-        session.receivedBytes = Object.values(session.chunks).reduce((a, b) => a + b, 0);
-      } else {
-        await fs.promises.appendFile(session.rawPath, chunkBuf);
-        session.receivedBytes += chunkBuf.length;
-      }
-      persistSession(session);
+      });
       return res.json({ success: true, receivedBytes: session.receivedBytes });
     } catch (err: any) {
       return res.status(500).json({ success: false, message: err?.message || 'Failed to save video chunk.' });

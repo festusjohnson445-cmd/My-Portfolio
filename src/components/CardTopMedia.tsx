@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BookOpen, Layers, Play, Wrench } from 'lucide-react';
+import { BookOpen, Play, Wrench } from 'lucide-react';
 import type { MediaCardControlsConfig } from '../utils/portfolioSupabase';
 
 interface CardTopMediaProps {
@@ -128,13 +128,13 @@ export const CardTopMedia: React.FC<CardTopMediaProps> = ({
       <div className="relative z-10 flex flex-col items-center gap-2">
         <div className="w-11 h-11 rounded-xl bg-white/95 border border-[#b8c6d4] shadow-2xs flex items-center justify-center text-cyan-900">
           {variant === 'project' ? (
-            isCad ? <Layers className="w-5 h-5" /> : <Wrench className="w-5 h-5" />
+            <Wrench className="w-5 h-5" />
           ) : (
             <BookOpen className="w-5 h-5" />
           )}
         </div>
         <span className="text-[11px] font-semibold text-slate-600 max-w-[180px] truncate">
-          {isCad ? '3D CAD Study' : category || (variant === 'project' ? 'Engineering Project' : 'Technical Article')}
+          {category || (variant === 'project' ? 'Engineering Project' : 'Technical Article')}
         </span>
       </div>
     </div>

@@ -103,12 +103,18 @@ export interface LinkItem {
   url: string;
 }
 
+export type ProjectScope = 'Personal' | 'Industrial' | 'Academic' | 'Global';
+
+export type ProjectFormFormat = 'general' | 'showcase';
+
 export interface PortfolioProject {
   id: string;
   slug: string;
   ownerId?: string;
   title: string;
   category: string;
+  projectScope?: ProjectScope | '';
+  formFormat?: ProjectFormFormat;
   description: string;
   mainContent?: string;
   overview: string;
@@ -121,6 +127,8 @@ export interface PortfolioProject {
   thumbnailUrl: string;
   images: MediaAssetItem[];
   videos: MediaAssetItem[];
+  showcasePdfs?: MediaAssetItem[];
+  showcaseImages?: MediaAssetItem[];
   toolsUsed: string[];
   results: string;
   demoLinks: LinkItem[];
@@ -129,6 +137,7 @@ export interface PortfolioProject {
   status: 'draft' | 'published' | 'archived';
   sortOrder?: number;
   heroInscription?: string;
+  likesCount?: number;
   viewsCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -158,10 +167,15 @@ export interface ArticleCodeBlock {
   code: string;
 }
 
+export type ArticleChartVisualType = 'bar' | 'histogram' | 'scatter' | 'pie' | 'line';
+
 export interface ArticleChartData {
   title: string;
   unit?: string;
-  items: { label: string; value: number }[];
+  chartType?: ArticleChartVisualType;
+  xHeading?: string;
+  yHeading?: string;
+  items: { label: string; value: number; xValue?: number; note?: string }[];
 }
 
 export interface ArticleBomItem {
@@ -1796,10 +1810,10 @@ export async function uploadFileToBucket(
     const runServerlessTusUploadFallback = async (): Promise<UploadBucketResult> => {
       throwIfAborted(signal);
       const ext = (file.name.split('.').pop() || '').toLowerCase();
-      const playableExts = ['mp4', 'webm', 'm4v'];
-      if (file.size > 30 * 1024 * 1024 || !playableExts.includes(ext)) {
+      const playableExts = ['mp4', 'webm', 'm4v', 'mov'];
+      if (file.size > MAX_VIDEO_BYTES || !playableExts.includes(ext)) {
         throw new Error(
-          'Video transcoding requires the Node media backend. Please upload a compact MP4/WebM (<= 30 MB) or use the preview server.'
+          `Video upload requires an MP4/WebM/M4V/MOV file under ${MAX_VIDEO_MB} MB when using direct browser upload.`
         );
       }
 
@@ -1807,8 +1821,10 @@ export async function uploadFileToBucket(
       const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
       const prefix = folderPrefix || 'videos';
       const storagePath = `${prefix}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${cleanName}`;
-      const contentType = file.type || (ext === 'webm' ? 'video/webm' : 'video/mp4');
-      const tokenHeader = authHeaders['Authorization'] || `Bearer ${cfg.anonKey}`;
+      const contentType =
+        file.type || (ext === 'webm' ? 'video/webm' : ext === 'mov' ? 'video/quicktime' : 'video/mp4');
+      const latestAuthHeaders = await getPipelineAuthHeaders();
+      const tokenHeader = latestAuthHeaders['Authorization'] || `Bearer ${cfg.anonKey}`;
 
       const createTus = async (authVal: string) =>
         fetchWithTimeout(`${cfg.url}/storage/v1/upload/resumable`, {
@@ -1831,7 +1847,12 @@ export async function uploadFileToBucket(
 
       let activeAuth = tokenHeader;
       let createResp = await createTus(activeAuth);
-      if (!createResp.ok && bucket === 'articles' && activeAuth !== `Bearer ${cfg.anonKey}` && (createResp.status === 400 || createResp.status === 401 || createResp.status === 403)) {
+      if (
+        !createResp.ok &&
+        bucket === 'articles' &&
+        activeAuth !== `Bearer ${cfg.anonKey}` &&
+        (createResp.status === 400 || createResp.status === 401 || createResp.status === 403)
+      ) {
         activeAuth = `Bearer ${cfg.anonKey}`;
         createResp = await createTus(activeAuth);
       }
@@ -1850,24 +1871,41 @@ export async function uploadFileToBucket(
         throwIfAborted(signal);
         const end = Math.min(file.size, offset + TUS_CHUNK);
         const pct = 15 + Math.round((end / Math.max(1, file.size)) * 80);
-        onProgress?.(pct, 'Uploading.....');
+        onProgress?.(pct, 'Uploading directly to storage...');
 
-        const patchResp = await fetchWithTimeout(tusUploadUrl, {
-          method: 'PATCH',
-          headers: {
-            apikey: cfg.anonKey,
-            Authorization: activeAuth,
-            'Tus-Resumable': '1.0.0',
-            'Upload-Offset': String(offset),
-            'Content-Type': 'application/offset+octet-stream',
-          },
-          body: file.slice(offset, end),
-          signal,
-          timeoutMs: 90_000,
-        });
-        if (!patchResp.ok) {
-          const msg = await patchResp.text().catch(() => patchResp.statusText);
-          throw new Error(`Storage resumable chunk failed (${patchResp.status}): ${msg}`);
+        let patchResp: Response | null = null;
+        let lastTusErr = '';
+        for (let attempt = 0; attempt < 3; attempt++) {
+          throwIfAborted(signal);
+          try {
+            patchResp = await fetchWithTimeout(tusUploadUrl, {
+              method: 'PATCH',
+              headers: {
+                apikey: cfg.anonKey,
+                Authorization: activeAuth,
+                'Tus-Resumable': '1.0.0',
+                'Upload-Offset': String(offset),
+                'Content-Type': 'application/offset+octet-stream',
+              },
+              body: file.slice(offset, end),
+              signal,
+              timeoutMs: 90_000,
+            });
+            if (patchResp.ok) break;
+            lastTusErr = await patchResp.text().catch(() => patchResp?.statusText || 'TUS chunk failed');
+            if (patchResp.status >= 400 && patchResp.status < 500 && patchResp.status !== 408 && patchResp.status !== 429) {
+              break;
+            }
+          } catch (tusNetErr: any) {
+            if (isAbortError(tusNetErr) || signal?.aborted) throw tusNetErr;
+            lastTusErr = tusNetErr?.message || 'Network interrupted during chunk upload';
+          }
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 450 * (attempt + 1)));
+          }
+        }
+        if (!patchResp || !patchResp.ok) {
+          throw new Error(`Storage resumable chunk failed: ${lastTusErr || 'Connection interrupted'}`);
         }
         const nextOff = Number(patchResp.headers.get('upload-offset'));
         offset = Number.isFinite(nextOff) && nextOff > offset ? nextOff : end;
@@ -1888,7 +1926,7 @@ export async function uploadFileToBucket(
         storagePath,
         mediaType: 'video',
         fileName: cleanName,
-        format: 'h264',
+        format: ext || 'mp4',
         durationSec: localDur,
         originalBytes: file.size,
         optimizedBytes: file.size,
@@ -1909,11 +1947,16 @@ export async function uploadFileToBucket(
         originalBytes: file.size,
         optimizedBytes: file.size,
         compressionPct: 0,
-        format: 'h264',
+        format: ext || 'mp4',
         h264Urls: { '720p': publicUrl },
         mediaAssetId: assetId,
       };
     };
+
+    const canDirectTusFallback = (() => {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      return ['mp4', 'webm', 'm4v', 'mov'].includes(ext) && file.size <= MAX_VIDEO_BYTES;
+    })();
 
     try {
       // If retrying an existing server jobId, resume polling or trigger server retry without re-uploading chunks
@@ -1990,7 +2033,7 @@ export async function uploadFileToBucket(
           initJson = await initResp.json().catch(() => null);
           if (initResp.ok && initJson?.success) break;
           initErrMsg = initJson?.message || `HTTP ${initResp.status}`;
-          if (initResp.status === 404) break;
+          if (initResp.status === 404 || initResp.status === 401 || initResp.status === 403) break;
         } catch (err: any) {
           if (isAbortError(err) || signal?.aborted) throw err;
           initErrMsg = err?.message || 'Connection error';
@@ -2007,17 +2050,20 @@ export async function uploadFileToBucket(
       }
 
       if (!initResp || !initResp.ok || !initJson?.success || !initJson?.jobId) {
+        if (canDirectTusFallback && (!initResp || initResp.status >= 500 || initResp.status === 404)) {
+          return await runServerlessTusUploadFallback();
+        }
         throw new Error(initErrMsg || 'Unable to start video upload session.');
       }
 
       jobId = initJson.jobId;
       attachAbortListener(jobId);
 
-      // 2. Upload 1 MB chunks concurrently (3 workers keeps high speed without consuming extra bandwidth)
+      // 2. Upload 2 MB chunks concurrently (3 workers keeps high throughput cleanly)
       const CHUNK_SIZE =
         typeof initJson.chunkSize === 'number' && initJson.chunkSize > 0
           ? initJson.chunkSize
-          : 1024 * 1024;
+          : 2 * 1024 * 1024;
       const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
       const chunkIndices = Array.from({ length: totalChunks }, (_, idx) => idx);
       let completedChunks = 0;
@@ -2030,13 +2076,13 @@ export async function uploadFileToBucket(
 
         let chunkOk = false;
         let lastChunkErr = '';
-        let forceBase64Json = false;
 
         for (let attempt = 0; attempt < 3 && !chunkOk; attempt++) {
           throwIfAborted(signal);
+          const useBase64 = attempt === 2;
           try {
             let chunkResp: Response;
-            if (!forceBase64Json) {
+            if (!useBase64) {
               chunkResp = await fetchWithTimeout(
                 `/api/media/video/chunk/${encodeURIComponent(jobId)}?offset=${start}&index=${i}`,
                 {
@@ -2046,7 +2092,7 @@ export async function uploadFileToBucket(
                   },
                   body: slice,
                   signal,
-                  timeoutMs: 45_000,
+                  timeoutMs: 60_000,
                 }
               );
             } else {
@@ -2064,7 +2110,7 @@ export async function uploadFileToBucket(
                     index: i,
                   }),
                   signal,
-                  timeoutMs: 45_000,
+                  timeoutMs: 60_000,
                 }
               );
             }
@@ -2075,12 +2121,10 @@ export async function uploadFileToBucket(
             } else {
               lastChunkErr = cJson?.message || `Chunk upload failed (HTTP ${chunkResp.status}).`;
               if (chunkResp.status === 404) break;
-              forceBase64Json = true;
             }
           } catch (e: any) {
             if (isAbortError(e) || signal?.aborted) throw e;
             lastChunkErr = e?.message || 'Network interrupted during chunk upload.';
-            forceBase64Json = true;
           }
           if (!chunkOk && attempt < 2) {
             await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
@@ -2092,35 +2136,41 @@ export async function uploadFileToBucket(
         }
         completedChunks += 1;
         const chunkPct = 8 + Math.round((completedChunks / totalChunks) * 32);
-        onProgress?.(chunkPct, 'Uploading.....');
+        onProgress?.(chunkPct, `Uploading video (${completedChunks}/${totalChunks})...`);
       };
 
       try {
         await runWithConcurrency(chunkIndices, Math.min(3, totalChunks), uploadSingleChunk);
-      } catch (chunkErr) {
-        void cancelServerVideoJob(jobId);
-        throw chunkErr;
-      }
 
-      // 3. Finalize upload & kick off background FFmpeg -> Supabase Storage pipeline
-      throwIfAborted(signal);
-      onProgress?.(41, 'Starting video optimization...');
-      const refreshedAuthHeaders = await getPipelineAuthHeaders();
-      const finishResp = await fetchWithTimeout(`/api/media/video/finish/${encodeURIComponent(jobId)}`, {
-        method: 'POST',
-        headers: refreshedAuthHeaders,
-        signal,
-        timeoutMs: 25_000,
-      });
-      const finishJson = await finishResp.json().catch(() => null);
-      if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
-        void cancelServerVideoJob(jobId);
-        throw new Error(finishJson?.message || `Unable to start video optimization (HTTP ${finishResp.status}).`);
-      }
-      initialProgress = finishJson.progress || 42;
-      initialStage = finishJson.stage || 'Optimizing video...';
+        // 3. Finalize upload & kick off background FFmpeg -> Supabase Storage pipeline
+        throwIfAborted(signal);
+        onProgress?.(41, 'Starting video optimization...');
+        const refreshedAuthHeaders = await getPipelineAuthHeaders();
+        const finishResp = await fetchWithTimeout(`/api/media/video/finish/${encodeURIComponent(jobId)}`, {
+          method: 'POST',
+          headers: refreshedAuthHeaders,
+          signal,
+          timeoutMs: 25_000,
+        });
+        const finishJson = await finishResp.json().catch(() => null);
+        if (!finishResp.ok || !finishJson?.success || !finishJson?.jobId) {
+          void cancelServerVideoJob(jobId);
+          throw new Error(finishJson?.message || `Unable to start video optimization (HTTP ${finishResp.status}).`);
+        }
+        initialProgress = finishJson.progress || 42;
+        initialStage = finishJson.stage || 'Optimizing video...';
 
-      return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
+        return await pollVideoJobUntilDone(jobId, initialProgress, initialStage);
+      } catch (pipelineErr: any) {
+        void cancelServerVideoJob(jobId);
+        if (isAbortError(pipelineErr) || signal?.aborted) throw pipelineErr;
+        if (canDirectTusFallback && !/admin sign-in/i.test(pipelineErr?.message || '')) {
+          console.warn('[Video Pipeline] Falling back to direct resumable upload:', pipelineErr);
+          onProgress?.(12, 'Switching to direct fast upload...');
+          return await runServerlessTusUploadFallback();
+        }
+        throw pipelineErr;
+      }
     } finally {
       if (abortListener) {
         signal?.removeEventListener('abort', abortListener);
@@ -2148,13 +2198,58 @@ export async function uploadFileToBucket(
 // PROJECTS CRUD (SUPABASE "projects" TABLE)
 // ============================================================================
 
+const HIDDEN_PROJECT_SPEC_KEYS = new Set([
+  '__hero_inscription__',
+  '__main_contains__',
+  '__project_scope__',
+  '__form_format__',
+  '__showcase_pdfs__',
+  '__showcase_images__',
+]);
+
+function safeParseJsonArray(raw: unknown): MediaAssetItem[] {
+  if (Array.isArray(raw)) return raw as MediaAssetItem[];
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {}
+  }
+  return [];
+}
+
+function deduplicateProjectsList(list: PortfolioProject[]): PortfolioProject[] {
+  const seen = new Set<string>();
+  const out: PortfolioProject[] = [];
+  for (const item of list) {
+    if (!item || !item.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
 function mapDbRowToProject(row: any): PortfolioProject {
   const rawSpecs = Array.isArray(row.specifications) ? row.specifications : [];
   const hiddenInscr = rawSpecs.find((s: any) => s?.label === '__hero_inscription__');
   const hiddenMainContains = rawSpecs.find((s: any) => s?.label === '__main_contains__');
-  const cleanSpecs = rawSpecs.filter(
-    (s: any) => s?.label !== '__hero_inscription__' && s?.label !== '__main_contains__'
-  );
+  const hiddenScope = rawSpecs.find((s: any) => s?.label === '__project_scope__');
+  const hiddenFormFormat = rawSpecs.find((s: any) => s?.label === '__form_format__');
+  const hiddenShowcasePdfs = rawSpecs.find((s: any) => s?.label === '__showcase_pdfs__');
+  const hiddenShowcaseImages = rawSpecs.find((s: any) => s?.label === '__showcase_images__');
+
+  const cleanSpecs = rawSpecs.filter((s: any) => !HIDDEN_PROJECT_SPEC_KEYS.has(s?.label));
+  const resolvedScope = (row.project_scope || hiddenScope?.value || '') as PortfolioProject['projectScope'];
+  const resolvedFormFormat: ProjectFormFormat =
+    row.form_format === 'showcase' || hiddenFormFormat?.value === 'showcase'
+      ? 'showcase'
+      : 'general';
+  const resolvedShowcasePdfs = Array.isArray(row.showcase_pdfs)
+    ? row.showcase_pdfs
+    : safeParseJsonArray(hiddenShowcasePdfs?.value);
+  const resolvedShowcaseImages = Array.isArray(row.showcase_images)
+    ? row.showcase_images
+    : safeParseJsonArray(hiddenShowcaseImages?.value);
 
   return {
     id: row.id,
@@ -2162,6 +2257,8 @@ function mapDbRowToProject(row: any): PortfolioProject {
     ownerId: row.owner_id,
     title: row.title || '',
     category: row.category || 'Mechanical Design',
+    projectScope: resolvedScope || '',
+    formFormat: resolvedFormFormat,
     description: row.description || '',
     mainContent: typeof hiddenMainContains?.value === 'string' ? hiddenMainContains.value : '',
     overview: row.overview || '',
@@ -2174,6 +2271,8 @@ function mapDbRowToProject(row: any): PortfolioProject {
     thumbnailUrl: row.thumbnail_url || '',
     images: Array.isArray(row.images) ? row.images : [],
     videos: Array.isArray(row.videos) ? row.videos : [],
+    showcasePdfs: resolvedShowcasePdfs,
+    showcaseImages: resolvedShowcaseImages,
     toolsUsed: Array.isArray(row.tools_used) ? row.tools_used : [],
     results: row.results || '',
     demoLinks: Array.isArray(row.demo_links) ? row.demo_links : [],
@@ -2185,6 +2284,7 @@ function mapDbRowToProject(row: any): PortfolioProject {
       typeof row.hero_inscription === 'string' && row.hero_inscription
         ? row.hero_inscription
         : hiddenInscr?.value || '',
+    likesCount: typeof row.likes_count === 'number' ? row.likes_count : 0,
     viewsCount: typeof row.views_count === 'number' ? row.views_count : 0,
     createdAt: row.created_at || new Date().toISOString(),
     updatedAt: row.updated_at || new Date().toISOString(),
@@ -2205,13 +2305,14 @@ export function getCachedProjects(includeAllForOwner = false): PortfolioProject[
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          memoryProjectsCache = parsed;
-          list = parsed;
+          memoryProjectsCache = deduplicateProjectsList(parsed);
+          list = memoryProjectsCache;
         }
       }
     } catch {}
   }
-  return includeAllForOwner ? list : list.filter((p) => p.status === 'published');
+  const deduped = deduplicateProjectsList(list);
+  return includeAllForOwner ? deduped : deduped.filter((p) => p.status === 'published');
 }
 
 export function hasProjectsCacheHydrated(): boolean {
@@ -2224,13 +2325,14 @@ export function hasProjectsCacheHydrated(): boolean {
 }
 
 function setCachedProjects(list: PortfolioProject[]) {
-  memoryProjectsCache = list;
+  const deduped = deduplicateProjectsList(list);
+  memoryProjectsCache = deduped;
   hasFetchedProjectsOnce = true;
   try {
-    localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(list));
+    localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(deduped));
   } catch {}
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(EVENT_PROJECTS_UPDATED, { detail: list }));
+    window.dispatchEvent(new CustomEvent(EVENT_PROJECTS_UPDATED, { detail: deduped }));
   }
 }
 
@@ -2281,7 +2383,7 @@ export async function fetchProjectsFromSupabase(
       if (error || !Array.isArray(data)) {
         return getCachedProjects(includeAllForOwner);
       }
-      const mapped = data.map(mapDbRowToProject);
+      const mapped = deduplicateProjectsList(data.map(mapDbRowToProject));
       projectsFetchedAt = Date.now();
       if (includeAllForOwner) projectsFetchedAsOwner = true;
       setCachedProjects(mapped);
@@ -2312,13 +2414,31 @@ export async function upsertProjectToSupabase(
   const slug = project.slug || slugifyText(project.title);
 
   const cleanSpecs = (project.specifications || []).filter(
-    (s) => s.label !== '__hero_inscription__' && s.label !== '__main_contains__'
+    (s) => !HIDDEN_PROJECT_SPEC_KEYS.has(s.label)
   );
   const trimmedInscription = (project.heroInscription || '').trim();
   const mainContentVal = (project.mainContent || '').trim();
-  const persistedSpecs = mainContentVal
-    ? [...cleanSpecs, { label: '__main_contains__', value: project.mainContent || '' }]
-    : cleanSpecs;
+  const scopeVal = (project.projectScope || '').trim();
+  const formFormatVal: ProjectFormFormat = project.formFormat === 'showcase' ? 'showcase' : 'general';
+  const showcasePdfsVal = Array.isArray(project.showcasePdfs) ? project.showcasePdfs : [];
+  const showcaseImagesVal = Array.isArray(project.showcaseImages) ? project.showcaseImages : [];
+
+  const persistedSpecs: ProjectSpecification[] = [...cleanSpecs];
+  if (mainContentVal) {
+    persistedSpecs.push({ label: '__main_contains__', value: project.mainContent || '' });
+  }
+  if (scopeVal) {
+    persistedSpecs.push({ label: '__project_scope__', value: scopeVal });
+  }
+  if (formFormatVal === 'showcase') {
+    persistedSpecs.push({ label: '__form_format__', value: 'showcase' });
+  }
+  if (showcasePdfsVal.length > 0) {
+    persistedSpecs.push({ label: '__showcase_pdfs__', value: JSON.stringify(showcasePdfsVal) });
+  }
+  if (showcaseImagesVal.length > 0) {
+    persistedSpecs.push({ label: '__showcase_images__', value: JSON.stringify(showcaseImagesVal) });
+  }
 
   const dbPayload: Record<string, any> = {
     id,
@@ -2326,17 +2446,21 @@ export async function upsertProjectToSupabase(
     owner_id: user.id,
     title: project.title.trim(),
     category: project.category.trim() || 'Mechanical Design',
+    project_scope: scopeVal,
+    form_format: formFormatVal,
     description: project.description.trim(),
     overview: project.overview.trim(),
     objectives: project.objectives.trim(),
     methodology: project.methodology.trim(),
     specifications: persistedSpecs,
     cad_drawings: project.cadDrawings || [],
-    is_cad_project: Boolean(project.isCadProject),
-    cad_model_type: project.cadModelType || '',
+    is_cad_project: false,
+    cad_model_type: '',
     thumbnail_url: project.thumbnailUrl.trim(),
     images: project.images || [],
     videos: project.videos || [],
+    showcase_pdfs: showcasePdfsVal,
+    showcase_images: showcaseImagesVal,
     tools_used: project.toolsUsed || [],
     results: project.results.trim(),
     demo_links: project.demoLinks || [],
@@ -2354,8 +2478,20 @@ export async function upsertProjectToSupabase(
     .select('*')
     .single();
 
-  if (error && /hero_inscription/i.test(error.message || '')) {
-    const { hero_inscription: _drop, ...fallbackPayload } = dbPayload;
+  if (
+    error &&
+    /(hero_inscription|project_scope|form_format|showcase_pdfs|showcase_images|column .* does not exist)/i.test(
+      error.message || ''
+    )
+  ) {
+    const {
+      hero_inscription: _dropInscr,
+      project_scope: _dropScope,
+      form_format: _dropFmt,
+      showcase_pdfs: _dropPdfs,
+      showcase_images: _dropImgs,
+      ...fallbackPayload
+    } = dbPayload;
     fallbackPayload.specifications = trimmedInscription
       ? [...persistedSpecs, { label: '__hero_inscription__', value: trimmedInscription }]
       : persistedSpecs;
@@ -2401,6 +2537,60 @@ export async function deleteProjectFromSupabase(projectId: string): Promise<void
   }
   const current = getCachedProjects(true);
   setCachedProjects(current.filter((p) => p.id !== projectId));
+}
+
+export async function toggleProjectLikeInSupabase(
+  projectId: string,
+  delta: 1 | -1,
+  fallbackNextCount?: number
+): Promise<number | null> {
+  try {
+    if (delta > 0) {
+      const { data, error } = await supabase.rpc('increment_project_likes', {
+        target_project_id: projectId,
+      });
+      if (!error && typeof data === 'number') {
+        const current = getCachedProjects(true);
+        setCachedProjects(
+          current.map((p) => (p.id === projectId ? { ...p, likesCount: data } : p))
+        );
+        return data;
+      }
+    } else {
+      const { data: decData, error: decError } = await supabase.rpc('decrement_project_likes', {
+        target_project_id: projectId,
+      });
+      if (!decError && typeof decData === 'number') {
+        const safeCount = Math.max(0, decData);
+        const current = getCachedProjects(true);
+        setCachedProjects(
+          current.map((p) => (p.id === projectId ? { ...p, likesCount: safeCount } : p))
+        );
+        return safeCount;
+      }
+    }
+
+    if (typeof fallbackNextCount === 'number') {
+      const { user } = await getValidatedSession().catch(() => ({ user: null as any }));
+      if (isRealOwnerUser(user)) {
+        const safeTarget = Math.max(0, fallbackNextCount);
+        const { data: updData, error: updError } = await supabase
+          .from('projects')
+          .update({ likes_count: safeTarget })
+          .eq('id', projectId)
+          .select('likes_count')
+          .maybeSingle();
+        if (!updError && updData && typeof updData.likes_count === 'number') {
+          const current = getCachedProjects(true);
+          setCachedProjects(
+            current.map((p) => (p.id === projectId ? { ...p, likesCount: updData.likes_count } : p))
+          );
+          return updData.likes_count;
+        }
+      }
+    }
+  } catch {}
+  return null;
 }
 
 export async function incrementProjectViewsInSupabase(projectId: string): Promise<number | null> {

@@ -14,7 +14,6 @@ import {
   Send,
   FileText,
   Compass,
-  BarChart3,
   Table as TableIcon,
   ShieldCheck,
   Plus,
@@ -44,6 +43,7 @@ import {
 import { useProfileSync } from '../utils/profileState';
 import { Interactive3DViewer } from './Interactive3DViewer';
 import { ArticleFormPanel } from './ArticleFormPanel';
+import { ArticleDataCharts } from './ArticleDataCharts';
 import { CleanVideoPlayer } from './CleanVideoPlayer';
 import { LiveRelativeTime } from './LiveRelativeTime';
 import { CardTopMedia } from './CardTopMedia';
@@ -706,54 +706,91 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
 
     return (
       <div className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-5 lg:px-6 py-4 pb-12 space-y-3 font-serif text-slate-900">
-        {/* Top Control Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-3 py-2 shadow-2xs">
+        {/* Top Control Bar — Compact Single Fitting Row */}
+        <div className="flex items-center justify-between gap-1 bg-[#edf2f8] border border-[#b8c6d4] rounded-xl px-2 sm:px-3 py-1.5 shadow-2xs flex-nowrap overflow-x-auto">
           <button
             type="button"
             onClick={closeArticleDetail}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-[11px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
+            <ArrowLeft className="w-3 h-3" />
             <span>Back</span>
           </button>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-1 flex-nowrap shrink-0">
             <span
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-semibold tabular-nums"
+              className="inline-flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-md border border-slate-300 bg-white text-slate-700 text-[11px] font-semibold tabular-nums shrink-0 whitespace-nowrap"
               title="Real-time views"
             >
-              <Eye className="w-3.5 h-3.5 text-cyan-800" />
+              <Eye className="w-3 h-3 text-cyan-800" />
               <span>{selectedArticle.viewsCount || 0}</span>
             </span>
             <button
               type="button"
               onClick={() => handleLike(selectedArticle)}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+              aria-label="Like article"
+              className={`inline-flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-md border text-[11px] font-semibold cursor-pointer shrink-0 whitespace-nowrap ${
                 likedIds.has(selectedArticle.id)
                   ? 'bg-rose-50 border-rose-300 text-rose-700'
                   : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50'
               }`}
             >
-              <Heart className={`w-3.5 h-3.5 ${likedIds.has(selectedArticle.id) ? 'fill-rose-600 text-rose-600' : ''}`} />
-              <span>{selectedArticle.likesCount}</span>
+              <Heart className={`w-3 h-3 ${likedIds.has(selectedArticle.id) ? 'fill-rose-600 text-rose-600' : ''}`} />
+              <span className="tabular-nums">{selectedArticle.likesCount}</span>
             </button>
 
             <a
               href={`https://www.linkedin.com/sharing/share-offsite/?url=${shareHref}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700"
+              aria-label="Share on LinkedIn"
+              title="Share on LinkedIn"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-[#0A66C2] shrink-0"
             >
-              LinkedIn
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" aria-hidden="true">
+                <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77Z" />
+              </svg>
             </a>
+
+            <a
+              href={`https://wa.me/?text=${shareTitle}%20${shareHref}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Share on WhatsApp"
+              title="Share on WhatsApp"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-[#16A34A] shrink-0"
+            >
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" aria-hidden="true">
+                <path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2m5.81 14.07c-.24.68-1.41 1.31-1.95 1.39-.51.08-1.16.11-1.87-.12-.43-.14-.99-.32-1.7-.63-2.99-1.29-4.94-4.31-5.09-4.51-.15-.2-1.21-1.61-1.21-3.07 0-1.46.77-2.18 1.04-2.48.27-.3.59-.38.79-.38h.57c.18 0 .43-.07.67.51.24.59.84 2.04.91 2.19.08.15.13.32.02.52-.1.2-.15.32-.3.5-.15.17-.31.39-.45.52-.15.15-.3.31-.13.61.18.3.78 1.29 1.68 2.09 1.15 1.02 2.12 1.34 2.42 1.49.3.15.48.12.66-.07.18-.2.76-.89.96-1.19.2-.3.4-.25.67-.15.27.1 1.74.82 2.04.97.3.15.5.22.57.34.08.13.08.73-.17 1.41Z" />
+              </svg>
+            </a>
+
+            <a
+              href={`https://www.facebook.com/sharer/sharer.php?u=${shareHref}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Share on Facebook"
+              title="Share on Facebook"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-[#1877F2] shrink-0"
+            >
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" aria-hidden="true">
+                <path d="M12 2.04c-5.5 0-10 4.49-10 10.02 0 5 3.66 9.15 8.44 9.9v-7H7.9v-2.9h2.54V9.85c0-2.51 1.49-3.89 3.78-3.89 1.09 0 2.23.19 2.23.19v2.47h-1.26c-1.24 0-1.63.77-1.63 1.56v1.88h2.78l-.45 2.9h-2.33v7a10 10 0 0 0 8.44-9.9c0-5.53-4.5-10.02-10-10.02Z" />
+              </svg>
+            </a>
+
             <a
               href={`https://x.com/intent/tweet?text=${shareTitle}&url=${shareHref}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700"
+              aria-label="Share on X"
+              title="Share on X"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-slate-900 shrink-0"
             >
-              X
+              <svg viewBox="0 0 24 24" className="w-3 h-3 fill-current" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
             </a>
+
             <button
               type="button"
               onClick={() => {
@@ -761,10 +798,12 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
                 setCopiedShare(true);
                 setTimeout(() => setCopiedShare(false), 2000);
               }}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-[11px] font-semibold text-slate-700 cursor-pointer"
+              aria-label="Copy link"
+              title={copiedShare ? 'Link copied' : 'Copy share link'}
+              className="inline-flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-md bg-white border border-slate-300 hover:bg-slate-50 text-[10.5px] font-semibold text-slate-700 cursor-pointer shrink-0 whitespace-nowrap"
             >
               {copiedShare ? <Check className="w-3 h-3 text-emerald-700" /> : <Share2 className="w-3 h-3" />}
-              <span>{copiedShare ? 'Copied' : 'Share'}</span>
+              <span className="hidden sm:inline">{copiedShare ? 'Copied' : 'Copy'}</span>
             </button>
 
             {isOwner && (
@@ -776,18 +815,20 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
                     setIsPostOpen(true);
                     closeArticleDetail();
                   }}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-300 text-slate-800 text-xs font-semibold cursor-pointer"
+                  aria-label="Edit article"
+                  className="inline-flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-md bg-white border border-slate-300 text-slate-800 text-[10.5px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
                 >
                   <Edit3 className="w-3 h-3 text-cyan-800" />
-                  <span>Edit</span>
+                  <span className="hidden sm:inline">Edit</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDeleteArticle(selectedArticle)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                  aria-label="Delete article"
+                  className="inline-flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-[10.5px] font-semibold cursor-pointer shrink-0 whitespace-nowrap"
                 >
                   <Trash2 className="w-3 h-3" />
-                  <span>Delete</span>
+                  <span className="hidden sm:inline">Delete</span>
                 </button>
               </>
             )}
@@ -1197,54 +1238,7 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
               )}
 
               {/* Data Charts & Visualizations */}
-              {selectedArticle.chartData.length > 0 && (
-                <section id="article-charts" className="space-y-2.5 pt-2 border-t border-slate-200">
-                  <h2 className="text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
-                    <BarChart3 className="w-3.5 h-3.5 text-cyan-800" />
-                    <span>Data Charts &amp; Visualizations</span>
-                  </h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {selectedArticle.chartData.map((ch, cIdx) => {
-                      const maxVal = Math.max(1, ...ch.items.map((x) => Math.abs(x.value)));
-                      return (
-                        <div key={cIdx} className="w-full p-3.5 rounded-xl bg-white border border-[#b8c6d4] shadow-2xs space-y-2.5">
-                          <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5">
-                            <h3 className="text-xs font-bold text-slate-950">
-                              {ch.title || 'Engineering Data'}
-                            </h3>
-                            {ch.unit && (
-                              <span className="px-2 py-0.5 rounded bg-[#edf2f8] border border-[#b8c6d4] text-[10px] font-mono font-bold text-cyan-950">
-                                {ch.unit}
-                              </span>
-                            )}
-                          </div>
-                          <div className="space-y-2">
-                            {ch.items.map((pt, pIdx) => {
-                              const pct = Math.max(4, Math.round((Math.abs(pt.value) / maxVal) * 100));
-                              return (
-                                <div key={pIdx} className="space-y-1 text-[11px]">
-                                  <div className="flex items-center justify-between gap-2 text-slate-800">
-                                    <span className="font-medium truncate">{pt.label}</span>
-                                    <span className="font-mono font-bold text-cyan-950 shrink-0 tabular-nums">
-                                      {pt.value.toLocaleString()} {ch.unit || ''}
-                                    </span>
-                                  </div>
-                                  <div className="w-full h-3 bg-slate-100 border border-slate-200 rounded-full overflow-hidden">
-                                    <div
-                                      className="h-full bg-gradient-to-r from-cyan-800 to-cyan-600 rounded-full transition-all duration-300"
-                                      style={{ width: `${pct}%` }}
-                                    />
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
+              <ArticleDataCharts chartData={selectedArticle.chartData} />
 
               {/* Optional Bill of Materials (BOM) */}
               {selectedArticle.bomItems.length > 0 && (
@@ -1643,7 +1637,11 @@ export const ArticlesView: React.FC<ArticlesViewProps> = ({
             ? 'p-5'
             : 'p-4';
         const textAlignClass =
-          innerLayout.cardTextAlign === 'center' ? 'text-center' : 'text-left';
+          innerLayout.cardTextAlign === 'justify'
+            ? 'text-justify'
+            : innerLayout.cardTextAlign === 'center'
+            ? 'text-center'
+            : 'text-left';
 
         return (
           <div className={`grid ${gridColsClass} ${gapClass}`}>

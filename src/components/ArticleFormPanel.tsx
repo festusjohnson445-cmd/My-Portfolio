@@ -26,6 +26,7 @@ import {
   type ArticleHeroMedia,
   type ArticleCodeBlock,
   type ArticleChartData,
+  type ArticleChartVisualType,
   type ArticleBomItem,
   type MediaAssetItem,
   type BucketFileItem,
@@ -89,6 +90,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
   const [attachments, setAttachments] = useState<MediaAssetItem[]>(initialArticle?.attachments || []);
   const [codeBlocks, setCodeBlocks] = useState<ArticleCodeBlock[]>(initialArticle?.codeBlocks || []);
   const [chartData, setChartData] = useState<ArticleChartData[]>(initialArticle?.chartData || []);
+  const [signedNumDrafts, setSignedNumDrafts] = useState<Record<string, string>>({});
   const [bomItems, setBomItems] = useState<ArticleBomItem[]>(initialArticle?.bomItems || []);
 
   const [status, setStatus] = useState<PortfolioArticle['status']>(
@@ -375,7 +377,21 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
           videos,
           diagrams,
           codeBlocks: codeBlocks.filter((c) => c.code.trim()),
-          chartData: chartData.filter((ch) => ch.items.length > 0),
+          chartData: chartData
+            .filter((ch) => ch.items.length > 0)
+            .map((ch) => ({
+              ...ch,
+              chartType: ch.chartType || 'bar',
+              xHeading: (ch.xHeading || '').trim() || undefined,
+              yHeading: (ch.yHeading || '').trim() || undefined,
+              items: ch.items.map((pt, idx) => ({
+                label: pt.label.trim() || `Item ${idx + 1}`,
+                value: Number.isFinite(Number(pt.value)) ? Number(pt.value) : 0,
+                ...(typeof pt.xValue === 'number' && Number.isFinite(pt.xValue)
+                  ? { xValue: pt.xValue }
+                  : {}),
+              })),
+            })),
           bomItems: bomItems.filter((b) => b.name.trim() || b.partNo.trim()),
           attachments,
           tags: tagsText
@@ -1246,107 +1262,262 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
       </div>
 
       {/* Data Charts & Visualizations */}
-      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2 text-xs">
+      <div className="w-full max-w-full overflow-hidden p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2.5 text-xs">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="font-bold text-slate-700 flex items-center gap-1">
             <BarChart3 className="w-3.5 h-3.5 text-cyan-800" />
-            <span>Data Charts ({chartData.length})</span>
+            <span>Data Tables &amp; Visualizations ({chartData.length})</span>
           </span>
           <button
             type="button"
-            onClick={() => setChartData((prev) => [...prev, { title: '', unit: '', items: [{ label: '', value: 0 }] }])}
+            onClick={() =>
+              setChartData((prev) => [
+                ...prev,
+                {
+                  title: '',
+                  unit: '',
+                  chartType: 'bar',
+                  xHeading: 'Parameter',
+                  yHeading: 'Value',
+                  items: [{ label: '', value: 0 }],
+                },
+              ])
+            }
             className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold cursor-pointer"
           >
             <Plus className="w-3 h-3" />
-            <span>Add Chart</span>
+            <span>Add Dataset</span>
           </button>
         </div>
         {chartData.map((ch, cIdx) => (
-          <div key={cIdx} className="p-2.5 rounded bg-white border border-slate-200 space-y-2 min-w-0">
-            <div className="flex flex-wrap sm:flex-nowrap gap-2 min-w-0">
+          <div key={cIdx} className="p-2.5 rounded-lg bg-white border border-slate-200 space-y-2 min-w-0">
+            <div className="flex flex-wrap sm:flex-nowrap gap-2 min-w-0 items-center">
               <input
                 type="text"
-                placeholder="Chart title"
+                placeholder="Dataset / Chart title"
                 value={ch.title}
                 onChange={(e) =>
                   setChartData((prev) => prev.map((x, i) => (i === cIdx ? { ...x, title: e.target.value } : x)))
                 }
                 className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
               />
+              <select
+                value={ch.chartType || 'bar'}
+                onChange={(e) =>
+                  setChartData((prev) =>
+                    prev.map((x, i) =>
+                      i === cIdx ? { ...x, chartType: e.target.value as ArticleChartVisualType } : x
+                    )
+                  )
+                }
+                className="w-full sm:w-36 min-w-0 px-2 py-1 rounded border border-slate-300 bg-slate-50 font-medium cursor-pointer"
+                title="Default visualization category"
+              >
+                <option value="bar">Bar Chart</option>
+                <option value="histogram">Histogram</option>
+                <option value="scatter">Scatter Diagram</option>
+                <option value="pie">Pie Chart</option>
+                <option value="line">Graphic Rep. (Curve)</option>
+              </select>
               <input
                 type="text"
-                placeholder="Unit (e.g. MPa, Hz)"
+                placeholder="Unit (e.g. MPa)"
                 value={ch.unit || ''}
                 onChange={(e) =>
                   setChartData((prev) => prev.map((x, i) => (i === cIdx ? { ...x, unit: e.target.value } : x)))
                 }
-                className="w-full sm:w-28 min-w-0 px-2 py-1 rounded border border-slate-300"
+                className="w-full sm:w-24 min-w-0 px-2 py-1 rounded border border-slate-300"
               />
               <button
                 type="button"
                 onClick={() => setChartData((prev) => prev.filter((_, i) => i !== cIdx))}
                 className="text-rose-600 p-1 cursor-pointer shrink-0"
+                title="Remove dataset"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             </div>
+
+            {/* Table Column Headings */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text"
+                placeholder="Column 1 heading (e.g. Parameter)"
+                value={ch.xHeading || ''}
+                onChange={(e) =>
+                  setChartData((prev) =>
+                    prev.map((x, i) => (i === cIdx ? { ...x, xHeading: e.target.value } : x))
+                  )
+                }
+                className="min-w-0 px-2 py-1 rounded border border-slate-200 bg-slate-50 text-[11px]"
+              />
+              <input
+                type="text"
+                placeholder="Column 2 heading (e.g. Value / Delta)"
+                value={ch.yHeading || ''}
+                onChange={(e) =>
+                  setChartData((prev) =>
+                    prev.map((x, i) => (i === cIdx ? { ...x, yHeading: e.target.value } : x))
+                  )
+                }
+                className="min-w-0 px-2 py-1 rounded border border-slate-200 bg-slate-50 text-[11px]"
+              />
+            </div>
+
             <div className="space-y-1.5">
-              {ch.items.map((pt, pIdx) => (
-                <div key={pIdx} className="flex flex-wrap sm:flex-nowrap gap-2 items-center min-w-0">
-                  <input
-                    type="text"
-                    placeholder="Data label"
-                    value={pt.label}
-                    onChange={(e) =>
-                      setChartData((prev) =>
-                        prev.map((x, i) =>
-                          i === cIdx
-                            ? {
-                                ...x,
-                                items: x.items.map((it, j) => (j === pIdx ? { ...it, label: e.target.value } : it)),
-                              }
-                            : x
+              {ch.items.map((pt, pIdx) => {
+                const valKey = `${cIdx}:${pIdx}:v`;
+                const xKey = `${cIdx}:${pIdx}:x`;
+                const valDisplay =
+                  valKey in signedNumDrafts ? signedNumDrafts[valKey] : String(pt.value ?? 0);
+                const xDisplay =
+                  xKey in signedNumDrafts
+                    ? signedNumDrafts[xKey]
+                    : typeof pt.xValue === 'number'
+                    ? String(pt.xValue)
+                    : '';
+
+                return (
+                  <div key={pIdx} className="flex flex-wrap sm:flex-nowrap gap-1.5 items-center min-w-0">
+                    <span className="w-5 text-center font-mono text-[10.5px] text-slate-400 shrink-0 tabular-nums">
+                      {pIdx + 1}.
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Row label"
+                      value={pt.label}
+                      onChange={(e) =>
+                        setChartData((prev) =>
+                          prev.map((x, i) =>
+                            i === cIdx
+                              ? {
+                                  ...x,
+                                  items: x.items.map((it, j) =>
+                                    j === pIdx ? { ...it, label: e.target.value } : it
+                                  ),
+                                }
+                              : x
+                          )
                         )
-                      )
-                    }
-                    className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
-                  />
-                  <input
-                    type="number"
-                    step="any"
-                    placeholder="Value"
-                    value={pt.value}
-                    onChange={(e) =>
-                      setChartData((prev) =>
-                        prev.map((x, i) =>
-                          i === cIdx
-                            ? {
-                                ...x,
-                                items: x.items.map((it, j) =>
-                                  j === pIdx ? { ...it, value: Number(e.target.value) || 0 } : it
-                                ),
-                              }
-                            : x
+                      }
+                      className="flex-1 min-w-0 px-2 py-1 rounded border border-slate-300"
+                    />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="X (opt)"
+                      title="Optional numeric X coordinate for scatter/curve"
+                      value={xDisplay}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw !== '' && !/^[-+]?\d*\.?\d*$/.test(raw)) return;
+                        setSignedNumDrafts((prev) => ({ ...prev, [xKey]: raw }));
+                        if (raw === '') {
+                          setChartData((prev) =>
+                            prev.map((x, i) =>
+                              i === cIdx
+                                ? {
+                                    ...x,
+                                    items: x.items.map((it, j) =>
+                                      j === pIdx ? { ...it, xValue: undefined } : it
+                                    ),
+                                  }
+                                : x
+                            )
+                          );
+                        } else if (/^[-+]?(?:\d+\.?\d*|\.\d+)$/.test(raw)) {
+                          const parsed = Number(raw);
+                          if (Number.isFinite(parsed)) {
+                            setChartData((prev) =>
+                              prev.map((x, i) =>
+                                i === cIdx
+                                  ? {
+                                      ...x,
+                                      items: x.items.map((it, j) =>
+                                        j === pIdx ? { ...it, xValue: parsed } : it
+                                      ),
+                                    }
+                                  : x
+                              )
+                            );
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        setSignedNumDrafts((prev) => {
+                          const next = { ...prev };
+                          delete next[xKey];
+                          return next;
+                        });
+                      }}
+                      className="w-16 min-w-0 px-2 py-1 rounded border border-slate-200 bg-slate-50 font-mono text-[11px] tabular-nums"
+                    />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="+/- Value"
+                      title="Accepts positive (+) and negative (-) values"
+                      value={valDisplay}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw !== '' && !/^[-+]?\d*\.?\d*$/.test(raw)) return;
+                        setSignedNumDrafts((prev) => ({ ...prev, [valKey]: raw }));
+                        if (/^[-+]?(?:\d+\.?\d*|\.\d+)$/.test(raw)) {
+                          const parsed = Number(raw);
+                          if (Number.isFinite(parsed)) {
+                            setChartData((prev) =>
+                              prev.map((x, i) =>
+                                i === cIdx
+                                  ? {
+                                      ...x,
+                                      items: x.items.map((it, j) =>
+                                        j === pIdx ? { ...it, value: parsed } : it
+                                      ),
+                                    }
+                                  : x
+                              )
+                            );
+                          }
+                        } else if (raw === '') {
+                          setChartData((prev) =>
+                            prev.map((x, i) =>
+                              i === cIdx
+                                ? {
+                                    ...x,
+                                    items: x.items.map((it, j) =>
+                                      j === pIdx ? { ...it, value: 0 } : it
+                                    ),
+                                  }
+                                : x
+                            )
+                          );
+                        }
+                      }}
+                      onBlur={() => {
+                        setSignedNumDrafts((prev) => {
+                          const next = { ...prev };
+                          delete next[valKey];
+                          return next;
+                        });
+                      }}
+                      className="w-24 min-w-0 px-2 py-1 rounded border border-slate-300 font-mono tabular-nums"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setChartData((prev) =>
+                          prev.map((x, i) =>
+                            i === cIdx ? { ...x, items: x.items.filter((_, j) => j !== pIdx) } : x
+                          )
                         )
-                      )
-                    }
-                    className="w-24 min-w-0 px-2 py-1 rounded border border-slate-300"
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setChartData((prev) =>
-                        prev.map((x, i) =>
-                          i === cIdx ? { ...x, items: x.items.filter((_, j) => j !== pIdx) } : x
-                        )
-                      )
-                    }
-                    className="text-rose-600 p-1 cursor-pointer shrink-0"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
+                      }
+                      className="text-rose-600 p-1 cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
               <button
                 type="button"
                 onClick={() =>
@@ -1358,7 +1529,7 @@ export const ArticleFormPanel: React.FC<ArticleFormPanelProps> = ({
                 }
                 className="text-[11px] text-cyan-800 hover:underline font-semibold cursor-pointer"
               >
-                + Add Data Point
+                + Add Data Row
               </button>
             </div>
           </div>
