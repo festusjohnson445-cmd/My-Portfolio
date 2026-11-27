@@ -84,10 +84,88 @@ function isPdfMedia(item?: Partial<MediaAssetItem>): boolean {
   return /\.pdf(\?|#|$)/i.test(item.url || item.fileName || '');
 }
 
-function getFileExtensionBadge(item: Partial<MediaAssetItem>): string {
-  const src = item.fileName || item.url || '';
-  const match = src.split('?')[0].match(/\.([a-z0-9]+)$/i);
-  return match ? match[1].toUpperCase() : 'CAD';
+async function trimDocumentCardWhitespace(src: string): Promise<string | null> {
+  if (!src || typeof document === 'undefined') return null;
+  return await new Promise<string | null>((resolve) => {
+    const img = new Image();
+    if (/^https?:\/\//i.test(src)) {
+      img.crossOrigin = 'anonymous';
+    }
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        if (!w || !h || w < 20 || h < 20) {
+          resolve(null);
+          return;
+        }
+        const scale = Math.min(1, 960 / Math.max(w, h));
+        const cw = Math.max(1, Math.round(w * scale));
+        const ch = Math.max(1, Math.round(h * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, cw, ch);
+        const data = ctx.getImageData(0, 0, cw, ch).data;
+
+        const rowHasContent = (y: number) => {
+          let nonWhite = 0;
+          const rowStart = y * cw * 4;
+          for (let x = 0; x < cw; x += 2) {
+            const idx = rowStart + x * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const a = data[idx + 3];
+            if (a > 20 && (r < 245 || g < 245 || b < 245)) {
+              nonWhite += 1;
+              if (nonWhite >= 2) return true;
+            }
+          }
+          return false;
+        };
+
+        let top = 0;
+        while (top < ch - 1 && !rowHasContent(top)) top++;
+        let bottom = ch - 1;
+        while (bottom > top && !rowHasContent(bottom)) bottom--;
+
+        const padY = Math.round(Math.min(14, ch * 0.015));
+        const cropTop = Math.max(0, top - padY);
+        const cropBottom = Math.min(ch - 1, bottom + padY);
+        const croppedH = cropBottom - cropTop + 1;
+
+        if (croppedH >= ch * 0.94 || croppedH < 24) {
+          resolve(null);
+          return;
+        }
+
+        const outTop = Math.round(cropTop / scale);
+        const outH = Math.max(24, Math.round(croppedH / scale));
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = w;
+        outCanvas.height = outH;
+        const outCtx = outCanvas.getContext('2d');
+        if (!outCtx) {
+          resolve(null);
+          return;
+        }
+        outCtx.fillStyle = '#ffffff';
+        outCtx.fillRect(0, 0, w, outH);
+        outCtx.drawImage(img, 0, outTop, w, outH, 0, 0, w, outH);
+        resolve(outCanvas.toDataURL('image/jpeg', 0.94));
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
 }
 
 function resolveProjectCardImage(proj: PortfolioProject): string {
@@ -133,6 +211,7 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
   const isPdf = isPdfMedia(item);
   const preRendered = item.posterUrl || item.jpegUrl || item.webpUrl || (isImg ? item.url : '');
   const [previewSrc, setPreviewSrc] = useState<string>(preRendered);
+  const [trimmedSrc, setTrimmedSrc] = useState<string>('');
   const [rendering, setRendering] = useState<boolean>(false);
 
   const cleanTitle =
@@ -142,6 +221,7 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
 
   useEffect(() => {
     setPreviewSrc(preRendered);
+    setTrimmedSrc('');
   }, [preRendered]);
 
   useEffect(() => {
@@ -167,7 +247,23 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
     };
   }, [previewSrc, isPdf, item.url, item.fileName, cleanTitle]);
 
-  const extBadge = getFileExtensionBadge(item);
+  useEffect(() => {
+    let active = true;
+    if (!previewSrc) {
+      setTrimmedSrc('');
+      return;
+    }
+    trimDocumentCardWhitespace(previewSrc).then((cropped) => {
+      if (active && cropped) {
+        setTrimmedSrc(cropped);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [previewSrc]);
+
+  const activePreview = trimmedSrc || previewSrc;
 
   const handleInspect = () => {
     if (isPdf) {
@@ -177,32 +273,32 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
         fileName: item.fileName || `${cleanTitle}.pdf`,
         fileType: 'pdf',
         downloadUrl: item.url,
-        previewUrl: previewSrc || undefined,
+        previewUrl: activePreview || undefined,
       });
-    } else if (previewSrc) {
-      onOpenLightbox(previewSrc, cleanTitle, item.url);
+    } else if (activePreview) {
+      onOpenLightbox(activePreview, cleanTitle, item.url);
     }
   };
 
   return (
-    <div className="rounded-xl bg-white border border-[#b8c6d4] overflow-hidden shadow-2xs flex flex-col justify-between">
+    <div className="rounded-xl bg-white border border-[#b8c6d4] overflow-hidden shadow-2xs flex flex-col">
       <div
-        onClick={previewSrc || isPdf ? handleInspect : undefined}
+        onClick={activePreview || isPdf ? handleInspect : undefined}
         className={`relative w-full ${
-          variant === 'pdf' ? 'aspect-[4/5]' : 'aspect-[4/3]'
-        } bg-slate-50 border-b border-slate-200 flex items-center justify-center overflow-hidden ${
-          previewSrc || isPdf ? 'cursor-pointer group' : ''
+          !activePreview ? 'aspect-[4/3] bg-slate-50' : 'bg-white'
+        } border-b border-slate-200 flex items-center justify-center overflow-hidden ${
+          activePreview || isPdf ? 'cursor-pointer group' : ''
         }`}
       >
-        {previewSrc ? (
+        {activePreview ? (
           <>
             <img
-              src={previewSrc}
+              src={activePreview}
               alt={cleanTitle}
               loading="lazy"
               decoding="async"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-contain bg-white p-1.5 transition-transform duration-200 group-hover:scale-[1.02]"
+              className="w-full h-auto max-h-[460px] object-contain bg-white block transition-transform duration-200 group-hover:scale-[1.01]"
             />
             <span className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-950/80 text-white text-[10.5px] font-semibold">
               <Maximize2 className="w-3 h-3" />
@@ -215,7 +311,7 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
             <span>Rendering clear sheet...</span>
           </div>
         ) : (
-          /* Sharp CAD Blueprint Drafting Card for native binary CAD formats (STEP/DWG/DXF/SLDPRT) */
+          /* Sharp CAD Blueprint Drafting Card for native binary CAD formats */
           <div className="w-full h-full bg-[#edf3fa] flex flex-col items-center justify-center p-4 text-center relative">
             <div
               className="absolute inset-0 opacity-45 pointer-events-none"
@@ -234,50 +330,29 @@ const SharpAssetCard: React.FC<SharpAssetCardProps> = ({
               <polygon points="78,24 98,24 98,48 74,48" />
             </svg>
             <span className="relative z-10 text-[11px] font-mono font-bold text-cyan-950 tracking-wide">
-              {extBadge} Engineering Sheet
+              {variant === 'cad' ? 'CAD Engineering Sheet' : 'Document Sheet'}
             </span>
-            {item.fileSize && (
-              <span className="relative z-10 text-[10px] font-mono text-slate-500 mt-0.5">
-                {item.fileSize}
-              </span>
-            )}
           </div>
         )}
       </div>
 
-      <div className="p-2.5 space-y-1.5 text-xs">
+      <div className="px-2.5 py-2 space-y-1.5 text-xs">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div className="min-w-0 flex-1">
             <p className="font-bold text-slate-950 truncate" title={cleanTitle}>
               {cleanTitle}
             </p>
-            <p className="text-[10.5px] font-mono text-slate-500 truncate">
-              {extBadge}
-              {item.fileSize ? ` · ${item.fileSize}` : ''}
-            </p>
           </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {(previewSrc || isPdf) && (
-              <button
-                type="button"
-                onClick={handleInspect}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 text-[10.5px] font-semibold cursor-pointer"
-              >
-                <Eye className="w-3 h-3" />
-                <span>{isPdf ? 'Read' : 'View'}</span>
-              </button>
-            )}
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              download
-              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-cyan-800 hover:bg-cyan-900 text-white text-[10.5px] font-semibold"
+          {(activePreview || isPdf) && (
+            <button
+              type="button"
+              onClick={handleInspect}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 text-[10.5px] font-semibold cursor-pointer shrink-0"
             >
-              <Download className="w-3 h-3" />
-              <span>Download</span>
-            </a>
-          </div>
+              <Eye className="w-3 h-3" />
+              <span>{isPdf ? 'Read' : 'View'}</span>
+            </button>
+          )}
         </div>
         {item.note && item.note.trim() && (
           <p className="text-[11px] text-slate-600 text-justify leading-relaxed border-t border-slate-100 pt-1.5">
@@ -839,7 +914,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             <div className="p-4 rounded-xl bg-[#edf2f8]/60 border border-[#b8c6d4] space-y-3">
               <h2 className="text-xs sm:text-sm font-bold text-slate-950 text-center flex items-center justify-center gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-cyan-800" />
-                <span>Showcase Project Documents ({selectedProject.showcasePdfs.length})</span>
+                <span>Project View ({selectedProject.showcasePdfs.length})</span>
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {selectedProject.showcasePdfs.map((pdf, idx) => (

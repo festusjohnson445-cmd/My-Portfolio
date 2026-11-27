@@ -1484,13 +1484,16 @@ let cachedFfmpegInfo: {
 async function getFfmpegCapabilities() {
   if (cachedFfmpegInfo) return cachedFfmpegInfo;
   let ffmpegPath = 'ffmpeg';
-  try {
-    const mod = await import('ffmpeg-static');
-    const candidate = mod.default || (mod as any);
-    if (typeof candidate === 'string' && fs.existsSync(candidate)) {
-      ffmpegPath = candidate;
-    }
-  } catch {}
+  if (process.env.VERCEL !== '1') {
+    try {
+      const ffmpegStaticPkg = 'ffmpeg-static';
+      const mod = await import(/* @vite-ignore */ ffmpegStaticPkg);
+      const candidate = mod.default || (mod as any);
+      if (typeof candidate === 'string' && fs.existsSync(candidate)) {
+        ffmpegPath = candidate;
+      }
+    } catch {}
+  }
 
   const ffprobeBin = fs.existsSync('/usr/bin/ffprobe') ? '/usr/bin/ffprobe' : 'ffprobe';
   let hasX264 = false;
@@ -2992,8 +2995,21 @@ if (process.env.VERCEL === '1') {
     try {
       await sendSeoInjectedHtml(req, res, readBuiltHtmlTemplate());
     } catch (err) {
-      next(err);
+      console.error('[Vercel SSR SEO Fallback]:', err);
+      if (!res.headersSent) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.status(200).send(readBuiltHtmlTemplate());
+      }
     }
+  });
+
+  // Fallback Express error handler for non-API routes on Vercel so transient errors never trigger 500 FUNCTION_INVOCATION_FAILED
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api/')) return next(err);
+    console.error('[Vercel Non-API Error Fallback]:', err);
+    if (res.headersSent) return;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.status(200).send(readBuiltHtmlTemplate());
   });
 }
 
@@ -3020,7 +3036,8 @@ async function startServer() {
       }
     });
   } else {
-    const { createServer: createViteServer } = await import('vite');
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false, watch: null },
       appType: 'custom',

@@ -54,6 +54,9 @@ function extractErrorString(err: any): string {
  * Execute a database operation with fast timeout and fallback
  */
 export async function withDbRetry<T>(operation: () => Promise<T>, maxRetries = 1): Promise<T> {
+  if (!process.env.SQL_HOST) {
+    throw new Error('SQL_HOST not configured');
+  }
   let lastError: any;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {

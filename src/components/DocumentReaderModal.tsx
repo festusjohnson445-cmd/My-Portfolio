@@ -166,6 +166,7 @@ const PdfPageRenderer: React.FC<{
   pageNumber: number;
   zoom: number;
   containerWidth: number;
+  eager?: boolean;
   highlights: ReaderHighlight[];
   annotations: ReaderAnnotation[];
   annotateMode: boolean;
@@ -176,6 +177,7 @@ const PdfPageRenderer: React.FC<{
   pageNumber,
   zoom,
   containerWidth,
+  eager = false,
   highlights,
   annotations,
   annotateMode,
@@ -186,13 +188,17 @@ const PdfPageRenderer: React.FC<{
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>({
-    width: Math.max(280, Math.min(840, containerWidth - 24)),
-    height: Math.round(Math.max(280, Math.min(840, containerWidth - 24)) * 1.414),
+    width: Math.max(280, Math.min(920, containerWidth - 36)),
+    height: Math.round(Math.max(280, Math.min(920, containerWidth - 36)) * 1.414),
   });
-  const [isVisible, setIsVisible] = useState(false);
+  const [isVisible, setIsVisible] = useState(eager);
   const [rendered, setRendered] = useState(false);
 
   useEffect(() => {
+    if (eager) {
+      setIsVisible(true);
+      return;
+    }
     const el = pageBoxRef.current;
     if (!el || typeof IntersectionObserver === 'undefined') {
       setIsVisible(true);
@@ -204,11 +210,11 @@ const PdfPageRenderer: React.FC<{
           setIsVisible(true);
         }
       },
-      { rootMargin: '420px 0px' }
+      { rootMargin: '420px 1000px' }
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [eager]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -222,7 +228,7 @@ const PdfPageRenderer: React.FC<{
         if (cancelled) return;
 
         const baseViewport = page.getViewport({ scale: 1 });
-        const maxReadableWidth = Math.max(280, Math.min(980, containerWidth - 28));
+        const maxReadableWidth = Math.max(280, Math.min(1040, containerWidth - 36));
         const fitScale = maxReadableWidth / baseViewport.width;
         const effectiveScale = fitScale * zoom;
         const viewport = page.getViewport({ scale: effectiveScale });
@@ -232,16 +238,24 @@ const PdfPageRenderer: React.FC<{
 
         const canvas = canvasRef.current;
         if (!canvas) return;
-        const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2.5);
-        canvas.width = Math.round(cssW * dpr);
-        canvas.height = Math.round(cssH * dpr);
+        const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+        let renderDpr = Math.min(Math.max(rawDpr * 1.5, 2.25), 3.25);
+        const maxBackingDim = 3800;
+        if (cssW * renderDpr > maxBackingDim || cssH * renderDpr > maxBackingDim) {
+          renderDpr = Math.max(1, Math.min(renderDpr, maxBackingDim / Math.max(cssW, cssH)));
+        }
+
+        canvas.width = Math.round(cssW * renderDpr);
+        canvas.height = Math.round(cssH * renderDpr);
         canvas.style.width = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
 
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) return;
         ctx.save();
-        ctx.scale(dpr, dpr);
+        ctx.scale(renderDpr, renderDpr);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, cssW, cssH);
 
@@ -313,7 +327,7 @@ const PdfPageRenderer: React.FC<{
       data-reader-page={pageNumber}
       onClick={handleSurfaceClick}
       style={{ width: `${dimensions.width}px`, height: `${dimensions.height}px` }}
-      className={`relative mx-auto bg-white shadow-md border border-stone-200 select-text overflow-hidden shrink-0 ${
+      className={`relative mx-auto bg-white shadow-lg border border-stone-300/80 select-text overflow-hidden shrink-0 ${
         annotateMode ? 'cursor-crosshair' : ''
       }`}
     >
@@ -406,10 +420,10 @@ const StructuredPageRenderer: React.FC<{
   const isSheet = page.kind === 'sheet';
   const isImage = page.kind === 'image';
 
-  const baseMaxW = isSlide || isSheet ? 920 : 760;
+  const baseMaxW = isSlide || isSheet ? 980 : 800;
   const pageWidth = Math.max(
     280,
-    Math.min(Math.round(baseMaxW * zoom), containerWidth - 24)
+    Math.min(Math.round(baseMaxW * zoom), containerWidth - 36)
   );
 
   const handleSurfaceClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -538,7 +552,7 @@ const StructuredPageRenderer: React.FC<{
       data-reader-page={page.pageNumber}
       onClick={handleSurfaceClick}
       style={{ width: `${pageWidth}px` }}
-      className={`relative mx-auto bg-white shadow-md border border-stone-200 select-text shrink-0 ${
+      className={`relative mx-auto bg-white shadow-lg border border-stone-300/80 antialiased text-stone-900 select-text shrink-0 ${
         isSlide ? 'min-h-[360px] sm:min-h-[480px] p-6 sm:p-10 flex flex-col justify-between' : isImage ? 'p-3 sm:p-5' : 'min-h-[540px] sm:min-h-[760px] px-6 py-8 sm:px-12 sm:py-12'
       } ${annotateMode ? 'cursor-crosshair' : ''}`}
     >
@@ -600,6 +614,7 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
   const [viewMode, setViewMode] = useState<'paginated' | 'continuous'>('paginated');
   const [zoom, setZoom] = useState(1);
   const pendingRestoreScrollRef = useRef<{ page: number; scrollRatio: number; viewMode: 'paginated' | 'continuous' } | null>(null);
+  const programmaticSlideScrollUntilRef = useRef<number>(0);
   const [restoreTick, setRestoreTick] = useState(0);
 
   // Private User Annotations / Bookmarks / Highlights / Personal Notes
@@ -683,7 +698,31 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
     return () => window.removeEventListener('resize', updateWidth);
   }, [isDrawerOpen]);
 
-  // Lock page body scroll while reader is open & support Escape close
+  const jumpToPage = useCallback((targetPage: number) => {
+    const clamped = Math.max(1, Math.min(totalPages, targetPage));
+    setCurrentPage(clamped);
+    const vp = viewportRef.current;
+    if (!vp) return;
+    if (viewMode === 'continuous') {
+      const targetEl = vp.querySelector(`[data-reader-page="${clamped}"]`) as HTMLElement | null;
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    } else {
+      const slideWidth = Math.max(1, vp.clientWidth);
+      programmaticSlideScrollUntilRef.current = Date.now() + 520;
+      vp.scrollTo({
+        left: Math.max(0, (clamped - 1) * slideWidth),
+        behavior: 'smooth',
+      });
+      const slideEl = vp.querySelector(`[data-reader-slide="${clamped}"]`) as HTMLElement | null;
+      if (slideEl) {
+        slideEl.scrollTop = 0;
+      }
+    }
+  }, [totalPages, viewMode]);
+
+  // Lock page body scroll while reader is open & support Escape + Arrow slide navigation
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -702,9 +741,11 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
         document.activeElement?.tagName !== 'TEXTAREA'
       ) {
         if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-          setCurrentPage((p) => Math.min(totalPages, p + 1));
+          e.preventDefault();
+          jumpToPage(latestStateRef.current.currentPage + 1);
         } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-          setCurrentPage((p) => Math.max(1, p - 1));
+          e.preventDefault();
+          jumpToPage(latestStateRef.current.currentPage - 1);
         }
       }
     };
@@ -713,7 +754,7 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
       document.body.style.overflow = prevOverflow;
       window.removeEventListener('keydown', onKey);
     };
-  }, [onClose, viewMode, totalPages, isDrawerOpen, pendingAnnotation, showAuthPopover]);
+  }, [onClose, viewMode, jumpToPage, isDrawerOpen, pendingAnnotation, showAuthPopover]);
 
   // Load authenticated user's private reading state from Supabase
   const loadPrivateReadingState = useCallback(async () => {
@@ -864,14 +905,29 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
           const maxS = Math.max(0, vp.scrollHeight - vp.clientHeight);
           vp.scrollTop = Math.round(maxS * pending.scrollRatio);
         }
-      } else if (pending.scrollRatio > 0) {
-        const maxS = Math.max(0, vp.scrollHeight - vp.clientHeight);
-        vp.scrollTop = Math.round(maxS * pending.scrollRatio);
+      } else {
+        const slideWidth = Math.max(1, vp.clientWidth);
+        programmaticSlideScrollUntilRef.current = Date.now() + 260;
+        vp.scrollTo({ left: Math.max(0, (pending.page - 1) * slideWidth), behavior: 'auto' });
       }
     }, 180);
 
     return () => window.clearTimeout(timer);
   }, [loadingDoc, parsedDoc, pdfDoc, restoreTick]);
+
+  // Keep active horizontal slide aligned when toggling viewMode or resizing container
+  useEffect(() => {
+    if (loadingDoc || viewMode !== 'paginated') return;
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const slideWidth = Math.max(1, vp.clientWidth);
+    const activePage = latestStateRef.current.currentPage;
+    const targetLeft = Math.max(0, (activePage - 1) * slideWidth);
+    if (Math.abs(vp.scrollLeft - targetLeft) > 8) {
+      programmaticSlideScrollUntilRef.current = Date.now() + 250;
+      vp.scrollTo({ left: targetLeft, behavior: 'auto' });
+    }
+  }, [viewMode, containerWidth, loadingDoc]);
 
   // Auto-save whenever reading state mutates
   useEffect(() => {
@@ -890,7 +946,7 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
     scheduleReadingStateSave,
   ]);
 
-  // Scroll listener for continuous page tracking + exact scroll position auto-save
+  // Scroll listener for horizontal slide paging + continuous vertical page tracking + auto-save
   const handleViewportScroll = () => {
     const vp = viewportRef.current;
     if (!vp) return;
@@ -912,23 +968,14 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
       if (bestPage !== currentPage) {
         setCurrentPage(bestPage);
       }
+    } else if (Date.now() > programmaticSlideScrollUntilRef.current) {
+      const slideWidth = Math.max(1, vp.clientWidth);
+      const approxPage = Math.max(1, Math.min(totalPages, Math.round(vp.scrollLeft / slideWidth) + 1));
+      if (approxPage !== currentPage) {
+        setCurrentPage(approxPage);
+      }
     }
     scheduleReadingStateSave();
-  };
-
-  const jumpToPage = (targetPage: number) => {
-    const clamped = Math.max(1, Math.min(totalPages, targetPage));
-    setCurrentPage(clamped);
-    const vp = viewportRef.current;
-    if (!vp) return;
-    if (viewMode === 'continuous') {
-      const targetEl = vp.querySelector(`[data-reader-page="${clamped}"]`) as HTMLElement | null;
-      if (targetEl) {
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    } else {
-      vp.scrollTop = 0;
-    }
   };
 
   const requireAuthForPrivateAction = (): boolean => {
@@ -1208,12 +1255,12 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
 
           <div className="hidden sm:block w-px h-4 bg-stone-300 mx-0.5" />
 
-          {/* Paginated vs Continuous Toggle */}
+          {/* Horizontal Slide Scroll vs Vertical Continuous Scroll Toggle */}
           <button
             type="button"
             onClick={() => setViewMode((m) => (m === 'paginated' ? 'continuous' : 'paginated'))}
-            aria-label={viewMode === 'paginated' ? 'Switch to continuous scroll' : 'Switch to page by page'}
-            title={viewMode === 'paginated' ? 'Continuous Reading' : 'Page-by-Page'}
+            aria-label={viewMode === 'paginated' ? 'Switch to vertical scroll' : 'Switch to horizontal slide scroll'}
+            title={viewMode === 'paginated' ? 'Horizontal Slide Scroll (Click for Vertical)' : 'Vertical Scroll (Click for Horizontal Slides)'}
             className={`w-6 h-6 sm:w-8 sm:h-8 rounded-md flex items-center justify-center transition-colors cursor-pointer ${
               viewMode === 'continuous'
                 ? 'bg-cyan-900 text-white'
@@ -1378,37 +1425,56 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
       <div className="relative flex-1 flex min-h-0 overflow-hidden">
         <div
           ref={viewportRef}
+          data-testid="reader-viewport"
+          data-view-mode={viewMode}
           onScroll={handleViewportScroll}
           onMouseUp={handleViewportMouseUpOrTouchEnd}
           onTouchEnd={() => window.setTimeout(handleViewportMouseUpOrTouchEnd, 80)}
-          className="flex-1 overflow-auto p-3 sm:p-6 space-y-5"
+          className={
+            viewMode === 'paginated'
+              ? 'flex-1 flex flex-row items-stretch overflow-x-auto overflow-y-hidden snap-x snap-mandatory scroll-smooth'
+              : 'flex-1 overflow-y-auto overflow-x-auto p-3 sm:p-6 space-y-5'
+          }
         >
           {loadingDoc ? (
-            <div className="h-full min-h-[300px] flex items-center justify-center">
+            <div className="w-full h-full min-h-[300px] flex items-center justify-center shrink-0">
               <Loader2 className="w-7 h-7 animate-spin text-cyan-900" />
             </div>
           ) : loadError ? (
-            <div className="max-w-md mx-auto mt-16 p-6 rounded-xl bg-white border border-stone-300 text-center space-y-3 shadow-sm">
-              <p className="text-sm text-stone-800">{loadError}</p>
+            <div className="w-full flex items-start justify-center p-4 shrink-0">
+              <div className="max-w-md w-full mt-16 p-6 rounded-xl bg-white border border-stone-300 text-center space-y-3 shadow-sm">
+                <p className="text-sm text-stone-800">{loadError}</p>
+              </div>
             </div>
           ) : pdfDoc ? (
             viewMode === 'paginated' ? (
-              <PdfPageRenderer
-                pdfDoc={pdfDoc}
-                pageNumber={currentPage}
-                zoom={zoom}
-                containerWidth={containerWidth}
-                highlights={highlights}
-                annotations={annotations}
-                annotateMode={annotateMode}
-                onPinAnnotationClick={(page, xPct, yPct) =>
-                  setPendingAnnotation({ page, xPct, yPct, comment: '' })
-                }
-                onSelectAnnotationPin={() => {
-                  setDrawerTab('highlights');
-                  setIsDrawerOpen(true);
-                }}
-              />
+              <>
+                {pdfPageNumbers.map((num) => (
+                  <div
+                    key={num}
+                    data-reader-slide={num}
+                    className="w-full h-full shrink-0 snap-center overflow-y-auto px-2 sm:px-8 py-3 sm:py-5 flex justify-center items-start"
+                  >
+                    <PdfPageRenderer
+                      pdfDoc={pdfDoc}
+                      pageNumber={num}
+                      zoom={zoom}
+                      containerWidth={containerWidth}
+                      eager={Math.abs(num - currentPage) <= 1}
+                      highlights={highlights}
+                      annotations={annotations}
+                      annotateMode={annotateMode}
+                      onPinAnnotationClick={(page, xPct, yPct) =>
+                        setPendingAnnotation({ page, xPct, yPct, comment: '' })
+                      }
+                      onSelectAnnotationPin={() => {
+                        setDrawerTab('highlights');
+                        setIsDrawerOpen(true);
+                      }}
+                    />
+                  </div>
+                ))}
+              </>
             ) : (
               <div className="space-y-5 pb-10">
                 {pdfPageNumbers.map((num) => (
@@ -1418,6 +1484,7 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
                     pageNumber={num}
                     zoom={zoom}
                     containerWidth={containerWidth}
+                    eager={Math.abs(num - currentPage) <= 1}
                     highlights={highlights}
                     annotations={annotations}
                     annotateMode={annotateMode}
@@ -1434,21 +1501,31 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
             )
           ) : parsedDoc ? (
             viewMode === 'paginated' ? (
-              <StructuredPageRenderer
-                page={parsedDoc.pages[Math.max(0, currentPage - 1)] || parsedDoc.pages[0]}
-                zoom={zoom}
-                containerWidth={containerWidth}
-                highlights={highlights}
-                annotations={annotations}
-                annotateMode={annotateMode}
-                onPinAnnotationClick={(page, xPct, yPct) =>
-                  setPendingAnnotation({ page, xPct, yPct, comment: '' })
-                }
-                onSelectAnnotationPin={() => {
-                  setDrawerTab('highlights');
-                  setIsDrawerOpen(true);
-                }}
-              />
+              <>
+                {parsedDoc.pages.map((pg) => (
+                  <div
+                    key={pg.pageNumber}
+                    data-reader-slide={pg.pageNumber}
+                    className="w-full h-full shrink-0 snap-center overflow-y-auto px-2 sm:px-8 py-3 sm:py-5 flex justify-center items-start"
+                  >
+                    <StructuredPageRenderer
+                      page={pg}
+                      zoom={zoom}
+                      containerWidth={containerWidth}
+                      highlights={highlights}
+                      annotations={annotations}
+                      annotateMode={annotateMode}
+                      onPinAnnotationClick={(page, xPct, yPct) =>
+                        setPendingAnnotation({ page, xPct, yPct, comment: '' })
+                      }
+                      onSelectAnnotationPin={() => {
+                        setDrawerTab('highlights');
+                        setIsDrawerOpen(true);
+                      }}
+                    />
+                  </div>
+                ))}
+              </>
             ) : (
               <div className="space-y-5 pb-10">
                 {parsedDoc.pages.map((pg) => (
@@ -1473,6 +1550,34 @@ export const DocumentReaderModal: React.FC<DocumentReaderModalProps> = ({ doc, o
             )
           ) : null}
         </div>
+
+        {/* Active Side-Slide Scroll Navigation Arrows */}
+        {!loadingDoc && !loadError && viewMode === 'paginated' && totalPages > 1 && (
+          <>
+            {currentPage > 1 && (
+              <button
+                type="button"
+                onClick={() => jumpToPage(currentPage - 1)}
+                aria-label="Slide to previous page"
+                title="Previous Slide"
+                className="absolute left-2 sm:left-3 top-1/2 -translate-y-1/2 z-20 w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 hover:bg-white border border-stone-300 shadow-md flex items-center justify-center text-stone-800 transition-opacity cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            )}
+            {currentPage < totalPages && (
+              <button
+                type="button"
+                onClick={() => jumpToPage(currentPage + 1)}
+                aria-label="Slide to next page"
+                title="Next Slide"
+                className={`absolute ${isDrawerOpen ? 'right-2 sm:right-[21rem] md:right-[25rem]' : 'right-2 sm:right-3'} top-1/2 -translate-y-1/2 z-20 w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 hover:bg-white border border-stone-300 shadow-md flex items-center justify-center text-stone-800 transition-opacity cursor-pointer`}
+              >
+                <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            )}
+          </>
+        )}
 
         {/* Floating Selection Action Toolbar */}
         {selectionAction && !highlightMode && (
